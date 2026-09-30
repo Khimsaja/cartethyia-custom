@@ -72,15 +72,25 @@ html[data-app="share"][data-theme="dark"] body {
   text-decoration: none;
 }
 
+/* The brand mark is the same artwork the console shell renders, so the two
+   surfaces share one identity instead of the share page inventing a shield. */
 .share-brand-mark {
   display: grid;
   place-items: center;
   width: 34px;
   height: 34px;
+  overflow: hidden;
   border: 1px solid var(--inner-border);
   border-radius: var(--radius-control);
   background: var(--accent-soft);
   color: var(--accent);
+}
+
+.share-brand-mark img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 
 .share-home-link {
@@ -192,7 +202,6 @@ html[data-app="share"] .share-hud-card {
   margin-top: 20px;
 }
 
-.share-status,
 .share-meta-pill {
   display: inline-flex;
   align-items: center;
@@ -206,24 +215,6 @@ html[data-app="share"] .share-hud-card {
   font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.3;
-}
-
-.share-status {
-  font-weight: 700;
-}
-
-.share-status-closed {
-  border-color: var(--orange-soft);
-  background: var(--orange-soft);
-  color: var(--orange);
-}
-
-.share-status-dot {
-  width: 7px;
-  height: 7px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: currentColor;
 }
 
 .share-section-heading,
@@ -589,7 +580,29 @@ html[data-app="share"] .share-hud-card {
 @media (max-width: 480px) {
   .share-topbar-inner {
     min-height: 58px;
-    padding: 10px 16px;
+    padding: 10px 14px;
+    gap: 10px;
+  }
+
+  /* The GitHub chip packs a mark and two remote count badges; on a narrow bar
+     they press against the theme toggle and Home link. Drop the counts and
+     keep the mark, and give the action cluster a little more breathing room. */
+  .share-topbar-actions {
+    gap: 6px;
+  }
+
+  .share-github-badge {
+    min-width: 34px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .share-github-badge .github-badge-metric {
+    display: none;
+  }
+
+  .share-home-link {
+    padding: 0 10px;
   }
 
   .share-main {

@@ -179,7 +179,6 @@ describe("public share enrollment page", () => {
     shareState = { data: { ...data, canIssue: false, alreadyIssued: true }, error: null, loading: false };
     const markup = render();
     expect(markup).toContain("An active key has already been issued from this IP.");
-    expect(markup).toContain("Already enrolled");
     expect(markup).not.toContain("Generate API Key");
   });
 

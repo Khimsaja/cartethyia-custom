@@ -459,13 +459,15 @@ function CombosSection(): ReactNode {
             renderItem={(c) => (
               <div
                 style={{
-                  padding: "14px 16px",
-                  borderRadius: "12px",
+                  // Same padding/radius as an alias row, but the members stay on
+                  // their own line below the header.
+                  padding: "10px 14px",
+                  borderRadius: "10px",
                   border: "1px solid var(--inner-border)",
                   background: "var(--surface-2)",
                   display: "flex",
                   flexDirection: "column",
-                  gap: "10px",
+                  gap: "8px",
                 }}
               >
                 <div
@@ -479,9 +481,7 @@ function CombosSection(): ReactNode {
                 >
                   {/* The strategy is already shown by the Select beside it; a
                       badge repeating the same value was redundant. */}
-                  <Inline gap="8px">
-                    <strong style={{ fontSize: "14px" }}>{c.name}</strong>
-                  </Inline>
+                  <strong style={{ fontSize: "13px" }}>{c.name}</strong>
 
                   <Inline gap="8px">
                     <Select

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
-import { Home, Moon, ShieldCheck, Sun, X } from "lucide-react";
+import { Home, Moon, Sun, X } from "lucide-react";
 import { useModalFocus } from "../../hooks/use-modal-focus";
 import { Button } from "../../components/ui/button";
 import { Card, CardBody } from "../../components/ui/card";
@@ -148,17 +148,6 @@ export function SharePage(): ReactElement {
   const canIssue =
     Boolean(enrollment?.canIssue) && !enrollment?.alreadyIssued && !issueConflict && !visibleSecret;
   const handoffKey = data?.kind === "handoff" ? data.key : null;
-  // The page states a problem, not a healthy-but-idle status: "ready to enroll"
-  // is the ordinary state and says nothing, while an unavailable link and an
-  // already-claimed IP both change what the recipient can do.
-  let statusLabel: string | null = null;
-  let statusClass = "share-status-closed";
-  if (visibleSecret || handoffKey) {
-    statusLabel = "Key ready";
-    statusClass = "share-status-ready";
-  } else if (enrollment?.alreadyIssued || issueConflict) {
-    statusLabel = "Already enrolled";
-  }
   const modelGroups = new Map<string, string[]>();
   for (const model of data?.modelAllowlist ?? []) {
     const slash = model.indexOf("/");
@@ -173,7 +162,12 @@ export function SharePage(): ReactElement {
         <div className="share-topbar-inner">
           <a className="share-brand" href="/">
             <span className="share-brand-mark" aria-hidden="true">
-              <ShieldCheck size={17} />
+              <img
+                src={`${import.meta.env.BASE_URL}favicon_love.webp`}
+                alt=""
+                width={34}
+                height={34}
+              />
             </span>
             <b>Cartethyia</b>
           </a>
@@ -230,12 +224,6 @@ export function SharePage(): ReactElement {
                 </p>
               ) : null}
               <div className="share-hero-meta">
-                {statusLabel ? (
-                  <span className={`share-status ${statusClass}`}>
-                    <span className="share-status-dot" aria-hidden="true" />
-                    {statusLabel}
-                  </span>
-                ) : null}
                 {data.expiresAt ? (
                   <span className="share-meta-pill">
                     Link expires {new Date(data.expiresAt).toLocaleString()}
