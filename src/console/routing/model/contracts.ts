@@ -61,6 +61,7 @@ export interface ModelRoutingStore {
     patch: ModelAliasPatchInput,
   ): Promise<ModelAliasRow | undefined>;
   deleteAlias(tenantId: string, id: string): Promise<boolean>;
+  reorderAliases(tenantId: string, ids: readonly string[]): Promise<void>;
   listCombos(tenantId: string): Promise<readonly ModelComboRow[]>;
   createCombo(tenantId: string, input: ModelComboCreateInput): Promise<ModelComboRow>;
   updateCombo(
@@ -69,6 +70,7 @@ export interface ModelRoutingStore {
     patch: ModelComboPatchInput,
   ): Promise<ModelComboRow | undefined>;
   deleteCombo(tenantId: string, id: string): Promise<boolean>;
+  reorderCombos(tenantId: string, ids: readonly string[]): Promise<void>;
   isKnownModel(tenantId: string, modelId: string): Promise<boolean>;
   areKnownModels(tenantId: string, modelIds: readonly string[]): Promise<ReadonlySet<string>>;
 }
@@ -214,9 +216,54 @@ export function createModelRoutingOperations(deps: ModelRoutingConfig) {
         await deps.snapshotInvalidator?.invalidate();
         return { success: true };
       },
+    /** Persists a new alias order. `ids` must name every alias the tenant has,
+        so a partial list cannot silently drop rows to index 0. */
+    async reorderAliases(access: AccessDecision | undefined, ids: readonly string[]): Promise<void> {
+        const a = requireTenantScope(access, "dashboard:write");
+        const tenantId = a.tenantId;
+        const existing = await deps.store.listAliases(tenantId);
+        const existingIds = new Set(existing.map((row) => row.id));
+        const seen = new Set<string>();
+        for (const id of ids) {
+          if (!existingIds.has(id))
+            throw new ConsoleDomainError("unknown_alias", 404, `Alias not found: ${id}`);
+          if (seen.has(id))
+            throw new ConsoleDomainError("invalid_request", 422, `Duplicate alias id: ${id}`);
+          seen.add(id);
+        }
+        if (seen.size !== existingIds.size)
+          throw new ConsoleDomainError(
+            "invalid_request",
+            422,
+            "Reorder must list every alias exactly once",
+          );
+        await deps.store.reorderAliases(tenantId, ids);
+      },
     async listCombos(access: AccessDecision | undefined): Promise<readonly ModelComboRow[]> {
         const a = requireTenantScope(access, "dashboard:read");
         return deps.store.listCombos(a.tenantId);
+      },
+    /** Persists a new combo order; see {@link reorderAliases}. */
+    async reorderCombos(access: AccessDecision | undefined, ids: readonly string[]): Promise<void> {
+        const a = requireTenantScope(access, "dashboard:write");
+        const tenantId = a.tenantId;
+        const existing = await deps.store.listCombos(tenantId);
+        const existingIds = new Set(existing.map((row) => row.id));
+        const seen = new Set<string>();
+        for (const id of ids) {
+          if (!existingIds.has(id))
+            throw new ConsoleDomainError("unknown_combo", 404, `Combo not found: ${id}`);
+          if (seen.has(id))
+            throw new ConsoleDomainError("invalid_request", 422, `Duplicate combo id: ${id}`);
+          seen.add(id);
+        }
+        if (seen.size !== existingIds.size)
+          throw new ConsoleDomainError(
+            "invalid_request",
+            422,
+            "Reorder must list every combo exactly once",
+          );
+        await deps.store.reorderCombos(tenantId, ids);
       },
     async createCombo(
         access: AccessDecision | undefined,
@@ -397,6 +444,8 @@ export type ComboSchemaParity = ExpectComboParity<
 
 const createAliasBody = t.Object({ alias: t.String(), targetModel: t.String() });
 const updateAliasBody = t.Object({ targetModel: t.String() });
+/** Full replacement order for the tenant's alias list. */
+const reorderBody = t.Object({ ids: t.Array(t.String(), { minItems: 1 }) });
 /** The combo-strategy enum's own values; see `ComboSchemaParity` above. */
 const comboStrategySchema = literalUnion(modelComboStrategy.enumValues);
 const createComboBody = t.Object({
@@ -441,6 +490,14 @@ export function createModelRoutingRoutes(config: ModelRoutingConfig): Elysia {
         return modelRoutingErrorResponse(e, set);
       }
     })
+    .post("/aliases/reorder", { body: reorderBody }, async ({ request, body, set }) => {
+      try {
+        await factory.reorderAliases(config.accessResolver(request), body.ids);
+        return { success: true };
+      } catch (e) {
+        return modelRoutingErrorResponse(e, set);
+      }
+    })
     .get("/combos", async ({ request, set }) => {
       try {
         return await factory.listCombos(config.accessResolver(request));
@@ -455,6 +512,14 @@ export function createModelRoutingRoutes(config: ModelRoutingConfig): Elysia {
           config.accessResolver(request),
           body as ModelComboCreateInput,
         );
+      } catch (e) {
+        return modelRoutingErrorResponse(e, set);
+      }
+    })
+    .post("/combos/reorder", { body: reorderBody }, async ({ request, body, set }) => {
+      try {
+        await factory.reorderCombos(config.accessResolver(request), body.ids);
+        return { success: true };
       } catch (e) {
         return modelRoutingErrorResponse(e, set);
       }

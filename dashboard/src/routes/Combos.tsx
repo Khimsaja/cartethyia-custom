@@ -1,6 +1,5 @@
 import { ArrowRight, Copy, Layers, Pencil, Plus, Route, Search, Trash2, X } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
-import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardBody, CardHeader } from "../components/ui/card";
 import { Dialog } from "../components/ui/dialog";
@@ -10,6 +9,8 @@ import { EmptyState, ErrorState, LoadingState } from "../components/ui/state";
 import { Inline } from "../components/ui/inline";
 import { Stack } from "../components/ui/stack";
 import { ModelPickerModal } from "../components/ModelPicker";
+import { SortableList } from "../components/SortableList";
+import { getErrorMessage } from "../shared/helpers";
 import { useTrackedTimeout } from "../hooks/use-timeout";
 import { useClipboard } from "../hooks/use-clipboard";
 import { toast } from "../shared/toast";
@@ -22,6 +23,8 @@ import {
   useDeleteModelCombo,
   useModelAliases,
   useModelCombos,
+  useReorderModelAliases,
+  useReorderModelCombos,
   useUpdateModelAlias,
   useUpdateModelCombo,
 } from "../hooks/routing";
@@ -33,6 +36,7 @@ function AliasesSection(): ReactNode {
   const createMutation = useCreateModelAlias();
   const updateMutation = useUpdateModelAlias();
   const deleteMutation = useDeleteModelAlias();
+  const reorderMutation = useReorderModelAliases();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingAlias, setEditingAlias] = useState<ModelAliasRow | null>(null);
   const [aliasName, setAliasName] = useState("");
@@ -121,10 +125,19 @@ function AliasesSection(): ReactNode {
             message="Create an alias to route short or friendly names to real provider model IDs."
           />
         ) : (
-          <Stack gap="8px">
-            {aliases.map((a) => (
+          <SortableList
+            items={aliases}
+            label="Model aliases"
+            gap="8px"
+            disabled={reorderMutation.isPending}
+            onReorder={(ids) =>
+              reorderMutation.mutate(ids, {
+                onError: (error) =>
+                  toast.error(getErrorMessage(error, "Could not save the new order.")),
+              })
+            }
+            renderItem={(a) => (
               <div
-                key={a.id}
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -195,8 +208,8 @@ function AliasesSection(): ReactNode {
                   />
                 </Inline>
               </div>
-            ))}
-          </Stack>
+            )}
+          />
         )}
       </CardBody>
 
@@ -314,6 +327,7 @@ function CombosSection(): ReactNode {
   const createMutation = useCreateModelCombo();
   const updateMutation = useUpdateModelCombo();
   const deleteMutation = useDeleteModelCombo();
+  const reorderMutation = useReorderModelCombos();
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingCombo, setEditingCombo] = useState<ModelComboRow | null>(null);
@@ -432,10 +446,18 @@ function CombosSection(): ReactNode {
             message="Create a model combo to distribute requests across multiple models."
           />
         ) : (
-          <Stack gap="10px">
-            {combos.map((c) => (
+          <SortableList
+            items={combos}
+            label="Model combos"
+            disabled={reorderMutation.isPending}
+            onReorder={(ids) =>
+              reorderMutation.mutate(ids, {
+                onError: (error) =>
+                  toast.error(getErrorMessage(error, "Could not save the new order.")),
+              })
+            }
+            renderItem={(c) => (
               <div
-                key={c.id}
                 style={{
                   padding: "14px 16px",
                   borderRadius: "12px",
@@ -455,11 +477,10 @@ function CombosSection(): ReactNode {
                     flexWrap: "wrap",
                   }}
                 >
+                  {/* The strategy is already shown by the Select beside it; a
+                      badge repeating the same value was redundant. */}
                   <Inline gap="8px">
                     <strong style={{ fontSize: "14px" }}>{c.name}</strong>
-                    <Badge tone="accent">
-                      {c.strategy === "round_robin" ? "round-robin" : "fallback"}
-                    </Badge>
                   </Inline>
 
                   <Inline gap="8px">
@@ -514,8 +535,8 @@ function CombosSection(): ReactNode {
                   ))}
                 </Inline>
               </div>
-            ))}
-          </Stack>
+            )}
+          />
         )}
       </CardBody>
 

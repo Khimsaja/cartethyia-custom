@@ -205,6 +205,13 @@ function createService(onApply?: (mappingOwnerId: string) => void): CliToolServi
       enabled: input.enabled,
       mappings: input.mappings,
     }),
+    resetMappings: async (tenantId: string, toolId: string, apiKeyId: string) => ({
+      tenantId,
+      toolId,
+      apiKeyId,
+      enabled: false,
+      mappings: [],
+    }),
     downloadConfig: async (toolId: string) =>
       toolId === "claude"
         ? { content: "{}", filename: "settings.json", mimeType: "application/json" }
@@ -385,6 +392,42 @@ describe("createCliToolsRoutes", () => {
       body: JSON.stringify({ endpoint: "http://x", keyId: "k", models: [] }),
     });
     expect((await app(readOnly).handle(req)).status).toBe(403);
+  });
+
+  test("resets remote routes and turns Remote Routing off", async () => {
+    const response = await app(readWrite).handle(
+      new Request("http://localhost/cli-tools/claude/mappings/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ keyId: "11111111-1111-1111-1111-111111111111" }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    // The reset reports the flag back as off with no routes left behind, which
+    // is what the dashboard switch and the route catalog both read.
+    expect(await response.json()).toMatchObject({ enabled: false, mappings: [] });
+  });
+
+  test("reset requires write scope", async () => {
+    const response = await app(readOnly).handle(
+      new Request("http://localhost/cli-tools/claude/mappings/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ keyId: "11111111-1111-1111-1111-111111111111" }),
+      }),
+    );
+    expect(response.status).toBe(403);
+  });
+
+  test("422s a reset without a keyId", async () => {
+    const response = await app(readWrite).handle(
+      new Request("http://localhost/cli-tools/claude/mappings/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      }),
+    );
+    expect(response.status).toBe(422);
   });
 
   test("409s when the selected key has no recoverable secret", async () => {

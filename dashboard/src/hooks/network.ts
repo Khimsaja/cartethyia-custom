@@ -4,6 +4,7 @@ import type {
   CreateNetworkPoolRequest,
   HealthCheckResult,
   NetworkPoolResponse,
+  PoolBatchProbeResult,
   PoolHealthEvent,
   PoolStrategySetting,
 } from "../data/contracts";
@@ -51,6 +52,27 @@ export function useProbeAdHocNetworkPool() {
       }),
   });
 }
+/**
+ * Probes many unsaved pool definitions in one request.
+ *
+ * The dashboard tests a pasted list before saving it; one request per proxy
+ * made a long paste take minutes. Dialing still happens per target, server-side
+ * with bounded concurrency — only the round-trips are batched.
+ */
+export function useProbeNetworkPoolBatch() {
+  return useMutation<
+    PoolBatchProbeResult[],
+    ApiErrorShape,
+    CreateNetworkPoolRequest[]
+  >({
+    mutationFn: (targets) =>
+      consoleRequest<PoolBatchProbeResult[]>("/network/pools/test-batch", {
+        method: "POST",
+        body: JSON.stringify({ targets }),
+      }),
+  });
+}
+
 /** Updates a network pool through the existing partial-update contract. */
 export function useUpdateNetworkPool() {
   const queryClient = useQueryClient();

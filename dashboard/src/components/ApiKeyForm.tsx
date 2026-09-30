@@ -3,12 +3,19 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Switch } from "./ui/switch";
 import { ModelPickerModal } from "./ModelPicker";
+import { useResetToolMappings, useSaveToolMappings, useToolMappings, useToolRegistry } from "../hooks/cli-tools";
+import { useUpdateApiKey } from "../hooks/api-keys";
+import { toast } from "../shared/toast";
+import { getErrorMessage } from "../shared/helpers";
 import {
   CLIENT_ROUTERS,
+  SHARE_POPUP_IMAGE_MAX_BYTES,
+  SHARE_POPUP_IMAGE_MIMES,
   TENANT_KEY_SCOPES,
   normalizeClientRouterId,
   type ApiKeyResponse,
   type TenantScope,
+  type ToolRegistryEntry,
 } from "../data/contracts";
 
 /**
@@ -125,6 +132,148 @@ function TokenBudgetField({
   );
 }
 
+/**
+ * One Remote Routing control for a single remote-mapping tool.
+ *
+ * Remote routing is two persisted facts that always travel together: the
+ * per-(tool, key) `cli_tool_settings.mappings_enabled` flag and the
+ * `routing:cli_mapping` scope that lets the key consume its routes. They are
+ * surfaced as one switch — on grants the scope and enables the routes, off
+ * clears the scope and disables them — so the operator never has to reason
+ * about which half is missing. Route rows are preserved across an off/on
+ * toggle; only Reset clears them.
+ */
+function RemoteRoutingRow({
+  tool,
+  keyId,
+  busy,
+  scopeGranted,
+  onScopeChange,
+}: {
+  tool: ToolRegistryEntry;
+  keyId: string;
+  busy: boolean;
+  scopeGranted: boolean;
+  onScopeChange: (next: boolean) => void;
+}): ReactNode {
+  const mappings = useToolMappings(tool.id, keyId);
+  const save = useSaveToolMappings();
+  const reset = useResetToolMappings();
+  const routesEnabled = mappings.data?.enabled ?? false;
+  const enabled = scopeGranted && routesEnabled;
+  const rowCount = mappings.data?.mappings.length ?? 0;
+  const pending = save.isPending || reset.isPending;
+
+  const setEnabled = (next: boolean) => {
+    if (next !== scopeGranted) onScopeChange(next);
+    save.mutate(
+      { toolId: tool.id, keyId, input: { enabled: next, mappings: mappings.data?.mappings ?? [] } },
+      {
+        onError: (error) => toast.error(getErrorMessage(error, "Could not save remote routing.")),
+      },
+    );
+  };
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: "12px",
+        minHeight: "44px",
+        padding: "8px 10px",
+        border: "1px solid var(--inner-border)",
+        borderRadius: "8px",
+        background: enabled ? "var(--accent-soft)" : "var(--surface-1)",
+      }}
+    >
+      <div>
+        <div style={{ fontSize: "12px", fontWeight: 600, color: "var(--text-primary)" }}>
+          {tool.name}
+        </div>
+        <p style={{ marginTop: "2px", fontSize: "11px", color: "var(--text-tertiary)" }}>
+          {enabled
+            ? `Remote routing on — ${rowCount} route${rowCount === 1 ? "" : "s"} active, routing:cli_mapping granted.`
+            : "Remote routing off — this key's requests go straight to the provider."}
+        </p>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        <Switch
+          checked={enabled}
+          disabled={busy || pending || mappings.isLoading}
+          aria-label={`Enable remote routing for ${tool.name}`}
+          onChange={setEnabled}
+        />
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={busy || pending || (!routesEnabled && rowCount === 0)}
+          onClick={() =>
+            reset.mutate(
+              { toolId: tool.id, keyId },
+              {
+                onSuccess: () => toast.success(`Cleared remote routes for ${tool.name}.`),
+                onError: (error) => toast.error(getErrorMessage(error, "Could not reset remote routes.")),
+              },
+            )
+          }
+        >
+          {reset.isPending ? "Resetting…" : "Reset"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** Remote-routing switches for every tool that supports persisted mapping.
+ * Hidden while creating a key: routes are stored per key, so there is nothing
+ * to attach them to until the key exists. */
+function RemoteRoutingSection({
+  keyId,
+  busy,
+  scopeGranted,
+  onScopeChange,
+  persistScope,
+}: {
+  keyId: string;
+  busy: boolean;
+  scopeGranted: boolean;
+  onScopeChange: (next: boolean) => void;
+  persistScope: (next: boolean) => void;
+}): ReactNode {
+  const registry = useToolRegistry();
+  const tools = (registry.data ?? []).filter((tool) => tool.mappingSupported);
+  if (keyId.length === 0 || tools.length === 0) return null;
+  return (
+    <section aria-labelledby="remote-routing-heading" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+      <div>
+        <h4 id="remote-routing-heading" style={{ fontSize: "12px", fontWeight: 700, color: "var(--text-primary)" }}>
+          Remote routing
+        </h4>
+        <p style={{ marginTop: "2px", fontSize: "11px", color: "var(--text-tertiary)" }}>
+          Route this key's CLI model calls through persisted mappings and grant routing:cli_mapping. Applies immediately — no save needed.
+        </p>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+        {tools.map((tool) => (
+          <RemoteRoutingRow
+            key={tool.id}
+            tool={tool}
+            keyId={keyId}
+            busy={busy}
+            scopeGranted={scopeGranted}
+            onScopeChange={(next) => {
+              onScopeChange(next);
+              persistScope(next);
+            }}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export interface KeyFormInput {
   label: string;
   keyMode: ApiKeyResponse["keyMode"];
@@ -141,12 +290,12 @@ export interface KeyFormInput {
   notesTitle?: string;
   notesSubtitle?: string;
   notesBody?: string;
-  sharePopupMode: "donation" | "information" | null;
-  sharePopupImageUrl: string;
+  /** Toggle for the single share-page popup; the owner edits its copy freely. */
+  sharePopupEnabled: boolean;
+  /** Uploaded art as a data URL; `null` clears it, omitted leaves it unchanged. */
+  sharePopupImage?: string | null;
   sharePopupTitle: string;
   sharePopupBody: string;
-  sharePopupActionLabel: string;
-  sharePopupActionUrl: string;
 }
 interface KeyFormProps {
   mode: "create" | "edit";
@@ -224,12 +373,20 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose }: KeyFormProps
     const b = (record as unknown as { notesBody?: string | null })?.notesBody;
     return b ?? "";
   });
-  const [sharePopupMode, setSharePopupMode] = useState<"donation" | "information" | null>(record?.sharePopupMode ?? null);
-  const [sharePopupImageUrl, setSharePopupImageUrl] = useState(record?.sharePopupImageUrl ?? "");
+  const [sharePopupEnabled, setSharePopupEnabled] = useState(record?.sharePopupEnabled ?? false);
+  // Tri-state upload: no pick yet, a freshly picked data URL, or an explicit
+  // removal of the art already stored on the key.
+  const [sharePopupImageDataUrl, setSharePopupImageDataUrl] = useState<string | null>(null);
+  const [sharePopupImageRemoved, setSharePopupImageRemoved] = useState(false);
+  const [sharePopupImageError, setSharePopupImageError] = useState<string | null>(null);
+  const hasStoredImage = record?.sharePopupImageMime !== undefined;
+  const popupImagePreview =
+    sharePopupImageDataUrl ??
+    (hasStoredImage && !sharePopupImageRemoved && record !== null
+      ? `/console/api/api-keys/${record.id}/share-popup-image`
+      : null);
   const [sharePopupTitle, setSharePopupTitle] = useState(record?.sharePopupTitle ?? "");
   const [sharePopupBody, setSharePopupBody] = useState(record?.sharePopupBody ?? "");
-  const [sharePopupActionLabel, setSharePopupActionLabel] = useState(record?.sharePopupActionLabel ?? "");
-  const [sharePopupActionUrl, setSharePopupActionUrl] = useState(record?.sharePopupActionUrl ?? "");
   const [keyMode, setKeyMode] = useState<ApiKeyResponse["keyMode"]>(
     record?.keyMode ?? "personal",
   );
@@ -238,6 +395,9 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose }: KeyFormProps
   // template to a personal key (or back) revokes its children and links, so the
   // edit form shows the mode but never lets it change.
   const modeLocked = mode === "edit";
+  // Used to persist the routing scope the instant the Remote routing switch
+  // flips, rather than deferring it to "Save changes".
+  const updateKey = useUpdateApiKey();
   const toggleScope = (scope: string) =>
     setScopes((cur) => (cur.includes(scope) ? cur.filter((s) => s !== scope) : [...cur, scope]));
   const submit = () => {
@@ -255,17 +415,19 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose }: KeyFormProps
       notesTitle: notesTitle.trim(),
       notesSubtitle: notesSubtitle.trim(),
       notesBody: notesBody.trim(),
-      sharePopupMode,
-      sharePopupImageUrl: sharePopupImageUrl.trim(),
+      sharePopupEnabled,
+      ...(sharePopupImageDataUrl !== null
+        ? { sharePopupImage: sharePopupImageDataUrl }
+        : sharePopupImageRemoved
+          ? { sharePopupImage: null }
+          : {}),
       sharePopupTitle: sharePopupTitle.trim(),
       sharePopupBody: sharePopupBody.trim(),
-      sharePopupActionLabel: sharePopupActionLabel.trim(),
-      sharePopupActionUrl: sharePopupActionUrl.trim(),
     });
   };
   return (
-    <div className="api-key-form-layout" style={{ paddingBottom: "4px" }}>
-      <section style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+    <div className="api-key-form-layout">
+      <section className="api-key-form-section api-key-form-section-wide">
         <h3 style={{ fontSize: "13px", fontWeight: 700, color: "var(--text-primary)" }}>Credential mode</h3>
         <div role="group" aria-label="Credential mode" style={{ display: "flex", gap: "8px" }}>
           {(["personal", "share"] as const).map((modeOption) => (
@@ -286,15 +448,16 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose }: KeyFormProps
             : "A personal key authenticates requests directly; its secret is shown once when created or rotated."}
         </p>
       </section>
+      <div className="api-key-form-columns">
       {mode === "create" && (
-        <section style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+        <section className="api-key-form-section">
           <div>
             <h3 style={{ fontSize: "13px", fontWeight: 700, color: "var(--text-primary)" }}>Identity</h3>
             <p style={{ marginTop: "2px", fontSize: "11px", color: "var(--text-tertiary)" }}>
               Give this credential a recognizable name.
             </p>
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+          <div className="api-key-form-grid">
             <Input label="Name" value={label} onChange={(e) => setLabel(e.target.value)}
               placeholder="ci-key…" disabled={busy} autoFocus />
             <Input label="Key prefix" value={prefix} onChange={(e) => setPrefix(e.target.value)}
@@ -307,7 +470,7 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose }: KeyFormProps
         </section>
       )}
       {mode === "edit" && (
-        <section style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+        <section className="api-key-form-section">
           <div>
             <h3 style={{ fontSize: "13px", fontWeight: 700, color: "var(--text-primary)" }}>
               Identity
@@ -316,7 +479,7 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose }: KeyFormProps
               Update the label for this credential.
             </p>
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+          <div className="api-key-form-grid">
             <Input
               label="Name"
               value={label}
@@ -328,7 +491,40 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose }: KeyFormProps
           </div>
         </section>
       )}
-      <section style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+      <section className="api-key-form-section">
+        <div>
+          <h3 style={{ fontSize: "13px", fontWeight: 700, color: "var(--text-primary)" }}>
+            Share notes
+          </h3>
+          <p style={{ marginTop: "2px", fontSize: "11px", color: "var(--text-tertiary)" }}>
+            Optional copy shown on the public share page.
+          </p>
+        </div>
+        <div className="api-key-form-grid">
+        <Input
+          label="Title"
+          value={notesTitle}
+          onChange={(e) => setNotesTitle(e.target.value)}
+          placeholder="e.g. Bansos Token"
+          disabled={busy}
+        />
+        <Input
+          label="Subtitle"
+          value={notesSubtitle}
+          onChange={(e) => setNotesSubtitle(e.target.value)}
+          placeholder="e.g. Come and save your tokens"
+          disabled={busy}
+        />
+        <Input
+          label="Body"
+          value={notesBody}
+          onChange={(e) => setNotesBody(e.target.value)}
+          placeholder="Free-form notes for the recipient"
+          disabled={busy}
+        />
+        </div>
+      </section>
+      <section className="api-key-form-section">
         <div>
           <h3 style={{ fontSize: "13px", fontWeight: 700, color: "var(--text-primary)" }}>
             Limits
@@ -337,7 +533,7 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose }: KeyFormProps
             Keep this credential predictable under load.
           </p>
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+        <div className="api-key-form-grid">
           <Input
             label="Requests per minute"
             type="number"
@@ -433,7 +629,7 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose }: KeyFormProps
             disabled={busy}
           />
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+          <div className="api-key-form-grid">
             <TokenBudgetField
               label="Daily token limit"
               value={daily}
@@ -449,89 +645,90 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose }: KeyFormProps
           </div>
         )}
       </section>
-      <section
-        style={{ display: "flex", flexDirection: "column", gap: "12px" }}
-      >
-        <div>
-          <h3 style={{ fontSize: "13px", fontWeight: 700, color: "var(--text-primary)" }}>
-            Share notes
-          </h3>
-          <p style={{ marginTop: "2px", fontSize: "11px", color: "var(--text-tertiary)" }}>
-            Optional copy shown on the public share page.
-          </p>
-        </div>
-        <Input
-          label="Title"
-          value={notesTitle}
-          onChange={(e) => setNotesTitle(e.target.value)}
-          placeholder="e.g. Bansos Token"
-          disabled={busy}
-        />
-        <Input
-          label="Subtitle"
-          value={notesSubtitle}
-          onChange={(e) => setNotesSubtitle(e.target.value)}
-          placeholder="e.g. Come and save your tokens"
-          disabled={busy}
-        />
-        <Input
-          label="Body"
-          value={notesBody}
-          onChange={(e) => setNotesBody(e.target.value)}
-          placeholder="Free-form notes for the recipient"
-          disabled={busy}
-        />
-      </section>
-      <section className="api-key-share-popup-editor" aria-labelledby="share-popup-heading">
-        <div>
-          <h3 id="share-popup-heading" style={{ fontSize: "13px", fontWeight: 700, color: "var(--text-primary)" }}>
-            Attach image popup
-          </h3>
-          <p style={{ marginTop: "2px", fontSize: "11px", color: "var(--text-tertiary)" }}>
-            Add an optional donation or information card. Visitors open it from the Base URL card on your share page.
-          </p>
-        </div>
-        <label className="form-label" htmlFor="share-popup-mode">
-          Popup type
-          <select
-            id="share-popup-mode"
-            value={sharePopupMode ?? "off"}
-            onChange={(event) => setSharePopupMode(event.target.value === "off" ? null : event.target.value as "donation" | "information")}
+      </div>
+      <section className="api-key-form-section api-key-form-section-wide" aria-labelledby="share-popup-heading">
+        <div className="api-key-popup-header">
+          <div>
+            <h3 id="share-popup-heading" style={{ fontSize: "13px", fontWeight: 700, color: "var(--text-primary)" }}>
+              Share page popup
+            </h3>
+            <p style={{ marginTop: "2px", fontSize: "11px", color: "var(--text-tertiary)" }}>
+              Optional card visitors open from the Base URL card on your share page.
+            </p>
+          </div>
+          <Switch
+            checked={sharePopupEnabled}
+            onChange={(checked) => setSharePopupEnabled(checked)}
             disabled={busy}
-          >
-            <option value="off">Off</option>
-            <option value="donation">Donation</option>
-            <option value="information">Information</option>
-          </select>
-        </label>
-        {sharePopupMode ? (
-          <>
-            <Input label="Image URL" type="url" value={sharePopupImageUrl} onChange={(event) => setSharePopupImageUrl(event.target.value)} placeholder="https://…" disabled={busy} />
-            {sharePopupImageUrl.trim() ? (
-              <img className="api-key-popup-preview" src={sharePopupImageUrl} alt="Popup image preview" referrerPolicy="no-referrer" />
-            ) : null}
-            <Input label="Popup title" value={sharePopupTitle} onChange={(event) => setSharePopupTitle(event.target.value)} maxLength={120} placeholder={sharePopupMode === "donation" ? "Support this gateway" : "A note for visitors"} disabled={busy} />
-            <label className="form-label" htmlFor="share-popup-copy">
-              Message
-              <textarea id="share-popup-copy" value={sharePopupBody} onChange={(event) => setSharePopupBody(event.target.value)} maxLength={1200} rows={4} placeholder={sharePopupMode === "donation" ? "If this service helps you, consider supporting its upkeep…" : "Share useful details with visitors…"} disabled={busy} />
-            </label>
-            <Input label="Button label (optional)" value={sharePopupActionLabel} onChange={(event) => setSharePopupActionLabel(event.target.value)} maxLength={40} placeholder={sharePopupMode === "donation" ? "Support me" : "Learn more"} disabled={busy} />
-            <Input label="Button URL (optional)" type="url" value={sharePopupActionUrl} onChange={(event) => setSharePopupActionUrl(event.target.value)} placeholder="https://… or mailto:…" disabled={busy} />
-            <p className="api-key-popup-footnote">Only HTTPS images and HTTPS / mailto buttons are accepted. The popup is optional and opens only when a visitor clicks it.</p>
-          </>
+            label="Enable popup"
+          />
+        </div>
+        {sharePopupEnabled ? (
+          <div className="api-key-popup-body">
+            <div className="api-key-popup-image">
+              {popupImagePreview ? (
+                <img className="api-key-popup-preview" src={popupImagePreview} alt="Popup image preview" />
+              ) : (
+                <div className="api-key-popup-preview api-key-popup-preview-empty" aria-hidden="true">
+                  <span>No image</span>
+                </div>
+              )}
+              <input
+                id="share-popup-image"
+                className="form-file-input"
+                type="file"
+                accept={SHARE_POPUP_IMAGE_MIMES.join(",")}
+                aria-label="Popup image"
+                disabled={busy}
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = "";
+                  if (!file) return;
+                  setSharePopupImageError(null);
+                  if (file.size > SHARE_POPUP_IMAGE_MAX_BYTES) {
+                    setSharePopupImageDataUrl(null);
+                    setSharePopupImageError("Image must be 2 MB or smaller.");
+                    return;
+                  }
+                  const reader = new FileReader();
+                  reader.onload = () => {
+                    setSharePopupImageDataUrl(String(reader.result));
+                    setSharePopupImageRemoved(false);
+                  };
+                  reader.onerror = () => setSharePopupImageError("Could not read that file.");
+                  reader.readAsDataURL(file);
+                }}
+              />
+              {popupImagePreview ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  type="button"
+                  disabled={busy}
+                  className="api-key-popup-remove"
+                  onClick={() => {
+                    setSharePopupImageDataUrl(null);
+                    setSharePopupImageRemoved(true);
+                    setSharePopupImageError(null);
+                  }}
+                >
+                  Remove image
+                </Button>
+              ) : null}
+              {sharePopupImageError ? <p className="form-error">{sharePopupImageError}</p> : null}
+              <p className="api-key-popup-footnote">PNG, JPEG, WebP, or GIF up to 2 MB.</p>
+            </div>
+            <div className="api-key-popup-fields">
+              <Input label="Popup title" value={sharePopupTitle} onChange={(event) => setSharePopupTitle(event.target.value)} maxLength={120} placeholder="Support this gateway" disabled={busy} />
+              <div className="form-group">
+                <label className="form-label" htmlFor="share-popup-copy">Message</label>
+                <textarea className="form-textarea" id="share-popup-copy" value={sharePopupBody} onChange={(event) => setSharePopupBody(event.target.value)} maxLength={1200} rows={3} placeholder="If this service helps you, consider supporting its upkeep…" disabled={busy} />
+              </div>
+            </div>
+          </div>
         ) : null}
       </section>
-      <section
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          gap: "16px",
-          padding: "12px",
-          borderRadius: "12px",
-          border: "1px solid var(--inner-border)",
-          background: "var(--surface-2)",
-        }}
-      >
+      <section className="api-key-form-section api-key-form-section-wide">
         <div>
           <h3 style={{ fontSize: "13px", fontWeight: 700, color: "var(--text-primary)" }}>
             Access
@@ -540,6 +737,7 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose }: KeyFormProps
             Choose which models this key can use and what it is allowed to access.
           </p>
         </div>
+        <div className="api-key-form-columns">
         <div>
           <label
             style={{
@@ -620,7 +818,7 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose }: KeyFormProps
               Blocked client routers
             </h4>
             <p style={{ marginTop: "2px", fontSize: "11px", color: "var(--text-tertiary)" }}>
-              Matching fingerprints are rejected with 403 before routing. Detection is best-effort; clients without a fingerprint are not matched.
+              Matching fingerprints are rejected with 403 before routing. Detection is best-effort; clients without a fingerprint are not matched. This may also block bazaar probe links that share the same fingerprint.
             </p>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
@@ -668,7 +866,11 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose }: KeyFormProps
             Routing
           </h4>
           <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-            {TENANT_KEY_SCOPES.filter((scope) => scope.startsWith("routing:")).map((scope) => (
+            {/* routing:cli_mapping is intentionally absent here: it is the scope
+                half of the Remote routing switch below, which grants it and
+                enables the routes together. Listing it separately let the two
+                disagree. */}
+            {TENANT_KEY_SCOPES.filter((scope) => scope === "routing:invoke").map((scope) => (
               <div
                 key={scope}
                 style={{
@@ -692,6 +894,32 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose }: KeyFormProps
             ))}
           </div>
         </section>
+        <RemoteRoutingSection
+          keyId={mode === "edit" && record ? record.id : ""}
+          busy={busy}
+          scopeGranted={scopes.includes("routing:cli_mapping")}
+          onScopeChange={(next) => {
+            if (next === scopes.includes("routing:cli_mapping")) return;
+            toggleScope("routing:cli_mapping");
+          }}
+          persistScope={(next) => {
+            // The scope must take effect now, not on "Save changes": a route
+            // enabled without the scope would never resolve. Persist it right
+            // away so the CLI page and the gateway agree the moment the switch
+            // flips. `scopes` here is still the pre-toggle value.
+            if (mode !== "edit" || !record) return;
+            const nextScopes = next
+              ? [...new Set([...scopes, "routing:cli_mapping"])]
+              : scopes.filter((scope) => scope !== "routing:cli_mapping");
+            updateKey.mutate(
+              { keyId: record.id, request: { scopes: nextScopes } },
+              {
+                onError: (error) =>
+                  toast.error(getErrorMessage(error, "Could not update the key's routing scope.")),
+              },
+            );
+          }}
+        />
         <section aria-labelledby="dashboard-scopes-heading" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
           <h4 id="dashboard-scopes-heading" style={{ fontSize: "12px", fontWeight: 700, color: "var(--text-primary)" }}>
             Dashboard / Resources
@@ -721,6 +949,7 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose }: KeyFormProps
             ))}
           </div>
         </section>
+        </div>
       </section>
       <div
         className="modal-form-actions"

@@ -1,3 +1,5 @@
+import type { CSSProperties } from "react";
+
 export interface SwitchProps {
   checked: boolean;
   onChange: (checked: boolean) => void;
@@ -6,6 +8,7 @@ export interface SwitchProps {
   label?: string;
   /** Accessible name override. Defaults to the visible `label` when present. */
   ["aria-label"]?: string;
+  style?: CSSProperties;
 }
 
 export function Switch({
@@ -15,9 +18,14 @@ export function Switch({
   id,
   label,
   ["aria-label"]: ariaLabel,
+  style,
 }: SwitchProps) {
   return (
-    <label htmlFor={id} className={`switch-container ${disabled ? "is-disabled" : ""}`.trim()}>
+    <label
+      htmlFor={id}
+      className={`switch-container ${disabled ? "is-disabled" : ""}`.trim()}
+      style={style}
+    >
       <button
         type="button"
         id={id}

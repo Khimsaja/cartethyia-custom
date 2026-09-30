@@ -97,7 +97,9 @@ export function StatCard({
       >
         {value}
       </p>
-      <span style={{ fontSize: "11px", color: "var(--text-secondary)" }}>{detail}</span>
+      <span className="stat-card-detail" style={{ fontSize: "11px", color: "var(--text-secondary)" }}>
+        {detail}
+      </span>
     </div>
   );
 }
@@ -116,6 +118,7 @@ export function DataTable({
   sortKey,
   sortDirection,
   onSort,
+  scrollRegion = false,
 }: {
   headers: readonly (string | DataTableColumn)[];
   children: ReactNode;
@@ -124,9 +127,15 @@ export function DataTable({
   sortKey?: string;
   sortDirection?: "asc" | "desc";
   onSort?: (key: string) => void;
+  /** Style the scroll box like the sidebar rail (thin overlay scrollbar). */
+  scrollRegion?: boolean;
 }) {
   return (
-    <div className="data-table-container" style={maxHeight ? { maxHeight, overflowY: "auto" } : undefined} onScroll={onScroll}>
+    <div
+      className={`data-table-container${scrollRegion ? " scroll-region" : ""}`}
+      style={maxHeight ? { maxHeight, overflowY: "auto" } : undefined}
+      onScroll={onScroll}
+    >
       <table className="data-table">
         <thead>
           <tr>

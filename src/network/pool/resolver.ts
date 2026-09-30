@@ -258,9 +258,11 @@ export class PoolAgentResolver {
         // The policy is handed to the agent too: both flavors re-resolve and
         // re-validate the proxy host on every connect, so the create-time
         // check cannot be bypassed by a DNS rebind of the proxy record.
+        // The pool id rides along so the tunnel's bytes are attributed to the
+        // pool that carried them.
         if (row.kind === "socks5")
-          return createSocks5Agent(row.endpoint, row.credential, this.ssrfPolicy, agentConfig);
-        return createHttpProxyAgent(row.endpoint, row.credential, this.ssrfPolicy, agentConfig);
+          return createSocks5Agent(row.endpoint, row.credential, this.ssrfPolicy, agentConfig, poolId);
+        return createHttpProxyAgent(row.endpoint, row.credential, this.ssrfPolicy, agentConfig, poolId);
       }
       default:
         // Compile-time exhaustiveness: new TransportKind variants must add a case.

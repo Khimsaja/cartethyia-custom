@@ -16,6 +16,7 @@ import { toast } from "../shared/toast";
 import { useApiKeys, useUpdateApiKey } from "../hooks/api-keys";
 import {
   useDownloadTool,
+  useResetToolMappings,
   useSaveToolMappings,
   useToolMappings,
   useToolRegistry,
@@ -89,40 +90,40 @@ function CliToolDetailBody({
 }): ReactNode {
   // User MUST manually select the API key — no auto-select.
   const [selectedKeyId, setSelectedKeyId] = useState("");
-  const [selectedMappingOwnerId, setSelectedMappingOwnerId] = useState("");
   const [endpoint, setEndpoint] = useState(() =>
     typeof window === "undefined" ? "http://localhost:12800" : window.location.origin,
   );
   const [slotModels, setSlotModels] = useState<Record<string, string>>({});
-  const [mappingEnabled, setMappingEnabled] = useState(true);
+  const [mappingEnabled, setMappingEnabled] = useState(false);
   const [mappingTargets, setMappingTargets] = useState<Record<string, string>>({});
-  const [bypassPermissions, setBypassPermissions] = useState(false);
   const [pickerFor, setPickerFor] = useState<string | null>(null);
   const [pickerMode, setPickerMode] = useState<"slot" | "target">("slot");
 
   // Track the last-saved mapping state to avoid re-saving unchanged data.
   const lastSavedRef = useRef<string | null>(null);
 
-  // Personal keys supply config secrets; root share templates can own inherited mappings.
-  const personalKeys = useMemo(
-    () => apiKeys.filter((key) => key.keyMode === "personal"),
+  // One dropdown picks the credential *and* the mapping profile: a personal key
+  // carries a recoverable secret, a share template has none but owns the routes
+  // every child key inherits.
+  const selectableKeys = useMemo(
+    () =>
+      apiKeys.filter(
+        (key) => key.keyMode === "personal" || (key.keyMode === "share" && key.parentKeyId === undefined),
+      ),
     [apiKeys],
   );
-  const mappingOwners = useMemo(
-    () => apiKeys.filter((key) => key.keyMode === "share" && key.parentKeyId === undefined),
-    [apiKeys],
-  );
-  const effectiveMappingOwnerId = selectedMappingOwnerId || selectedKeyId;
 
-  // Mapping profiles are keyed by their owner, independently of the credential selected below.
-  const mappingsQuery = useToolMappings(tool.id, effectiveMappingOwnerId);
+  // Mappings are per-(tool, key): reload whenever the user picks a different key.
+  const mappingsQuery = useToolMappings(tool.id, selectedKeyId);
   const saveMappings = useSaveToolMappings();
+  const resetMappings = useResetToolMappings();
   const updateApiKey = useUpdateApiKey();
   const downloadTool = useDownloadTool();
 
-  const selectedKey = personalKeys.find((key) => key.id === selectedKeyId);
+  const selectedKey = selectableKeys.find((key) => key.id === selectedKeyId);
   const cliEligible = selectedKey?.scopes?.includes("routing:cli_mapping") === true;
-  const canAct = selectedKey !== undefined;
+  // Only a personal key can supply the secret written into a CLI config.
+  const canAct = selectedKey?.keyMode === "personal";
 
   useEffect(() => {
     // When switching tool or key: reset local draft to tool defaults.
@@ -132,11 +133,11 @@ function CliToolDetailBody({
     setSlotModels(defaults);
     setMappingTargets({});
     lastSavedRef.current = null;
-  }, [tool, selectedKeyId, effectiveMappingOwnerId]);
+  }, [tool, selectedKeyId]);
 
   useEffect(() => {
     const settings = mappingsQuery.data;
-    if (!settings || settings.apiKeyId !== effectiveMappingOwnerId) return;
+    if (!settings || settings.apiKeyId !== selectedKeyId) return;
     setMappingEnabled(settings.enabled);
     if (settings.mappings.length > 0) {
       setSlotModels((prev) => ({
@@ -155,7 +156,7 @@ function CliToolDetailBody({
       setMappingTargets({});
     }
     lastSavedRef.current = JSON.stringify({ enabled: settings.enabled, mappings: settings.mappings });
-  }, [effectiveMappingOwnerId, mappingsQuery.data, tool.defaultModels]);
+  }, [selectedKeyId, mappingsQuery.data, tool.defaultModels]);
 
   const installed = status?.installed ?? false;
   const configured = status?.configured ?? false;
@@ -169,34 +170,37 @@ function CliToolDetailBody({
 
   const buildMappingInput = useCallback((): CliMappingInput | undefined => {
     if (!tool.mappingSupported) return undefined;
+    // The route rows are sent even while Remote Routing is off: the snapshot
+    // gates on the enabled flag, so keeping them lets the operator flip the
+    // switch back on and find the routes intact. Only the explicit Reset
+    // action clears them.
     return {
       enabled: mappingEnabled,
-      mappings: mappingEnabled
-        ? tool.defaultModels
-            .filter((model) => (mappingTargets[model.alias] ?? "").length > 0)
-            .map((model) => ({
-              slotKey: model.alias,
-              sourceModel: slotModels[model.alias] ?? model.defaultValue ?? model.id,
-              targetModel: mappingTargets[model.alias] ?? "",
-              enabled: true,
-            }))
-            .filter((row) => row.targetModel.length > 0)
-        : [],
+      mappings: tool.defaultModels
+        .filter((model) => (mappingTargets[model.alias] ?? "").length > 0)
+        .map((model) => ({
+          slotKey: model.alias,
+          sourceModel: slotModels[model.alias] ?? model.defaultValue ?? model.id,
+          targetModel: mappingTargets[model.alias] ?? "",
+          enabled: true,
+        }))
+        .filter((row) => row.targetModel.length > 0),
     };
   }, [mappingEnabled, mappingTargets, slotModels, tool.defaultModels, tool.mappingSupported]);
 
-  // Auto-save to the selected profile; credentials remain independently selected below.
+  // Auto-save mappings against the selected key: a personal key's own bucket, or
+  // the share template whose children inherit it.
   useEffect(() => {
-    if (!tool.mappingSupported || effectiveMappingOwnerId.length === 0) return;
+    if (!tool.mappingSupported || selectedKeyId.length === 0) return;
     const server = mappingsQuery.data;
-    if (!server || server.apiKeyId !== effectiveMappingOwnerId) return;
+    if (!server || server.apiKeyId !== selectedKeyId) return;
     const input = buildMappingInput();
     if (!input) return;
     const fingerprint = JSON.stringify({ enabled: input.enabled, mappings: input.mappings });
     if (fingerprint === lastSavedRef.current) return;
     const timer = setTimeout(() => {
       saveMappings.mutate(
-        { toolId: tool.id, keyId: effectiveMappingOwnerId, input },
+        { toolId: tool.id, keyId: selectedKeyId, input },
         {
           onSuccess: () => {
             lastSavedRef.current = fingerprint;
@@ -206,7 +210,7 @@ function CliToolDetailBody({
       );
     }, 600);
     return () => clearTimeout(timer);
-  }, [buildMappingInput, effectiveMappingOwnerId, mappingsQuery.data, saveMappings, tool.id, tool.mappingSupported]);
+  }, [buildMappingInput, selectedKeyId, mappingsQuery.data, saveMappings, tool.id, tool.mappingSupported]);
 
   const buildApplyInput = useCallback((): ApplyInput => {
     const modelSlots = Object.fromEntries(
@@ -225,15 +229,13 @@ function CliToolDetailBody({
       ...(subagent
         ? { subagentModel: slotModels[subagent.alias] ?? subagent.defaultValue ?? subagent.id }
         : {}),
-      mappingOwnerId: effectiveMappingOwnerId,
+      mappingOwnerId: selectedKeyId,
       ...(tool.mappingSupported ? { mapping: buildMappingInput() } : {}),
-      ...(tool.id === "claude" ? { bypassPermissions } : {}),
     };
   }, [
     activeModels,
     buildMappingInput,
-    bypassPermissions,
-    effectiveMappingOwnerId,
+    selectedKeyId,
     endpoint,
     slotModels,
     tool,
@@ -328,7 +330,7 @@ function CliToolDetailBody({
       <Card>
         <CardHeader
           title="Setup"
-          subtitle="Pick the API key and endpoint, set the models, then apply or download. The key's secret is read server-side — you never paste it."
+          subtitle="Pick the Apikey Name and endpoint, set the models, then download. The key's secret is read server-side — you never paste it."
         />
         <CardBody>
           <Stack gap="12px">
@@ -341,24 +343,22 @@ function CliToolDetailBody({
             >
               <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                 <Select
-                  label="API key"
+                  label="Apikey Name"
                   id="api-key-select"
                   value={selectedKeyId}
                   onValueChange={setSelectedKeyId}
                   options={[
-                    { value: "", label: "Select an API key…" },
-                    ...personalKeys.map((key) => ({
+                    { value: "", label: "Select…" },
+                    ...selectableKeys.map((key) => ({
                       value: key.id,
-                      label: key.scopes.includes("routing:cli_mapping")
-                        ? `${key.label} — Remote Routing active`
-                        : key.label,
+                      label: `${key.label} — ${key.keyMode === "personal" ? "Personal" : "Share template"}`,
                     })),
                   ]}
                 />
                 <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
                   {selectedKey === undefined ? (
                     <span style={{ fontSize: "11px", color: "var(--text-tertiary)" }}>
-                      Choose the API key whose routes this CLI session should use.
+                      Choose the Apikey Name whose routes this CLI session should use.
                     </span>
                   ) : cliEligible ? (
                     <>
@@ -378,6 +378,11 @@ function CliToolDetailBody({
                     </>
                   )}
                 </div>
+                {selectedKey?.keyMode === "share" ? (
+                  <span style={{ fontSize: "11px", color: "var(--text-tertiary)" }}>
+                    Share template: its child keys inherit these routes automatically.
+                  </span>
+                ) : null}
               </div>
               <Input
                 label="Endpoint"
@@ -385,23 +390,6 @@ function CliToolDetailBody({
                 onChange={(e) => setEndpoint(e.target.value)}
               />
             </div>
-            {tool.mappingSupported ? (
-              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                <Select
-                  label="Remote mapping profile"
-                  id="mapping-owner-select"
-                  value={effectiveMappingOwnerId}
-                  onValueChange={setSelectedMappingOwnerId}
-                  options={[
-                    { value: selectedKeyId, label: selectedKey ? `${selectedKey.label} — API key profile` : "Select an API key first" },
-                    ...mappingOwners.map((key) => ({ value: key.id, label: `${key.label} — shared profile` })),
-                  ]}
-                />
-                <span style={{ fontSize: "11px", color: "var(--text-tertiary)" }}>
-                  Save Claude model routes once on a share template; its child keys inherit them.
-                </span>
-              </div>
-            ) : null}
           </Stack>
         </CardBody>
       </Card>
@@ -416,7 +404,8 @@ function CliToolDetailBody({
           }
           action={
             tool.mappingSupported ? (
-              <Switch
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <Switch
                 checked={mappingEnabled}
                 disabled={!selectedKeyId}
                 onChange={(enabled) => {
@@ -454,6 +443,32 @@ function CliToolDetailBody({
                 }}
                 label={mappingEnabled ? "Remote Routing on" : "Remote Routing off"}
               />
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={!selectedKeyId || resetMappings.isPending}
+                  onClick={() => {
+                    if (!selectedKeyId) {
+                      toast.error("Select an API key first.");
+                      return;
+                    }
+                    resetMappings.mutate(
+                      { toolId: tool.id, keyId: selectedKeyId },
+                      {
+                        onSuccess: () => {
+                          setMappingEnabled(false);
+                          setMappingTargets({});
+                          toast.success("Remote routes cleared and Remote Routing turned off.");
+                        },
+                        onError: (error) =>
+                          toast.error(getErrorMessage(error, "Could not reset remote routes.")),
+                      },
+                    );
+                  }}
+                >
+                  {resetMappings.isPending ? "Resetting…" : "Reset"}
+                </Button>
+              </div>
             ) : undefined
           }
         />
@@ -652,35 +667,6 @@ function CliToolDetailBody({
           subtitle="Download the config file for this CLI tool. The selected API key secret is decrypted automatically into the download."
         />
         <CardBody style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-          {tool.id === "claude" ? (
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: "12px",
-                padding: "10px 12px",
-                borderRadius: "10px",
-                background: "var(--surface-2)",
-                border: "1px solid var(--inner-border)",
-              }}
-            >
-              <div>
-                <div style={{ fontSize: "12px", fontWeight: 600, color: "var(--text-primary)" }}>
-                  Enable bypass permissions (YOLO mode)
-                </div>
-                <div style={{ fontSize: "11px", color: "var(--text-tertiary)" }}>
-                  Allow Claude to run without permission prompts
-                </div>
-              </div>
-              <Switch
-                checked={bypassPermissions}
-                onChange={setBypassPermissions}
-                label="Enable bypass permissions (YOLO mode)"
-              />
-            </div>
-          ) : null}
-
           <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "flex-end" }}>
             <Button
               variant="primary"
@@ -709,7 +695,9 @@ function CliToolDetailBody({
           </div>
           {!canAct ? (
             <p style={{ fontSize: "11.5px", color: "var(--text-tertiary)", textAlign: "right" }}>
-              Select an API key above to enable downloading the config file.
+              {selectedKey?.keyMode === "share"
+                ? "A share template has no secret to write into a config. Select a personal key to download the config file."
+                : "Select an Apikey Name above to enable downloading the config file."}
             </p>
           ) : null}
         </CardBody>

@@ -42,6 +42,11 @@ function fakeKeyStore() {
       records.set(keyId, { ...current, revokedAt });
       return true;
     },
+    async reorder(_tenantId, keyIds) {
+      const ordered = keyIds.map((id) => records.get(id)).filter((r): r is ApiKeyRecord => r !== undefined);
+      records.clear();
+      for (const row of ordered) records.set(row.id, row);
+    },
   };
   return { store, records };
 }

@@ -1,4 +1,19 @@
 import type { HealthCheckResult } from "./contracts";
+import { isIP } from "node:net";
+
+/**
+ * Pulls the egress address out of a Cloudflare trace response.
+ *
+ * The body is newline-delimited `key=value` pairs and the line we want is
+ * `ip=<address>`. Returns undefined when the body is not a trace response or
+ * carries no address, so callers treat "no address" as a missing observation
+ * rather than a probe failure.
+ */
+export function parseEgressIp(body: string): string | undefined {
+  const match = /^ip=(\S+)$/m.exec(body);
+  const value = match?.[1]?.trim();
+  return value && isIP(value) ? value : undefined;
+}
 
 /**
  * Classifies probe responses without confusing an HTTP proxy response with a

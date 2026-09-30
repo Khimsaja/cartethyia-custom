@@ -58,13 +58,35 @@ export function useSaveToolMappings() {
   );
 }
 
+/**
+ * Clears every remote route and switches Remote Routing off for one
+ * (tool, key). This is the fast deactivate: the gateway stops resolving the
+ * key's CLI mappings on the next request.
+ */
+export function useResetToolMappings() {
+  const qc = useQueryClient();
+  return useMutation<CliMappingSettings, ApiErrorShape, { toolId: string; keyId: string }>({
+    mutationFn: ({ toolId, keyId }) =>
+      consoleRequest<CliMappingSettings>(`/cli-tools/${encodeURIComponent(toolId)}/mappings/reset`, {
+        method: "POST",
+        body: JSON.stringify({ keyId }),
+      }),
+    onSuccess: async (_result, { toolId, keyId }) => {
+      await qc.invalidateQueries({ queryKey: queryKeys.cliTools.mappings(toolId, keyId) });
+    },
+  });
+}
+
 export function useDownloadTool() {
   const qc = useQueryClient();
   return useMutation<DownloadResult, ApiErrorShape, { toolId: string; keyId: string; input: ApplyInput }>({
     mutationFn: ({ toolId, keyId, input }) =>
       consoleRequest<DownloadResult>(`/cli-tools/${encodeURIComponent(toolId)}/download`, {
         method: "POST",
-        body: JSON.stringify({ ...input, keyId }),
+        // The wire schema names this `models`; the shared interface calls it
+        // `modelIds`. Sending only the interface name is rejected as
+        // `invalid_request: must have required properties models`.
+        body: JSON.stringify({ ...input, models: input.modelIds, keyId }),
       }),
     onSuccess: async (_result, { toolId, keyId }) => {
       await Promise.all([
@@ -89,7 +111,7 @@ export function useApplyTool() {
     mutationFn: ({ toolId, keyId, input }) =>
       consoleRequest<ApplyConfigResult>(`/cli-tools/${encodeURIComponent(toolId)}/apply`, {
         method: "POST",
-        body: JSON.stringify({ ...input, keyId }),
+        body: JSON.stringify({ ...input, models: input.modelIds, keyId }),
       }),
     onSuccess: async (_result, { toolId, keyId }) => {
       await Promise.all([

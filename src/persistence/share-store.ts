@@ -66,12 +66,12 @@ export interface ShareLinkPolicy {
   readonly notesTitle: string | null;
   readonly notesSubtitle: string | null;
   readonly notesBody: string | null;
-  readonly sharePopupMode: "donation" | "information" | null;
-  readonly sharePopupImageUrl: string | null;
+  readonly sharePopupEnabled: boolean;
+  /** Uploaded popup art; the share page fetches it from its own image route. */
+  readonly sharePopupImage: Buffer | null;
+  readonly sharePopupImageMime: string | null;
   readonly sharePopupTitle: string | null;
   readonly sharePopupBody: string | null;
-  readonly sharePopupActionLabel: string | null;
-  readonly sharePopupActionUrl: string | null;
   readonly expiresAt: string | null;
 }
 
@@ -139,12 +139,11 @@ function mapShareRow(key: ApiKeyRow, link: ShareLinkRow): ShareApiKeyRow {
     notesTitle: key.notesTitle,
     notesSubtitle: key.notesSubtitle,
     notesBody: key.notesBody,
-    sharePopupMode: key.sharePopupMode,
-    sharePopupImageUrl: key.sharePopupImageUrl,
+    sharePopupEnabled: key.sharePopupEnabled,
+    sharePopupImage: key.sharePopupImage,
+    sharePopupImageMime: key.sharePopupImageMime,
     sharePopupTitle: key.sharePopupTitle,
     sharePopupBody: key.sharePopupBody,
-    sharePopupActionLabel: key.sharePopupActionLabel,
-    sharePopupActionUrl: key.sharePopupActionUrl,
     createdAt: key.createdAt.toISOString(),
     expiresAt: link.expiresAt?.toISOString() ?? null,
   };
@@ -168,12 +167,11 @@ function mapHandoffRow(key: ApiKeyRow, link: ShareLinkRow): ShareHandoffRow {
     notesTitle: key.notesTitle,
     notesSubtitle: key.notesSubtitle,
     notesBody: key.notesBody,
-    sharePopupMode: key.sharePopupMode,
-    sharePopupImageUrl: key.sharePopupImageUrl,
+    sharePopupEnabled: key.sharePopupEnabled,
+    sharePopupImage: key.sharePopupImage,
+    sharePopupImageMime: key.sharePopupImageMime,
     sharePopupTitle: key.sharePopupTitle,
     sharePopupBody: key.sharePopupBody,
-    sharePopupActionLabel: key.sharePopupActionLabel,
-    sharePopupActionUrl: key.sharePopupActionUrl,
     expiresAt: link.expiresAt?.toISOString() ?? null,
   };
 }

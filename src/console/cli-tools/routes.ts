@@ -221,6 +221,31 @@ export function createCliToolsRoutes(config: CliToolsRoutesConfig): Elysia {
         return errorResponse(e, set, "CLI tool operation failed");
       }
     })
+    .post("/:toolId/mappings/reset", { body: t.Object({ keyId: t.String() }) }, async ({ request, params, body, set }) => {
+      try {
+        const a = requireTenantScope(accessResolver(request), "dashboard:write");
+        if (!service.isValidTool(params.toolId)) {
+          set.status = 404;
+          return { error: "CLI tool not found", code: "tool_not_found" };
+        }
+        const keyId = typeof body.keyId === "string" && body.keyId.length > 0 ? body.keyId : undefined;
+        if (!keyId) {
+          set.status = 422;
+          return { error: "keyId is required", code: "invalid_request" };
+        }
+        const result = await service.resetMappings(a.tenantId, params.toolId, keyId);
+        await auditSink?.record({
+          access: a,
+          action: "cli_tool.mappings_reset",
+          target: params.toolId,
+          detail: { keyId },
+        });
+        await snapshotInvalidator?.invalidate();
+        return result;
+      } catch (e) {
+        return errorResponse(e, set, "CLI tool operation failed");
+      }
+    })
     .get("/:toolId", async ({ request, params, set }) => {
       try {
         requireTenantScope(accessResolver(request), "dashboard:read");

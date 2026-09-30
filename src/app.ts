@@ -3,6 +3,7 @@ import { resolveDashboardDist, resolveElysiaPrecompile } from "./config";
 import { createConsoleRouter, type ConsoleApiCompositionDeps } from "./console/console-router";
 import { createStaticHandler } from "./console/dashboard-assets";
 import { createShareRouter } from "./console/share/share-router";
+import { createShareStatsPort } from "./console/share/share-stats";
 import { DrizzleShareLinkStore } from "./persistence/share-store";
 import { chatAdapter } from "./transport/surface/chat/adapter";
 import { responsesAdapter } from "./transport/surface/responses/adapter";
@@ -430,6 +431,7 @@ export function createGatewayApp(deps: GatewayAppDeps) {
       createShareRouter({
         db: deps.db,
         shareStore: new DrizzleShareLinkStore(deps.db),
+        stats: createShareStatsPort(deps.db),
         resolveClientIp: (request) => {
           const peer = peerAddresses.get(request);
           return peer

@@ -7,7 +7,8 @@ import { EmptyState, ErrorState, LoadingState } from "../../components/ui/state"
 import { ClipboardButton } from "../../components/patterns/clipboard-button";
 import { GithubBadge } from "../../components/patterns/github-badge";
 import { readConsoleTheme, applyConsoleTheme, isDarkEffective, writeConsoleTheme, type ConsoleThemeChoice } from "../../shared/theme";
-import { useShareData, type ShareLinkData } from "../../hooks/share-data";
+import { useShareData, type ShareFamilyStatsData, type ShareLinkData } from "../../hooks/share-data";
+import { ShareQuotaPanel, ShareStatsSection } from "./stats";
 import {
   deleteStoredShareKey,
   readStoredShareKey,
@@ -41,6 +42,10 @@ export function SharePage(): ReactElement {
   // the endpoint the recipient is told to call is derived here.
   const baseUrl = typeof window === "undefined" ? "" : window.location.origin;
   const state = useShareData<ShareLinkData>(dataPath);
+  // Family activity for the stats section. Loaded alongside the policy so the
+  // section is ready the moment the recipient expands it, and kept separate so
+  // a stats failure never blocks the page or the key it hands out.
+  const statsState = useShareData<ShareFamilyStatsData>(`${path}/stats`);
   const [secret, setSecret] = useState<IssueResult | null>(null);
   const [restoredSecret, setRestoredSecret] = useState<StoredShareKey | null>(null);
   // The recipient's display-name hint for the issued key. The backend keeps
@@ -237,6 +242,7 @@ export function SharePage(): ReactElement {
                   </span>
                 ) : null}
               </div>
+              <ShareQuotaPanel policy={data} stats={statsState.data} />
             </Card>
 
             <div className="share-credentials">
@@ -254,18 +260,17 @@ export function SharePage(): ReactElement {
                   />
                 </div>
                 <p>Point your SDK, Opencode, Claude Code, Droid, and any other CLI</p>
-                {data.sharePopup.mode ? (
+                {data.sharePopup.enabled ? (
                   <button
                     type="button"
                     className="share-support-trigger"
                     onClick={() => setSharePopupOpen(true)}
                     aria-haspopup="dialog"
-                    aria-label={data.sharePopup.mode === "donation" ? "Open support popup" : "Open information popup"}
+                    aria-label="Open popup"
                   >
                     <span className="share-support-icon" aria-hidden="true">♡</span>
                     <span>
-                      <strong>{data.sharePopup.mode === "donation" ? "Support this project" : "More information"}</strong>
-                      <small>{data.sharePopup.title || "A note from the link owner"}</small>
+                      <strong>{data.sharePopup.title || "More information"}</strong>
                     </span>
                     <span className="share-support-arrow" aria-hidden="true">↗</span>
                   </button>
@@ -367,7 +372,7 @@ export function SharePage(): ReactElement {
               </Card>
             </div>
 
-            {sharePopupOpen && data.sharePopup.mode ? (
+            {sharePopupOpen && data.sharePopup.enabled ? (
               <div
                 className="share-support-overlay"
                 role="presentation"
@@ -382,37 +387,31 @@ export function SharePage(): ReactElement {
                   role="dialog"
                   aria-modal="true"
                   aria-labelledby="share-support-title"
-                  aria-describedby="share-support-message"
                 >
                   <button type="button" className="share-support-close" onClick={() => setSharePopupOpen(false)} aria-label="Close popup">
                     <X size={18} aria-hidden="true" />
                   </button>
-                  {data.sharePopup.imageUrl ? (
-                    <img className="share-support-image" src={data.sharePopup.imageUrl} alt="" referrerPolicy="no-referrer" />
+                  {data.sharePopup.hasImage ? (
+                    <img
+                      className="share-support-image"
+                      src={`/share/${linkToken}/popup-image`}
+                      alt=""
+                    />
                   ) : (
                     <div className="share-support-image-placeholder" aria-hidden="true">
-                      <span>{data.sharePopup.mode === "donation" ? "♡" : "✦"}</span>
+                      <span>♡</span>
                     </div>
                   )}
                   <div className="share-support-content">
-                    <p className="share-eyebrow">{data.sharePopup.mode === "donation" ? "SUPPORT THIS PROJECT" : "A NOTE FOR YOU"}</p>
-                    <h2 id="share-support-title">{data.sharePopup.title || (data.sharePopup.mode === "donation" ? "Keep the gateway going" : "A little more context")}</h2>
-                    <p id="share-support-message" className="share-support-message">
-                      {data.sharePopup.body || (data.sharePopup.mode === "donation" ? "If this service has been useful, your support helps cover hosting and keep it available for everyone." : "Thanks for visiting this shared access page. Here is a little more information from its owner.")}
-                    </p>
+                    <h2 id="share-support-title">{data.sharePopup.title || "More information"}</h2>
+                    {data.sharePopup.body ? (
+                      <p id="share-support-message" className="share-support-message">
+                        {data.sharePopup.body}
+                      </p>
+                    ) : null}
                     <div className="share-support-actions">
-                      {data.sharePopup.actionUrl ? (
-                        <a
-                          className="share-support-action"
-                          href={data.sharePopup.actionUrl}
-                          target={data.sharePopup.actionUrl.startsWith("https:") ? "_blank" : undefined}
-                          rel={data.sharePopup.actionUrl.startsWith("https:") ? "noopener noreferrer" : undefined}
-                        >
-                          {data.sharePopup.actionLabel || (data.sharePopup.mode === "donation" ? "Support the project" : "Learn more")}
-                        </a>
-                      ) : null}
                       <button type="button" className="share-support-dismiss" onClick={() => setSharePopupOpen(false)}>
-                        Maybe later
+                        Close
                       </button>
                     </div>
                   </div>
@@ -427,6 +426,8 @@ export function SharePage(): ReactElement {
                 {data.notes.body ? <p className="share-notes-body">{data.notes.body}</p> : null}
               </Card>
             ) : null}
+
+            <ShareStatsSection stats={statsState.data} loading={statsState.loading} />
 
             <Card className="share-hud-card share-models">
               <div className="share-section-heading">

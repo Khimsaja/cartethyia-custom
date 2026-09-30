@@ -23,12 +23,12 @@ export interface ApiKeyRecord {
   readonly notesTitle?: string;
   readonly notesSubtitle?: string;
   readonly notesBody?: string;
-  readonly sharePopupMode?: "donation" | "information";
-  readonly sharePopupImageUrl?: string;
+  readonly sharePopupEnabled?: boolean;
+  /** Uploaded popup art; served from the share page rather than a remote URL. */
+  readonly sharePopupImage?: Buffer;
+  readonly sharePopupImageMime?: string;
   readonly sharePopupTitle?: string;
   readonly sharePopupBody?: string;
-  readonly sharePopupActionLabel?: string;
-  readonly sharePopupActionUrl?: string;
   readonly requestsPerMinute?: number;
   readonly dailyTokenLimit?: number;
   readonly monthlyTokenLimit?: number;
@@ -66,12 +66,11 @@ export interface ApiKeyPatch
     | "notesTitle"
     | "notesSubtitle"
     | "notesBody"
-    | "sharePopupMode"
-    | "sharePopupImageUrl"
+    | "sharePopupEnabled"
+    | "sharePopupImage"
+    | "sharePopupImageMime"
     | "sharePopupTitle"
     | "sharePopupBody"
-    | "sharePopupActionLabel"
-    | "sharePopupActionUrl"
     | "requestsPerMinute"
     | "dailyTokenLimit"
     | "monthlyTokenLimit"
@@ -84,12 +83,12 @@ export interface ApiKeyPatch
   readonly notesTitle?: string | null;
   readonly notesSubtitle?: string | null;
   readonly notesBody?: string | null;
-  readonly sharePopupMode?: "donation" | "information" | null;
-  readonly sharePopupImageUrl?: string | null;
+  readonly sharePopupEnabled?: boolean | null;
+  /** Null clears both bytes and mime; setting one without the other is rejected upstream. */
+  readonly sharePopupImage?: Buffer | null;
+  readonly sharePopupImageMime?: string | null;
   readonly sharePopupTitle?: string | null;
   readonly sharePopupBody?: string | null;
-  readonly sharePopupActionLabel?: string | null;
-  readonly sharePopupActionUrl?: string | null;
   readonly requestsPerMinute?: number | null;
   readonly dailyTokenLimit?: number | null;
   readonly monthlyTokenLimit?: number | null;
@@ -103,6 +102,8 @@ export interface ApiKeyStore {
   get(tenantId: string, keyId: string): Promise<ApiKeyRecord | undefined>;
   listChildren(tenantId: string, parentKeyId: string): Promise<readonly ApiKeyRecord[]>;
   create(record: ApiKeyRecord): Promise<void>;
+  /** Rewrites list order for one tenant; `keyIds` is the full desired order. */
+  reorder(tenantId: string, keyIds: readonly string[]): Promise<void>;
   update(tenantId: string, keyId: string, patch: ApiKeyPatch): Promise<ApiKeyRecord | undefined>;
   revoke(tenantId: string, keyId: string, revokedAt: Date): Promise<boolean>;
   findActiveByHash?(hash: string): Promise<typeof apiKeys.$inferSelect | undefined>;
@@ -131,12 +132,11 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
       ...(row.notesTitle === null ? {} : { notesTitle: row.notesTitle }),
       ...(row.notesSubtitle === null ? {} : { notesSubtitle: row.notesSubtitle }),
       ...(row.notesBody === null ? {} : { notesBody: row.notesBody }),
-      ...(row.sharePopupMode === null ? {} : { sharePopupMode: row.sharePopupMode as "donation" | "information" }),
-      ...(row.sharePopupImageUrl === null ? {} : { sharePopupImageUrl: row.sharePopupImageUrl }),
+      ...(row.sharePopupEnabled ? { sharePopupEnabled: row.sharePopupEnabled } : {}),
+      ...(row.sharePopupImage === null ? {} : { sharePopupImage: row.sharePopupImage }),
+      ...(row.sharePopupImageMime === null ? {} : { sharePopupImageMime: row.sharePopupImageMime }),
       ...(row.sharePopupTitle === null ? {} : { sharePopupTitle: row.sharePopupTitle }),
       ...(row.sharePopupBody === null ? {} : { sharePopupBody: row.sharePopupBody }),
-      ...(row.sharePopupActionLabel === null ? {} : { sharePopupActionLabel: row.sharePopupActionLabel }),
-      ...(row.sharePopupActionUrl === null ? {} : { sharePopupActionUrl: row.sharePopupActionUrl }),
       ...(row.requestsPerMinute === null ? {} : { requestsPerMinute: row.requestsPerMinute }),
       ...(row.dailyTokenLimit === null ? {} : { dailyTokenLimit: row.dailyTokenLimit }),
       ...(row.monthlyTokenLimit === null ? {} : { monthlyTokenLimit: row.monthlyTokenLimit }),
@@ -157,8 +157,37 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
   }
   async list(tenantId: string): Promise<readonly ApiKeyRecord[]> {
     // Bounded: a large tenant key list must not load fully into memory.
-    const rows = await this.db.select().from(apiKeys).where(eq(apiKeys.tenantId, tenantId)).limit(1000);
+    // Ordered by the explicit `sort_index`, not `created_at`: a stable key means
+    // rows keep their position across reloads (and can be reordered) instead of
+    // shifting when two rows share a timestamp or one is updated.
+    const rows = await this.db
+      .select()
+      .from(apiKeys)
+      .where(eq(apiKeys.tenantId, tenantId))
+      .orderBy(apiKeys.sortIndex, apiKeys.createdAt, apiKeys.id)
+      .limit(1000);
     return rows.map((row) => this.map(row));
+  }
+
+  /** Rewrites the list order for one tenant; `keyIds` is the full order. */
+  async reorder(tenantId: string, keyIds: readonly string[]): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      for (const [index, keyId] of keyIds.entries()) {
+        await tx
+          .update(apiKeys)
+          .set({ sortIndex: index })
+          .where(and(eq(apiKeys.tenantId, tenantId), eq(apiKeys.id, keyId)));
+      }
+    });
+  }
+
+  /** Next free list position for a new key in this tenant. */
+  private async nextSortIndex(tenantId: string): Promise<number> {
+    const rows = await this.db
+      .select({ max: sql<number>`coalesce(max(${apiKeys.sortIndex}), -1)` })
+      .from(apiKeys)
+      .where(eq(apiKeys.tenantId, tenantId));
+    return Number(rows[0]?.max ?? -1) + 1;
   }
   async get(tenantId: string, keyId: string): Promise<ApiKeyRecord | undefined> {
     const rows = await this.db
@@ -182,9 +211,13 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
     return rows.map((row) => this.map(row));
   }
   async create(record: ApiKeyRecord): Promise<void> {
+    // Append to the end of the tenant's list rather than relying on creation
+    // time, so a new key never displaces the existing rows' positions.
+    const sortIndex = await this.nextSortIndex(record.tenantId);
     await this.db.insert(apiKeys).values({
       id: record.id,
       tenantId: record.tenantId,
+      sortIndex,
       keyHash: record.keyHash,
       keyMode: record.keyMode,
       parentKeyId: record.parentKeyId ?? null,
@@ -197,12 +230,11 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
       notesTitle: record.notesTitle ?? null,
       notesSubtitle: record.notesSubtitle ?? null,
       notesBody: record.notesBody ?? null,
-      sharePopupMode: record.sharePopupMode ?? null,
-      sharePopupImageUrl: record.sharePopupImageUrl ?? null,
+      sharePopupEnabled: record.sharePopupEnabled ?? false,
+      sharePopupImage: record.sharePopupImage ?? null,
+      sharePopupImageMime: record.sharePopupImageMime ?? null,
       sharePopupTitle: record.sharePopupTitle ?? null,
       sharePopupBody: record.sharePopupBody ?? null,
-      sharePopupActionLabel: record.sharePopupActionLabel ?? null,
-      sharePopupActionUrl: record.sharePopupActionUrl ?? null,
       requestsPerMinute: record.requestsPerMinute ?? null,
       dailyTokenLimit: record.dailyTokenLimit ?? null,
       monthlyTokenLimit: record.monthlyTokenLimit ?? null,
@@ -259,12 +291,15 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
           ...(patch.notesTitle !== undefined ? { notesTitle: patch.notesTitle } : {}),
           ...(patch.notesSubtitle !== undefined ? { notesSubtitle: patch.notesSubtitle } : {}),
           ...(patch.notesBody !== undefined ? { notesBody: patch.notesBody } : {}),
-          ...(patch.sharePopupMode !== undefined ? { sharePopupMode: patch.sharePopupMode } : {}),
-          ...(patch.sharePopupImageUrl !== undefined ? { sharePopupImageUrl: patch.sharePopupImageUrl } : {}),
+          ...(patch.sharePopupEnabled !== undefined ? { sharePopupEnabled: patch.sharePopupEnabled ?? false } : {}),
+          ...(patch.sharePopupImage !== undefined
+            ? { sharePopupImage: patch.sharePopupImage }
+            : {}),
+          ...(patch.sharePopupImageMime !== undefined
+            ? { sharePopupImageMime: patch.sharePopupImageMime }
+            : {}),
           ...(patch.sharePopupTitle !== undefined ? { sharePopupTitle: patch.sharePopupTitle } : {}),
           ...(patch.sharePopupBody !== undefined ? { sharePopupBody: patch.sharePopupBody } : {}),
-          ...(patch.sharePopupActionLabel !== undefined ? { sharePopupActionLabel: patch.sharePopupActionLabel } : {}),
-          ...(patch.sharePopupActionUrl !== undefined ? { sharePopupActionUrl: patch.sharePopupActionUrl } : {}),
           ...(patch.requestsPerMinute !== undefined
             ? { requestsPerMinute: patch.requestsPerMinute }
             : {}),
@@ -339,17 +374,25 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
   }
 
   /**
-   * Total lifetime consumption across one key's active children.
+   * Total lifetime consumption across one key's children, revoked included.
    *
    * The parent's own counter never moves for child traffic — attribution
    * lands on the child row — so quota enforcement reads the parent plus this
    * sum rather than the parent alone.
+   *
+   * Revoked children stay in the sum on purpose. Tokens a recipient already
+   * spent are spent; dropping them on revoke would refund the parent's budget
+   * the moment the Redis lifetime counter is re-seeded from this total (which
+   * happens on every purge, and whenever that counter's TTL lapses), letting a
+   * recipient burn the whole allowance, be revoked, and hand the next
+   * recipient a fresh one. It also keeps this figure equal to the "Total
+   * quota" the share dialog reports, which counts every recipient.
    */
   async sumChildrenConsumed(parentKeyId: string): Promise<number> {
     const rows = await this.db
       .select({ total: sql<number>`coalesce(sum(${apiKeys.lifetimeTokensConsumed}), 0)` })
       .from(apiKeys)
-      .where(and(eq(apiKeys.parentKeyId, parentKeyId), isNull(apiKeys.revokedAt)));
+      .where(eq(apiKeys.parentKeyId, parentKeyId));
     return Number(rows[0]?.total ?? 0);
   }
 }

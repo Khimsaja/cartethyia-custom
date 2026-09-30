@@ -164,6 +164,14 @@ either field is rejected as unknown, because only the bundled declaration is aut
 
 Operator-defined routing targets (aliases and combos) and tenant network pools.
 
+Aliases and combos carry a `sort_index` and are listed by it rather than by
+`created_at`, which is not stable when two rows share a timestamp. The dashboard
+lets an operator drag a row to a new position and posts the complete new order
+(`POST /routing/aliases/reorder`, `/routing/combos/reorder`); the operation
+requires `dashboard:write` and rejects a list that omits or duplicates a row, so
+a partial payload cannot renumber rows by accident. API credentials follow the
+same pattern (`POST /api-keys/reorder`).
+
 Alias creation rejects self-references, duplicate names, cycles (`aliasCycleExists`, depth 16
 matching the engine's `resolveAlias` bound), and targets that resolve to nothing
 (`targetResolves` walks alias chains, then combos, then `isKnownModel`). Combo members must each
@@ -198,6 +206,12 @@ hops, matching the engine's `resolveAlias`; a pool advertises the minimum across
 reach, and only the modalities every member shares, because dispatch may pick any of them.
 
 Pools are CRUD plus health checks that dial a public canary through the pool's real dispatch agent.
+The canary is Cloudflare's `/cdn-cgi/trace`, whose plain-text body carries `ip=` — the address the
+request egressed from — so a successful probe also records the pool's public **egress address**
+(`parseEgressIp` in `probe-result.ts`, persisted as `network_pools.egress_ip` and surfaced as
+`egressIp`). That is the address the outside world sees, which is not the same as whatever the
+endpoint's hostname resolves to locally. A body that cannot be parsed leaves the stored address
+untouched rather than clearing it.
 HTTP 402 and 407 mean the proxy answered, so checks report `Proxy reachable` with the response
 code; because the pool is unusable, it is disabled from routing and the reason is recorded in
 `health_events`. The same response during dispatch disables the bound pool instead of flagging
@@ -208,6 +222,26 @@ Operators can inspect `GET /:poolId/health-events`; mutations release the cached
 (`poolAgentReleaser`), and responses redact legacy secret config keys and surface only
 `hasCredential`.
 
+Each pool also carries a **bandwidth quota** (`quota_bytes`, `0021_network_pool_quota_bytes.sql`,
+folded into the baseline): a byte allowance the operator sets per pool, `NULL` meaning unmetered.
+The proxy page's **Load** cell draws a second bar under the concurrency bar showing measured
+egress against it, turning orange at 80% and red once exceeded. The measurement is taken at the
+**raw socket**, before TLS wraps it (`network/pool/byte-accounting.ts`): Node's socket counters
+cannot be used here, because a TLS-wrapped socket's `bytesWritten` stays at zero and the TLS
+socket's own counters report decrypted plaintext — measured at roughly a sixth of the real wire
+volume. Counting at the raw socket therefore includes the TLS handshake and record overhead,
+which is what a proxy provider bills. The cost is one integer addition per TCP chunk, not per
+byte. Totals are **in-memory and reset when the process restarts**, so the bar is a
+since-startup figure, not a billing-period one; the tooltip says so rather than implying a
+monthly allowance.
+
+The public share page (`GET /share/:token/data`) carries the template's policy, and a companion
+`GET /share/:token/stats` (`share-stats.ts`) rolls up family activity for the stats section:
+request/token totals, a 24-hour bucket series, top models, and top client IPs. It aggregates the
+template *plus every key it issued*, because the quota is shared — a per-recipient figure would
+understate the link's spend. Client IPs are always masked in this payload (`maskClientIp`); the
+recipient is outside the tenant, so the console's IP-privacy preference does not apply.
+
 Pool selection strategy is per-tenant (`GET`/`PATCH /strategy`): `least_loaded` (default, absent
 row reads as default) or `round_robin`, striding the per-tenant pool cursor by `rotateCount`
 (`POOL_ROUTING_STRATEGIES`, `PoolStrategySetting`, `DEFAULT_POOL_STRATEGY`; persisted in
@@ -215,6 +249,13 @@ row reads as default) or `round_robin`, striding the per-tenant pool cursor by `
 as `PoolRotation` — see `NETWORK.md` admission and `TRANSPORT.md` routing). Updates validate the
 strategy (`invalid_pool`) and clamp `rotateCount` to 1..1000 (`invalid_pool_limits`), record the
 `network_pool.strategy_updated` audit event, and invalidate the route snapshot.
+
+`POST /test-batch` probes up to `MAX_BATCH_PROBE_TARGETS` (100) ad-hoc endpoints in one
+request, dialing each through the real dispatch agent with at most
+`POOL_BATCH_PROBE_CONCURRENCY` (10) in flight. It returns one verdict per target in request
+order, and a target that throws fails only itself — the batch still reports the rest. Nothing
+is persisted: it is a reachability preview for the operator, not a pool creation. A larger
+batch is rejected (`invalid_pool`).
 
 **Invariants.** Tenant scoping is enforced at the operations layer (`requireTenantScope`) and
 again in store queries (`globalOrOwnedBy` / `ownedByOnly`), and pool endpoints can never point
@@ -241,7 +282,7 @@ prefix-length hints leave the store.
   request, so the route serializes it explicitly. A key may also carry `clientRouterDenylist`, the ids of downstream
   routers it refuses (see `security/SECURITY.md`); the write path rejects an id the gateway
   cannot fingerprint, so a stored rule is always one that can match.
-- Each key can optionally configure a `sharePopupMode` (`donation` or `information`) with image URL, title, message, and HTTPS/mailto action. It travels with both enrollment and handoff public policy and is opened only by a visitor clicking the button below Base URL; it is never auto-opened.
+- Each key can optionally configure a single share-page popup behind a boolean `share_popup_enabled` toggle (**Enable popup**); the editor stays collapsed until it is on and is laid out image-left, fields-right. It carries an uploaded image, title, and message. The art is uploaded as a data URL and stored on the key row as bytes plus a mime; it is served by `GET /api-keys/:keyId/share-popup-image` for the owner and `GET /share/:token/popup-image` for a link, never hotlinked from a third-party host. It travels with both enrollment and handoff public policy and is opened only by a visitor clicking the button below Base URL; it is never auto-opened.
 - **Studio** (`studio/`): CRUD over per-tenant saved sessions (capped, messages and media
   normalized and bounded on write and read), a tenant-scoped `web-fetch` tool over
   the validated outbound network binding, plus a key endpoint that decrypts the tenant's default
@@ -288,8 +329,10 @@ persistence. The folder is a classic layered split, with `contracts.ts` holding
 `ToolDef`/`ToolInjector`/`InjectorSpec` plus `TOOL_REGISTRY`.
 
 Routes: `GET /registry`, `GET /all-statuses`, `GET /:toolId`, `GET|POST /:toolId/mappings`,
-`POST /:toolId/download` (`dashboard:read`), and `POST /:toolId/apply` (`dashboard:write`,
-audited as `cli_tool.applied`, invalidating the routing snapshot when it saves a remote route).
+`POST /:toolId/mappings/reset` (clears every route and turns Remote Routing off, audited as
+`cli_tool.mappings_reset`), `POST /:toolId/download` (`dashboard:read`), and `POST /:toolId/apply`
+(`dashboard:write`, audited as `cli_tool.applied`, invalidating the routing snapshot when it saves
+a remote route).
 
 `download` and `apply` accept either a pasted `apiKey` **or** a `keyId`. A `keyId` is resolved
 server-side by `secret-source.ts` to the tenant's recoverable `api_keys.key_encrypted` copy, so the
@@ -297,6 +340,14 @@ operator never has to paste a raw secret to get a config — the plaintext stays
 written only into the returned config text. A key with no recoverable copy (created before that
 column existed) fails with `api_key_unresolvable` rather than silently emitting a blank token, and
 resolution is tenant-scoped so one console session can never read another tenant's key.
+
+The Claude injector's `download`/`apply` emit a fixed team template (bypass
+permissions, the two LSP plugins, effort and compaction settings) with only
+`env` and `model` derived per request: `ANTHROPIC_BASE_URL` is the selected
+endpoint through `stripV1Suffix`, `ANTHROPIC_AUTH_TOKEN` is the resolved secret,
+and `model` comes from the selected slot. Because the template already sets
+`permissions.defaultMode`, the dashboard exposes no separate bypass-permissions
+control.
 
 `apply` has two independent delivery paths and reports which actually ran as `ApplyOutcome`:
 `file` writes the tool's config on the host this process runs on (only reaches the CLI when both
@@ -314,8 +365,14 @@ Mapping profiles can be saved to a top-level share template. A shared child's re
 the template's mapping bucket, while the dashboard selects a separate personal API key for the
 CLI credential written into config. Children need no individual mapping rows.
 
-Mapping is opt-out at the tenant configuration layer, but **request-time CLI mapping is API-key
-gated**: only keys carrying the `routing:cli_mapping` scope may consume these source→target rows,
+Remote Routing is opt-in at the tenant configuration layer — an absent `cli_tool_settings` row
+means off, so a new key never inherits stale routes — and the route-catalog snapshot gates each
+mapping row on its bucket's `mappings_enabled` flag, so turning the switch off stops routing. The
+CLI tool page and the API-key edit form both write that one per-(tenant, tool, key) flag and apply
+immediately. On the key edit form the `routing:cli_mapping` scope is not a separate grant row: the
+Remote routing switch grants that scope and flips the flag together, so a key can never hold routes
+it is unable to consume. Toggling off keeps the saved route rows; the reset action is what clears
+them. **Request-time CLI mapping is API-key gated**: only keys carrying the `routing:cli_mapping` scope may consume these source→target rows,
 and only when the inbound User-Agent identifies that remote CLI (Claude Code: `claude-cli/` /
 `claude-code/`). Keys without the scope, or callers that are not that CLI, keep normal
 model/alias routing and are never silently remapped — so a Claude→DeepSeek `opus` remap cannot

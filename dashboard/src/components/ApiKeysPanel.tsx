@@ -15,10 +15,17 @@ import { ApiKeyForm, oneTimeSecretForMode, type KeyFormInput } from "./ApiKeyFor
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ClipboardButton } from "./patterns/clipboard-button";
 import { ShareManagementDialog } from "./ShareManagementDialog";
+import { SortableList } from "./SortableList";
 import { toast } from "../shared/toast";
 import { getErrorMessage } from "../shared/helpers";
 import type { ApiKeyResponse } from "../data/contracts";
-import { useApiKeys, useCreateApiKey, useRevokeApiKey, useUpdateApiKey } from "../hooks/api-keys";
+import {
+  useApiKeys,
+  useCreateApiKey,
+  useReorderApiKeys,
+  useRevokeApiKey,
+  useUpdateApiKey,
+} from "../hooks/api-keys";
 
 /** Compact K/M/B/T token count used by the credential rows. */
 function compactTokens(value: number | null | undefined): string {
@@ -48,6 +55,7 @@ export function ApiKeysPanel(): ReactNode {
   const createKey = useCreateApiKey();
   const updateKey = useUpdateApiKey();
   const revokeKey = useRevokeApiKey();
+  const reorderKeys = useReorderApiKeys();
   const [createOpen, setCreateOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<ApiKeyResponse | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<ApiKeyResponse | null>(null);
@@ -139,10 +147,21 @@ export function ApiKeysPanel(): ReactNode {
             icon={<KeyRound size={20} />}
           />
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-            {keys.map((key) => (
+          // The key list is the tallest thing on the page; bounding it keeps the
+          // page chrome in place and scrolls only the rows, like the sidebar.
+          <div className="scroll-region" style={{ maxHeight: "560px", paddingRight: "2px" }}>
+          <SortableList
+            items={keys}
+            label="API credentials"
+            disabled={reorderKeys.isPending}
+            onReorder={(ids) =>
+              reorderKeys.mutate(ids, {
+                onError: (error) =>
+                  toast.error(getErrorMessage(error, "Could not save the new order.")),
+              })
+            }
+            renderItem={(key) => (
               <div
-                key={key.id}
                 style={{
                   display: "flex",
                   alignItems: "flex-start",
@@ -195,13 +214,16 @@ export function ApiKeysPanel(): ReactNode {
                       color: "var(--text-tertiary)",
                     }}
                   >
-                    <span>Usage {compactTokens(key.tokensConsumed)}</span>
+                    <span>
+                      {key.keyMode === "share" ? "Total usage " : "Usage "}
+                      {compactTokens(key.tokensConsumed)}
+                    </span>
                     <span>RPM {limitLabel(key.requestsPerMinute)}</span>
                     <span>Daily {limitLabel(key.dailyTokenLimit)}</span>
                     <span>Monthly {limitLabel(key.monthlyTokenLimit)}</span>
                     <span>One-time {limitLabel(key.lifetimeTokenBudget)}</span>
                     <span>Concurrent {limitLabel(key.maxConcurrentRequests)}</span>
-                    <span>Models {key.modelAllowlist?.length ?? "All"}</span>
+                    <span>Models {key.modelAllowlist?.length ? key.modelAllowlist.length : "All"}</span>
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: "6px", flexShrink: 0, flexWrap: "wrap" }}>
@@ -232,7 +254,8 @@ export function ApiKeysPanel(): ReactNode {
                   </Button>
                 </div>
               </div>
-            ))}
+            )}
+          />
           </div>
         )}
       </CardBody>
@@ -242,7 +265,7 @@ export function ApiKeysPanel(): ReactNode {
         onClose={() => setCreateOpen(false)}
         title="Create API Key"
         description="Create a tenant-scoped credential. Choose model access, permissions, limits, and optional blocked client routers."
-        width={760}
+        width={880}
       >
         <ApiKeyForm
           mode="create"
@@ -266,7 +289,7 @@ export function ApiKeysPanel(): ReactNode {
         onClose={() => setEditTarget(null)}
         title="Edit API Key"
         description="Update the key's model access, permissions, limits, share notes, and optional public popup."
-        width={760}
+        width={880}
       >
         <ApiKeyForm
           mode="edit"

@@ -88,12 +88,11 @@ function shareRow(overrides: Partial<ShareApiKeyRow> = {}): ShareApiKeyRow {
     notesTitle: null,
     notesSubtitle: null,
     notesBody: null,
-    sharePopupMode: null,
-    sharePopupImageUrl: null,
+    sharePopupEnabled: false,
+    sharePopupImage: null,
+    sharePopupImageMime: null,
     sharePopupTitle: null,
     sharePopupBody: null,
-    sharePopupActionLabel: null,
-    sharePopupActionUrl: null,
     createdAt: "2026-01-01T00:00:00.000Z",
     expiresAt: null,
     ...overrides,
@@ -118,18 +117,28 @@ function handoffRow(overrides: Partial<ShareHandoffRow> = {}): ShareHandoffRow {
     notesTitle: null,
     notesSubtitle: null,
     notesBody: null,
-    sharePopupMode: null,
-    sharePopupImageUrl: null,
+    sharePopupEnabled: false,
+    sharePopupImage: null,
+    sharePopupImageMime: null,
     sharePopupTitle: null,
     sharePopupBody: null,
-    sharePopupActionLabel: null,
-    sharePopupActionUrl: null,
     expiresAt: null,
     ...overrides,
   };
 }
 
 const noopDb = {} as unknown as CartethyiaDatabase;
+
+/** Stub db that answers the one `select().from(apiKeys)` the stats route makes. */
+function childrenDb(children: readonly { id: string; revokedAt: Date | null }[]): CartethyiaDatabase {
+  return {
+    select: () => ({
+      from: () => ({
+        where: async () => children,
+      }),
+    }),
+  } as unknown as CartethyiaDatabase;
+}
 const VALID_TOKEN = "a".repeat(43);
 
 describe("public share router", () => {
@@ -173,12 +182,10 @@ describe("public share router", () => {
       dailyLimit: 1000,
     });
     expect(body.sharePopup).toEqual({
-      mode: null,
-      imageUrl: null,
+      enabled: false,
+      hasImage: false,
       title: null,
       body: null,
-      actionLabel: null,
-      actionUrl: null,
     });
     // Issuing is an enrollment capability; a handoff link has none.
     expect(body).not.toHaveProperty("canIssue");
@@ -269,6 +276,40 @@ describe("public share router", () => {
     expect(body).not.toHaveProperty("apiKey");
     expect(body).not.toHaveProperty("clientIp");
     expect(store.touched).toEqual([hashShareToken(VALID_TOKEN)]);
+  });
+
+  test("serves the owner-uploaded popup art for its link and 404s otherwise", async () => {
+    const art = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+    const withArt = fakeStore([
+      { token: VALID_TOKEN, row: shareRow({ sharePopupImage: art, sharePopupImageMime: "image/png" }) },
+    ]);
+    const router = createShareRouter({
+      db: noopDb,
+      shareStore: withArt,
+      resolveClientIp: () => "198.51.100.1",
+    });
+
+    const response = await router.handle(
+      new Request(`http://internal.test/share/${VALID_TOKEN}/popup-image`),
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("image/png");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array(art));
+
+    // A link whose key carries no art resolves to nothing to serve, and an
+    // unknown token must not leak whether the route exists.
+    const withoutArt = createShareRouter({
+      db: noopDb,
+      shareStore: fakeStore([{ token: VALID_TOKEN, row: shareRow() }]),
+      resolveClientIp: () => "198.51.100.1",
+    });
+    expect(
+      (await withoutArt.handle(new Request(`http://internal.test/share/${VALID_TOKEN}/popup-image`))).status,
+    ).toBe(404);
+    expect(
+      (await router.handle(new Request(`http://internal.test/share/${"b".repeat(43)}/popup-image`))).status,
+    ).toBe(404);
   });
 
   test("issues the child bearer once and binds it to the resolved client IP", async () => {
@@ -385,5 +426,96 @@ describe("public share router", () => {
       expect(response.headers.get("content-type")).toContain("application/json");
       expect(await response.text()).not.toContain("<html");
     }
+  });
+
+  test("serves family stats for a link, aggregating every issued key", async () => {
+    const store = fakeStore([
+      { token: VALID_TOKEN, row: shareRow({ id: "template-1" }) },
+    ]);
+    const seen: { tenantId: string; keyIds: readonly string[]; recipients: unknown }[] = [];
+    const router = createShareRouter({
+      db: childrenDb([
+        { id: "child-a", revokedAt: null },
+        { id: "child-b", revokedAt: new Date() },
+      ]),
+      shareStore: store,
+      resolveClientIp: () => "198.51.100.1",
+      stats: {
+        async getFamilyStats(tenantId, keyIds, recipients) {
+          seen.push({ tenantId, keyIds, recipients });
+          return {
+            totals: {
+              requests: 3,
+              errors: 1,
+              inputTokens: 100,
+              outputTokens: 50,
+              totalTokens: 150,
+              lastHourRequests: 2,
+              todayTokens: 150,
+              monthTokens: 150,
+            },
+            recipients,
+            hourly: [],
+            models: [],
+            clientIps: [],
+          };
+        },
+      },
+    });
+    const response = await router.handle(
+      new Request(`http://internal.test/share/${VALID_TOKEN}/stats`),
+    );
+    expect(response.status).toBe(200);
+    // The template plus every child, revoked ones included.
+    expect(seen[0]?.keyIds).toEqual(["template-1", "child-a", "child-b"]);
+    expect(seen[0]?.recipients).toEqual({ total: 2, active: 1 });
+    const body = (await response.json()) as { totals: { totalTokens: number } };
+    expect(body.totals.totalTokens).toBe(150);
+  });
+
+  test("stats 404 for an unknown token", async () => {
+    const store = fakeStore([], []);
+    const router = createShareRouter({
+      db: childrenDb([]),
+      shareStore: store,
+      resolveClientIp: () => "198.51.100.1",
+      stats: {
+        async getFamilyStats(_tenantId, _keyIds, recipients) {
+          return {
+            totals: {
+              requests: 0,
+              errors: 0,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+              lastHourRequests: 0,
+              todayTokens: 0,
+              monthTokens: 0,
+            },
+            recipients,
+            hourly: [],
+            models: [],
+            clientIps: [],
+          };
+        },
+      },
+    });
+    const response = await router.handle(
+      new Request(`http://internal.test/share/${"b".repeat(43)}/stats`),
+    );
+    expect(response.status).toBe(404);
+  });
+
+  test("stats 503 when no stats port is configured", async () => {
+    const store = fakeStore([{ token: VALID_TOKEN, row: shareRow({ id: "template-1" }) }]);
+    const router = createShareRouter({
+      db: noopDb,
+      shareStore: store,
+      resolveClientIp: () => "198.51.100.1",
+    });
+    const response = await router.handle(
+      new Request(`http://internal.test/share/${VALID_TOKEN}/stats`),
+    );
+    expect(response.status).toBe(503);
   });
 });

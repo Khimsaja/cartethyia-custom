@@ -143,29 +143,54 @@
   }
 }
 
-/* Scrollbars: the main application column keeps a visible native scrollbar.
-   Only opting decorative containers into thin overlay styling. */
+/* Scrollbars: the page column hides its bar, while contained regions (the
+   sidebar rail, dialogs, `.scroll-region`) keep a thin overlay style. */
 .app-sidebar nav,
-.dialog-panel .modal-body {
+.dialog-panel .modal-body,
+.scroll-region {
   scrollbar-width: thin;
   scrollbar-color: var(--inner-border) transparent;
 }
 
+/* The page column still scrolls, it just does not draw a bar: the content is
+   the signal, and the rail is always visible for orientation anyway. */
+.app-main-column {
+  scrollbar-width: none;
+}
+
+.app-main-column::-webkit-scrollbar {
+  display: none;
+}
+
 .app-sidebar nav::-webkit-scrollbar,
-.dialog-panel .modal-body::-webkit-scrollbar {
+.dialog-panel .modal-body::-webkit-scrollbar,
+.scroll-region::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
 .app-sidebar nav::-webkit-scrollbar-thumb,
-.dialog-panel .modal-body::-webkit-scrollbar-thumb {
+.dialog-panel .modal-body::-webkit-scrollbar-thumb,
+.scroll-region::-webkit-scrollbar-thumb {
   background: var(--inner-border);
   border-radius: 999px;
 }
 
 .app-sidebar nav::-webkit-scrollbar-track,
-.dialog-panel .modal-body::-webkit-scrollbar-track {
+.dialog-panel .modal-body::-webkit-scrollbar-track,
+.scroll-region::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/*
+ * A contained scroll area, styled like the sidebar rail: content moves inside
+ * its own box while the surrounding chrome (headers, toolbars, the page
+ * itself) stays put. Pair it with a height/max-height and `overflow-y: auto`.
+ */
+.scroll-region {
+  overflow-y: auto;
+  /* No `overscroll-behavior: contain`: once this region hits its end the wheel
+   * must keep scrolling the page, not stop dead against the edge. */
 }
 
 html {
@@ -796,12 +821,18 @@ html[data-glass-enabled="true"] .card-solid {
   white-space: nowrap;
 }
 
-/* Sticky header: the scroll container moves rows, the header row stays put. */
+/* Sticky header: this container must be the scroller (pass `maxHeight`) or
+ * the header scrolls away with the rows. An ancestor that also scrolls wins
+ * instead, which is why the pages hand `maxHeight` here rather than wrapping
+ * the table in their own overflow box. */
 .data-table thead th {
   position: sticky;
   top: 0;
   z-index: 2;
   background: var(--surface-1);
+  /* Keep the header above the rows' own sticky-ish content and give it a
+   * solid backing so scrolled rows cannot show through. */
+  box-shadow: inset 0 -1px 0 var(--inner-border);
 }
 
 .data-table td {

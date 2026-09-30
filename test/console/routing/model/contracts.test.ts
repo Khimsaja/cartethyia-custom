@@ -70,6 +70,11 @@ function makeStore(knownModels: readonly string[] = ["claude-sonnet-4-5", "gpt-4
       aliasRows.splice(idx, 1);
       return true;
     },
+    async reorderAliases(tenantId, ids) {
+      const ordered = ids.map((id) => aliasRows.find((r) => r.tenantId === tenantId && r.id === id)!);
+      aliasRows.length = 0;
+      aliasRows.push(...ordered);
+    },
     async listCombos(tenantId) {
       return comboRows.filter((r) => r.tenantId === tenantId);
     },
@@ -103,6 +108,11 @@ function makeStore(knownModels: readonly string[] = ["claude-sonnet-4-5", "gpt-4
       if (idx === -1) return false;
       comboRows.splice(idx, 1);
       return true;
+    },
+    async reorderCombos(tenantId, ids) {
+      const ordered = ids.map((id) => comboRows.find((r) => r.tenantId === tenantId && r.id === id)!);
+      comboRows.length = 0;
+      comboRows.push(...ordered);
     },
     async isKnownModel(_tenantId, modelId) {
       return knownModels.includes(modelId);

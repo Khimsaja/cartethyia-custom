@@ -10,7 +10,16 @@ import type { ShareEnrollmentData, ShareHandoffData, ShareLinkData } from "../..
 
 interface ShareState { data: ShareLinkData | null; error: string | null; loading: boolean }
 let shareState: ShareState = { data: null, error: null, loading: true };
-mock.module("../../../src/hooks/share-data", () => ({ useShareData: (): ShareState => shareState }));
+/** The stats section is a second hook call; it is routed by path, not shared. */
+let statsState: { data: unknown; error: string | null; loading: boolean } = {
+  data: null,
+  error: null,
+  loading: true,
+};
+mock.module("../../../src/hooks/share-data", () => ({
+  useShareData: (path: string): ShareState =>
+    (path.endsWith("/stats") ? statsState : shareState) as ShareState,
+}));
 // Load after mock.module so the page captures the mocked data hook.
 const { SharePage, tokenFromPathname } = await import("../../../src/apps/share/page");
 function render(): string { return renderToStaticMarkup(createElement(SharePage)); }
@@ -20,8 +29,28 @@ const data: ShareEnrollmentData = {
   name: "Team Access", keyPrefix: "ctk", canIssue: true, alreadyIssued: false,
   dailyLimit: 50_000, monthlyLimit: null, oneTimeLimit: null, requestsPerMinute: 20, maxConcurrentRequests: 3,
   modelAllowlist: ["gpt-5"], modelDenylist: null, modelPrefix: "gpt-", notes: { title: null, subtitle: "Shared access", body: "Use responsibly" },
-  sharePopup: { mode: null, imageUrl: null, title: null, body: null, actionLabel: null, actionUrl: null },
+  sharePopup: { enabled: false, hasImage: false, title: null, body: null },
   expiresAt: null,
+};
+
+const statsFixture = {
+  totals: {
+    requests: 128,
+    errors: 3,
+    inputTokens: 80_000,
+    outputTokens: 4_200,
+    totalTokens: 84_200,
+    lastHourRequests: 37,
+    todayTokens: 12_000,
+    monthTokens: 40_000,
+  },
+  recipients: { total: 5, active: 4 },
+  hourly: Array.from({ length: 24 }, (_unused, index) => ({
+    hour: new Date(Date.UTC(2026, 0, 1, index)).toISOString(),
+    requests: index,
+  })),
+  models: [{ providerId: "anthropic", modelId: "claude-sonnet", requests: 90, tokens: 70_000 }],
+  clientIps: [{ ip: "203.0.113.xxx", requests: 90, tokens: 70_000, lastSeenAt: null }],
 };
 
 const handoff: ShareHandoffData = {
@@ -29,7 +58,7 @@ const handoff: ShareHandoffData = {
   name: "Personal key", keyPrefix: "rk_", key: "rk_handed_over_secret",
   dailyLimit: null, monthlyLimit: null, oneTimeLimit: null, requestsPerMinute: null, maxConcurrentRequests: null,
   modelAllowlist: ["gpt-5"], modelDenylist: null, modelPrefix: null, notes: { title: null, subtitle: null, body: null },
-  sharePopup: { mode: null, imageUrl: null, title: null, body: null, actionLabel: null, actionUrl: null },
+  sharePopup: { enabled: false, hasImage: false, title: null, body: null },
   expiresAt: null,
 };
 
@@ -49,6 +78,21 @@ describe("public share enrollment page", () => {
     expect(markup).toContain("Base URL");
     expect(markup).toContain("Generate API Key");
   });
+
+  test("shows family quota in the hero and a collapsed stats section", () => {
+    shareState = { data, error: null, loading: false };
+    statsState = { data: statsFixture, error: null, loading: false };
+    const markup = render();
+    // Quota rows live in the hero, using the family total against the policy limit.
+    expect(markup).toContain("share-quota");
+    expect(markup).toContain("Daily");
+    expect(markup).toContain("84.2K");
+    // Stats are present but collapsed: the toggle exists, its body does not.
+    expect(markup).toContain("STATS &amp; ACTIVITY");
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).not.toContain("TOP MODELS");
+    expect(markup).not.toContain("203.0.113.xxx");
+  });
   test("requires a display name before enabling shared key issuance", () => {
     shareState = { data, error: null, loading: false };
     const markup = render();
@@ -56,28 +100,27 @@ describe("public share enrollment page", () => {
     expect(markup).toContain("disabled=\"\"");
     expect(markup).toContain("Enter your name to generate a personal key.");
   });
-  test("renders an image popup trigger and customizable donation content", () => {
+  test("renders an image popup trigger with owner-edited copy", () => {
     shareState = {
       data: {
         ...data,
         sharePopup: {
-          mode: "donation",
-          imageUrl: "https://images.example/donate.webp",
+          enabled: true,
+          hasImage: true,
           title: "Keep it online",
           body: "Your support covers hosting.",
-          actionLabel: "Donate",
-          actionUrl: "https://pay.example/donate",
         },
       },
       error: null,
       loading: false,
     };
     const markup = render();
-    expect(markup).toContain("Open support popup");
-    expect(markup).toContain("Support this project");
+    expect(markup).toContain("Open popup");
     expect(markup).toContain("Keep it online");
     expect(markup).toContain("share-support-trigger");
     expect(markup).not.toContain("share-support-dialog");
+    // The popup has no action button: title, message, and dismiss only.
+    expect(markup).not.toContain("share-support-action");
   });
 
   test("shows the repository link beside Home, and drops the policy and prefix panels", () => {

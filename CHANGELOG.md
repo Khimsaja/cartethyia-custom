@@ -5,9 +5,156 @@
 > All changes below are pre-release. Cartethyia has not been tagged or
 > released; this document reflects the current production codebase architecture and capabilities.
 
+### Each proxy pool reports the bandwidth it has carried
+
+The proxy table's **Load** cell now carries a second bar: bytes carried against
+the pool's own quota, so a metered proxy plan can be watched from the same row
+as its concurrency. The quota is per pool (`quota_bytes`,
+`0021_network_pool_quota_bytes.sql`, folded into the baseline), entered in GB in
+the pool form and stored in bytes so the bar compares without a lossy round
+trip; blank means unmetered and the bar then shows a running total only. It
+turns orange at 80% and red once the allowance is passed. Each pool keeps its
+own figure — there is no shared or relative allowance.
+
+The measurement is taken at the **raw socket**, before TLS wraps it
+(`network/pool/byte-accounting.ts`). That choice was forced by measurement, not
+taste: a TLS-wrapped socket's `bytesWritten` stays at zero, and the TLS socket's
+own counters report decrypted plaintext — a ground-truth run against a
+byte-counting proxy showed them at about a sixth of the true wire volume. The
+raw socket therefore sees the TLS handshake and record overhead, which is what a
+proxy provider actually bills. The cost is one integer addition per TCP chunk
+(16-64 KiB), not per byte, so the per-request overhead the operator asked to
+avoid is not there.
+
+Two limits are worth stating plainly. Totals are **in-memory and reset on
+process restart** — the tooltip says "since this process started" rather than
+implying a billing period, and nothing is flushed to the database. And the
+figure covers the tunneled connection: for SOCKS5 the negotiation handshake is
+not counted, only the tunnel that follows.
+
+### A share link shows the family's quota and activity
+
+The share page gains two things a recipient could not see before. The hero now
+carries the **family quota** — lifetime, daily, and monthly, each a bar against
+the limit the gateway enforces, or a running total when no limit is set, plus
+RPM / concurrent and how many recipients are active. Below the credentials, a
+collapsed **Stats & activity** section opens onto request/token KPIs, a
+24-hour activity strip, top models, and top client IPs.
+
+The figures are **family totals**, not the caller's own: the allowance is
+shared, so a per-recipient number would understate what the link has spent.
+They come from a new public `GET /share/:token/stats`, authorized by the same
+bearer token that opens the page. Client IPs leave **masked** and there is no
+setting to unmask them — this payload is rendered outside the tenant, so the
+console's privacy preference does not apply to it.
+
+### The proxy page summarizes pool health instead of asking you to pick a strategy
+
+The proxy page's four summary cards are now **Enabled pool**, **Route capacity**,
+**Latency**, and **Cooldown**. *Enabled pool* splits the enabled count from the
+tenant total; *Route capacity* keeps the inflight/available split; *Cooldown*
+shows the nearest wait rather than a bare count. *Latency* replaces the previous
+*Routable now* card, whose "no pool enabled" detail said nothing the count had
+not already said: it averages the last-known latency of the **active** pools
+(disabled pools are excluded, and pools that have never succeeded are left out
+rather than averaged in as zero) and says how many pools that average covers.
+Until something has been measured it reads `—` / "no measurement yet" rather
+than a confident `0ms`.
+
+The pool table drops its **Type**, **Status**, and **Latency** columns. The
+health verdict moved under the pool name, where it costs no horizontal space,
+and now carries the measurement with it (`Connected · 62ms`), so latency is read
+where the pool's state already is. Its **Address** column holds the pool's public
+egress address, captured by dialing Cloudflare's trace endpoint *through* the
+pool, so it reports where traffic actually leaves rather than the local DNS
+answer for the hostname (which says nothing about the tunnel). It reads "not
+probed" until the pool has been tested; the address is stored on the pool
+(`0020_network_pool_egress_ip.sql`, and folded into `0000_baseline.sql` so a
+database created today has it) so it survives reloads.
+
+The pool table's header row is pinned: the table scrolls inside its own box and
+only the rows move. This needed the table's own container to be the scroller —
+`overflow` on the wrapper made the wrapper the nearest scrollport, which trapped
+the sticky header and let it scroll away with the rows.
+
+Long lists across the console (the pool table, the usage breakdown, the API key
+list on the overview) now scroll the same way the sidebar rail does: a contained
+region with a thin overlay scrollbar, so the surrounding card headers and page
+chrome stay put while only the content moves. The main column uses that same
+scrollbar style, so scrolling looks identical wherever it happens.
+
+Every column except the selection box and **Actions** is sortable, toggling
+ascending/descending on repeat clicks. Pools with no address yet, or none
+probed, sort last in both directions rather than leading a descending sort —
+"unknown" is not the same as "smallest". The row actions (**Activity**, **Test**,
+**Edit**, **Delete**, plus **Clear** when a provider is cooling) are icon +
+label pills that collapse back to square icons when the row is too narrow to
+hold the text, so the wider layout degrades instead of overflowing. The
+enable/disable switch sits at the far right of the row, set slightly apart from
+the destructive **Delete** button rather than buried among the actions.
+
+The **Pool Selection** card and its strategy control are removed — pool selection
+is automatic admission, so the setting was inert from the operator's point of
+view — and the standalone **Add pool** dialog is gone in favour of the bulk
+**Add proxies** form. That form gains a **Test proxies** button: it probes every
+pasted endpoint in one request (`POST /network/pools/test-batch`, capped at 100
+targets and 10 concurrent dials) and prints per-endpoint verdicts into a
+fixed-height scrollable log, so a batch of dead proxies is obvious before
+anything is saved. The server never persists batch probes.
+
+### Reorderable lists carry a stable index instead of sorting by creation time
+
+The API credentials, model combos, and model aliases lists each gained an
+explicit `sort_index` (`0019_list_sort_index.sql`, backfilled from creation
+order). They previously ordered by `created_at`, which is not stable: rows
+sharing a millisecond — or any row touched by an `UPDATE` — could swap places
+between loads, so the list appeared to jump around. New rows append to the end
+rather than displacing the rest.
+
+Each row now shows a drag handle and its 1-based position, and can be dragged to
+a new place; the order is saved as a whole (`POST /api-keys/reorder`,
+`/routing/aliases/reorder`, `/routing/combos/reorder`), which rejects a partial
+or duplicated list rather than silently renumbering rows. The position is
+presentation only and is never sent to the client. The combo rows' redundant
+`fallback`/`round-robin` badge is removed — the strategy dropdown beside it
+already shows that value.
+
+### Claude config downloads emit the fixed team template; the popup type is now a toggle
+
+Generated Claude Code configs are the team's fixed template — bypass
+permissions, the two LSP plugins, effort and compaction settings — with only
+`env` (the selected endpoint and the **decrypted** secret of the selected key)
+and `model` derived per request, so a downloaded `settings.json` needs no manual
+editing. The dashboard now sends the wire field `models` the route actually
+requires (it had been sending `modelIds`, which Elysia rejected with
+`invalid_request: must have required properties models` before the handler ran),
+fixing the download.
+
+The share-page popup's `donation`/`information` type selector is gone: a single
+**Enable popup** toggle turns one popup on or off, and the whole editor is
+collapsed until it is on. The popup editor is now image-left, fields-right. The
+share eyebrow text is dropped.
+
+Remote Routing is now settable from two places — the CLI tool page and the API
+key's edit form — both writing the one per-(tenant, tool, key)
+`cli_tool_settings.mappings_enabled` flag and applying immediately, with no
+separate save. It is opt-in: an absent settings row means off, so a fresh key
+never inherits stale routes, and the transport snapshot now gates mappings on
+that flag instead of ignoring it. A **Reset** control clears every route and
+turns the flag off in one action; toggling the switch off keeps the saved routes
+so flipping it back on restores them. The `routing:cli_mapping` scope is no
+longer a separate grant row — it is folded into the Remote routing switch, which
+grants the scope and enables the routes together so the two can never disagree.
+The blocked-client-routers copy now notes that the same fingerprint match may
+also block bazaar probe links. The popup's optional action button (label + URL)
+is removed entirely — the popup is image, title, and message, with a Close
+button; `0018_api_key_share_popup_drop_action.sql` drops its columns. The CLI tool page's "Enable bypass permissions
+(YOLO mode)" card is removed, since the generated template already sets
+`permissions.defaultMode`.
+
 ### Shared-key issuance requires a recipient name; Claude mappings support share profiles
 
-The public enrollment endpoint now rejects missing or blank `nameHint` values before it creates a child key. Claude CLI mapping profiles can be saved on a top-level share template and are resolved for its children at request time; the CLI config still uses a separately selected personal credential. Existing `routing:cli_mapping` scope and Claude User-Agent checks remain required.
+The public enrollment endpoint now rejects missing or blank `nameHint` values before it creates a child key. The Claude CLI tool's single **Apikey Name** picker lists personal keys and share templates: a personal key supplies the credential written into the CLI config, while a share template owns the remote model mappings its child keys inherit at request time. Existing `routing:cli_mapping` scope and Claude User-Agent checks remain required.
 
 ### Payload capture is typed on disk and gains a metadata-only mode
 
@@ -23,7 +170,7 @@ bodies), and `none` (drawer capture off). Both capture modes still prune after
 the 15-minute payload TTL.
 ### Public share pages support owner-configured donation and information popups
 
-API-key create/edit can configure a popup mode, HTTPS image URL, title, message, and optional HTTPS/mailto action. Public enrollment and handoff pages show a button under Base URL; the responsive dialog opens only on visitor action. The new nullable key fields are added to fresh installs and upgraded by `0015_api_key_share_popup.sql`.
+API-key create/edit can configure a popup mode, an uploaded image, title, message, and optional HTTPS/mailto action. The image is uploaded and stored with the key (`bytea` + mime) and served from the gateway, so the share page never hotlinks a third-party host; the original `share_popup_image_url` column is dropped by `0016_api_key_share_popup_image.sql`. Public enrollment and handoff pages show a button under Base URL; the responsive dialog opens only on visitor action. The new nullable key fields are added to fresh installs and upgraded by `0015_api_key_share_popup.sql`. The create/edit modal itself is now a compact two-column form (`.api-key-form-columns`) whose columns balance the cards and collapse to one column under 720px, instead of one tall scrolling stack.
 
 ### Reasoning effort is recorded on every surface, and the Usage table names a provider
 

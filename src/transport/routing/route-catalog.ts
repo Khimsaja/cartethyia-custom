@@ -13,6 +13,7 @@ import {
   providers,
   tenantDisabledModels,
   cliToolMappings,
+  cliToolSettings,
 } from "../../persistence/schema";
 import "../../providers/integrations/claude/claude-oauth";
 import "../../providers/integrations/codex/codex-oauth";
@@ -265,6 +266,15 @@ const CLI_MAPPING_COLUMNS = {
   enabled: cliToolMappings.enabled,
 } as const;
 
+/** The per-(tenant, tool, key) Remote Routing switch. A mapping row only
+ * routes when its bucket's settings row has `mappings_enabled` set. */
+const CLI_MAPPING_SETTING_COLUMNS = {
+  tenantId: cliToolSettings.tenantId,
+  apiKeyId: cliToolSettings.apiKeyId,
+  toolId: cliToolSettings.toolId,
+  mappingsEnabled: cliToolSettings.mappingsEnabled,
+} as const;
+
 const POOL_SETTING_COLUMNS = {
   tenantId: poolRoutingSettings.tenantId,
   strategy: poolRoutingSettings.strategy,
@@ -282,7 +292,7 @@ class RouteCatalogRepository {
   constructor(private readonly db: CartethyiaDatabase) {}
 
   async loadRouteCatalogSnapshot(tenantId?: string): Promise<RouteCatalogSnapshotResult> {
-    const [providerRows, modelRows, accountRows, aliasRows, comboRows, routingRows, poolRows, disabledModelRows, cliMappingRows, poolSettingRows] =
+    const [providerRows, modelRows, accountRows, aliasRows, comboRows, routingRows, poolRows, disabledModelRows, cliMappingRows, cliMappingSettingRows, poolSettingRows] =
       await Promise.all([
         this.db.select(PROVIDER_COLUMNS).from(providers).where(eq(providers.enabled, true)),
         this.db.select(MODEL_COLUMNS).from(models),
@@ -297,6 +307,7 @@ class RouteCatalogRepository {
         this.db.select(POOL_COLUMNS).from(networkPools),
         this.db.select(DISABLED_MODEL_COLUMNS).from(tenantDisabledModels),
         this.db.select(CLI_MAPPING_COLUMNS).from(cliToolMappings),
+        this.db.select(CLI_MAPPING_SETTING_COLUMNS).from(cliToolSettings),
         this.db.select(POOL_SETTING_COLUMNS).from(poolRoutingSettings),
       ]);
     const mergedModelRows = mergeModelCatalog(modelRows);
@@ -590,8 +601,17 @@ class RouteCatalogRepository {
     // CLI slot to a different target. The snapshot keys the alias bucket by
     // `${tenantId}:${apiKeyId}` so the preparer can look up the exact key's
     // routes without merging across keys.
+    // Remote Routing is opt-in per (tenant, tool, key): a mapping row routes
+    // only when its bucket's settings row explicitly enabled it. The CLI tool
+    // page and the API-key edit form both write that one flag, so either place
+    // can turn the routes on or off.
+    const enabledMappingBuckets = new Set<string>();
+    for (const row of cliMappingSettingRows) {
+      if (row.mappingsEnabled) enabledMappingBuckets.add(`${row.tenantId}:${row.apiKeyId}`);
+    }
     for (const row of cliMappingRows) {
       if (!row.enabled) continue;
+      if (!enabledMappingBuckets.has(`${row.tenantId}:${row.apiKeyId}`)) continue;
       if (tenantId === undefined || row.tenantId === tenantId) {
         const bucketKey = `${row.tenantId}:${row.apiKeyId}`;
         const aliasBucket = (cliAliases[bucketKey] ??= {});

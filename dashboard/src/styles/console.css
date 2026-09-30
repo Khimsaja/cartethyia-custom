@@ -538,11 +538,262 @@
   }
 }
 
+/*
+ * API key create/edit form.
+ *
+ * Sections are cards that pack into a balanced two-column flow: CSS columns
+ * fill the left column and spill into the right, so the layout stays compact
+ * without the ragged blank space a fixed card-to-column grid leaves when two
+ * cards of different heights share a row (and it re-balances when a card such
+ * as the popup editor grows). Cards never split across columns.
+ */
 .api-key-form-layout {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
   min-width: 0;
+  padding-bottom: 4px;
+}
+
+/* ===== sortable lists ===== */
+/* Rows that can be dragged into a new order (API credentials, combos,
+   aliases). The left rail carries the drag handle and the 1-based position;
+   the position is presentation only and never leaves the browser as data. */
+.sortable-row {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  min-width: 0;
+  border-radius: 12px;
+  transition: opacity 120ms ease, box-shadow 120ms ease;
+}
+
+.sortable-row[data-dragging="true"] {
+  opacity: 0.5;
+}
+
+.sortable-row[data-drop-target="true"] {
+  box-shadow: 0 -2px 0 0 var(--accent);
+}
+
+.sortable-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  padding-top: 12px;
+  cursor: grab;
+  color: var(--text-tertiary);
+  user-select: none;
+}
+
+.sortable-row:active .sortable-rail {
+  cursor: grabbing;
+}
+
+.sortable-grip {
+  opacity: 0.55;
+}
+
+.sortable-row:hover .sortable-grip {
+  opacity: 1;
+}
+
+.sortable-index {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.sortable-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.api-key-form-columns {
+  columns: 2;
+  column-gap: 12px;
+  min-width: 0;
+}
+
+.api-key-form-columns > * {
+  break-inside: avoid;
+  margin: 0 0 12px;
+}
+
+.api-key-form-section-wide,
+.modal-form-actions {
+  grid-column: 1 / -1;
+}
+
+.api-key-form-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--inner-border);
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+
+.api-key-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  align-items: start;
+  min-width: 0;
+}
+
+.api-key-form-field-wide {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+/* Header row: title/description on the left, the enable switch on the right. */
+.api-key-popup-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+/* Image column on the left, fields on the right; stacks on narrow screens. */
+.api-key-popup-body {
+  display: grid;
+  grid-template-columns: minmax(0, 200px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+  margin-top: 4px;
+}
+
+.api-key-popup-image {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.api-key-popup-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.api-key-popup-fields .form-group {
+  gap: 4px;
+}
+
+.api-key-popup-footnote {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+/* Clear, non-tiny preview filling the left column. */
+.api-key-popup-preview {
+  width: 100%;
+  height: 132px;
+  object-fit: cover;
+  border: 1px solid var(--inner-border);
+  border-radius: 8px;
+  background: var(--surface-1);
+  display: block;
+}
+
+.api-key-popup-preview-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  border-style: dashed;
+}
+
+.api-key-popup-remove {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 11px;
+  align-self: flex-start;
+}
+
+@media (max-width: 720px) {
+  .api-key-popup-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .api-key-popup-preview {
+    height: 160px;
+  }
+}
+
+/* File picker matches the height and radius of every other form control. */
+.form-file-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 32px;
+  padding: 0 4px 0 0;
+  border: 1px solid var(--inner-border);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  cursor: pointer;
+  box-sizing: border-box;
+  transition: border-color var(--dur-micro) ease;
+}
+
+.form-file-input:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+
+.form-file-input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.form-file-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.form-file-input::file-selector-button {
+  height: 100%;
+  margin-right: 8px;
+  padding: 0 10px;
+  border: none;
+  border-right: 1px solid var(--inner-border);
+  border-radius: var(--radius-control) 0 0 var(--radius-control);
+  background: var(--surface-1);
+  color: var(--text-primary);
+  font: inherit;
+  font-weight: 600;
+  cursor: inherit;
+}
+
+.form-file-input::file-selector-button:hover {
+  background: var(--surface-hover);
+}
+
+@media (max-width: 720px) {
+  .api-key-form-columns {
+    columns: 1;
+  }
+
+  .api-key-form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .api-key-form-field-wide,
+  .api-key-form-section-wide,
+  .modal-form-actions {
+    grid-column: auto;
+  }
 }
 
 /* ===== shell ===== */
@@ -1092,6 +1343,26 @@
     box-shadow var(--dur-micro) var(--ease-spring),
     border-color var(--dur-micro) ease;
 }
+/* Named container for the proxy table: the labeled action buttons in
+ * `base.css` collapse to square icon buttons against this width, so a narrow
+ * row degrades gracefully instead of overflowing the Actions column.
+ *
+ * Deliberately NOT a scroller — the table's own container scrolls (via
+ * `maxHeight`), which is what keeps the header row pinned while the rows move. */
+.proxy-table-scroll {
+  container-type: inline-size;
+  container-name: rule-row;
+}
+
+.stat-card-detail {
+  /* Details can name a pool; a long label must not stretch the card or wrap
+   * onto a second line and change the row height. */
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .stat-card:hover {
   transform: translateY(-1px);
   border-color: var(--border-soft);

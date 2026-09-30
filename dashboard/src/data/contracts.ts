@@ -18,6 +18,13 @@ export type { UsageDimension } from "../../../src/console/observability/usage-di
 // module is pure (no imports), so it is safe in the browser bundle.
 export { TENANT_KEY_SCOPES } from "../../../src/security/access-control";
 export type { TenantScope } from "../../../src/security/access-control";
+// Share-popup image bounds are re-exported as values (like `TENANT_KEY_SCOPES`)
+// so the upload control rejects the same formats and size the backend does.
+// The module is pure (no imports), so it is safe in the browser bundle.
+export {
+  SHARE_POPUP_IMAGE_MAX_BYTES,
+  SHARE_POPUP_IMAGE_MIMES,
+} from "../../../src/console/domains/api-keys/share-popup-image";
 // `CLIENT_ROUTER_IDS` is re-exported so the API-key editor offers exactly the
 // routers the backend can fingerprint, instead of a hand-kept copy that would
 // let the form offer an id the backend rejects. The module is pure (no imports),
@@ -149,7 +156,7 @@ export type {
   NetworkPoolResponse,
   HealthCheckResult,
   PoolStrategySetting,
-
+  PoolBatchProbeResult,
 } from "../../../src/console/routing/pools/contracts";
 export type { PoolHealthEvent } from "../../../src/network/pool-health-machine";
 

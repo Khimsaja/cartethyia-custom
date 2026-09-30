@@ -129,21 +129,57 @@ describe("SQL migration integrity", () => {
     expect(migration).toContain('CREATE UNIQUE INDEX "share_links_token_hash_idx"');
     expect(migration).toContain('CREATE INDEX "idx_share_links_active"');
   });
-  test("api-key share popup fields exist in baseline and upgrade migration", async () => {
+  test("api-key share popup fields exist in baseline and upgrade migrations", async () => {
     const baseline = await readFile(resolve(migrationsDir, "0000_baseline.sql"), "utf8");
     const migration = await readFile(resolve(migrationsDir, "0015_api_key_share_popup.sql"), "utf8");
-    for (const name of [
-      "share_popup_mode",
-      "share_popup_image_url",
-      "share_popup_title",
-      "share_popup_body",
-      "share_popup_action_label",
-      "share_popup_action_url",
-    ]) {
+    const imageMigration = await readFile(
+      resolve(migrationsDir, "0016_api_key_share_popup_image.sql"),
+      "utf8",
+    );
+    const enabledMigration = await readFile(
+      resolve(migrationsDir, "0017_api_key_share_popup_enabled.sql"),
+      "utf8",
+    );
+    for (const name of ["share_popup_title", "share_popup_body"]) {
       expect(baseline).toContain(`"${name}" text`);
       expect(migration).toContain(`ADD COLUMN IF NOT EXISTS "${name}" text`);
     }
-    expect(migration).toContain("api_keys_share_popup_mode_check");
+    // The popup's action button was removed outright: neither the baseline nor
+    // any migration may reintroduce its columns, and 0018 drops them for
+    // databases created before the removal.
+    const dropActionMigration = await readFile(
+      resolve(migrationsDir, "0018_api_key_share_popup_drop_action.sql"),
+      "utf8",
+    );
+    for (const name of ["share_popup_action_label", "share_popup_action_url"]) {
+      expect(baseline).not.toContain(name);
+      expect(dropActionMigration).toContain(`DROP COLUMN IF EXISTS "${name}"`);
+    }
+    // List ordering is an explicit integer index on each reorderable table, so
+    // a list cannot shift when two rows share a created_at timestamp.
+    const sortIndexMigration = await readFile(
+      resolve(migrationsDir, "0019_list_sort_index.sql"),
+      "utf8",
+    );
+    for (const table of ["api_keys", "model_combos", "model_aliases"]) {
+      expect(sortIndexMigration).toContain(
+        `ALTER TABLE "${table}" ADD COLUMN IF NOT EXISTS "sort_index" integer`,
+      );
+    }
+    expect(baseline).toContain('"sort_index" integer DEFAULT 0 NOT NULL');
+    // Popup art is uploaded bytes, not a URL: the baseline and the follow-up
+    // migration both declare the bytea column plus its mime, and the original
+    // URL column is dropped rather than left behind as a dead key.
+    expect(baseline).toContain('"share_popup_image" bytea');
+    expect(baseline).toContain('"share_popup_image_mime" text');
+    expect(imageMigration).toContain('ADD COLUMN IF NOT EXISTS "share_popup_image" bytea');
+    expect(imageMigration).toContain('ADD COLUMN IF NOT EXISTS "share_popup_image_mime" text');
+    expect(imageMigration).toContain('DROP COLUMN IF EXISTS "share_popup_image_url"');
+    // The donation/information mode collapsed into a boolean on/off flag: the
+    // baseline declares it directly and 0017 converts any existing mode rows.
+    expect(baseline).toContain('"share_popup_enabled" boolean DEFAULT false NOT NULL');
+    expect(enabledMigration).toContain('ADD COLUMN IF NOT EXISTS "share_popup_enabled" boolean');
+    expect(enabledMigration).toContain('DROP COLUMN IF EXISTS "share_popup_mode"');
   });
 
   test("baseline is self-contained: it declares every column the schema reads", async () => {
@@ -154,6 +190,9 @@ describe("SQL migration integrity", () => {
 
     const networkPools = migration.match(/CREATE TABLE "network_pools" \(([\s\S]*?)\n\);/)?.[1] ?? "";
     expect(networkPools).toContain('"kind" "network_pool_kind" NOT NULL');
+    // Added by 0020 on existing installs, so a new database must get it here.
+    expect(networkPools).toContain('"egress_ip" text');
+    expect(networkPools).toContain('"quota_bytes" bigint');
 
     const telemetryEvents =
       migration.match(/CREATE TABLE "telemetry_events" \(([\s\S]*?)\n\);/)?.[1] ?? "";

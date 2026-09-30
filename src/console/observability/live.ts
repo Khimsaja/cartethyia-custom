@@ -16,6 +16,7 @@ import { eq } from "drizzle-orm";
 import type { CartethyiaDatabase } from "../../persistence/postgres";
 import { networkPools } from "../../persistence/schema";
 import { subscribePoolHealth } from "../../network/pool-health-machine";
+import { poolByteSnapshot } from "../../network/pool/byte-accounting";
 import { consoleSseResponse, createConsoleSseStream } from "./sse";
 
 export interface LiveConfig {
@@ -33,6 +34,24 @@ async function tenantPoolIds(
   const rows = await db.select({ id: networkPools.id }).from(networkPools).where(eq(networkPools.tenantId, tenantId));
   return new Set(rows.map((row) => row.id));
 }
+/**
+ * Joins measured egress bytes onto the selector's usage rows.
+ *
+ * The selector only knows concurrency, and byte accounting lives outside it
+ * (it is fed by the transport layer, not the scheduler), so the two are merged
+ * at the edge. Pools that have carried no traffic yet are absent from the byte
+ * snapshot and read as zero.
+ */
+function withPoolBytes<T extends { poolId: string }>(
+  pools: readonly T[],
+): ReadonlyArray<T & { bytesSent: number; bytesReceived: number }> {
+  const bytes = new Map(poolByteSnapshot().map((row) => [row.poolId, row]));
+  return pools.map((pool) => {
+    const row = bytes.get(pool.poolId);
+    return { ...pool, bytesSent: row?.sent ?? 0, bytesReceived: row?.received ?? 0 };
+  });
+}
+
 export function createLiveRoutes(config: LiveConfig): Elysia {
   return new Elysia()
     .get("/live/in-flight", ({ request, set }) => {
@@ -61,7 +80,7 @@ export function createLiveRoutes(config: LiveConfig): Elysia {
       try {
         const access = requireScope(config.accessResolver(request), "dashboard:read");
         const allowed = await tenantPoolIds(config.db, access.tenantId);
-        const pools = config.poolSelector?.snapshotPoolUsage() ?? [];
+        const pools = withPoolBytes(config.poolSelector?.snapshotPoolUsage() ?? []);
         return { pools: allowed ? pools.filter((pool) => allowed.has(pool.poolId)) : pools };
       } catch (e) {
         return errorResponse(e, set, "Live operation failed");
@@ -80,10 +99,12 @@ export function createLiveRoutes(config: LiveConfig): Elysia {
       const selector = config.poolSelector;
       return consoleSseResponse(
         createConsoleSseStream(request.signal, ({ send }) => {
-          const sendUsage = (pools: readonly { poolId: string; currentInflight: number }[]) =>
+          const sendUsage = (pools: readonly { poolId: string; currentInflight: number }[]) => {
+            const merged = withPoolBytes(pools);
             send("pools", {
-              pools: allowed ? pools.filter((pool) => allowed.has(pool.poolId)) : pools,
+              pools: allowed ? merged.filter((pool) => allowed.has(pool.poolId)) : merged,
             });
+          };
           sendUsage(selector?.snapshotPoolUsage() ?? []);
           const unsubscribeUsage = selector?.subscribePoolUsage(sendUsage);
           const unsubscribeHealth = subscribePoolHealth((pool) => {

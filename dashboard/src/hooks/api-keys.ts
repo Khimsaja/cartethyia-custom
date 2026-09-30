@@ -48,6 +48,21 @@ export function useUpdateApiKey() {
   });
 }
 
+/** Persists a new credential order. `keyIds` must list every top-level key. */
+export function useReorderApiKeys() {
+  const queryClient = useQueryClient();
+  return useMutation<{ success: boolean }, ApiErrorShape, string[]>({
+    mutationFn: (keyIds) =>
+      consoleRequest<{ success: boolean }>("/api-keys/reorder", {
+        method: "POST",
+        body: JSON.stringify({ keyIds }),
+      }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.apiKeys.all });
+    },
+  });
+}
+
 /** Revokes an API key and refreshes the key list. */
 export function useRevokeApiKey() {
   const queryClient = useQueryClient();

@@ -182,8 +182,10 @@ export class CliToolService {
       toolId,
       tenantId,
       apiKeyId,
-      // Mapping is opt-out: an absent settings row means enabled.
-      enabled: settings?.mappingsEnabled !== false,
+      // Remote routing is opt-in: an absent settings row means disabled, so a
+      // fresh key never routes through stale mappings until the operator turns
+      // it on from either the CLI tool page or the key's edit form.
+      enabled: settings?.mappingsEnabled === true,
       mappings: rows.map((row) => ({
         slotKey: row.slotKey,
         sourceModel: row.sourceModel,
@@ -229,6 +231,22 @@ export class CliToolService {
       if (!incomingSlots.has(row.slotKey))
         await this.mappings.remove(tenantId, toolId, apiKeyId, row.slotKey);
     }
+    return this.getMappings(tenantId, toolId, apiKeyId);
+  }
+
+  /**
+   * Clears every remote route and turns Remote Routing off for one
+   * (tenant, tool, key). This is the fast deactivate: the next `/v1/*` request
+   * stops resolving the key's CLI mappings instead of routing through stale
+   * targets until each one is blanked by hand.
+   */
+  async resetMappings(
+    tenantId: string,
+    toolId: string,
+    apiKeyId: string,
+  ): Promise<CliMappingSettings> {
+    if (!this.isValidTool(toolId)) throw new Error(`Unknown tool: ${toolId}`);
+    await this.mappings.reset(tenantId, toolId, apiKeyId);
     return this.getMappings(tenantId, toolId, apiKeyId);
   }
 

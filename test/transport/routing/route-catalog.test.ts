@@ -17,6 +17,7 @@ import {
   providerRoutingSettings,
   poolRoutingSettings,
   cliToolMappings,
+  cliToolSettings,
 } from "../../../src/persistence/schema";
 
 
@@ -90,10 +91,17 @@ dbDescribe("createDatabaseSnapshotBuilder — model aliases/combos", () => {
       { tenantId: tenantA, apiKeyId: keyA, toolId: "claude", slotKey: "opus", sourceModel: "claude-opus-4-5", targetModel: modelId, enabled: false },
       { tenantId: tenantB, apiKeyId: keyB, toolId: "claude", slotKey: "haiku", sourceModel: "claude-haiku-4-5", targetModel: modelId, enabled: true },
     ]);
+    // Remote Routing is opt-in per (tenant, tool, key): a mapping row only
+    // routes when its bucket's settings row enabled it. keyA is enabled, keyB
+    // is not, so only keyA's routes appear in the snapshot.
+    await db.insert(cliToolSettings).values([
+      { tenantId: tenantA, apiKeyId: keyA, toolId: "claude", mappingsEnabled: true, mode: "remote" },
+    ]);
   });
 
   afterAll(async () => {
     await db.delete(cliToolMappings).where(inArray(cliToolMappings.tenantId, [tenantA, tenantB]));
+    await db.delete(cliToolSettings).where(inArray(cliToolSettings.tenantId, [tenantA, tenantB]));
     await db.delete(modelAliases).where(inArray(modelAliases.tenantId, [tenantA, tenantB]));
     await db.delete(modelCombos).where(inArray(modelCombos.tenantId, [tenantA, tenantB]));
     await db.delete(apiKeys).where(inArray(apiKeys.id, [keyA, keyB]));
@@ -122,14 +130,10 @@ dbDescribe("createDatabaseSnapshotBuilder — model aliases/combos", () => {
       "claude-sonnet-5-5": modelId,
       "claude-sonnet-4-6": modelId,
     });
-    expect(built.cli_aliases?.[`${tenantB}:${keyB}`]).toEqual({
-      "claude-haiku-4-5": modelId,
-      haiku: modelId,
-      "claude-haiku-5": modelId,
-      "claude-haiku-5-1": modelId,
-      "claude-haiku-5-5": modelId,
-      "claude-haiku-4-6": modelId,
-    });
+    // Remote Routing is opt-in: keyB has mapping rows but no enabled settings
+    // row, so none of its routes reach the snapshot. Only keyA, whose settings
+    // row turned mapping on, contributes a bucket.
+    expect(built.cli_aliases?.[`${tenantB}:${keyB}`]).toBeUndefined();
     expect(built.combos[tenantB]).toEqual({
       "pool-b": { members: [modelId], strategy: "round_robin" },
     });

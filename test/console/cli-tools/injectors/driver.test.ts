@@ -53,6 +53,47 @@ describe("claude injector", () => {
     expect(parsed.env.ANTHROPIC_AUTH_TOKEN).toBe("sk-test-1234567890");
     expect(parsed.permissions.defaultMode).toBe("bypassPermissions");
   });
+
+  test("download emits the fixed template with only env and model derived", async () => {
+    const download = await INJECTORS.claude.download({
+      ...DEFAULT_INPUT,
+      endpoint: "https://carte.risun.web.id/v1",
+      apiKey: "rk_derived",
+      activeModel: "claude-opus-5",
+    });
+    const parsed = JSON.parse(download.content);
+    // Everything the operator standardised on is present verbatim, so the
+    // generated file needs no manual editing beyond the endpoint and key.
+    expect(parsed).toMatchObject({
+      permissions: { defaultMode: "bypassPermissions" },
+      enabledPlugins: {
+        "typescript-lsp@claude-plugins-official": true,
+        "pyright-lsp@claude-plugins-official": true,
+      },
+      effortLevel: "medium",
+      modelSettings: { "claude-opus-5.5": { effortLevel: "medium" } },
+      skipDangerousModePermissionPrompt: true,
+      includeCoAuthoredBy: false,
+      theme: "dark",
+      autoCompactWindow: 800000,
+      autoCompactEnabled: true,
+      autoContinueAtUsageLimit: true,
+      hasCompletedOnboarding: true,
+    });
+    // Only the two derived fields vary: the base URL loses the /v1 suffix and
+    // the token is the decrypted secret the caller resolved.
+    expect(parsed.env).toEqual({
+      ANTHROPIC_BASE_URL: "https://carte.risun.web.id",
+      ANTHROPIC_AUTH_TOKEN: "rk_derived",
+    });
+    expect(parsed.model).toBe("claude-opus-5");
+  });
+
+  test("download falls back to the template model when no slot is chosen", async () => {
+    const { activeModel: _drop, ...input } = DEFAULT_INPUT;
+    const download = await INJECTORS.claude.download({ ...input, modelSlots: {} });
+    expect(JSON.parse(download.content).model).toBe("opus[1m]");
+  });
 });
 });
 

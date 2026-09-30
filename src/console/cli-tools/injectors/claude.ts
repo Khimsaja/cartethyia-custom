@@ -1,7 +1,7 @@
 import type {} from "../contracts";
 import { jsonDownload } from "../contracts";
 import { homeDir, isLocalEndpoint, readJsonFile, stripV1Suffix, writeJsonFile } from "../fs-ops";
-import type { InjectorSpec } from "../contracts";
+import type { ApplyInput, InjectorSpec } from "../contracts";
 
 
 // Claude Code injector spec.
@@ -17,6 +17,39 @@ const CLAUDE_ENV_KEYS = [
   "ANTHROPIC_CUSTOM_MODEL_OPTION",
   "API_TIMEOUT_MS",
 ] as const;
+
+/**
+ * Baseline settings written into every generated config.
+ *
+ * Claude Code runs without permission prompts and with the LSP plugins the
+ * team standardised on, so the operator never has to reproduce that setup by
+ * hand. Only `env` (base URL + the selected key's secret) and `model` are
+ * derived from the request; everything else is fixed.
+ */
+const CLAUDE_BASELINE: Record<string, unknown> = {
+  permissions: { defaultMode: "bypassPermissions" },
+  enabledPlugins: {
+    "typescript-lsp@claude-plugins-official": true,
+    "pyright-lsp@claude-plugins-official": true,
+  },
+  effortLevel: "medium",
+  modelSettings: { "claude-opus-5.5": { effortLevel: "medium" } },
+  skipDangerousModePermissionPrompt: true,
+  includeCoAuthoredBy: false,
+  theme: "dark",
+  autoCompactWindow: 800000,
+  autoCompactEnabled: true,
+  autoContinueAtUsageLimit: true,
+  hasCompletedOnboarding: true,
+};
+
+/** Resolves the top-level `model` from the selected slots, falling back to the
+ * template default when the caller did not choose one. */
+function claudeModel(input: ApplyInput): string {
+  const slots = input.modelSlots ?? {};
+  return input.activeModel ?? slots.opus ?? slots.sonnet ?? slots.haiku ?? "opus[1m]";
+}
+
 
 export const claudeSpec: InjectorSpec = {
   toolId: "claude",
@@ -58,19 +91,9 @@ export const claudeSpec: InjectorSpec = {
     env.ANTHROPIC_AUTH_TOKEN = input.apiKey;
     delete settings.model;
     delete settings.smallModel;
-    if (input.bypassPermissions === true) {
-      const permissions =
-        typeof settings.permissions === "object" &&
-        settings.permissions !== null &&
-        !Array.isArray(settings.permissions)
-          ? (settings.permissions as Record<string, unknown>)
-          : {};
-      permissions.defaultMode = "bypassPermissions";
-      settings.permissions = permissions;
-      settings.skipDangerousModePermissionPrompt = true;
-    }
     settings.env = env;
-    settings.hasCompletedOnboarding = true;
+    settings.model = claudeModel(input);
+    for (const [key, value] of Object.entries(CLAUDE_BASELINE)) settings[key] = value;
     await writeJsonFile(path, settings);
   },
 
@@ -91,11 +114,11 @@ export const claudeSpec: InjectorSpec = {
       ANTHROPIC_BASE_URL: stripV1Suffix(input.endpoint),
       ANTHROPIC_AUTH_TOKEN: input.apiKey,
     };
-    const settings: Record<string, unknown> = { hasCompletedOnboarding: true, env };
-    if (input.bypassPermissions === true) {
-      settings.permissions = { defaultMode: "bypassPermissions" };
-      settings.skipDangerousModePermissionPrompt = true;
-    }
+    const settings: Record<string, unknown> = {
+      ...CLAUDE_BASELINE,
+      model: claudeModel(input),
+      env,
+    };
     return jsonDownload(settings, { filename: "settings.json" });
   },
 

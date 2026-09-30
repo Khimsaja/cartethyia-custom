@@ -310,6 +310,10 @@ export const networkPools = pgTable("network_pools", {
   cooldownUntil: timestamp("cooldown_until", { withTimezone: true }),
   lastRecoveredAt: timestamp("last_recovered_at", { withTimezone: true }),
   lastHealthCheckAt: timestamp("last_health_check_at", { withTimezone: true }),
+  /** Public egress address reported by the last successful probe; null until probed. */
+  egressIp: text("egress_ip"),
+  /** Operator-set egress allowance in bytes; null means unmetered. */
+  quotaBytes: bigint("quota_bytes", { mode: "number" }),
   },
   (table) => [
     index("network_pools_tenant_id_idx").on(table.tenantId),
@@ -367,6 +371,8 @@ export const modelAliases = pgTable(
     tenantId: tenantRefRequired(),
     alias: text("alias").notNull(),
     targetModel: text("target_model").notNull(),
+    /** Explicit list position; see `0019_list_sort_index.sql`. */
+    sortIndex: integer("sort_index").notNull().default(0),
     ...timestampColumns(),
   },
   (t) => [uniqueIndex("model_aliases_tenant_alias_uidx").on(t.tenantId, t.alias)],
@@ -381,6 +387,8 @@ export const modelCombos = pgTable(
     name: text("name").notNull(),
     members: jsonb("members").notNull().$type<string[]>(),
     strategy: modelComboStrategy("strategy").notNull().default("fallback"),
+    /** Explicit list position; see `0019_list_sort_index.sql`. */
+    sortIndex: integer("sort_index").notNull().default(0),
     ...timestampColumns(),
   },
   (t) => [uniqueIndex("model_combos_tenant_name_uidx").on(t.tenantId, t.name)],
@@ -480,12 +488,16 @@ export const apiKeys = pgTable(
     notesTitle: text("notes_title"),
     notesSubtitle: text("notes_subtitle"),
     notesBody: text("notes_body"),
-    sharePopupMode: text("share_popup_mode").$type<"donation" | "information">(),
-    sharePopupImageUrl: text("share_popup_image_url"),
+    /** Explicit list position; see `0019_list_sort_index.sql`. */
+    sortIndex: integer("sort_index").notNull().default(0),
+    // One popup, no donation/information type: the owner edits its copy freely.
+    sharePopupEnabled: boolean("share_popup_enabled").notNull().default(false),
+    // The popup art is uploaded and served from this row; a remote URL would
+    // leak the visitor's IP to a third party and rot when the host moves.
+    sharePopupImage: bytea("share_popup_image"),
+    sharePopupImageMime: text("share_popup_image_mime"),
     sharePopupTitle: text("share_popup_title"),
     sharePopupBody: text("share_popup_body"),
-    sharePopupActionLabel: text("share_popup_action_label"),
-    sharePopupActionUrl: text("share_popup_action_url"),
     requestsPerMinute: integer("requests_per_minute"),
     dailyTokenLimit: bigint("daily_token_limit", { mode: "number" }),
     monthlyTokenLimit: bigint("monthly_token_limit", { mode: "number" }),

@@ -15,6 +15,7 @@ import type { ApiKeyConfig, ApiKeyResponse, UpdateApiKeyResponse } from "./contr
 import type { ApiKeyPatch, ApiKeyRecord } from "../../../persistence/api-key-store";
 import {
   generateApiKeySecret,
+  parseSharePopupImage,
   sanitizeApiKeyResponse,
   validateApiKeyRequest,
   parseRequest,
@@ -28,15 +29,57 @@ import {
   type ShareLinkResponse,
 } from "./contracts";
 import type { SharedKeyActivityDetail, SharedKeySummary } from "../../share/share-usage";
+import { popupImageBytes } from "./share-popup-image";
 
 export function createApiKeyOperations(config: ApiKeyConfig) {
   const operations = {
     async listKeys(access: AccessDecision | undefined): Promise<ApiKeyResponse[]> {
         const authorized = requireTenantScope(access, "dashboard:read");
         const records = await config.store.list(authorized.tenantId);
-        return records
-          .filter((record) => record.revokedAt === undefined && record.parentKeyId === undefined)
-          .map(sanitizeApiKeyResponse);
+        const topLevel = records.filter(
+          (record) => record.revokedAt === undefined && record.parentKeyId === undefined,
+        );
+        // A share template's own counter never moves for child traffic, so
+        // reporting it raw would show a template as untouched while the gateway
+        // is refusing its recipients on the parent budget. Report the figure the
+        // gateway actually enforces: the template plus every recipient it has
+        // issued, revoked ones included (their spend is already spent).
+        const sumChildren = config.store.sumChildrenConsumed?.bind(config.store);
+        return Promise.all(
+          topLevel.map(async (record) => {
+            const response = sanitizeApiKeyResponse(record);
+            if (record.keyMode !== "share" || !sumChildren) return response;
+            const children = await sumChildren(record.id).catch(() => 0);
+            return children > 0
+              ? { ...response, tokensConsumed: response.tokensConsumed + children }
+              : response;
+          }),
+        );
+      },
+    /** Persists a new credential order. `keyIds` must name every top-level key
+        the tenant has, so a partial list cannot silently renumber rows. */
+    async reorderKeys(access: AccessDecision | undefined, keyIds: readonly string[]): Promise<void> {
+        const authorized = requireTenantScope(access, "dashboard:write");
+        const records = await config.store.list(authorized.tenantId);
+        const reorderable = records.filter(
+          (record) => record.revokedAt === undefined && record.parentKeyId === undefined,
+        );
+        const known = new Set(reorderable.map((record) => record.id));
+        const seen = new Set<string>();
+        for (const keyId of keyIds) {
+          if (!known.has(keyId))
+            throw new ConsoleDomainError("key_not_found", 404, `Key not found: ${keyId}`);
+          if (seen.has(keyId))
+            throw new ConsoleDomainError("invalid_request", 422, `Duplicate key id: ${keyId}`);
+          seen.add(keyId);
+        }
+        if (seen.size !== known.size)
+          throw new ConsoleDomainError(
+            "invalid_request",
+            422,
+            "Reorder must list every key exactly once",
+          );
+        await config.store.reorder(authorized.tenantId, keyIds);
       },
     async getKeyDetail(access: AccessDecision | undefined, keyId: string): Promise<ApiKeyResponse> {
         const authorized = requireTenantScope(access, "dashboard:read");
@@ -44,12 +87,24 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
         if (!record) throw new ConsoleDomainError("key_not_found", 404, "Key not found");
         return sanitizeApiKeyResponse(record);
       },
+    async getSharePopupImage(
+      access: AccessDecision | undefined,
+      keyId: string,
+    ): Promise<{ mime: string; image: Buffer }> {
+      const authorized = requireTenantScope(access, "dashboard:read");
+      const record = await config.store.get(authorized.tenantId, keyId);
+      if (!record) throw new ConsoleDomainError("key_not_found", 404, "Key not found");
+      if (record.sharePopupImage === undefined || record.sharePopupImageMime === undefined)
+        throw new ConsoleDomainError("key_not_found", 404, "This key has no popup image");
+      return { mime: record.sharePopupImageMime, image: record.sharePopupImage };
+    },
     async createKey(
       access: AccessDecision | undefined,
       request: CreateApiKeyRequest,
     ): Promise<CreateApiKeyResponse> {
       const authorized = requireTenantScope(access, "dashboard:write");
       const scopes = validateApiKeyRequest(request);
+      const popupImage = parseSharePopupImage(request.sharePopupImage);
       const keyMode = request.keyMode ?? "personal";
       const generated =
         keyMode === "personal"
@@ -69,12 +124,12 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
         ...(request.notesTitle === undefined ? {} : { notesTitle: request.notesTitle }),
         ...(request.notesSubtitle === undefined ? {} : { notesSubtitle: request.notesSubtitle }),
         ...(request.notesBody === undefined ? {} : { notesBody: request.notesBody }),
-        ...(request.sharePopupMode == null ? {} : { sharePopupMode: request.sharePopupMode }),
-        ...(request.sharePopupImageUrl?.trim() ? { sharePopupImageUrl: request.sharePopupImageUrl.trim() } : {}),
+        ...(request.sharePopupEnabled == null ? {} : { sharePopupEnabled: request.sharePopupEnabled }),
+        ...(popupImage
+          ? { sharePopupImage: popupImage.image, sharePopupImageMime: popupImage.mime }
+          : {}),
         ...(request.sharePopupTitle?.trim() ? { sharePopupTitle: request.sharePopupTitle.trim() } : {}),
         ...(request.sharePopupBody?.trim() ? { sharePopupBody: request.sharePopupBody.trim() } : {}),
-        ...(request.sharePopupActionLabel?.trim() ? { sharePopupActionLabel: request.sharePopupActionLabel.trim() } : {}),
-        ...(request.sharePopupActionUrl?.trim() ? { sharePopupActionUrl: request.sharePopupActionUrl.trim() } : {}),
         ...(request.requestsPerMinute == null ? {} : { requestsPerMinute: request.requestsPerMinute }),
         ...(request.dailyTokenLimit == null ? {} : { dailyTokenLimit: request.dailyTokenLimit }),
         ...(request.monthlyTokenLimit == null ? {} : { monthlyTokenLimit: request.monthlyTokenLimit }),
@@ -164,6 +219,10 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
 
       const scopes =
         patchRequest.scopes === undefined ? undefined : validateApiKeyRequest(patchRequest);
+      const popupImage =
+        patchRequest.sharePopupImage === undefined
+          ? undefined
+          : parseSharePopupImage(patchRequest.sharePopupImage);
       const updated = await config.store.update(authorized.tenantId, keyId, {
         ...credentialPatch,
         ...(patchRequest.keyMode === undefined ? {} : { keyMode: nextMode }),
@@ -178,12 +237,14 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
         ...(patchRequest.notesBody === undefined
           ? {}
           : { notesBody: patchRequest.notesBody.trim() === "" ? null : patchRequest.notesBody }),
-        ...(patchRequest.sharePopupMode === undefined ? {} : { sharePopupMode: patchRequest.sharePopupMode }),
-        ...(patchRequest.sharePopupImageUrl === undefined ? {} : { sharePopupImageUrl: patchRequest.sharePopupImageUrl.trim() || null }),
+        ...(patchRequest.sharePopupEnabled === undefined ? {} : { sharePopupEnabled: patchRequest.sharePopupEnabled }),
+        ...(popupImage === undefined
+          ? {}
+          : popupImage === null
+            ? { sharePopupImage: null, sharePopupImageMime: null }
+            : { sharePopupImage: popupImage.image, sharePopupImageMime: popupImage.mime }),
         ...(patchRequest.sharePopupTitle === undefined ? {} : { sharePopupTitle: patchRequest.sharePopupTitle.trim() || null }),
         ...(patchRequest.sharePopupBody === undefined ? {} : { sharePopupBody: patchRequest.sharePopupBody.trim() || null }),
-        ...(patchRequest.sharePopupActionLabel === undefined ? {} : { sharePopupActionLabel: patchRequest.sharePopupActionLabel.trim() || null }),
-        ...(patchRequest.sharePopupActionUrl === undefined ? {} : { sharePopupActionUrl: patchRequest.sharePopupActionUrl.trim() || null }),
         ...(patchRequest.requestsPerMinute === undefined ? {} : { requestsPerMinute: patchRequest.requestsPerMinute }),
         ...(patchRequest.dailyTokenLimit === undefined ? {} : { dailyTokenLimit: patchRequest.dailyTokenLimit }),
         ...(patchRequest.monthlyTokenLimit === undefined ? {} : { monthlyTokenLimit: patchRequest.monthlyTokenLimit }),
@@ -529,13 +590,14 @@ const apiKeyBody = t.Object({
   notesTitle: t.Optional(t.String()),
   notesSubtitle: t.Optional(t.String()),
   notesBody: t.Optional(t.String()),
-  sharePopupMode: t.Optional(t.Union([literalUnion(["donation", "information"] as const), t.Null()])),
-  sharePopupImageUrl: t.Optional(t.Union([t.String({ maxLength: 2048 }), t.Null()])),
+  sharePopupEnabled: t.Optional(t.Union([t.Boolean(), t.Null()])),
+  sharePopupImage: t.Optional(t.Union([t.String({ maxLength: 2_800_000 }), t.Null()])),
   sharePopupTitle: t.Optional(t.Union([t.String({ maxLength: 120 }), t.Null()])),
   sharePopupBody: t.Optional(t.Union([t.String({ maxLength: 1200 }), t.Null()])),
-  sharePopupActionLabel: t.Optional(t.Union([t.String({ maxLength: 40 }), t.Null()])),
-  sharePopupActionUrl: t.Optional(t.Union([t.String({ maxLength: 2048 }), t.Null()])),
 });
+
+/** Full replacement order for the tenant's top-level credential list. */
+const reorderKeysBody = t.Object({ keyIds: t.Array(t.String(), { minItems: 1 }) });
 
 const apiKeyShareBody = t.Object({
   expiresAt: t.Optional(t.Union([t.String(), t.Null()])),
@@ -568,11 +630,33 @@ export function createApiKeyRoutes(config: ApiKeyConfig): Elysia {
         return errorResponse(error, set, "API-key operation failed");
       }
     })
+    .post("/reorder", { body: reorderKeysBody }, async ({ request, body, set }) => {
+      try {
+        await factory.reorderKeys(config.accessResolver(request), body.keyIds);
+        return { success: true };
+      } catch (error) {
+        return errorResponse(error, set, "API-key operation failed");
+      }
+    })
     .get("/:keyId", async ({ request, params, set }) => {
       try {
         return await factory.getKeyDetail(config.accessResolver(request), params.keyId);
       } catch (error) {
         return errorResponse(error, set, "API-key operation failed");
+      }
+    })
+    .get("/:keyId/share-popup-image", async ({ request, params, set }) => {
+      try {
+        const result = await factory.getSharePopupImage(config.accessResolver(request), params.keyId);
+        return new Response(new Blob([popupImageBytes(result.image)], { type: result.mime }), {
+          headers: {
+            "content-length": String(result.image.byteLength),
+            "cache-control": "private, max-age=300",
+            "x-content-type-options": "nosniff",
+          },
+        });
+      } catch (error) {
+        return errorResponse(error, set, "API key operation failed");
       }
     })
     .get("/:keyId/shares", async ({ request, params, set }) => {

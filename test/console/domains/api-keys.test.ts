@@ -6,6 +6,11 @@ import type { ShareLinkStore, ShareLinkSummary } from "../../../src/persistence/
 import { decryptCredentialToString, setCredentialEncryptionKeyForTesting } from "../../../src/security/crypto";
 import { createAccessDecision } from "../../../src/security/access-control";
 import type { ShareActivityPort } from "../../../src/console/share/share-usage";
+import { SHARE_POPUP_IMAGE_MAX_BYTES } from "../../../src/console/domains/api-keys/share-popup-image";
+
+/** Minimal PNG signature; `sniffSharePopupImageMime` accepts it as a real PNG. */
+const PNG_HEADER = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const pngDataUrl = (): string => `data:image/png;base64,${PNG_HEADER.toString("base64")}`;
 
 /** In-memory API-key store covering only what these operations exercise. */
 function fakeKeyStore() {
@@ -39,6 +44,17 @@ function fakeKeyStore() {
       if (!current) return false;
       records.set(keyId, { ...current, revokedAt });
       return true;
+    },
+    async reorder(_tenantId, keyIds) {
+      const ordered = keyIds.map((id) => records.get(id)).filter((r): r is ApiKeyRecord => r !== undefined);
+      records.clear();
+      for (const row of ordered) records.set(row.id, row);
+    },
+    async sumChildrenConsumed(parentKeyId) {
+      // Mirrors the SQL: every child counts, revoked included.
+      return [...records.values()]
+        .filter((record) => record.parentKeyId === parentKeyId)
+        .reduce((sum, record) => sum + record.tokensConsumed, 0);
     },
   };
   return { store, records };
@@ -165,45 +181,63 @@ describe("api-key operations", () => {
     // The public projection must never leak credential material.
     expect(JSON.stringify(created)).not.toContain("keyHash");
   });
-  test("persists the donation popup config and rejects unsafe popup URLs", async () => {
+  test("persists uploaded popup art and rejects anything that is not a raster image", async () => {
     const { store, records } = fakeKeyStore();
     const operations = createApiKeyOperations({ store, accessResolver: () => writer, admissionService: fakeAdmission() });
     const created = await operations.createKey(writer, {
       keyMode: "share",
-      sharePopupMode: "donation",
-      sharePopupImageUrl: "https://images.example/donate.webp",
+      sharePopupEnabled: true,
+      sharePopupImage: pngDataUrl(),
       sharePopupTitle: "Keep us online",
       sharePopupBody: "Support hosting.",
-      sharePopupActionLabel: "Donate",
-      sharePopupActionUrl: "mailto:hello@example.test",
     });
-    expect(records.get(created.id)).toMatchObject({
-      sharePopupMode: "donation",
-      sharePopupImageUrl: "https://images.example/donate.webp",
+    const stored = records.get(created.id);
+    expect(stored).toMatchObject({
+      sharePopupEnabled: true,
+      sharePopupImageMime: "image/png",
       sharePopupTitle: "Keep us online",
       sharePopupBody: "Support hosting.",
-      sharePopupActionLabel: "Donate",
-      sharePopupActionUrl: "mailto:hello@example.test",
     });
+    expect(stored?.sharePopupImage?.length).toBe(PNG_HEADER.length);
+    // The public projection exposes only the mime; bytes leave through the
+    // key's own image route, never as part of the JSON record.
+    expect(created.sharePopupImageMime).toBe("image/png");
+    expect(JSON.stringify(created)).not.toContain("iVBORw0KGgo");
+    // A remote URL is not an upload: it would re-introduce the third-party
+    // hotlink this column exists to remove.
     await expect(operations.createKey(writer, {
       keyMode: "share",
-      sharePopupMode: "information",
-      sharePopupImageUrl: "javascript:alert(1)",
+      sharePopupEnabled: true,
+      sharePopupImage: "https://images.example/donate.webp",
+    })).rejects.toMatchObject({ code: "invalid_share_popup" });
+    await expect(operations.createKey(writer, {
+      keyMode: "share",
+      sharePopupEnabled: true,
+      sharePopupImage: "javascript:alert(1)",
     })).rejects.toMatchObject({ code: "invalid_share_popup" });
   });
-  test("accepts popup emails and rejects credential-bearing URLs", async () => {
+  test("rejects popup art whose bytes contradict its declared format", async () => {
     const { store } = fakeKeyStore();
     const operations = createApiKeyOperations({ store, accessResolver: () => writer, admissionService: fakeAdmission() });
     const valid = await operations.createKey(writer, {
       keyMode: "share",
-      sharePopupMode: "donation",
-      sharePopupActionUrl: "mailto:hello@example.test",
+      sharePopupEnabled: true,
     });
-    expect(valid.sharePopupActionUrl).toBe("mailto:hello@example.test");
+    expect(valid.sharePopupEnabled).toBe(true);
+    // A GIF labelled as PNG must not land as image/png: that stored value is
+    // the Content-Type the share page serves.
     await expect(operations.createKey(writer, {
       keyMode: "share",
-      sharePopupMode: "information",
-      sharePopupImageUrl: "https://user:password@images.example/popup.webp",
+      sharePopupEnabled: true,
+      sharePopupImage: `data:image/png;base64,${Buffer.from("GIF89a\0\0").toString("base64")}`,
+    })).rejects.toMatchObject({ code: "invalid_share_popup" });
+    await expect(operations.createKey(writer, {
+      keyMode: "share",
+      sharePopupEnabled: true,
+      sharePopupImage: `data:image/png;base64,${Buffer.concat([
+        PNG_HEADER,
+        Buffer.alloc(SHARE_POPUP_IMAGE_MAX_BYTES),
+      ]).toString("base64")}`,
     })).rejects.toMatchObject({ code: "invalid_share_popup" });
   });
   test("updates and can disable a share popup", async () => {
@@ -211,16 +245,16 @@ describe("api-key operations", () => {
     const operations = createApiKeyOperations({ store, accessResolver: () => writer, admissionService: fakeAdmission() });
     const created = await operations.createKey(writer, {
       keyMode: "share",
-      sharePopupMode: "information",
+      sharePopupEnabled: true,
       sharePopupTitle: "About this key",
     });
     const updated = await operations.updateKey(writer, created.id, {
-      sharePopupMode: null,
+      sharePopupEnabled: false,
       sharePopupTitle: "",
     });
-    expect(records.get(created.id)?.sharePopupMode).toBeUndefined();
+    expect(records.get(created.id)?.sharePopupEnabled).toBe(false);
     expect(records.get(created.id)?.sharePopupTitle).toBeUndefined();
-    expect(updated.sharePopupMode).toBeUndefined();
+    expect(updated.sharePopupEnabled).toBe(false);
   });
 
   test("changing a personal key prefix rotates and returns a new secret once", async () => {
@@ -274,6 +308,66 @@ describe("api-key operations", () => {
     const listed = await operations.listKeys(writer);
     expect(listed.map((key) => key.id)).toEqual([created.id]);
     expect(JSON.stringify(listed)).not.toContain("stored-child-hash");
+  });
+
+  test("a share template reports its own usage plus every recipient's", async () => {
+    const { store, records } = fakeKeyStore();
+    const operations = createApiKeyOperations({ store, accessResolver: () => writer, admissionService: fakeAdmission() });
+    records.set("template-1", {
+      id: "template-1",
+      tenantId: "tenant-1",
+      keyHash: null,
+      keyMode: "share",
+      label: "template",
+      scopes: ["routing:invoke"],
+      createdAt: new Date(),
+      tokensConsumed: 100,
+    });
+    records.set("child-a", {
+      id: "child-a",
+      tenantId: "tenant-1",
+      keyHash: "hash-a",
+      keyMode: "share",
+      parentKeyId: "template-1",
+      label: "recipient a",
+      scopes: ["routing:invoke"],
+      createdAt: new Date(),
+      tokensConsumed: 250,
+    });
+    // A revoked recipient's spend still counts: the tokens were already spent,
+    // so dropping them would hand the next recipient a fresh allowance.
+    records.set("child-b", {
+      id: "child-b",
+      tenantId: "tenant-1",
+      keyHash: "hash-b",
+      keyMode: "share",
+      parentKeyId: "template-1",
+      label: "recipient b",
+      scopes: ["routing:invoke"],
+      createdAt: new Date(),
+      revokedAt: new Date(),
+      tokensConsumed: 400,
+    });
+    const listed = await operations.listKeys(writer);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.tokensConsumed).toBe(750);
+  });
+
+  test("a personal key reports only its own usage", async () => {
+    const { store, records } = fakeKeyStore();
+    const operations = createApiKeyOperations({ store, accessResolver: () => writer, admissionService: fakeAdmission() });
+    records.set("personal-1", {
+      id: "personal-1",
+      tenantId: "tenant-1",
+      keyHash: "hash-p",
+      keyMode: "personal",
+      label: "personal",
+      scopes: ["routing:invoke"],
+      createdAt: new Date(),
+      tokensConsumed: 42,
+    });
+    const listed = await operations.listKeys(writer);
+    expect(listed[0]?.tokensConsumed).toBe(42);
   });
 
   test("rejects activity reads for a child outside the selected share template", async () => {

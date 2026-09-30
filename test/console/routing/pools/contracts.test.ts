@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { parseEgressIp } from "../../../../src/console/routing/pools/probe-result";
 import {
   createNetworkPoolOperations,
   createNetworkPoolRoutes,
@@ -11,6 +12,37 @@ import {
 } from "../../../../src/console/routing/pools/contracts";
 import { ConsoleDomainError } from "../../../../src/console/shared/errors";
 import type { AccessDecision } from "../../../../src/security/access-control";
+
+describe("parseEgressIp", () => {
+  const trace = [
+    "fl=123abc",
+    "h=www.cloudflare.com",
+    "ip=203.0.113.42",
+    "ts=1700000000.000",
+    "warp=off",
+  ].join("\n");
+
+  test("reads the address out of a trace response", () => {
+    expect(parseEgressIp(trace)).toBe("203.0.113.42");
+  });
+
+  test("accepts an IPv6 address", () => {
+    expect(parseEgressIp("ip=2001:db8::1\nwarp=off")).toBe("2001:db8::1");
+  });
+
+  test("does not match a key that merely ends in ip", () => {
+    expect(parseEgressIp("clientip=198.51.100.7")).toBeUndefined();
+  });
+
+  test("returns undefined for a body that is not a trace response", () => {
+    expect(parseEgressIp("")).toBeUndefined();
+    expect(parseEgressIp("<html>nope</html>")).toBeUndefined();
+  });
+
+  test("rejects a non-address value", () => {
+    expect(parseEgressIp("ip=not-an-address")).toBeUndefined();
+  });
+});
 
 describe("network.test.ts", () => {
 const access: AccessDecision = {
@@ -165,6 +197,51 @@ describe("network pool domain contract", () => {
     expect(response).not.toHaveProperty("credential");
   });
 
+  test("sanitizePoolResponse carries a positive quota and drops a useless one", () => {
+    const base = {
+      id: "pool-1",
+      kind: "http" as const,
+      endpoint: "https://proxy.example.com",
+      weight: 1,
+      maxInflight: 100,
+      status: "active" as const,
+      inflight: 0,
+      consecutiveFailures: 0,
+      tenantId: "tenant-1",
+      hasCredential: false,
+    };
+    expect(sanitizePoolResponse({ ...base, quotaBytes: 5_000_000 }).quotaBytes).toBe(5_000_000);
+    // Zero and negatives are not a quota, and absent means unmetered.
+    expect(sanitizePoolResponse({ ...base, quotaBytes: 0 })).not.toHaveProperty("quotaBytes");
+    expect(sanitizePoolResponse({ ...base, quotaBytes: -1 })).not.toHaveProperty("quotaBytes");
+    expect(sanitizePoolResponse(base)).not.toHaveProperty("quotaBytes");
+  });
+
+  test("createPool persists a quota and leaves it unset when omitted", async () => {
+    const { store, created } = makeStore();
+    const factory = createNetworkPoolOperations({ store, accessResolver: () => access });
+    await factory.createPool(access, {
+      kind: "http",
+      endpoint: "http://proxy.example.com:8080",
+      quotaBytes: 3_000_000_000,
+    });
+    expect(created[0]?.quotaBytes).toBe(3_000_000_000);
+    await factory.createPool(access, { kind: "http", endpoint: "http://proxy2.example.com:8080" });
+    expect(created[1]).not.toHaveProperty("quotaBytes");
+  });
+
+  test("updatePool clears a quota with an explicit null", async () => {
+    const { store } = makeStore();
+    const factory = createNetworkPoolOperations({ store, accessResolver: () => access });
+    const pool = await factory.createPool(access, {
+      kind: "http",
+      endpoint: "http://proxy.example.com:8080",
+      quotaBytes: 5_000,
+    });
+    const cleared = await factory.updatePool(access, pool.id, { quotaBytes: null });
+    expect(cleared).not.toHaveProperty("quotaBytes");
+  });
+
   test("createPool rejects a literal private IPv4 endpoint as SSRF", async () => {
     const { store } = makeStore();
     const factory = createNetworkPoolOperations({ store, accessResolver: () => access });
@@ -266,6 +343,85 @@ describe("network pool routes — real Elysia schema validation", () => {
     );
     expect(response.status).toBe(201);
     expect(created).toHaveLength(1);
+  });
+
+  test("batch probe returns one verdict per target and never saves a pool", async () => {
+    const { store, created } = makeStore();
+    let inFlight = 0;
+    let peak = 0;
+    store.probeAdHoc = async (_tenantId, request) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight -= 1;
+      return { poolId: request.endpoint, status: "healthy", latencyMs: 12 };
+    };
+    const app = createNetworkPoolRoutes({ store, accessResolver: () => access });
+    const targets = Array.from({ length: 25 }, (_, i) => ({
+      kind: "http",
+      endpoint: `proxy-${i}.example.com:8080`,
+    }));
+    const response = await app.handle(
+      new Request("http://localhost/network/pools/test-batch", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ targets }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Array<{ endpoint: string; result: { status: string } }>;
+    expect(body).toHaveLength(25);
+    // Order matches the request so the dashboard can line results up by row.
+    expect(body[0]?.endpoint).toBe("proxy-0.example.com:8080");
+    expect(body[24]?.endpoint).toBe("proxy-24.example.com:8080");
+    expect(body.every((r) => r.result.status === "healthy")).toBe(true);
+    // Dials are bounded, not one socket per target at once.
+    expect(peak).toBeLessThanOrEqual(10);
+    // Probing never persists anything.
+    expect(created).toHaveLength(0);
+  });
+
+  test("a single failing probe does not fail the batch", async () => {
+    const { store } = makeStore();
+    store.probeAdHoc = async (_tenantId, request) => {
+      if (request.endpoint.startsWith("bad")) throw new Error("dial refused");
+      return { poolId: request.endpoint, status: "healthy" };
+    };
+    const app = createNetworkPoolRoutes({ store, accessResolver: () => access });
+    const response = await app.handle(
+      new Request("http://localhost/network/pools/test-batch", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          targets: [
+            { kind: "http", endpoint: "ok.example.com:8080" },
+            { kind: "http", endpoint: "bad.example.com:8080" },
+          ],
+        }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Array<{ endpoint: string; result: { status: string; errorMessage?: string } }>;
+    expect(body[0]?.result.status).toBe("healthy");
+    expect(body[1]?.result.status).toBe("unhealthy");
+    expect(body[1]?.result.errorMessage).toContain("dial refused");
+  });
+
+  test("rejects a batch above the 100-target cap", async () => {
+    const { store } = makeStore();
+    const app = createNetworkPoolRoutes({ store, accessResolver: () => access });
+    const targets = Array.from({ length: 101 }, (_, i) => ({
+      kind: "http",
+      endpoint: `proxy-${i}.example.com:8080`,
+    }));
+    const response = await app.handle(
+      new Request("http://localhost/network/pools/test-batch", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ targets }),
+      }),
+    );
+    expect(response.status).toBe(422);
   });
 });
 });

@@ -2,6 +2,10 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { createLiveRoutes } from "../../../src/console/observability/live";
 import { resetInFlightForTests, trackInFlight } from "../../../src/transport/request/inflight";
 import { NetworkPoolSelector } from "../../../src/network/pool/selector";
+import {
+  recordPoolBytes,
+  resetPoolByteAccounting,
+} from "../../../src/network/pool/byte-accounting";
 import type { AccessDecision } from "../../../src/security/access-control";
 
 const readerAccess: AccessDecision = {
@@ -81,7 +85,9 @@ describe("live pool usage routes", () => {
       new Request("http://localhost/live/pools"),
     );
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ pools: [{ poolId: "pool-a", currentInflight: 1 }] });
+    expect(await response.json()).toEqual({
+      pools: [{ poolId: "pool-a", currentInflight: 1, bytesSent: 0, bytesReceived: 0 }],
+    });
     slot.release();
   });
 
@@ -115,8 +121,24 @@ describe("live pool usage routes", () => {
     await reader.cancel();
     slot.release();
     expect(new TextDecoder().decode(first.value)).toContain(
-      `event: pools\ndata: {"pools":[{"poolId":"pool-s","currentInflight":1}]}`,
+      `event: pools\ndata: {"pools":[{"poolId":"pool-s","currentInflight":1,"bytesSent":0,"bytesReceived":0}]}`,
     );
+  });
+
+  test("snapshot joins measured egress bytes onto the pool row", async () => {
+    resetPoolByteAccounting();
+    recordPoolBytes("pool-bytes", "sent", 1_500);
+    recordPoolBytes("pool-bytes", "received", 500);
+    const selector = new NetworkPoolSelector();
+    const slot = selector.acquire("pool-bytes", 10);
+    const response = await appWith(readerAccess, selector).handle(
+      new Request("http://localhost/live/pools"),
+    );
+    expect(await response.json()).toEqual({
+      pools: [{ poolId: "pool-bytes", currentInflight: 1, bytesSent: 1_500, bytesReceived: 500 }],
+    });
+    slot.release();
+    resetPoolByteAccounting();
   });
 
   test("stream rejects unauthenticated callers without opening a stream", async () => {

@@ -1,5 +1,5 @@
 // Drizzle-backed console persistence for model routing (aliases + combos).
-import { and, eq, inArray, or } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { globalOrOwnedBy } from "../../../persistence/tenant-scope";
 import type { CartethyiaDatabase } from "../../../persistence/postgres";
 import {
@@ -67,17 +67,43 @@ export class DrizzleModelRoutingStore implements ModelRoutingStore {
   constructor(private readonly db: CartethyiaDatabase) {}
 
   async listAliases(tenantId: string): Promise<readonly ModelAliasRow[]> {
+    // Ordered by the explicit `sort_index` so rows keep a stable position
+    // across reloads instead of shifting on equal timestamps or updates.
     const rows = await this.db
       .select()
       .from(modelAliases)
-      .where(eq(modelAliases.tenantId, tenantId));
+      .where(eq(modelAliases.tenantId, tenantId))
+      .orderBy(modelAliases.sortIndex, modelAliases.createdAt, modelAliases.id);
     return rows.map(mapAliasRow);
   }
 
+  /** Rewrites alias order for one tenant; `ids` is the full desired order. */
+  async reorderAliases(tenantId: string, ids: readonly string[]): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      for (const [index, id] of ids.entries()) {
+        await tx
+          .update(modelAliases)
+          .set({ sortIndex: index })
+          .where(and(eq(modelAliases.tenantId, tenantId), eq(modelAliases.id, id)));
+      }
+    });
+  }
+
+  /** Next free list position for a new alias in this tenant. */
+  private async nextAliasSortIndex(tenantId: string): Promise<number> {
+    const rows = await this.db
+      .select({ max: sql<number>`coalesce(max(${modelAliases.sortIndex}), -1)` })
+      .from(modelAliases)
+      .where(eq(modelAliases.tenantId, tenantId));
+    return Number(rows[0]?.max ?? -1) + 1;
+  }
+
   async createAlias(tenantId: string, input: ModelAliasCreateInput): Promise<ModelAliasRow> {
+    // Append rather than key off creation time, so existing rows never move.
+    const sortIndex = await this.nextAliasSortIndex(tenantId);
     const rows = await this.db
       .insert(modelAliases)
-      .values({ tenantId, alias: input.alias, targetModel: input.targetModel })
+      .values({ tenantId, alias: input.alias, targetModel: input.targetModel, sortIndex })
       .returning();
     const row = rows[0];
     if (!row) throw new Error("model alias insert returned no row");
@@ -107,11 +133,37 @@ export class DrizzleModelRoutingStore implements ModelRoutingStore {
   }
 
   async listCombos(tenantId: string): Promise<readonly ModelComboRow[]> {
-    const rows = await this.db.select().from(modelCombos).where(eq(modelCombos.tenantId, tenantId));
+    const rows = await this.db
+      .select()
+      .from(modelCombos)
+      .where(eq(modelCombos.tenantId, tenantId))
+      .orderBy(modelCombos.sortIndex, modelCombos.createdAt, modelCombos.id);
     return rows.map(mapComboRow);
   }
 
+  /** Rewrites combo order for one tenant; `ids` is the full desired order. */
+  async reorderCombos(tenantId: string, ids: readonly string[]): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      for (const [index, id] of ids.entries()) {
+        await tx
+          .update(modelCombos)
+          .set({ sortIndex: index })
+          .where(and(eq(modelCombos.tenantId, tenantId), eq(modelCombos.id, id)));
+      }
+    });
+  }
+
+  /** Next free list position for a new combo in this tenant. */
+  private async nextComboSortIndex(tenantId: string): Promise<number> {
+    const rows = await this.db
+      .select({ max: sql<number>`coalesce(max(${modelCombos.sortIndex}), -1)` })
+      .from(modelCombos)
+      .where(eq(modelCombos.tenantId, tenantId));
+    return Number(rows[0]?.max ?? -1) + 1;
+  }
+
   async createCombo(tenantId: string, input: ModelComboCreateInput): Promise<ModelComboRow> {
+    const sortIndex = await this.nextComboSortIndex(tenantId);
     const rows = await this.db
       .insert(modelCombos)
       .values({
@@ -119,6 +171,7 @@ export class DrizzleModelRoutingStore implements ModelRoutingStore {
         name: input.name,
         members: [...input.members],
         strategy: input.strategy ?? "fallback",
+        sortIndex,
       })
       .returning();
     const row = rows[0];

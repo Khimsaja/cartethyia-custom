@@ -4,6 +4,7 @@
  * caches instances of these; the selector owns admission.
  */
 import { isIP } from "node:net";
+import { accountSocketBytes, accountSocketWrites } from "./byte-accounting";
 import {
   Agent as HttpAgent,
   request as httpRequest,
@@ -148,6 +149,7 @@ function createProxyConnection(
   policy: SsrfPolicy,
     options: ClientRequestArgs,
     callback?: (error: Error | null, stream: Duplex) => void,
+    poolId?: string,
   ): Duplex | null | undefined {
     const targetHost = options.hostname ?? options.host ?? "";
     const targetPort = options.port ?? 443;
@@ -186,6 +188,12 @@ function createProxyConnection(
           return;
         }
         if (head.length > 0) socket.unshift(head);
+        // Tally the tunnel from here on. The CONNECT request itself is a few
+        // dozen bytes and is not counted; everything the tunnel carries is.
+        if (poolId) {
+          accountSocketBytes(socket, poolId);
+          accountSocketWrites(socket, poolId);
+        }
         callback?.(null, socket);
       },
     );
@@ -236,6 +244,7 @@ class HttpProxyAgent extends HttpAgent {
      *  address after the pool was validated at create-time. */
     private readonly policy: SsrfPolicy = {},
     config: AgentConfig = {},
+    private readonly poolId?: string,
   ) {
     super({
       keepAlive: true,
@@ -249,7 +258,7 @@ class HttpProxyAgent extends HttpAgent {
     options: ClientRequestArgs,
     callback?: (error: Error | null, stream: Duplex) => void,
   ): Duplex | null | undefined {
-    return createProxyConnection(this.proxy, this.policy, options, callback);
+    return createProxyConnection(this.proxy, this.policy, options, callback, this.poolId);
   }
 }
 
@@ -258,6 +267,7 @@ class HttpsProxyAgent extends HttpsAgent {
     readonly proxy: URL,
     private readonly policy: SsrfPolicy = {},
     config: AgentConfig = {},
+    private readonly poolId?: string,
   ) {
     super({
       keepAlive: true,
@@ -288,7 +298,7 @@ class HttpsProxyAgent extends HttpsAgent {
         rawSocket.destroy();
         callback?.(tlsErr, undefined as unknown as Duplex);
       });
-    });
+    }, this.poolId);
   }
 }
 export function createHttpProxyAgent(
@@ -296,6 +306,7 @@ export function createHttpProxyAgent(
   credential?: string,
   policy: SsrfPolicy = {},
   config: AgentConfig = {},
+  poolId?: string,
 ): ProxyAgentPair {
   let url: URL;
   try {
@@ -305,18 +316,44 @@ export function createHttpProxyAgent(
   }
   const proxy = new URL(withCredential(url, credential).toString());
   return {
-    http: new HttpProxyAgent(proxy, policy, config),
-    https: new HttpsProxyAgent(proxy, policy, config),
+    http: new HttpProxyAgent(proxy, policy, config, poolId),
+    https: new HttpsProxyAgent(proxy, policy, config, poolId),
     ...(isRelayHost(proxy.hostname) ? { relayEndpoint: proxy } : {}),
   };
 }
 
+
+/**
+ * Tally a SOCKS5 agent's tunnel.
+ *
+ * The socks client owns socket creation, so this wraps `createConnection`
+ * instead of the CONNECT callback the HTTP path uses. The socket handed back is
+ * the raw tunnel (Node applies TLS afterwards for `https:` targets), which is
+ * exactly the layer whose bytes the proxy bills. The SOCKS negotiation itself
+ * is a handful of bytes exchanged before this point and is not counted.
+ */
+function accountSocksAgent(agent: SocksProxyAgent, poolId?: string): void {
+  if (!poolId) return;
+  const original = agent.createConnection.bind(agent) as (
+    options: ClientRequestArgs,
+    callback?: (error: Error | null, stream: Duplex) => void,
+  ) => Duplex | null | undefined;
+  agent.createConnection = ((options: ClientRequestArgs, callback?: (error: Error | null, stream: Duplex) => void) =>
+    original(options, (error, socket) => {
+      if (socket) {
+        accountSocketBytes(socket, poolId);
+        accountSocketWrites(socket, poolId);
+      }
+      callback?.(error, socket);
+    })) as unknown as typeof agent.createConnection;
+}
 
 export function createSocks5Agent(
   endpoint: string,
   credential?: string,
   policy: SsrfPolicy = {},
   config: AgentConfig = {},
+  poolId?: string,
 ): ProxyAgentPair {
   const authority = endpoint.includes("://") ? endpoint : `socks5://${endpoint}`;
   let url: URL;
@@ -336,12 +373,14 @@ export function createSocks5Agent(
     timeout: config.keepAliveTimeout ?? PROXY_KEEP_ALIVE_TIMEOUT_MS,
   };
   const http = new SocksProxyAgent(withCredential(url, credential), options);
+  accountSocksAgent(http, poolId);
   // Same latent Node check as HTTP pools: an `http:`-protocol agent is
   // rejected for `https:` targets, so the https flavor carries an
   // overridden protocol (per-instance shadow — the shared SocksProxyAgent
   // prototype is untouched). Behavior is identical; only the check reads it.
   const https = new SocksProxyAgent(withCredential(url, credential), options);
   https.protocol = "https:";
+  accountSocksAgent(https, poolId);
   return {
     http: http as unknown as HttpAgent,
     https: https as unknown as HttpsAgent,

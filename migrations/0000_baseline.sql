@@ -122,6 +122,8 @@ CREATE TABLE "network_pools" (
   "cooldown_until" timestamptz,
   "last_recovered_at" timestamptz,
   "last_health_check_at" timestamptz,
+  "egress_ip" text,
+  "quota_bytes" bigint,
   CONSTRAINT "network_pools_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE cascade
 );
 --> statement-breakpoint
@@ -210,12 +212,12 @@ CREATE TABLE "api_keys" (
   "notes_title" text,
   "notes_subtitle" text,
   "notes_body" text,
-  "share_popup_mode" text,
-  "share_popup_image_url" text,
+  "sort_index" integer DEFAULT 0 NOT NULL,
+  "share_popup_enabled" boolean DEFAULT false NOT NULL,
+  "share_popup_image" bytea,
+  "share_popup_image_mime" text,
   "share_popup_title" text,
   "share_popup_body" text,
-  "share_popup_action_label" text,
-  "share_popup_action_url" text,
   CONSTRAINT "api_keys_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE cascade,
   CONSTRAINT "api_keys_parent_key_id_api_keys_id_fk" FOREIGN KEY ("parent_key_id") REFERENCES "api_keys"("id") ON DELETE cascade,
   CONSTRAINT "api_keys_mode_shape_check" CHECK (

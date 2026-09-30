@@ -107,6 +107,9 @@ export function useInFlight(): InFlightState {
 export interface PoolUsageRow {
   readonly poolId: string;
   readonly currentInflight: number;
+  /** Wire bytes the pool has carried since this process started. */
+  readonly bytesSent: number;
+  readonly bytesReceived: number;
 }
 
 export interface PoolUsageState {
@@ -124,7 +127,14 @@ function readPools(payload: unknown): readonly PoolUsageRow[] | null {
     const currentInflight = typeof raw.currentInflight === "number" && Number.isFinite(raw.currentInflight)
       ? Math.max(0, Math.floor(raw.currentInflight))
       : 0;
-    rows.push({ poolId: raw.poolId, currentInflight });
+    const bytes = (value: unknown): number =>
+      typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+    rows.push({
+      poolId: raw.poolId,
+      currentInflight,
+      bytesSent: bytes(raw.bytesSent),
+      bytesReceived: bytes(raw.bytesReceived),
+    });
   }
   return rows;
 }

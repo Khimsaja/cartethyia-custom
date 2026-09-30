@@ -621,12 +621,12 @@ function BreakdownSnapshot({
           <EmptyState title="No usage for this period" message="Route requests to populate the breakdown." />
         ) : (
           <div
+            className="scroll-region"
             style={{
               display: "flex",
               flexDirection: "column",
               gap: "8px",
               maxHeight: `${BREAKDOWN_VISIBLE_ROWS * BREAKDOWN_ROW_HEIGHT}px`,
-              overflowY: "auto",
               paddingRight: "2px",
             }}
           >

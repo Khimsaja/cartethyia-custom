@@ -142,6 +142,13 @@ function memoryKeys(): ApiKeyStore & { rows: ApiKeyRecord[] } {
       rows.splice(rows.indexOf(found), 1, { ...found, revokedAt });
       return true;
     },
+    async reorder(tenantId, keyIds) {
+      const ordered = keyIds
+        .map((id) => rows.find((r) => r.tenantId === tenantId && r.id === id))
+        .filter((r): r is ApiKeyRecord => r !== undefined);
+      rows.length = 0;
+      rows.push(...ordered);
+    },
   };
 }
 

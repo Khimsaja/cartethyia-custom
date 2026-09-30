@@ -15,6 +15,21 @@ import type { ShareActivityPort } from "../../share/share-usage";
 import { ConsoleDomainError } from "../../shared/errors";
 import type { ConsoleAccessResolver } from "../../auth/access";
 import type { ApiKeyAdmissionService } from "../../../security/admission";
+import {
+  SHARE_POPUP_IMAGE_MAX_BYTES,
+  SHARE_POPUP_IMAGE_MIMES,
+  sniffSharePopupImageMime,
+  type SharePopupImageMime,
+} from "./share-popup-image";
+
+// Re-exported so consumers reach the image bounds from this contract module.
+// `share-popup-image.ts` is the pure authority; it stays import-free so the
+// dashboard can read the same bounds its upload control enforces.
+export {
+  SHARE_POPUP_IMAGE_MAX_BYTES,
+  SHARE_POPUP_IMAGE_MIMES,
+  type SharePopupImageMime,
+} from "./share-popup-image";
 export type {
   SharedKeySummary,
   SharedKeyActivityDetail,
@@ -41,12 +56,15 @@ export interface CreateApiKeyRequest {
   notesTitle?: string;
   notesSubtitle?: string;
   notesBody?: string;
-  sharePopupMode?: "donation" | "information" | null;
-  sharePopupImageUrl?: string;
+  sharePopupEnabled?: boolean | null;
+  /**
+   * Uploaded popup art as a `data:<mime>;base64,…` URL. `null` clears it and
+   * omitting it leaves the stored image alone. There is no remote-URL form: a
+   * hotlink leaked each visitor's IP to a third party and rotted on host moves.
+   */
+  sharePopupImage?: string | null;
   sharePopupTitle?: string;
   sharePopupBody?: string;
-  sharePopupActionLabel?: string;
-  sharePopupActionUrl?: string;
 }
 
 /** Public key representation; it never contains a secret, hash, or IP-key digest. */
@@ -69,12 +87,11 @@ export interface ApiKeyResponse {
   readonly notesTitle?: string;
   readonly notesSubtitle?: string;
   readonly notesBody?: string;
-  readonly sharePopupMode?: "donation" | "information";
-  readonly sharePopupImageUrl?: string;
+  readonly sharePopupEnabled?: boolean;
+  /** Mime of the stored popup art; its bytes are served by a dedicated route. */
+  readonly sharePopupImageMime?: string;
   readonly sharePopupTitle?: string;
   readonly sharePopupBody?: string;
-  readonly sharePopupActionLabel?: string;
-  readonly sharePopupActionUrl?: string;
   readonly createdAt: string;
   readonly revokedAt?: string;
   readonly tokensConsumed: number;
@@ -159,19 +176,47 @@ export function finitePositive(value: number | null | undefined, name: string): 
   }
 }
 
-/** Accepts HTTPS image URLs and HTTPS/mailto action URLs, rejecting unsafe schemes and credentials. */
-function validatePopupUrl(value: string, field: string, allowMailto: boolean): void {
-  try {
-    const url = new URL(value);
-    const schemeAllowed = url.protocol === "https:" || (allowMailto && url.protocol === "mailto:");
-    if (!schemeAllowed || url.username !== "" || url.password !== "") throw new Error("invalid");
-  } catch {
+/**
+ * Decodes an uploaded popup image into the bytes and mime to persist.
+ *
+ * Returns `null` for absent/blank input (nothing to store). Throws
+ * `invalid_share_popup` for a non-data URL, an oversized payload, or bytes that
+ * are not one of the four raster formats the share page may safely serve.
+ */
+export function parseSharePopupImage(
+  value: string | null | undefined,
+): { image: Buffer; mime: SharePopupImageMime } | null {
+  if (value === null || value === undefined) return null;
+  const raw = value.trim();
+  if (raw.length === 0) return null;
+  const match =
+    /^data:([a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+);base64,([A-Za-z0-9+/=]+)$/i.exec(raw);
+  const declared = match?.[1]?.toLowerCase();
+  const payload = match?.[2];
+  if (!payload || declared === undefined || !(SHARE_POPUP_IMAGE_MIMES as readonly string[]).includes(declared)) {
     throw new ConsoleDomainError(
       "invalid_share_popup",
       400,
-      `${field} must be a valid HTTPS URL${allowMailto ? " or mailto link" : ""}`,
+      "sharePopupImage must be an uploaded PNG, JPEG, WebP, or GIF file",
     );
   }
+  const image = Buffer.from(payload, "base64");
+  if (image.length === 0 || image.length > SHARE_POPUP_IMAGE_MAX_BYTES) {
+    throw new ConsoleDomainError(
+      "invalid_share_popup",
+      400,
+      `sharePopupImage must be at most ${Math.floor(SHARE_POPUP_IMAGE_MAX_BYTES / (1024 * 1024))} MB`,
+    );
+  }
+  const mime = sniffSharePopupImageMime(image);
+  if (mime === undefined || mime !== declared) {
+    throw new ConsoleDomainError(
+      "invalid_share_popup",
+      400,
+      "sharePopupImage bytes do not match a supported image format",
+    );
+  }
+  return { image, mime };
 }
 
 /** Validates scopes and quota fields before persistence. */
@@ -194,20 +239,12 @@ export function validateApiKeyRequest(request: CreateApiKeyRequest): readonly Ac
   finitePositive(request.monthlyTokenLimit, "monthlyTokenLimit");
   finitePositive(request.lifetimeTokenBudget, "lifetimeTokenBudget");
   finitePositive(request.maxConcurrentRequests, "maxConcurrentRequests");
-  if (request.sharePopupImageUrl?.trim()) {
-    validatePopupUrl(request.sharePopupImageUrl.trim(), "sharePopupImageUrl", false);
-  }
-  if (request.sharePopupActionUrl?.trim()) {
-    validatePopupUrl(request.sharePopupActionUrl.trim(), "sharePopupActionUrl", true);
-  }
+  parseSharePopupImage(request.sharePopupImage);
   if (request.sharePopupTitle != null && request.sharePopupTitle.length > 120) {
     throw new ConsoleDomainError("invalid_share_popup", 400, "Share popup title is too long");
   }
   if (request.sharePopupBody != null && request.sharePopupBody.length > 1200) {
     throw new ConsoleDomainError("invalid_share_popup", 400, "Share popup body is too long");
-  }
-  if (request.sharePopupActionLabel != null && request.sharePopupActionLabel.length > 40) {
-    throw new ConsoleDomainError("invalid_share_popup", 400, "Share popup action label is too long");
   }
   if (
     request.modelPrefix !== undefined &&
@@ -265,12 +302,12 @@ export function sanitizeApiKeyResponse(record: ApiKeyRecord): ApiKeyResponse {
     ...(record.notesTitle === undefined ? {} : { notesTitle: record.notesTitle }),
     ...(record.notesSubtitle === undefined ? {} : { notesSubtitle: record.notesSubtitle }),
     ...(record.notesBody === undefined ? {} : { notesBody: record.notesBody }),
-    ...(record.sharePopupMode === undefined ? {} : { sharePopupMode: record.sharePopupMode }),
-    ...(record.sharePopupImageUrl === undefined ? {} : { sharePopupImageUrl: record.sharePopupImageUrl }),
+    ...(record.sharePopupEnabled === undefined ? {} : { sharePopupEnabled: record.sharePopupEnabled }),
+    ...(record.sharePopupImageMime === undefined
+      ? {}
+      : { sharePopupImageMime: record.sharePopupImageMime }),
     ...(record.sharePopupTitle === undefined ? {} : { sharePopupTitle: record.sharePopupTitle }),
     ...(record.sharePopupBody === undefined ? {} : { sharePopupBody: record.sharePopupBody }),
-    ...(record.sharePopupActionLabel === undefined ? {} : { sharePopupActionLabel: record.sharePopupActionLabel }),
-    ...(record.sharePopupActionUrl === undefined ? {} : { sharePopupActionUrl: record.sharePopupActionUrl }),
     ...(record.requestsPerMinute === undefined ? {} : { requestsPerMinute: record.requestsPerMinute }),
     ...(record.dailyTokenLimit === undefined ? {} : { dailyTokenLimit: record.dailyTokenLimit }),
     ...(record.monthlyTokenLimit === undefined ? {} : { monthlyTokenLimit: record.monthlyTokenLimit }),

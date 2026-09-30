@@ -113,6 +113,36 @@ export function useDeleteModelAlias() {
   });
 }
 
+/** Persists a new alias order. `ids` must list every alias exactly once. */
+export function useReorderModelAliases() {
+  const queryClient = useQueryClient();
+  return useMutation<{ success: boolean }, ApiErrorShape, string[]>({
+    mutationFn: (ids) =>
+      consoleRequest<{ success: boolean }>("/routing/aliases/reorder", {
+        method: "POST",
+        body: JSON.stringify({ ids }),
+      }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.modelRouting.aliases });
+    },
+  });
+}
+
+/** Persists a new combo order. `ids` must list every combo exactly once. */
+export function useReorderModelCombos() {
+  const queryClient = useQueryClient();
+  return useMutation<{ success: boolean }, ApiErrorShape, string[]>({
+    mutationFn: (ids) =>
+      consoleRequest<{ success: boolean }>("/routing/combos/reorder", {
+        method: "POST",
+        body: JSON.stringify({ ids }),
+      }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.modelRouting.combos });
+    },
+  });
+}
+
 /** Creates a model combo and invalidates the combo list. */
 export function useCreateModelCombo() {
   const queryClient = useQueryClient();

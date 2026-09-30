@@ -15,12 +15,12 @@ export interface ShareLinkPolicyData {
   readonly modelPrefix: string | null;
   readonly notes: { readonly title: string | null; readonly subtitle: string | null; readonly body: string | null };
   readonly sharePopup: {
-    readonly mode: "donation" | "information" | null;
-    readonly imageUrl: string | null;
+    /** True when the owner turned the popup on for this link. */
+    readonly enabled: boolean;
+    /** True when the owner uploaded art; fetch it from the link's image route. */
+    readonly hasImage: boolean;
     readonly title: string | null;
     readonly body: string | null;
-    readonly actionLabel: string | null;
-    readonly actionUrl: string | null;
   };
   readonly expiresAt: string | null;
 }
@@ -40,6 +40,34 @@ export interface ShareHandoffData extends ShareLinkPolicyData {
 }
 
 export type ShareLinkData = ShareEnrollmentData | ShareHandoffData;
+
+/** Family-wide activity for the share page's stats section. */
+export interface ShareFamilyStatsData {
+  readonly totals: {
+    readonly requests: number;
+    readonly errors: number;
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly totalTokens: number;
+    readonly lastHourRequests: number;
+    readonly todayTokens: number;
+    readonly monthTokens: number;
+  };
+  readonly recipients: { readonly total: number; readonly active: number };
+  readonly hourly: readonly { readonly hour: string; readonly requests: number }[];
+  readonly models: readonly {
+    readonly providerId: string | null;
+    readonly modelId: string;
+    readonly requests: number;
+    readonly tokens: number;
+  }[];
+  readonly clientIps: readonly {
+    readonly ip: string;
+    readonly requests: number;
+    readonly tokens: number;
+    readonly lastSeenAt: string | null;
+  }[];
+}
 
 interface ShareDataState<TData> {
   readonly data: TData | null;

@@ -17,6 +17,7 @@ export interface CreateNetworkPoolRequest {
   label?: string;
   endpoint: string;
   credential?: string;
+  quotaBytes?: number | null;
   maxInflight?: number;
   /** Routing weight across the pool group; defaults to 100. */
   weight?: number;
@@ -48,6 +49,11 @@ export interface NetworkPoolResponse {
   config?: Record<string, unknown>;
   /** True when an encrypted credential is stored for this pool; never the credential itself. */
   hasCredential?: boolean;
+  /** Public address the pool egresses from, as reported by the last successful
+   * probe. Absent until the pool has been probed. */
+  egressIp?: string;
+  /** Operator-set egress allowance in bytes; absent when unmetered. */
+  quotaBytes?: number;
   providerCooldowns?: Array<{ providerId: string; until: string; reason: string }>;
 }
 
@@ -63,6 +69,8 @@ export interface HealthCheckResult {
   httpStatus?: 402 | 407;
   latencyMs?: number;
   errorMessage?: string;
+  /** Public address the pool egressed from, when the probe could read one. */
+  egressIp?: string;
 }
 export function validateTransportConfig(
   kind: TransportKind,
@@ -203,6 +211,11 @@ export function sanitizePoolResponse(pool: unknown): NetworkPoolResponse {
     tenantId: requiredPoolString(p.tenantId, "tenantId"),
     ...(config ? { config } : {}),
     ...(p.hasCredential === true ? { hasCredential: true } : {}),
+    // An observed address, not a secret: it is the pool's public egress.
+    ...(typeof p.egressIp === "string" && isIP(p.egressIp) ? { egressIp: p.egressIp } : {}),
+    ...(typeof p.quotaBytes === "number" && Number.isFinite(p.quotaBytes) && p.quotaBytes > 0
+      ? { quotaBytes: p.quotaBytes }
+      : {}),
   };
 }
 export interface NetworkPoolStore {
@@ -228,6 +241,17 @@ export interface NetworkPoolStore {
   /** Upserts the tenant's single settings row; returns the stored value. */
   setStrategy(tenantId: string, setting: PoolStrategySetting): Promise<PoolStrategySetting>;
 }
+/** One entry of a batch probe: the requested endpoint plus its outcome. */
+export interface PoolBatchProbeResult {
+  readonly endpoint: string;
+  readonly kind: TransportKind;
+  readonly result: HealthCheckResult;
+}
+
+/** Upper bound on a single batch probe. Each entry dials an external host, so
+ * the cap keeps one request from turning into an unbounded fan-out. */
+export const MAX_BATCH_PROBE_TARGETS = 100;
+
 export interface NetworkPoolAgentReleaser {
   releasePool(poolId: string, tenantId: string): Promise<void>;
 }
@@ -446,6 +470,9 @@ export function createNetworkPoolOperations(config: NetworkPoolConfig) {
           ...(Object.keys(normalizedConfig).length > 0 ? { config: normalizedConfig } : {}),
           ...(request.credential === undefined ? {} : { credential: request.credential }),
           ...(request.credential !== undefined ? { hasCredential: true } : {}),
+          // Absent or `null` both mean unmetered; a positive number is the
+          // allowance. The body schema already rejects zero and negatives.
+          ...(typeof request.quotaBytes === "number" ? { quotaBytes: request.quotaBytes } : {}),
         };
         await config.store.create(record);
         await config.auditSink?.record({
@@ -565,6 +592,59 @@ export function createNetworkPoolOperations(config: NetworkPoolConfig) {
       }
       throw new ConsoleDomainError("not_supported", 400, "Ad-hoc pool probing is unavailable");
     },
+    /**
+     * Probes many unsaved pool definitions in one call.
+     *
+     * The dashboard tests a pasted list before saving it; doing that one
+     * request per proxy made a 100-line paste take a minute. The dials still
+     * happen individually — only the round-trips are batched — and run with
+     * bounded concurrency so a large list does not open every socket at once.
+     */
+    async probeAdHocPoolBatch(
+      access: AccessDecision | undefined,
+      requests: readonly CreateNetworkPoolRequest[],
+    ): Promise<readonly PoolBatchProbeResult[]> {
+      const a = requireTenantScope(access, "dashboard:read");
+      if (requests.length === 0) return [];
+      if (requests.length > MAX_BATCH_PROBE_TARGETS) {
+        throw new ConsoleDomainError(
+          "batch_too_large",
+          422,
+          `At most ${MAX_BATCH_PROBE_TARGETS} targets per batch`,
+        );
+      }
+      if (!config.store.probeAdHoc) {
+        throw new ConsoleDomainError("not_supported", 400, "Ad-hoc pool probing is unavailable");
+      }
+      const probe = config.store.probeAdHoc.bind(config.store);
+      const results: PoolBatchProbeResult[] = new Array(requests.length);
+      let cursor = 0;
+      const worker = async () => {
+        while (cursor < requests.length) {
+          const index = cursor++;
+          const request = requests[index]!;
+          // A single failing probe must not fail the batch: the caller wants a
+          // per-endpoint verdict, so an error becomes that endpoint's result.
+          let result: HealthCheckResult;
+          try {
+            result = await probe(a.tenantId, request);
+          } catch (error) {
+            result = {
+              poolId: request.endpoint,
+              status: "unhealthy",
+              errorMessage: error instanceof Error ? error.message : "Probe failed",
+            };
+          }
+          results[index] = { endpoint: request.endpoint, kind: request.kind, result };
+        }
+      };
+      const workers = Array.from(
+        { length: Math.min(POOL_BATCH_PROBE_CONCURRENCY, requests.length) },
+        () => worker(),
+      );
+      await Promise.all(workers);
+      return results;
+    },
 
   };
   return operations;
@@ -580,6 +660,15 @@ const createPoolBody = t.Object({
   weight: t.Optional(t.Number()),
   status: t.Optional(literalUnion(POOL_STATUSES)),
   config: t.Optional(t.Record(t.String(), t.Unknown())),
+  /** Egress allowance in bytes; `null` clears it back to unmetered. */
+  quotaBytes: t.Optional(t.Union([t.Number({ minimum: 1 }), t.Null()])),
+});
+
+/** How many proxy dials run at once during a batch probe. */
+const POOL_BATCH_PROBE_CONCURRENCY = 10;
+
+const testBatchBody = t.Object({
+  targets: t.Array(createPoolBody, { minItems: 1, maxItems: MAX_BATCH_PROBE_TARGETS }),
 });
 const updatePoolBody = t.Partial(createPoolBody);
 
@@ -625,6 +714,12 @@ export function createNetworkPoolRoutes(config: NetworkPoolConfig): Elysia {
       return await factory.probeAdHocPool(
         config.accessResolver(request),
         body as CreateNetworkPoolRequest,
+      );
+})
+    .post("/test-batch", { body: testBatchBody }, async ({ request, body }) => {
+      return await factory.probeAdHocPoolBatch(
+        config.accessResolver(request),
+        body.targets as CreateNetworkPoolRequest[],
       );
 })
     .post(

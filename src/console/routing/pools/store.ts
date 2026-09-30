@@ -10,7 +10,7 @@ import {
   type NetworkPoolStore,
   type PoolStrategySetting,
 } from "./contracts";
-import { classifyPoolConnectError, classifyPoolProbeResponse } from "./probe-result";
+import { classifyPoolConnectError, classifyPoolProbeResponse, parseEgressIp } from "./probe-result";
 import { encryptCredential } from "../../../security/crypto";
 import { createValidatedFetch } from "../../../network/outbound-fetch";
 import {
@@ -28,7 +28,12 @@ import {
   listNetworkPoolHealthEvents,
   recoverNetworkPool,
 } from "../../../network/pool-health-machine";
-const NETWORK_POOL_HEALTH_CANARY = "https://www.google.com/generate_204";
+// Cloudflare's trace endpoint answers with plain `key=value` lines including
+// `ip=`, the address the request egressed from. Dialing it THROUGH the pool
+// therefore reports the pool's public address — which is what an operator
+// means by "the proxy's IP" — rather than the local DNS answer for its
+// hostname, which says nothing about where traffic actually leaves.
+const NETWORK_POOL_HEALTH_CANARY = "https://www.cloudflare.com/cdn-cgi/trace";
 /** Real Drizzle-backed network pool repository. */
 export class DrizzleNetworkPoolStore implements NetworkPoolStore {
   /**
@@ -65,6 +70,10 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
       ...(row.lastErrorAt ? { lastErrorAt: row.lastErrorAt.toISOString() } : {}),
       ...(row.lastError ? { lastError: row.lastError } : {}),
       ...(row.lastErrorCategory ? { lastErrorCategory: row.lastErrorCategory } : {}),
+      ...(row.egressIp ? { egressIp: row.egressIp } : {}),
+      ...(row.quotaBytes !== null && row.quotaBytes !== undefined
+        ? { quotaBytes: row.quotaBytes }
+        : {}),
       ...(Object.keys(rest).length > 0 ? { config: rest } : {}),
       ...(row.credentialCiphertext ? { hasCredential: true } : {}),
       tenantId,
@@ -72,13 +81,23 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
     };
   }
 
-  private async dialPoolCanary(agent: PoolAgent): Promise<{ response: Response; latencyMs: number }> {
+  private async dialPoolCanary(agent: PoolAgent): Promise<{ response: Response; latencyMs: number; egressIp?: string }> {
     const started = performance.now();
     const response = await createValidatedFetch({ agent })(NETWORK_POOL_HEALTH_CANARY, {
       method: "GET",
       signal: AbortSignal.timeout(8000),
     });
-    return { response, latencyMs: Math.round(performance.now() - started) };
+    const latencyMs = Math.round(performance.now() - started);
+    // The body is tiny and already buffered by the time we read it; a failure
+    // to read it must not turn a healthy probe into an error.
+    let egressIp: string | undefined;
+    try {
+      const body = await response.clone().text();
+      egressIp = parseEgressIp(body);
+    } catch {
+      egressIp = undefined;
+    }
+    return { response, latencyMs, ...(egressIp ? { egressIp } : {}) };
   }
 
   async list(tenantId: string): Promise<readonly NetworkPoolRecord[]> {
@@ -119,6 +138,7 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
       weight: record.weight,
       status: record.status,
       consecutiveFailures: 0,
+      ...(record.quotaBytes !== undefined ? { quotaBytes: record.quotaBytes } : {}),
     });
   }
 
@@ -152,6 +172,9 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
         // PATCH truly leaves un-mentioned fields alone.
         maxInflight: patch.maxInflight ?? current.maxInflight,
         weight: patch.weight ?? current.weight,
+        // An explicit `null` clears the quota (back to unmetered); omitting the
+        // field leaves it as-is.
+        ...("quotaBytes" in patch ? { quotaBytes: patch.quotaBytes ?? null } : {}),
         ...(clearsProxyResponseFailure
           ? {
               consecutiveFailures: 0,
@@ -240,8 +263,9 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
     const started = performance.now();
     let result: HealthCheckResult;
     try {
-      const { response, latencyMs } = await this.dialPoolCanary(agent);
+      const { response, latencyMs, egressIp } = await this.dialPoolCanary(agent);
       result = classifyPoolProbeResponse(poolId, response, latencyMs);
+      if (egressIp) result = { ...result, egressIp };
     } catch (error) {
       const latencyMs = Math.round(performance.now() - started);
       const proxyResponse = classifyPoolConnectError(poolId, error, latencyMs);
@@ -269,6 +293,8 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
       .set({
         lastHealthCheckAt: now,
         lastLatencyMs: result.latencyMs ?? null,
+        // Keep the previous address when this probe could not read one.
+        ...(result.egressIp ? { egressIp: result.egressIp } : {}),
       })
       .where(and(eq(networkPools.tenantId, tenantId), eq(networkPools.id, poolId)));
     if (result.httpStatus !== undefined) {
@@ -296,8 +322,9 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
         request.kind === "socks5"
           ? createSocks5Agent(rawEndpoint, request.credential, this.ssrfPolicy)
           : createHttpProxyAgent(rawEndpoint, request.credential, this.ssrfPolicy);
-      const { response, latencyMs } = await this.dialPoolCanary(agent);
-      return classifyPoolProbeResponse("adhoc", response, latencyMs);
+      const { response, latencyMs, egressIp } = await this.dialPoolCanary(agent);
+      const result = classifyPoolProbeResponse("adhoc", response, latencyMs);
+      return egressIp ? { ...result, egressIp } : result;
     } catch (error) {
       const message = error instanceof Error ? error.message : "Probe failed";
       return {
