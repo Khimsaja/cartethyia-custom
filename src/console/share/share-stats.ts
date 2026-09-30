@@ -39,7 +39,6 @@ export interface ShareHourlyBucket {
 }
 
 export interface ShareTopModel {
-  readonly providerId: string | null;
   readonly modelId: string;
   readonly requests: number;
   readonly tokens: number;
@@ -163,14 +162,13 @@ export function createShareStatsPort(db: CartethyiaDatabase): ShareStatsPort {
           .groupBy(sql`date_trunc('hour', ${telemetryEvents.createdAt})`),
         db
           .select({
-            providerId: telemetryEvents.providerId,
             modelId: telemetryEvents.requestedModel,
             requests: sql<number>`count(*)`,
             tokens: tokenSum,
           })
           .from(telemetryEvents)
           .where(and(familyScope, sql`${telemetryEvents.requestedModel} is not null`))
-          .groupBy(telemetryEvents.providerId, telemetryEvents.requestedModel)
+          .groupBy(telemetryEvents.requestedModel)
           .orderBy(desc(sql`count(*)`))
           .limit(TOP_MODELS_LIMIT),
         db
@@ -218,7 +216,6 @@ export function createShareStatsPort(db: CartethyiaDatabase): ShareStatsPort {
             ? []
             : [
                 {
-                  providerId: row.providerId,
                   modelId: row.modelId,
                   requests: Number(row.requests ?? 0),
                   tokens: Number(row.tokens ?? 0),

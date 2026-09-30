@@ -17,8 +17,8 @@ let statsState: { data: unknown; error: string | null; loading: boolean } = {
   loading: true,
 };
 mock.module("../../../src/hooks/share-data", () => ({
-  useShareData: (path: string): ShareState =>
-    (path.endsWith("/stats") ? statsState : shareState) as ShareState,
+  useShareData: (path: string, _options?: { readonly streamEvent?: string }): ShareState =>
+    (path.includes("/stats") ? statsState : shareState) as ShareState,
 }));
 // Load after mock.module so the page captures the mocked data hook.
 const { SharePage, tokenFromPathname } = await import("../../../src/apps/share/page");
@@ -49,7 +49,7 @@ const statsFixture = {
     hour: new Date(Date.UTC(2026, 0, 1, index)).toISOString(),
     requests: index,
   })),
-  models: [{ providerId: "anthropic", modelId: "claude-sonnet", requests: 90, tokens: 70_000 }],
+  models: [{ modelId: "claude-sonnet", requests: 90, tokens: 70_000 }],
   clientIps: [{ ip: "203.0.113.xxx", requests: 90, tokens: 70_000, lastSeenAt: null }],
 };
 

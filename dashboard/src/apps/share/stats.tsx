@@ -1,7 +1,54 @@
-import { useState, type ReactElement } from "react";
 import { ChevronRight } from "lucide-react";
 import { Card } from "../../components/ui/card";
-import type { ShareFamilyStatsData, ShareLinkPolicyData } from "../../hooks/share-data";
+import { createContext, useContext, useState, type ReactElement, type ReactNode } from "react";
+import { useShareData, type ShareFamilyStatsData, type ShareLinkPolicyData } from "../../hooks/share-data";
+
+/**
+ * Live stats subscription shared by every consumer on the page.
+ *
+ * The stream ticks every couple of seconds. Subscribing in the page component
+ * itself would re-render the whole share page — key panel, model allowlist,
+ * notes — on every tick, which is what made the page feel heavy on a phone.
+ * Holding the subscription in a provider and passing children through keeps
+ * that subtree referentially stable: a tick re-renders only the components
+ * that actually read this context. One subscription, not one per consumer, so
+ * the gateway sees a single stream per open page.
+ */
+const ShareStatsContext = createContext<{
+  readonly data: ShareFamilyStatsData | null;
+  readonly loading: boolean;
+}>({ data: null, loading: true });
+
+export function ShareStatsProvider({
+  path,
+  children,
+}: {
+  readonly path: string;
+  readonly children: ReactNode;
+}): ReactElement {
+  const state = useShareData<ShareFamilyStatsData>(path, { streamEvent: "stats" });
+  return (
+    <ShareStatsContext.Provider value={{ data: state.data, loading: state.loading }}>
+      {children}
+    </ShareStatsContext.Provider>
+  );
+}
+
+/** Hero quota rows, kept live without re-rendering the page around them. */
+export function LiveShareQuotaPanel({
+  policy,
+}: {
+  readonly policy: ShareLinkPolicyData;
+}): ReactElement {
+  const { data } = useContext(ShareStatsContext);
+  return <ShareQuotaPanel policy={policy} stats={data} />;
+}
+
+/** Collapsible activity section, same treatment as the quota rows above. */
+export function LiveShareStatsSection(): ReactElement {
+  const { data, loading } = useContext(ShareStatsContext);
+  return <ShareStatsSection stats={data} loading={loading} />;
+}
 
 /** Compact token count: 1.2K / 84.2K / 3.4M. Matches the console's key cards. */
 function compact(value: number): string {
@@ -242,39 +289,40 @@ export function ShareStatsSection({
                 {models.length === 0 ? (
                   <p className="share-stats-empty">No model traffic yet.</p>
                 ) : (
-                  <table className="share-stats-table">
-                    <thead>
-                      <tr>
-                        <th scope="col" aria-label="Rank" />
-                        <th scope="col">Model</th>
-                        <th scope="col" className="is-numeric">
-                          Req
-                        </th>
-                        <th scope="col">Tokens</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {models.map((model, index) => (
-                        <tr key={`${model.providerId ?? ""}/${model.modelId}`}>
-                          <td className="share-stats-rank">{index + 1}</td>
-                          <td>
-                            <span className="share-stats-model">
-                              <code title={model.modelId}>{model.modelId}</code>
-                              {model.providerId ? <span>{model.providerId}</span> : null}
-                            </span>
-                          </td>
-                          <td className="is-numeric">{model.requests.toLocaleString()}</td>
-                          <td>
-                            <BarCell
-                              value={model.tokens}
-                              max={maxModelTokens}
-                              label={compact(model.tokens)}
-                            />
-                          </td>
+                  <div className="share-stats-scroll">
+                    <table className="share-stats-table">
+                      <thead>
+                        <tr>
+                          <th scope="col" aria-label="Rank" />
+                          <th scope="col">Model</th>
+                          <th scope="col" className="is-numeric">
+                            Req
+                          </th>
+                          <th scope="col">Tokens</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {models.map((model, index) => (
+                          <tr key={model.modelId}>
+                            <td className="share-stats-rank">{index + 1}</td>
+                            <td>
+                              <span className="share-stats-model">
+                                <code title={model.modelId}>{model.modelId}</code>
+                              </span>
+                            </td>
+                            <td className="is-numeric">{model.requests.toLocaleString()}</td>
+                            <td>
+                              <BarCell
+                                value={model.tokens}
+                                max={maxModelTokens}
+                                label={compact(model.tokens)}
+                              />
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 )}
               </section>
 
@@ -285,32 +333,34 @@ export function ShareStatsSection({
                 {ips.length === 0 ? (
                   <p className="share-stats-empty">No client addresses recorded yet.</p>
                 ) : (
-                  <table className="share-stats-table">
-                    <thead>
-                      <tr>
-                        <th scope="col">Address</th>
-                        <th scope="col" className="is-numeric">
-                          Req
-                        </th>
-                        <th scope="col">Tokens</th>
-                        <th scope="col">Last seen</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {ips.map((ip) => (
-                        <tr key={ip.ip}>
-                          <td>
-                            <code>{ip.ip}</code>
-                          </td>
-                          <td className="is-numeric">{ip.requests.toLocaleString()}</td>
-                          <td>
-                            <BarCell value={ip.requests} max={maxIpRequests} label={compact(ip.tokens)} />
-                          </td>
-                          <td>{relativeTime(ip.lastSeenAt)}</td>
+                  <div className="share-stats-scroll">
+                    <table className="share-stats-table">
+                      <thead>
+                        <tr>
+                          <th scope="col">Address</th>
+                          <th scope="col" className="is-numeric">
+                            Req
+                          </th>
+                          <th scope="col">Tokens</th>
+                          <th scope="col">Last seen</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {ips.map((ip) => (
+                          <tr key={ip.ip}>
+                            <td>
+                              <code>{ip.ip}</code>
+                            </td>
+                            <td className="is-numeric">{ip.requests.toLocaleString()}</td>
+                            <td>
+                              <BarCell value={ip.requests} max={maxIpRequests} label={compact(ip.tokens)} />
+                            </td>
+                            <td>{relativeTime(ip.lastSeenAt)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 )}
               </section>
             </>

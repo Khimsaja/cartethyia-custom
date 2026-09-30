@@ -5,6 +5,56 @@
 > All changes below are pre-release. Cartethyia has not been tagged or
 > released; this document reflects the current production codebase architecture and capabilities.
 
+### The share page's activity view is live, and says less
+
+The share page's **Stats & activity** section now updates itself over
+server-sent events (`GET /share/:token/stats/stream`) instead of waiting to be
+reloaded. The stream sends one snapshot the moment it opens and another every
+two seconds; telemetry is buffered and drained in under a second server-side, so
+re-reading the rollup on that cadence is as fresh as an event bus would be and
+costs a handful of indexed aggregates. The one-shot `/stats` route stays for
+callers that cannot hold a stream, and both now read the same
+`resolveFamilyStats` helper so the live view and a fetched snapshot cannot
+disagree.
+
+Two things were wrong with the section before this. It leaked the provider: the
+Top Models table rendered a `providerId` line under every model, and the field
+was in the JSON payload too, so hiding it in the CSS would have left it readable
+in devtools. Provider is now gone from the query, the response, and the UI —
+`ShareTopModel` has no `providerId` at all, and the aggregate groups by
+`requested_model` alone. The side effect is an improvement: the same model
+reached through two providers is now one row instead of two half-counts.
+
+And it was heavy on a phone. The 4-column tables overflowed the card — the token
+bar carried a 110px minimum, which is wider than the space a phone has for it —
+and the stream subscription lived in the page component, so every two-second
+tick re-rendered the whole share page: key panel, model allowlist, notes,
+popup. The bar shrinks and the tables sit in a scroll wrapper now, and the
+subscription moved into a `ShareStatsProvider`. Children pass through as a prop,
+so the subtree stays referentially stable and a tick re-renders only the quota
+rows and the stats section — one stream per open page, not one per consumer.
+
+### Routing Strategy reads as a form, not a pile of boxes
+
+The provider Routing Strategy card was a main/side grid where the concurrency
+ceiling sat in a narrow column of its own and the rotation slider stretched the
+full width of the card. It is now one vertical stack of labelled rows: round
+robin, rotation, then Limits and Upstream identity side by side, then Always
+direct. The dead `.routing-strategy-grid` rules are gone with it.
+
+Max inflight / account became a slider (1–100) with the value pinned to the
+thumb, plus an **Unlimited** button, because the field's empty state *means*
+unlimited and a slider alone cannot express that. Round robin, rotation, max
+inflight, client identity, and Always direct all carry the same icon treatment
+as the rest of the console, and changing the client identity raises a toast
+naming what was selected.
+
+The raw **User-Agent header value** input is gone. It was labelled "Only for
+built-in API-key providers without an adapter User-Agent builder", which is to
+say it did nothing for any provider that owns its identity — including every
+provider the card is shown for. The identity selector above it is the control
+that actually applies.
+
 ### Each proxy pool reports the bandwidth it has carried
 
 The proxy table's **Load** cell now carries a second bar: bytes carried against

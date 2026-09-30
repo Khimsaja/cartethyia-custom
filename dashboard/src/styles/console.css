@@ -1893,28 +1893,6 @@
   }
 }
 
-/* Routing Strategy splits mode selection from the provider-wide concurrency
-   ceiling so the side control never forces account tables wider. */
-.routing-strategy-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(190px, 250px);
-  gap: 12px;
-  align-items: start;
-  width: 100%;
-  min-width: 0;
-}
-
-.routing-strategy-main,
-.routing-strategy-side {
-  min-width: 0;
-}
-
-@media (max-width: 720px) {
-  .routing-strategy-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
 /* One panel in a `two-column-grid` claims the whole row. Used by the Usage
    page's per-panel "widen" control, which is how a side-by-side panel gets the
    full width without the layout having to change shape. */

@@ -13,7 +13,8 @@ import { isModelAllowed, type ApiKeyAuthorizationSnapshot } from "../../security
 import { API_CONTENT_SECURITY_POLICY, X_FRAME_OPTIONS } from "../../security/outbound-headers";
 import { SHARED_CHILD_HINT_MAX_LENGTH, generateApiKeySecret } from "../domains/api-keys/contracts";
 import { popupImageBytes } from "../domains/api-keys/share-popup-image";
-import type { ShareStatsPort } from "./share-stats";
+import type { ShareFamilyStats, ShareStatsPort } from "./share-stats";
+import { consoleSseResponse, createConsoleSseStream } from "../observability/sse";
 import {
   hashShareToken,
   type ShareLinkPolicy,
@@ -22,6 +23,13 @@ import {
 
 /** Minimum accepted token length; generated tokens are 43 base64url chars. */
 const MIN_TOKEN_LENGTH = 20;
+
+/**
+ * Cadence of the share stats SSE snapshot. Short enough to read as live;
+ * the rollup itself is a handful of indexed aggregates, so re-reading on this
+ * interval is cheap next to the per-request telemetry insert it summarizes.
+ */
+const SHARE_STATS_STREAM_INTERVAL_MS = 2_000;
 
 export interface ShareRouterOptions {
   readonly db: CartethyiaDatabase;
@@ -101,6 +109,31 @@ async function modelsForShare(db: CartethyiaDatabase, row: ShareLinkPolicy): Pro
   return [...slugs].sort((left, right) => left.localeCompare(right));
 }
 
+
+/**
+ * Family-wide activity for one share token, or `null` when the token does not
+ * resolve. Shared by the one-shot stats route and its SSE stream so both read
+ * exactly the same rollup — a drifting second copy would let the live view and
+ * the fetched snapshot disagree.
+ */
+async function resolveFamilyStats(
+  db: CartethyiaDatabase,
+  shareStore: ShareLinkStore,
+  stats: ShareStatsPort,
+  token: string,
+): Promise<ShareFamilyStats | null> {
+  const resolved = await shareStore.resolveShareLink(hashShareToken(token));
+  if (resolved === null) return null;
+  const templateId = resolved.key.id;
+  const tenantId = resolved.key.tenantId;
+  const children = await db
+    .select({ id: apiKeys.id, revokedAt: apiKeys.revokedAt })
+    .from(apiKeys)
+    .where(eq(apiKeys.parentKeyId, templateId));
+  const active = children.filter((child) => child.revokedAt === null).length;
+  const keyIds = [templateId, ...children.map((child) => child.id)];
+  return stats.getFamilyStats(tenantId, keyIds, { total: children.length, active });
+}
 
 /** Creates the public enrollment page and one-time shared-key issuance route. */
 export function createShareRouter(options: ShareRouterOptions): Elysia {
@@ -269,20 +302,56 @@ export function createShareRouter(options: ShareRouterOptions): Elysia {
       if (token.length < MIN_TOKEN_LENGTH) return notFound();
       const stats = options.stats;
       if (!stats) return json({ error: { code: "stats_unavailable", message: "Stats are unavailable" } }, 503);
-      const resolved = await shareStore.resolveShareLink(hashShareToken(token));
-      if (resolved === null) return notFound();
-      const templateId = resolved.key.id;
-      const tenantId = resolved.key.tenantId;
-      const children = await db
-        .select({ id: apiKeys.id, revokedAt: apiKeys.revokedAt })
-        .from(apiKeys)
-        .where(eq(apiKeys.parentKeyId, templateId));
-      const active = children.filter((child) => child.revokedAt === null).length;
-      const keyIds = [templateId, ...children.map((child) => child.id)];
-      const family = await stats.getFamilyStats(tenantId, keyIds, {
-        total: children.length,
-        active,
-      });
+      const family = await resolveFamilyStats(db, shareStore, stats, token);
+      if (family === null) return notFound();
       return json(family);
+    })
+    /**
+     * Live family activity for the share page's stats section, pushed over SSE.
+     *
+     * The stream sends one snapshot immediately on connect, then re-reads on a
+     * short cadence so the recipient watches the shared quota move instead of
+     * refreshing. Telemetry is buffered server-side and drained in under a
+     * second, so a DB re-read on this cadence is as fresh as an event bus would
+     * be. Same bearer token and same masked-IP rollup as the one-shot route; a
+     * token that stops resolving closes the stream rather than reporting zeros.
+     */
+    .get("/share/:token/stats/stream", async ({ params, request }) => {
+      if (typeof params.token !== "string") return notFound();
+      const token = params.token;
+      if (token.length < MIN_TOKEN_LENGTH) return notFound();
+      const stats = options.stats;
+      if (!stats) return json({ error: { code: "stats_unavailable", message: "Stats are unavailable" } }, 503);
+      return consoleSseResponse(
+        createConsoleSseStream(request.signal, (sender) => {
+          let closed = false;
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const push = async () => {
+            const family = await resolveFamilyStats(db, shareStore, stats, token);
+            if (closed) return;
+            if (family === null) {
+              sender.send("error", { code: "link_not_found" });
+              closed = true;
+              return;
+            }
+            sender.send("stats", family);
+          };
+          const schedule = () => {
+            timer = setTimeout(() => {
+              if (closed) return;
+              void push().finally(() => {
+                if (!closed) schedule();
+              });
+            }, SHARE_STATS_STREAM_INTERVAL_MS);
+          };
+          void push().finally(() => {
+            if (!closed) schedule();
+          });
+          return () => {
+            closed = true;
+            clearTimeout(timer);
+          };
+        }),
+      );
     }) as unknown as Elysia;
 }

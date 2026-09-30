@@ -1012,6 +1012,13 @@ html[data-app="share"] .share-hud-card {
   font-size: 9.5px;
 }
 
+.share-stats-scroll {
+  width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
 .share-stats-table {
   width: 100%;
   border-collapse: collapse;
@@ -1121,5 +1128,18 @@ html[data-app="share"] .share-hud-card {
 
   .share-stats-summary {
     display: none;
+  }
+
+  /* The model/IP tables carry four columns; at phone widths the token bar is
+     what pushes them past the card. Shrink it and let the wrapper scroll as a
+     last resort instead of overflowing the card. */
+  .share-stats-bar {
+    min-width: 64px;
+  }
+
+  .share-stats-table th,
+  .share-stats-table td {
+    padding-left: 6px;
+    padding-right: 6px;
   }
 }

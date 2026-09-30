@@ -7,8 +7,12 @@ import { EmptyState, ErrorState, LoadingState } from "../../components/ui/state"
 import { ClipboardButton } from "../../components/patterns/clipboard-button";
 import { GithubBadge } from "../../components/patterns/github-badge";
 import { readConsoleTheme, applyConsoleTheme, isDarkEffective, writeConsoleTheme, type ConsoleThemeChoice } from "../../shared/theme";
-import { useShareData, type ShareFamilyStatsData, type ShareLinkData } from "../../hooks/share-data";
-import { ShareQuotaPanel, ShareStatsSection } from "./stats";
+import { useShareData, type ShareLinkData } from "../../hooks/share-data";
+import {
+  LiveShareQuotaPanel,
+  LiveShareStatsSection,
+  ShareStatsProvider,
+} from "./stats";
 import {
   deleteStoredShareKey,
   readStoredShareKey,
@@ -18,6 +22,7 @@ import {
 
 interface IssueResult { key: string; keyId: string; keyPrefix: string; createdAt: string }
 interface ApiError { error?: string | { code?: string; message?: string }; message?: string }
+
 function message(payload: ApiError): string {
   if (typeof payload.error === "string") return payload.error;
   return payload.error?.message ?? payload.message ?? "Unable to generate an API key.";
@@ -42,10 +47,8 @@ export function SharePage(): ReactElement {
   // the endpoint the recipient is told to call is derived here.
   const baseUrl = typeof window === "undefined" ? "" : window.location.origin;
   const state = useShareData<ShareLinkData>(dataPath);
-  // Family activity for the stats section. Loaded alongside the policy so the
-  // section is ready the moment the recipient expands it, and kept separate so
-  // a stats failure never blocks the page or the key it hands out.
-  const statsState = useShareData<ShareFamilyStatsData>(`${path}/stats`);
+  // Family activity lives behind ShareStatsProvider (see ./stats): the page
+  // itself does not subscribe, so a stream tick cannot re-render it.
   const [secret, setSecret] = useState<IssueResult | null>(null);
   const [restoredSecret, setRestoredSecret] = useState<StoredShareKey | null>(null);
   // The recipient's display-name hint for the issued key. The backend keeps
@@ -157,7 +160,8 @@ export function SharePage(): ReactElement {
     modelGroups.set(provider, models);
   }
   return (
-    <div className="share-page">
+    <ShareStatsProvider path={`${path}/stats/stream`}>
+      <div className="share-page">
       <header className="share-topbar">
         <div className="share-topbar-inner">
           <a className="share-brand" href="/">
@@ -230,7 +234,7 @@ export function SharePage(): ReactElement {
                   </span>
                 ) : null}
               </div>
-              <ShareQuotaPanel policy={data} stats={statsState.data} />
+              <LiveShareQuotaPanel policy={data} />
             </Card>
 
             <div className="share-credentials">
@@ -415,7 +419,7 @@ export function SharePage(): ReactElement {
               </Card>
             ) : null}
 
-            <ShareStatsSection stats={statsState.data} loading={statsState.loading} />
+            <LiveShareStatsSection />
 
             <Card className="share-hud-card share-models">
               <div className="share-section-heading">
@@ -526,6 +530,7 @@ export function SharePage(): ReactElement {
           </Card>
         )}
       </main>
-    </div>
+      </div>
+    </ShareStatsProvider>
   );
 }

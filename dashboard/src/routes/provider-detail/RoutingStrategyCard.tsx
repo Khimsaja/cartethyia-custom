@@ -1,12 +1,12 @@
-import { Cable, Info, Layers, Repeat } from "lucide-react";
+import { Cable, Fingerprint, Gauge, Info, Layers, RefreshCw, Repeat } from "lucide-react";
 import type { ReactNode } from "react";
+import { Button } from "../../components/ui/button";
 import { Card, CardBody, CardHeader } from "../../components/ui/card";
 import { Inline } from "../../components/ui/inline";
-import { Input } from "../../components/ui/input";
 import { Select } from "../../components/ui/select";
 import { ErrorState, LoadingState } from "../../components/ui/state";
-import { Stack } from "../../components/ui/stack";
 import { Switch } from "../../components/ui/switch";
+import { toast } from "../../shared/toast";
 import {
   PROXY_UNSUPPORTED_HINT_PROVIDERS,
   ROUTING_ACTIVE_LABEL,
@@ -17,6 +17,26 @@ const USER_AGENT_PRESETS = [
   { value: "codex_cli_rs/0.156.1", label: "Codex" },
   { value: "claude-cli/2.1.280 (external, cli)", label: "Claude Code" },
 ] as const;
+
+/** Shared shell for the grouped settings rows. */
+function Row({ children }: { readonly children: ReactNode }): ReactNode {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: "12px",
+        padding: "10px 12px",
+        borderRadius: "10px",
+        border: "1px solid var(--inner-border)",
+        minWidth: 0,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
 
 export function RoutingStrategyCard({
   providerId,
@@ -43,182 +63,240 @@ export function RoutingStrategyCard({
     : routing.saveFailed
       ? "Save failed — reverted to last saved value"
       : `Active: ${activeLabel}`;
+  // Slider reads 1–100; `null` (unlimited) parks the thumb at the far right.
+  const maxInflightValue =
+    routing.maxInflight === null ? 100 : Math.min(100, Math.max(1, routing.maxInflight));
+  const handleUserAgentChange = (next: string) => {
+    if (next === routing.userAgent) return;
+    routing.setUserAgent(next);
+    const label = userAgentOptions.find((option) => option.value === next)?.label ?? next;
+    toast.success("Client identity updated", label);
+  };
 
   return (
     <Card>
-      <CardHeader
-        title="Routing Strategy"
-        subtitle={subtitle}
-        icon={<Layers size={16} />}
-      />
+      <CardHeader title="Routing Strategy" subtitle={subtitle} icon={<Layers size={16} />} />
       <CardBody>
-        <div className="routing-strategy-grid">
-          <div className="routing-strategy-main">
-            <Stack gap="10px">
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: "12px",
-                  padding: "10px 12px",
-                  borderRadius: "10px",
-                  border: "1px solid var(--inner-border)",
-                }}
-              >
-                <Inline gap="8px">
-                  <div>
-                    <label htmlFor="routing-round-robin">
-                      <Inline gap="6px" style={{ fontSize: "13px", fontWeight: 600 }}>
-                        <Repeat
-                          size={15}
-                          aria-hidden="true"
-                          style={{ color: routing.roundRobinEnabled ? "var(--accent)" : "var(--text-tertiary)", flexShrink: 0 }}
-                        />
-                        Round robin
-                      </Inline>
-                    </label>
-                    <div style={{ fontSize: "11px", color: "var(--text-tertiary)" }}>
-                      Off = failover: use accounts in priority order, fall through on failure. On = rotate
-                      requests across this provider's accounts.
-                    </div>
-                  </div>
-                </Inline>
-                <Switch
-                  checked={routing.roundRobinEnabled}
-                  onChange={routing.setRoundRobinEnabled}
-                  id="routing-round-robin"
-                />
-              </div>
-
-              {routing.roundRobinEnabled ? (
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "1fr auto",
-                    alignItems: "center",
-                    gap: "12px",
-                    padding: "10px 12px",
-                    borderRadius: "10px",
-                    border: "1px solid var(--inner-border)",
-                  }}
-                >
-                  <div>
-                    <label htmlFor="routing-rotate-count" style={{ fontSize: "13px", fontWeight: 600 }}>
-                      Accounts per rotation
-                    </label>
-                    <div style={{ fontSize: "11px", color: "var(--text-tertiary)" }}>
-                      Requests served by one account before the rotation advances
-                    </div>
-                    <input
-                      id="routing-rotate-count"
-                      type="range"
-                      min={1}
-                      max={10}
-                      step={1}
-                      value={Math.min(10, routing.rotateCount)}
-                      onChange={(event) => {
-                        const value = Number(event.target.value);
-                        if (Number.isFinite(value)) routing.setRotateCount(Math.min(1000, Math.max(1, Math.round(value))));
-                      }}
-                      style={{ width: "100%", marginTop: "8px" }}
-                    />
-                  </div>
-                  <Input
-                    label="Accounts"
-                    type="number"
-                    min={1}
-                    max={1000}
-                    value={String(routing.rotateCount)}
-                    onChange={(event) => {
-                      const value = Number(event.target.value);
-                      if (Number.isFinite(value)) routing.setRotateCount(Math.min(1000, Math.max(1, Math.round(value))));
+        <div style={{ display: "grid", gap: "10px", width: "100%", minWidth: 0 }}>
+          <Row>
+            <div style={{ minWidth: 0 }}>
+              <label htmlFor="routing-round-robin">
+                <Inline gap="6px" style={{ fontSize: "13px", fontWeight: 600 }}>
+                  <Repeat
+                    size={15}
+                    aria-hidden="true"
+                    style={{
+                      color: routing.roundRobinEnabled ? "var(--accent)" : "var(--text-tertiary)",
+                      flexShrink: 0,
                     }}
                   />
-                </div>
-              ) : null}
-            </Stack>
-          </div>
-          <div className="routing-strategy-side">
-            <Input
-              label="Max inflight / account"
-              type="number"
-              min={1}
-              max={10000}
-              placeholder="default"
-              value={routing.maxInflight === null ? "" : String(routing.maxInflight)}
-              onChange={(event) => {
-                const raw = event.target.value.trim();
-                if (raw === "") {
-                  routing.setMaxInflight(null);
-                  return;
-                }
-                const parsed = Number(raw);
-                if (!Number.isFinite(parsed)) return;
-                routing.setMaxInflight(Math.min(10000, Math.max(1, Math.round(parsed))));
-              }}
-              hint="Shared provider ceiling; empty = unlimited"
+                  Round robin
+                </Inline>
+              </label>
+              <div style={{ fontSize: "11px", color: "var(--text-tertiary)" }}>
+                Off = failover: use accounts in priority order, fall through on failure. On = rotate
+                requests across this provider's accounts.
+              </div>
+            </div>
+            <Switch
+              checked={routing.roundRobinEnabled}
+              onChange={routing.setRoundRobinEnabled}
+              id="routing-round-robin"
             />
-          </div>
-        </div>
+          </Row>
 
-        {showUserAgent ? (
-          <div style={{ display: "grid", gap: "8px", marginTop: "12px", maxWidth: "480px" }}>
-            <Select
-              id="routing-user-agent-preset"
-              label="Upstream client identity"
-              value={routing.userAgent}
-              options={userAgentOptions}
-              onValueChange={routing.setUserAgent}
-            />
-            <Input
-              id="routing-user-agent"
-              label="User-Agent header value"
-              value={routing.userAgent}
-              maxLength={4096}
-              onChange={(event) => routing.setUserAgent(event.target.value)}
-              hint="Only for built-in API-key providers without an adapter User-Agent builder; provider-owned identities are preserved."
-            />
-          </div>
-        ) : null}
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: "12px",
-              padding: "10px 12px",
-              borderRadius: "10px",
-              border: "1px solid var(--inner-border)",
-              marginTop: "10px",
-            }}
-          >
-            <Inline gap="8px">
-              <div>
-                <label htmlFor="routing-bypass-proxy">
+          {routing.roundRobinEnabled ? (
+            <Row>
+              <div style={{ minWidth: 0 }}>
+                <label htmlFor="routing-rotate-count">
                   <Inline gap="6px" style={{ fontSize: "13px", fontWeight: 600 }}>
-                    <Cable
+                    <RefreshCw
                       size={15}
                       aria-hidden="true"
-                      style={{ color: routing.bypassProxy ? "var(--accent)" : "var(--text-tertiary)", flexShrink: 0 }}
+                      style={{ color: "var(--text-tertiary)", flexShrink: 0 }}
                     />
-                    Always direct
+                    Accounts per rotation
                   </Inline>
                 </label>
                 <div style={{ fontSize: "11px", color: "var(--text-tertiary)" }}>
-                  Bypass automatic proxy-pool routing for this provider and always dial direct
+                  Requests served before the rotation advances
                 </div>
               </div>
-            </Inline>
+              <Inline gap="10px" style={{ flexShrink: 0 }}>
+                <input
+                  id="routing-rotate-count"
+                  type="range"
+                  min={1}
+                  max={10}
+                  step={1}
+                  value={Math.min(10, routing.rotateCount)}
+                  onChange={(event) => {
+                    const value = Number(event.target.value);
+                    if (Number.isFinite(value))
+                      routing.setRotateCount(Math.min(1000, Math.max(1, Math.round(value))));
+                  }}
+                  style={{ width: "160px" }}
+                />
+                <input
+                  type="number"
+                  aria-label="Accounts per rotation"
+                  min={1}
+                  max={1000}
+                  value={routing.rotateCount}
+                  onChange={(event) => {
+                    const value = Number(event.target.value);
+                    if (Number.isFinite(value))
+                      routing.setRotateCount(Math.min(1000, Math.max(1, Math.round(value))));
+                  }}
+                  className="form-input"
+                  style={{ width: "64px", textAlign: "center", padding: "6px 8px" }}
+                />
+              </Inline>
+            </Row>
+          ) : null}
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+              gap: "10px",
+              minWidth: 0,
+            }}
+          >
+            <div
+              style={{
+                padding: "10px 12px",
+                borderRadius: "10px",
+                border: "1px solid var(--inner-border)",
+                minWidth: 0,
+              }}
+            >
+              <div className="form-group">
+                <label htmlFor="routing-max-inflight" className="form-label">
+                  <Inline gap="6px" style={{ fontSize: "13px", fontWeight: 600 }}>
+                    <Gauge
+                      size={15}
+                      aria-hidden="true"
+                      style={{ color: "var(--text-tertiary)", flexShrink: 0 }}
+                    />
+                    Max inflight / account
+                  </Inline>
+                </label>
+                <div style={{ fontSize: "11px", color: "var(--text-tertiary)" }}>
+                  Shared provider ceiling
+                </div>
+                <Inline gap="10px" style={{ marginTop: "18px" }}>
+                  <div style={{ position: "relative", flex: 1, minWidth: 0 }}>
+                    <span
+                      aria-hidden="true"
+                      style={{
+                        position: "absolute",
+                        left: `${((maxInflightValue - 1) / 99) * 100}%`,
+                        transform: "translate(-50%, -100%)",
+                        marginTop: "-8px",
+                        padding: "1px 6px",
+                        borderRadius: "6px",
+                        background: "var(--accent)",
+                        color: "var(--accent-foreground)",
+                        fontSize: "11px",
+                        fontWeight: 600,
+                        fontVariantNumeric: "tabular-nums",
+                        pointerEvents: "none",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {routing.maxInflight === null ? "∞" : maxInflightValue}
+                    </span>
+                    <input
+                      id="routing-max-inflight"
+                      type="range"
+                      className="form-range"
+                      min={1}
+                      max={100}
+                      step={1}
+                      value={maxInflightValue}
+                      onChange={(event) => {
+                        const value = Number(event.target.value);
+                        if (Number.isFinite(value))
+                          routing.setMaxInflight(Math.max(1, Math.round(value)));
+                      }}
+                      style={{ width: "100%" }}
+                    />
+                  </div>
+                  <Button
+                    size="sm"
+                    variant={routing.maxInflight === null ? "primary" : "secondary"}
+                    onClick={() => routing.setMaxInflight(null)}
+                  >
+                    Unlimited
+                  </Button>
+                </Inline>
+              </div>
+            </div>
+
+            {showUserAgent ? (
+              <div
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: "10px",
+                  border: "1px solid var(--inner-border)",
+                  minWidth: 0,
+                }}
+              >
+                <Inline gap="6px" style={{ fontSize: "13px", fontWeight: 600, marginBottom: "6px" }}>
+                  <Fingerprint
+                    size={15}
+                    aria-hidden="true"
+                    style={{ color: "var(--text-tertiary)", flexShrink: 0 }}
+                  />
+                  Client identity
+                </Inline>
+                <Select
+                  id="routing-user-agent-preset"
+                  aria-label="Client identity"
+                  value={routing.userAgent}
+                  options={userAgentOptions}
+                  onValueChange={handleUserAgentChange}
+                />
+                <div style={{ fontSize: "11px", color: "var(--text-tertiary)", marginTop: "4px" }}>
+                  Adapter-owned identities are preserved.
+                </div>
+              </div>
+            ) : null}
+          </div>
+
+          <Row>
+            <div style={{ minWidth: 0 }}>
+              <label htmlFor="routing-bypass-proxy">
+                <Inline gap="6px" style={{ fontSize: "13px", fontWeight: 600 }}>
+                  <Cable
+                    size={15}
+                    aria-hidden="true"
+                    style={{
+                      color: routing.bypassProxy ? "var(--accent)" : "var(--text-tertiary)",
+                      flexShrink: 0,
+                    }}
+                  />
+                  Always direct
+                </Inline>
+              </label>
+              <div style={{ fontSize: "11px", color: "var(--text-tertiary)" }}>
+                Bypass automatic proxy-pool routing for this provider and always dial direct
+              </div>
+            </div>
             <Switch
               checked={routing.bypassProxy}
               onChange={routing.setBypassProxy}
               id="routing-bypass-proxy"
             />
-          </div>
+          </Row>
 
           {showUnsupportedHint && (
-                <Inline gap="6px" align="flex-start" style={{ fontSize: "11px", color: "var(--text-tertiary)", marginTop: "10px" }}>
+            <Inline
+              gap="6px"
+              align="flex-start"
+              style={{ fontSize: "11px", color: "var(--text-tertiary)" }}
+            >
               <Info size={12} style={{ flexShrink: 0, marginTop: "1px" }} />
               <span>
                 This provider doesn't reliably work through a plain HTTP/S proxy — use a SOCKS5 or
@@ -226,6 +304,7 @@ export function RoutingStrategyCard({
               </span>
             </Inline>
           )}
+        </div>
       </CardBody>
     </Card>
   );
