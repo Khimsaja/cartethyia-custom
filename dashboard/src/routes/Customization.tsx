@@ -508,7 +508,11 @@ export default function Customization(): ReactNode {
             <div
               role="radiogroup"
               aria-label="Appearance mode"
-              style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "10px" }}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 110px), 1fr))",
+                gap: "10px",
+              }}
             >
               {(["system", "light", "dark"] as const).map((choice) => {
                 const active = settings.theme === choice;

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   Activity,
@@ -47,7 +47,7 @@ import {
 import { providerDisplayName, requestProviderId } from "../../shared/provider-names";
 
 import { useProviderAccounts } from "../../hooks/providers";
-import { useInFlight } from "../../hooks/live";
+import { useInFlight, type InFlightState } from "../../hooks/live";
 import { useTrackedTimeout } from "../../hooks/use-timeout";
 import { USAGE_PERIODS, type UsagePeriod as Period } from "../../data/usage-periods";
 import { httpStatusLabel, httpStatusShortLabel, httpStatusTone } from "../../shared/http-status";
@@ -1046,6 +1046,57 @@ function InFlightPill({
 }
 
 /**
+ * Live in-flight count, held above the page body.
+ *
+ * The stream ticks whenever any request starts or finishes. Subscribing in the
+ * page component itself re-rendered the whole page — every row, every chart —
+ * on each tick, which is what made a busy Usage page feel heavy. The
+ * subscription lives here instead and children pass through as a prop, so the
+ * subtree stays referentially stable and a tick re-renders only the pill and
+ * the one tile that read this context. One stream per open page.
+ */
+const InFlightContext = createContext<InFlightState>({ count: null, uniqueIps: null, live: false });
+
+function InFlightProvider({ children }: { readonly children: ReactNode }): ReactNode {
+  const state = useInFlight();
+  const value = useMemo(
+    () => ({ count: state.count, uniqueIps: state.uniqueIps, live: state.live }),
+    [state.count, state.uniqueIps, state.live],
+  );
+  return <InFlightContext.Provider value={value}>{children}</InFlightContext.Provider>;
+}
+
+/** The header pill, subscribed without dragging the page into the tick. */
+function LiveInFlightPill(): ReactNode {
+  const flight = useContext(InFlightContext);
+  return <InFlightPill count={flight.count} uniqueIps={flight.uniqueIps} live={flight.live} />;
+}
+
+/**
+ * The Requests tile. Split out because its detail line carries the live count;
+ * the other tiles never change on a tick and stay in the page.
+ */
+function RequestsStatCard({
+  pending,
+  requests,
+  period,
+}: {
+  readonly pending: boolean;
+  readonly requests: number | undefined;
+  readonly period: Period;
+}): ReactNode {
+  const flight = useContext(InFlightContext);
+  return (
+    <StatCard
+      label="Requests"
+      value={pending ? "…" : formatNumber(requests)}
+      detail={`${periodLabel(period)} · ${flight.count ?? 0} in flight from ${flight.uniqueIps ?? 0} IPs`}
+      icon={<Activity size={13} />}
+    />
+  );
+}
+
+/**
  * Scale switcher on a token card. Cards start on the exact count; each click
  * steps through the compact units from the coarsest that fits down to K and
  * then wraps back to the exact count, so the raw number and the readable
@@ -1245,7 +1296,6 @@ export default function Usage(): ReactNode {
       }
     }
   };
-  const flight = useInFlight();
   const summary = summaryQuery.data?.totals;
   const requestItems = useMemo(() => {
     const items = [...(requestsQuery.data?.items ?? [])];
@@ -1300,13 +1350,13 @@ export default function Usage(): ReactNode {
   };
 
   return (
-    <Stack gap="16px">
+    <InFlightProvider>
+      <Stack gap="16px">
       <div className="metric-grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))" }}>
-        <StatCard
-          label="Requests"
-          value={summaryQuery.isPending ? "…" : formatNumber(summary?.requests)}
-          detail={`${periodLabel(period)} · ${flight.count ?? 0} in flight from ${flight.uniqueIps ?? 0} IPs`}
-          icon={<Activity size={13} />}
+        <RequestsStatCard
+          pending={summaryQuery.isPending}
+          requests={summary?.requests}
+          period={period}
         />
         <StatCard
           label="Input tokens"
@@ -1462,7 +1512,7 @@ export default function Usage(): ReactNode {
               >
                 {hideProviderName ? "Masked" : "Mask"}
               </Button>
-              <InFlightPill count={flight.count} uniqueIps={flight.uniqueIps} live={flight.live} />
+              <LiveInFlightPill />
             </Inline>
           }
         />
@@ -1658,6 +1708,7 @@ export default function Usage(): ReactNode {
       </Card>
 
       <RequestDetailDrawer requestId={selectedId} onClose={() => setSelectedId(null)} />
-    </Stack>
+      </Stack>
+    </InFlightProvider>
   );
 }

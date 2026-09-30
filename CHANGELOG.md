@@ -5,6 +5,67 @@
 > All changes below are pre-release. Cartethyia has not been tagged or
 > released; this document reflects the current production codebase architecture and capabilities.
 
+### Provider requests stop failing when the install id cannot be written
+
+Grok Build, Claude, and Codex each stamp a stable per-installation id on their
+upstream requests, and each wrote it to `$HOME/.cartethyia`. In the container
+that is `/root/.cartethyia`: the entrypoint drops privileges with `setpriv
+--reuid=10001`, which does **not** change `HOME`, so the process ran as uid 10001
+against a directory it does not own. Every write failed with `EACCES`, and
+because the failure escaped into dispatch, a purely cosmetic telemetry identity
+took the provider offline — `grok-4.6` probing as `EACCES: permission denied,
+open '/root/.cartethyia/grok-install-id'`.
+
+The three copies of the read/mkdir/open sequence are now one module
+(`providers/integrations/install-id.ts`) that fixes both halves of the bug. The
+location is a list of candidates tried in order — `CARTETHYIA_INSTALL_ID_DIR`,
+then `$HOME/.cartethyia`, then `./data/.cartethyia` — so a `HOME` that exists but
+cannot be written (exactly the container's shape) falls through to a directory
+the process can actually use. The image also pins it to `/app/data/.cartethyia`,
+under the data directory the entrypoint already repairs. And a failure to
+persist is no longer fatal: it degrades to an in-process id that stays stable
+for the process's lifetime, with one warning naming the path and the fix. The id
+is an identity hint, not a credential — losing it changes how a machine is
+counted, never whether a request is served.
+
+### Proxies can be speed-tested, not just health-checked
+
+A health check answers whether a pool can carry traffic at all; it says nothing
+about how fast. `/console/proxy` now has a **Speedtest selected** toolbar control
+that measures download throughput through each selected pool
+(`POST /network/pools/:poolId/speed-test`).
+
+The measurement streams a payload from Cloudflare's speed endpoint through the
+pool's own SSRF-validated agent — the same builder dispatch uses, so a pool
+cannot be measured over a path production would refuse. The clock starts at
+request and stops after the body is fully read, so a stalled tail counts against
+the number instead of flattering a slow tunnel. A pool that cannot be dialed
+reports `failed` with its error rather than throwing, and the button is disabled
+until at least one row is selected. Tests run two at a time: each pulls its
+payload, and a wide fan-out would saturate the operator's own uplink and corrupt
+every measurement.
+
+The control is a split button: the primary half runs the test, the chevron half
+picks the payload — 1, 5 (default), 50, or 100 MB, bounded server-side between
+1 MB and 100 MB. A bigger payload washes out the TLS handshake and TCP
+slow-start that otherwise dominate a short transfer and make the number depend
+on the moment it ran, at the cost of a longer wait and more bytes billed to the
+operator's proxy plan. The last result per pool is persisted with the time it
+was taken, so the Address column keeps showing last known throughput — and how
+stale it is — across a reload, the same way health-check results already do.
+
+### The dashboard stops overflowing on a phone
+
+Auditing every page at phone width turned up five places where content ran past
+the viewport. The worst was the proxy summary tiles: their column count was set
+inline as `repeat(4, 1fr)`, which silently overrode the `.metric-grid`
+breakpoints, so the cards stayed four-wide on a phone. The theme picker's
+`repeat(3, 1fr)` grid, two popovers in Studio, and the sidebar's fixed 280px
+width were all pinned wider than a narrow screen; each now shrinks to fit. Two
+tables in the share management dialog — Top models and Recent requests — had no
+scroll wrapper and now sit in the same `.data-table-container` the recipients
+table already used.
+
 ### The share page's activity view is live, and says less
 
 The share page's **Stats & activity** section now updates itself over

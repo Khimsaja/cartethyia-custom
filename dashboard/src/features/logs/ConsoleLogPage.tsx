@@ -12,7 +12,7 @@
  *     backend returns 403 for lesser scopes.
  */
 import { RefreshCw, ScrollText, Search, ShieldCheck, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Badge } from "../../components/ui/badge";
 import { formatDuration } from "../../shared/format";
 import { Button } from "../../components/ui/button";
@@ -181,7 +181,13 @@ function eventRoute(line: ConsoleLogEntry): string | null {
  * status, route, model, client, duration) so a scan down the column reads as a
  * table; plain server lines keep the original message text.
  */
-function LogRow({
+/**
+ * One log line.
+ *
+ * Memoized: the stream appends a line at a time, and without this every append
+ * re-rendered the whole retained window (up to 500 rows) for one new line.
+ */
+const LogRow = memo(function LogRow({
   line,
   isNew,
 }: {
@@ -203,7 +209,7 @@ function LogRow({
       {isRequest ? <RequestFields line={line} /> : <span className="console-log-msg">{line.msg}</span>}
     </div>
   );
-}
+});
 
 /** The structured half of a request lifecycle row. */
 function RequestFields({ line }: { readonly line: ConsoleLogEntry }): ReactNode {
@@ -257,6 +263,13 @@ function LiveLogsPanel(): ReactNode {
     () => filterLogLines(lines, level, normalizedQuery),
     [lines, level, normalizedQuery],
   );
+  // Counts per level: one pass instead of one `filter` per filter button on
+  // every append.
+  const levelCounts = useMemo(() => {
+    const counts = new Map<string, number>([["all", lines.length]]);
+    for (const line of lines) counts.set(line.level, (counts.get(line.level) ?? 0) + 1);
+    return counts;
+  }, [lines]);
   useEffect(() => {
     if (!stickRef.current) return;
     const el = scrollRef.current;
@@ -290,7 +303,7 @@ function LiveLogsPanel(): ReactNode {
       <CardBody className="console-log-toolbar">
         <div className="console-log-filters" role="group" aria-label="Log level">
           {LEVEL_FILTERS.map((option) => {
-            const count = option.id === "all" ? lines.length : lines.filter((line) => line.level === option.id).length;
+            const count = levelCounts.get(option.id) ?? 0;
             return (
               <button
                 className={`console-log-filter${level === option.id ? " is-active" : ""}`}

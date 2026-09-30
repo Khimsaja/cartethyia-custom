@@ -867,8 +867,8 @@
     bottom: 12px;
     left: 12px;
     z-index: 70;
-    width: 280px;
-    min-width: 280px;
+    width: min(280px, calc(100vw - 24px));
+    min-width: 0;
     max-width: 280px;
     height: auto;
     max-height: none;
