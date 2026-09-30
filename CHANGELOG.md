@@ -32,6 +32,76 @@ implying a billing period, and nothing is flushed to the database. And the
 figure covers the tunneled connection: for SOCKS5 the negotiation handshake is
 not counted, only the tunnel that follows.
 
+### Quota enforcement: the rest of the accounting defects
+
+Five more, found by the same audit. The pre-dispatch estimate now counts tool
+results, documents, images and audio — it walked `text` parts only, so a request
+whose weight was mostly a pasted document was priced near zero and admitted far
+above its reserve. `/v1/responses/compact` reconciles the usage the compaction
+endpoint reports instead of always charging a flat 2048, which for a
+large-input operation under-counted real spend by orders of magnitude. A failed
+failover attempt commits its input estimate only rather than a full input+output
+reserve, so a request that walks N candidates no longer leaves N estimates on
+the counters. Adding a daily/monthly limit to a key that already spent in the
+current bucket seeds the counter from that spend instead of starting at zero.
+And the concurrency slot's TTL is derived from the lease TTL, so it cannot
+expire underneath a live lease.
+
+### Quota enforcement: three accounting defects closed
+
+A restore of a configuration backup can re-insert API keys the tenant revoked
+after that backup, and revoking a key purges its admission counters — so a
+resurrected key started with a fresh lifetime budget on top of everything it had
+already spent. A restore that replaces `api_keys` now clears the API-key auth
+cache and purges admission state for every key the tenant holds.
+
+Editing a key dropped its whole family's admission counters even when no limit
+changed: the dashboard form always sends all five limit fields, and the server
+treated any mention of them as a change. That handed every recipient a brand-new
+daily/monthly budget mid-bucket on an unrelated save (a rename, a note). Only a
+lowered or newly-added limit purges now; raising one cannot be bypassed by a
+stale counter, so it does not.
+
+`commitUsage` charged `input + output + cache_write + reasoning`, but
+`normalizeUsage` already folds cache writes into input and reasoning is a
+breakdown of output — the same tokens were billed twice, so a key hit its budget
+while it still had headroom.
+
+### The share page wears the console's mark, and its topbar breathes on phones
+
+The public share page drew its own shield glyph where the console renders the
+project logo; it now shows the same `favicon_love.webp`, so the two surfaces read
+as one product. On a narrow bar the GitHub chip's two remote count badges pressed
+against the theme toggle and the Home link — under 480px the counts are dropped
+and the chip shrinks to its mark, with a little more gap between the controls.
+
+### Provider accounts have a stable list order
+
+Accounts were listed by `created_at`, so two created in the same millisecond —
+or one touched by an update — could swap places between loads and the list
+appeared to jump on its own. Each account now carries a `sort_index` scoped to
+its `(tenant, provider)` list: a new account appends at the end, existing rows
+are backfilled from creation order so nothing moves, and the console's default
+sort is **Added** (the stored order) with **Name** still available for A-Z.
+A `reorderAccounts` store method rewrites the whole order atomically, ready for
+drag-to-reorder. The row checkboxes are 16px (the browser default read as a speck
+next to the 32px controls), the select-all label spells out **Select all**, and
+the bulk bar gained a **Test** action that probes every selected account and
+reports how many passed — a failed test is a 200 with `ok: false`, so it is
+counted rather than treated as a transport error.
+
+### A provider page totals its accounts' credits
+
+A provider whose accounts report a credit balance now opens its **Accounts** card
+with a single **Credit pool** line: every account's credits summed into one bar,
+`used / limit`, with a colour that follows the same green/orange/red ladder as
+the quota page and a caption reading `51% used across 12 accounts`. It reads
+from the quota overview the console already polls, so there is no new endpoint,
+and a provider that reports no credit window (RPM/TPM only) shows no card at
+all. Windows without a positive limit are excluded — they are rate limits, not
+credits — and one account's over-reported `used` is clamped so it cannot inflate
+the pool.
+
 ### A share link shows the family's quota and activity
 
 The share page gains two things a recipient could not see before. The hero now
