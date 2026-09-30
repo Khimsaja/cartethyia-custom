@@ -131,6 +131,38 @@ describe("ApiKeyAdmissionService", () => {
   });
 
   /**
+   * `normalizeUsage` folds cache writes into `input_tokens` and reasoning into
+   * `output_tokens`, so the reconciled counter must not add them again. Adding
+   * them charged the same tokens twice and made a key hit its budget early.
+   */
+  test("reconcile charges cache writes and reasoning only once", async () => {
+    const store = new InMemoryAdmissionCounterStore();
+    const svc = new ApiKeyAdmissionService(store);
+    const auth = snapshot({ api_key_id: "double-count-key", daily_tokens: 1_000 });
+    const lease = await svc.admit({
+      authorization: auth,
+      targetProvider: "anthropic",
+      targetModel: "claude-sonnet-5",
+      estimatedInputTokens: 10,
+    });
+
+    // The shape `normalizeUsage` emits for an Anthropic cache write with
+    // reasoning: input already includes the 100 written, output already
+    // includes the 40 thought tokens.
+    await lease.commitUsage({
+      input_tokens: 150,
+      output_tokens: 90,
+      cached_input_tokens: 0,
+      cache_write_tokens: 100,
+      uncached_input_tokens: 50,
+      reasoning_tokens: 40,
+      estimated_cost: null,
+    });
+
+    expect(await store.getDailyTokens("double-count-key")).toBe(240);
+  });
+
+  /**
    * The in-memory store is the documented `REDIS_MODE=single_instance_local`
    * production mode, so its daily/monthly budgets must roll over on the
    * calendar boundary exactly as the Redis store's bucket-qualified keys do.

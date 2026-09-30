@@ -354,7 +354,14 @@ describe("backup restore invalidates the route snapshot", () => {
     admissionIdentity: "operator",
   };
 
-  function routesWith(invalidations: { count: number }, restore: () => Promise<unknown>) {
+  function routesWith(
+    invalidations: { count: number },
+    restore: () => Promise<unknown>,
+    extra?: {
+      apiKeyStore?: { list(tenantId: string): Promise<readonly { id: string }[]> };
+      admissionService?: { purgeKey(apiKeyId: string): Promise<void> };
+    },
+  ) {
     return createBackupRoutes({
       accessResolver: () => sessionAccess,
       backupFor: () =>
@@ -367,6 +374,8 @@ describe("backup restore invalidates the route snapshot", () => {
           return invalidations.count;
         },
       },
+      ...(extra?.apiKeyStore ? { apiKeyStore: extra.apiKeyStore } : {}),
+      ...(extra?.admissionService ? { admissionService: extra.admissionService } : {}),
     });
   }
 
@@ -382,6 +391,48 @@ describe("backup restore invalidates the route snapshot", () => {
     );
     expect(res.status).toBe(200);
     expect(invalidations.count).toBe(1);
+  });
+
+  test("a restore that replaced api_keys purges every key's admission state", async () => {
+    // A key revoked after the backup comes back with `revoked_at = NULL` and a
+    // purged counter; without this purge it re-seeds a fresh lifetime budget.
+    const invalidations = { count: 0 };
+    const purged: string[] = [];
+    const app = routesWith(
+      invalidations,
+      async () => ({ restored: { api_keys: 2 }, skipped: {} }),
+      {
+        apiKeyStore: { list: async () => [{ id: "key-1" }, { id: "key-2" }] },
+        admissionService: { purgeKey: async (id) => void purged.push(id) },
+      },
+    );
+    const res = await app.handle(
+      new Request("http://localhost/backup/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: "pw", backup: { app: "cartethyia" } }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(purged.sort()).toEqual(["key-1", "key-2"]);
+  });
+
+  test("a restore with no api_keys touches no admission state", async () => {
+    const invalidations = { count: 0 };
+    const purged: string[] = [];
+    const app = routesWith(invalidations, async () => ({ restored: { providers: 1 }, skipped: {} }), {
+      apiKeyStore: { list: async () => [{ id: "key-1" }] },
+      admissionService: { purgeKey: async (id) => void purged.push(id) },
+    });
+    const res = await app.handle(
+      new Request("http://localhost/backup/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: "pw", backup: { app: "cartethyia" } }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(purged).toEqual([]);
   });
 
   test("a failed restore does not invalidate", async () => {

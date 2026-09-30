@@ -108,10 +108,27 @@ produces. A request with no `model`, or a blank one, is rejected 400 `invalid_re
    `InMemoryAdmissionCounterStore` (mutex-gated, 10 000 terminal-reservation
    ring) and `RedisAdmissionCounterStore` (RESERVE/RECONCILE/RELEASE Lua
    scripts over `admission:<kind>:*` keys with TTLs; `sweepLeases` +
-   `releaseAdmissionLease` reap crashed leases; `purgeKey` on key revocation).
-   `commitUsage` also persists reconciled lifetime consumption to Postgres via
-   an injected persister (COALESCE increment), so budgets survive a Redis
-   flush.
+   `releaseAdmissionLease` reap crashed leases; `purgeKey` on key revocation, on
+   a lowered/added limit, and for every key after a config restore that replaced
+   `api_keys` — a restored key may come back un-revoked with a purged counter, so
+   its lifetime budget would otherwise be re-seeded to full).
+   `commitUsage` charges `input_tokens + output_tokens` only: `normalizeUsage`
+   already folds cache writes into input and reasoning into output, so adding
+   those fields again double-charged the same tokens. It also persists reconciled
+   lifetime consumption to Postgres via an injected persister (COALESCE
+   increment), so budgets survive a Redis flush.
+   Pre-dispatch estimates are derived from every content part, not just `text`:
+   tool results, documents, images and audio carry no `text` field, so a
+   text-only walk priced them at zero and a request whose weight was mostly a
+   pasted document could be admitted far above the reserve. Binary payloads get
+   a flat per-part reserve.
+   A failed failover attempt commits its *input* estimate only — it may have
+   sent bytes upstream, but nothing was generated, so a request that walks N
+   candidates does not leave N full estimates on the counters.
+   The concurrency slot's TTL is derived from the lease TTL (it must outlive a
+   live lease), and `seedBuckets` lets an operator who adds a daily/monthly
+   ceiling have it enforced against spend already recorded in the current
+   bucket (`SET NX` — a live counter is never overwritten).
 
 `csrf.ts: isCsrfValid` is not a data-plane layer: it guards unsafe
 `/console/api/*` mutations only (session-cookie present: the readable

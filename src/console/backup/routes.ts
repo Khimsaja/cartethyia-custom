@@ -16,6 +16,7 @@
  */
 import { Elysia, t } from "elysia";
 import type { ConsoleAccessResolver } from "../auth/access";
+import { invalidateApiKeyCache } from "../../security/api-key-auth";
 import { ConsoleDomainError, errorResponse, requireAnyScope } from "../shared/errors";
 import { MAX_BACKUP_BYTES } from "./contracts";
 import type { BackupSection } from "./contracts";
@@ -40,6 +41,21 @@ export interface BackupRoutesConfig {
    * old members) until some unrelated console write happens to invalidate.
    */
   readonly snapshotInvalidator?: { invalidate(): Promise<number> };
+  /**
+   * The tenant's API keys, read after a restore so their admission counters can
+   * be purged. A restore replaces `api_keys` wholesale, so a key that was
+   * revoked after the backup — and had its counters purged by `revokeKey` — can
+   * come back with `revoked_at = NULL`; without purging, its lifetime counter
+   * is re-seeded from the restored total, granting a fresh full budget on top
+   * of everything already spent. Optional so a host that never restores keys
+   * need not supply it.
+   */
+  readonly apiKeyStore?: { list(tenantId: string): Promise<readonly { id: string }[]> };
+  /**
+   * Structurally satisfied by `ApiKeyAdmissionService`. Purges one key's
+   * reservation/counter state. Paired with {@link apiKeyStore} on restore.
+   */
+  readonly admissionService?: { purgeKey(apiKeyId: string): Promise<void> };
 }
 
 /**
@@ -130,6 +146,19 @@ export function createBackupRoutes(config: BackupRoutesConfig): Elysia {
         // Routing-visible write: the restore has committed, so the cached
         // snapshot must be rebuilt before the next `/v1/*` dispatch.
         await config.snapshotInvalidator?.invalidate();
+        // A restore can re-insert keys the tenant revoked after the backup, and
+        // `revokeKey` purged their counters when they went away. Drop the whole
+        // auth cache (the restore is rare, and a stale entry for any key must
+        // not survive it) and purge admission state for every key the tenant
+        // now has, so a resurrected key cannot start with a fresh budget.
+        if (result.restored.api_keys !== undefined) {
+          invalidateApiKeyCache();
+          const keys = await config.apiKeyStore?.list(access.tenantId);
+          if (keys && config.admissionService) {
+            const admission = config.admissionService;
+            await Promise.all(keys.map((key) => admission.purgeKey(key.id)));
+          }
+        }
         set.status = 200;
         return result;
       } catch (error) {

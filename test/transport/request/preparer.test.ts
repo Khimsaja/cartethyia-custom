@@ -15,6 +15,37 @@ const authorization: ResolvedApiKey = {
   },
 };
 
+/**
+ * The admission estimate is derived from content that carries no `text` field:
+ * a tool result, a document and an image. A text-only walk priced all three at
+ * zero, so a request whose weight was mostly a pasted document could be
+ * admitted while its true usage was far above the reserve.
+ */
+function preparerForEstimate(): ProxyRequestPreparer {
+  return new ProxyRequestPreparer({
+    snapshotService: { getSnapshot: async () => ({ revision: 1 }) } as never,
+    routingEngine: {
+      plan: async () =>
+        ({
+          revision: 1,
+          requested_model: "gpt-4o",
+          resolved_model: "openai/gpt-4o",
+          provider_id: "openai",
+          candidates: [
+            {
+              provider_id: "openai",
+              model_id: "gpt-4o",
+              wire_family: "chat",
+              endpoint: "/v1/chat/completions",
+              capability_profile: { image: true, document: true, tools: true },
+            },
+          ],
+        }) as RoutePlan,
+    } as never,
+    admissionService: {} as never,
+  });
+}
+
 const codexRouteCandidate: RouteCandidate = {
   provider_id: "codex",
   model_id: "gpt-5.6-sol",
@@ -61,6 +92,40 @@ describe("native compact routing preparation", () => {
     expect(plannedTenant).toBe("tenant-a");
     expect(prepared.candidates).toEqual([codexRouteCandidate]);
     expect(prepared.candidates[0]?.provider_account_id).toBe("tenant-a-codex-account");
+  });
+
+  test("the admission estimate counts tool results, documents and images", async () => {
+    const prepared = await preparerForEstimate().prepare({
+      canonicalRequest: {
+        model: "gpt-4o",
+        messages: [
+          { role: "user", content: [{ kind: "text", text: "look at this" }] },
+          // The call must precede the result, or the incomplete-round repair
+          // drops the orphan result before the estimate ever runs.
+          {
+            role: "assistant",
+            content: [{ kind: "toolCall", call_id: "c1", name: "read", arguments: { path: "a" } }],
+          },
+          {
+            role: "tool",
+            content: [
+              { kind: "toolResult", call_id: "c1", content: "x".repeat(4_000) },
+              { kind: "document", data: "b64", media_type: "application/pdf", title: "spec" },
+              { kind: "image", payload: "b64" },
+            ],
+          },
+        ],
+        generation_controls: {},
+        stream: false,
+        source_surface: "chat",
+      },
+      authorization,
+      deadlineMs: 60_000,
+    });
+
+    // 4_000 chars of tool result alone is ~1_000 tokens; the text-only walk
+    // returned 4 for the same request.
+    expect(prepared.estimatedInputTokens).toBeGreaterThan(1_000);
   });
 
   test("rejects a tenant route that has no eligible Codex account candidate", async () => {

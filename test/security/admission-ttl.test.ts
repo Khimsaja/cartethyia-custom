@@ -91,6 +91,36 @@ redisDescribe("admission counter TTLs (live Redis)", () => {
     await store.release(request.apiKeyId, request.estimatedTokens, request.reservationId);
   });
 
+  test("the concurrency slot outlives the longest possible lease", async () => {
+    // The slot must not expire underneath a still-live lease: a later reserve
+    // would then INCR from zero and the key could hold more simultaneous
+    // requests than `max_concurrent`. Derived from the lease TTL rather than
+    // hard-coded, so raising the lease cannot silently reopen the hole.
+    const request = { ...lifetimeRequest("conc"), concurrencyLimit: 2 };
+    await store.reserve(request);
+
+    const slotTtl = await redis.ttl(`admission:concurrent:${request.apiKeyId}`);
+    const leaseTtl = await redis.ttl(`admission:lease:${request.reservationId}`);
+    expect(slotTtl).toBeGreaterThan(0);
+    expect(slotTtl).toBeGreaterThanOrEqual(leaseTtl);
+
+    await store.release(request.apiKeyId, request.estimatedTokens, request.reservationId);
+  });
+
+  test("seeding a bucket never overwrites a live counter", async () => {
+    // A counter that already exists is the running total; seeding is only for
+    // a bucket that has not been written yet.
+    const request = { ...lifetimeRequest("seedbucket"), dailyLimit: 100_000 };
+    await store.reserve(request);
+    const key = `admission:daily:${request.apiKeyId}:${new Date().toISOString().slice(0, 10)}`;
+    const before = await redis.get(key);
+
+    await store.seedBuckets?.({ apiKeyId: request.apiKeyId, now: Date.now(), daily: 1 });
+    expect(await redis.get(key)).toBe(before);
+
+    await store.release(request.apiKeyId, request.estimatedTokens, request.reservationId);
+  });
+
   test("a rejected reserve still leaves the seeded counter bounded", async () => {
     // The seed runs before the budget check, so the early `return -4` used to
     // leave a freshly created counter with no expiry and no later write to arm

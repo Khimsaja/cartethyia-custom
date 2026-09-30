@@ -113,7 +113,23 @@ export interface ApiKeyConfig {
   readonly auditSink?: AuditSink;
   readonly shareStore?: ShareLinkStore;
   readonly shareActivity?: ShareActivityPort;
-  readonly admissionService: Pick<ApiKeyAdmissionService, "purgeKey">;
+  readonly admissionService: Pick<ApiKeyAdmissionService, "purgeKey"> & {
+    seedBuckets?(request: {
+      readonly apiKeyId: string;
+      readonly now?: number;
+      readonly daily?: number;
+      readonly monthly?: number;
+    }): Promise<void>;
+  };
+  /**
+   * Reads tokens already spent in the current daily/monthly bucket, so a
+   * newly-added limit is enforced against the whole bucket. Optional: without
+   * it a new limit simply starts counting from the moment it was set.
+   */
+  readonly bucketSpend?: (
+    keyId: string,
+    now: Date,
+  ) => Promise<{ daily: number; monthly: number }>;
 }
 
 /** Result of minting a share link. The bearer token is returned exactly once. */

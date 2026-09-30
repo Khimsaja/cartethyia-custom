@@ -79,6 +79,23 @@ export interface AdmissionCounterStore {
    * via TTL. Best-effort: never throws.
    */
   purge(apiKeyId: string): Promise<void>;
+  /**
+   * Seeds the daily/monthly counters for the bucket containing `now`, but only
+   * when the counter does not exist yet.
+   *
+   * An operator who adds a daily limit to a key that has already spent today
+   * must not be handed a fresh budget on top of that spend. The counters are
+   * not persisted anywhere, so the only honest baseline is the usage already
+   * recorded for the current bucket. `SETNX`-style: an existing counter is the
+   * running total and must never be overwritten. Best-effort and optional —
+   * a store without it simply starts the bucket at zero, as before.
+   */
+  seedBuckets?(request: {
+    readonly apiKeyId: string;
+    readonly now: number;
+    readonly daily?: number;
+    readonly monthly?: number;
+  }): Promise<void>;
 }
 
 interface InMemoryReservation {
@@ -213,13 +230,18 @@ function knownTokens(value: number | "unavailable" | null | undefined): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
 }
 
+/**
+ * Token total charged to a key's counters.
+ *
+ * `normalizeUsage` already folds cache writes into `input_tokens` (the
+ * Anthropic cache shape adds read + written to the fresh count) and reasoning
+ * tokens are a breakdown *of* `output_tokens` on both wire families — the
+ * pricing path in `providers/usage.ts` subtracts reasoning from output for the
+ * same reason. Adding them again here charged the same tokens twice, so a key
+ * hit its budget while it still had real headroom.
+ */
 function usageTokens(usage: UsageRecord): number {
-  return (
-    knownTokens(usage.input_tokens) +
-    knownTokens(usage.output_tokens) +
-    knownTokens(usage.cache_write_tokens) +
-    knownTokens(usage.reasoning_tokens)
-  );
+  return knownTokens(usage.input_tokens) + knownTokens(usage.output_tokens);
 }
 
 
@@ -411,6 +433,23 @@ export class InMemoryAdmissionCounterStore implements AdmissionCounterStore {
     });
   }
 
+  async seedBuckets(request: {
+    readonly apiKeyId: string;
+    readonly now: number;
+    readonly daily?: number;
+    readonly monthly?: number;
+  }): Promise<void> {
+    await this.exclusive(() => {
+      this.assertAvailable();
+      const dailyKey = bucketKey(request.apiKeyId, dailyBucket(request.now));
+      const monthlyKey = bucketKey(request.apiKeyId, monthlyBucket(request.now));
+      if (request.daily !== undefined && !this.daily.has(dailyKey))
+        this.daily.set(dailyKey, Math.floor(request.daily));
+      if (request.monthly !== undefined && !this.monthly.has(monthlyKey))
+        this.monthly.set(monthlyKey, Math.floor(request.monthly));
+    });
+  }
+
   /** Drops every entry whose key is `<apiKeyId>:<bucket>`. */
   private deleteKeyPrefix(store: Map<string, number>, apiKeyId: string): void {
     const prefix = `${apiKeyId}:`;
@@ -527,6 +566,22 @@ export class ApiKeyAdmissionService {
    */
   async purgeKey(apiKeyId: string): Promise<void> {
     await this.store.purge(apiKeyId).catch(() => undefined);
+  }
+
+  /**
+   * Seeds the current daily/monthly buckets from already-recorded spend so a
+   * newly added limit is enforced against the whole bucket, not just from the
+   * moment it was set. No-op when the store does not implement it.
+   */
+  async seedBuckets(request: {
+    readonly apiKeyId: string;
+    readonly now?: number;
+    readonly daily?: number;
+    readonly monthly?: number;
+  }): Promise<void> {
+    await this.store
+      .seedBuckets?.({ ...request, now: request.now ?? this.clock() })
+      .catch(() => undefined);
   }
 
   async admit(input: ApiKeyAdmissionRequest): Promise<AdmissionLease> {
@@ -666,7 +721,11 @@ const MONTHLY_COUNTER_TTL_SECONDS = 3024000;
 const LIFETIME_COUNTER_TTL_SECONDS = 3024000;
 /** RPM window plus slack; concurrency slots are held for the request duration. */
 const RPM_WINDOW_TTL_SECONDS = 65;
-const CONCURRENCY_TTL_SECONDS = 3600;
+// Must exceed the lease's own lifetime (`LEASE_TTL_MS` + grace), otherwise a
+// request held longer than this lets its concurrency counter expire underneath
+// a still-live lease and a later reserve INCRs from zero. Derived rather than
+// hard-coded so raising the lease TTL cannot silently reopen the hole.
+const CONCURRENCY_TTL_SECONDS = LEASE_KEY_TTL_SECONDS;
 
 function dailyBucket(now: number): string {
   return new Date(now).toISOString().slice(0, 10);
@@ -905,6 +964,47 @@ export class RedisAdmissionCounterStore implements AdmissionCounterStore {
       apiKeyId,
     );
     assertResult(result, "release");
+  }
+
+  /**
+   * `SET NX`-seeds the current bucket's counters from already-recorded usage.
+   * NX is what makes this safe: an existing counter is the live running total,
+   * and overwriting it would erase spend. Best-effort by contract.
+   */
+  async seedBuckets(request: {
+    readonly apiKeyId: string;
+    readonly now: number;
+    readonly daily?: number;
+    readonly monthly?: number;
+  }): Promise<void> {
+    try {
+      const operations: Promise<unknown>[] = [];
+      if (request.daily !== undefined && request.daily > 0) {
+        operations.push(
+          this.redis.set(
+            `admission:daily:${request.apiKeyId}:${dailyBucket(request.now)}`,
+            Math.floor(request.daily),
+            "EX",
+            DAILY_COUNTER_TTL_SECONDS,
+            "NX",
+          ),
+        );
+      }
+      if (request.monthly !== undefined && request.monthly > 0) {
+        operations.push(
+          this.redis.set(
+            `admission:monthly:${request.apiKeyId}:${monthlyBucket(request.now)}`,
+            Math.floor(request.monthly),
+            "EX",
+            MONTHLY_COUNTER_TTL_SECONDS,
+            "NX",
+          ),
+        );
+      }
+      await Promise.all(operations);
+    } catch {
+      // Seeding is an optimisation, not a correctness gate.
+    }
   }
 
   /**

@@ -269,14 +269,35 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
       // invalidation above is enough. Only quota/concurrency edits need an
       // admission purge — otherwise blocking 9Router would also wipe RPM /
       // daily counters for every recipient mid-day.
+      //
+      // And only a *tightened* limit needs it. The dashboard edit form always
+      // sends all five limit fields, so a `!== undefined` test treated every
+      // save — renaming a key, editing notes — as a limit change and dropped
+      // the whole family's daily/monthly counters, restarting the budget
+      // mid-bucket. Loosening a limit cannot be bypassed by a stale counter
+      // (the counter only ever grows toward the new ceiling), so it needs no
+      // purge either; only a lowered or newly-added ceiling does.
+      const tightened = (
+        next: number | null | undefined,
+        previous: number | null | undefined,
+      ): boolean => {
+        if (next === undefined || next === null) return false;
+        if (previous === null || previous === undefined) return true;
+        return next < previous;
+      };
+      /** A ceiling that did not exist before this request. */
+      const isNewLimit = (
+        next: number | null | undefined,
+        previous: number | null | undefined,
+      ): boolean => next !== undefined && next !== null && (previous === null || previous === undefined);
       const limitsChanged =
         modeChanged ||
         secret !== undefined ||
-        patchRequest.requestsPerMinute !== undefined ||
-        patchRequest.dailyTokenLimit !== undefined ||
-        patchRequest.monthlyTokenLimit !== undefined ||
-        patchRequest.lifetimeTokenBudget !== undefined ||
-        patchRequest.maxConcurrentRequests !== undefined;
+        tightened(patchRequest.requestsPerMinute, current.requestsPerMinute) ||
+        tightened(patchRequest.dailyTokenLimit, current.dailyTokenLimit) ||
+        tightened(patchRequest.monthlyTokenLimit, current.monthlyTokenLimit) ||
+        tightened(patchRequest.lifetimeTokenBudget, current.lifetimeTokenBudget) ||
+        tightened(patchRequest.maxConcurrentRequests, current.maxConcurrentRequests);
       if (limitsChanged) {
         // Drop stale admission counters so a newly lowered one-time/recurring
         // budget cannot be bypassed by a counter seeded under the old limit.
@@ -285,6 +306,25 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
           config.admissionService.purgeKey(keyId),
           ...children.map((child) => config.admissionService.purgeKey(child.id)),
         ]);
+      }
+      // Adding a daily/monthly ceiling to a key that already spent in the
+      // current bucket must not hand it a full fresh budget: seed the counter
+      // from the spend already recorded, so the limit covers the whole bucket.
+      // Only a *newly added* ceiling needs this — a lowered one was just
+      // purged above, and re-seeding there would restore the old baseline.
+      const dailyAdded = isNewLimit(patchRequest.dailyTokenLimit, current.dailyTokenLimit);
+      const monthlyAdded = isNewLimit(patchRequest.monthlyTokenLimit, current.monthlyTokenLimit);
+      if ((dailyAdded || monthlyAdded) && config.bucketSpend && config.admissionService.seedBuckets) {
+        const now = new Date();
+        const spend = await config.bucketSpend(keyId, now).catch(() => null);
+        if (spend) {
+          await config.admissionService.seedBuckets({
+            apiKeyId: keyId,
+            now: now.getTime(),
+            ...(dailyAdded ? { daily: spend.daily } : {}),
+            ...(monthlyAdded ? { monthly: spend.monthly } : {}),
+          });
+        }
       }
       await config.auditSink?.record({
         access: authorized,

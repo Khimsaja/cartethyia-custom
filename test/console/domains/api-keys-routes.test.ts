@@ -261,13 +261,14 @@ describe("api-key routes", () => {
     store?: ReturnType<typeof fakeKeyStore>["store"];
     shareStore?: ReturnType<typeof fakeShareStore>["shareStore"];
     shareActivity?: ShareActivityPort;
+    admissionService?: { purgeKey(apiKeyId: string): Promise<void> };
   }) {
     return createApiKeyRoutes({
       store: config?.store ?? fakeKeyStore().store,
       accessResolver: () => writer,
       ...(config?.shareStore ? { shareStore: config.shareStore } : {}),
       ...(config?.shareActivity ? { shareActivity: config.shareActivity } : {}),
-      admissionService: fakeAdmission(),
+      admissionService: config?.admissionService ?? fakeAdmission(),
     });
   }
 
@@ -385,6 +386,96 @@ describe("api-key routes", () => {
       body: JSON.stringify({ label: "after" }),
     });
     expect(response.status).toBe(200);
+  });
+
+  test("PATCH that only renames does not purge admission counters", async () => {
+    // The dashboard edit form always sends all five limit fields, so a naive
+    // `!== undefined` test dropped the family's daily/monthly counters on every
+    // save — restarting the budget mid-bucket. An unchanged limit must not.
+    const { store } = fakeKeyStore();
+    const purged: string[] = [];
+    const admission = { purgeKey: async (id: string) => void purged.push(id) };
+    const operations = createApiKeyOperations({
+      store,
+      accessResolver: () => writer,
+      admissionService: admission,
+    });
+    const key = await operations.createKey(writer, { label: "stable" });
+    await operations.updateKey(writer, key.id, { label: "renamed" });
+    expect(purged).toEqual([]);
+  });
+
+  test("PATCH that lowers a limit purges admission counters", async () => {
+    const { store, records } = fakeKeyStore();
+    const purged: string[] = [];
+    const admission = { purgeKey: async (id: string) => void purged.push(id) };
+    const operations = createApiKeyOperations({
+      store,
+      accessResolver: () => writer,
+      admissionService: admission,
+    });
+    const key = await operations.createKey(writer, { label: "limited" });
+    const existing = records.get(key.id);
+    if (existing) records.set(key.id, { ...existing, dailyTokenLimit: 10_000 });
+    await operations.updateKey(writer, key.id, { dailyTokenLimit: 500 });
+    expect(purged).toContain(key.id);
+  });
+
+  test("PATCH that raises a limit does not purge admission counters", async () => {
+    const { store, records } = fakeKeyStore();
+    const purged: string[] = [];
+    const admission = { purgeKey: async (id: string) => void purged.push(id) };
+    const operations = createApiKeyOperations({
+      store,
+      accessResolver: () => writer,
+      admissionService: admission,
+    });
+    const key = await operations.createKey(writer, { label: "limited" });
+    const existing = records.get(key.id);
+    if (existing) records.set(key.id, { ...existing, dailyTokenLimit: 10_000 });
+    await operations.updateKey(writer, key.id, { dailyTokenLimit: 20_000 });
+    expect(purged).toEqual([]);
+  });
+
+  test("adding a daily limit seeds the bucket from already-recorded spend", async () => {
+    // Without this, a key that already spent today would be handed a full
+    // fresh budget on top of that spend.
+    const { store } = fakeKeyStore();
+    const seeded: Array<{ apiKeyId: string; daily?: number; monthly?: number }> = [];
+    const admission = {
+      purgeKey: async () => {},
+      seedBuckets: async (request: { apiKeyId: string; daily?: number; monthly?: number }) => {
+        seeded.push(request);
+      },
+    };
+    const operations = createApiKeyOperations({
+      store,
+      accessResolver: () => writer,
+      admissionService: admission,
+      bucketSpend: async () => ({ daily: 7_000, monthly: 9_000 }),
+    });
+    const key = await operations.createKey(writer, { label: "spender" });
+    await operations.updateKey(writer, key.id, { dailyTokenLimit: 10_000 });
+    expect(seeded).toHaveLength(1);
+    expect(seeded[0]).toMatchObject({ apiKeyId: key.id, daily: 7_000 });
+  });
+
+  test("renaming never seeds the bucket", async () => {
+    const { store } = fakeKeyStore();
+    const seeded: unknown[] = [];
+    const admission = {
+      purgeKey: async () => {},
+      seedBuckets: async (request: unknown) => void seeded.push(request),
+    };
+    const operations = createApiKeyOperations({
+      store,
+      accessResolver: () => writer,
+      admissionService: admission,
+      bucketSpend: async () => ({ daily: 7_000, monthly: 9_000 }),
+    });
+    const key = await operations.createKey(writer, { label: "spender" });
+    await operations.updateKey(writer, key.id, { label: "renamed" });
+    expect(seeded).toEqual([]);
   });
 
   test("DELETE /:keyId revokes the key", async () => {

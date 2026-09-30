@@ -13,7 +13,7 @@ import { ProxyRequestPreparer } from "../request/preparer";
 import { isModelAllowed } from "../../security/api-key-auth";
 import type { CodexCompactAdapter } from "../../providers/integrations/codex/codex";
 import { completeAttempt, estimatedUsage } from "./attempt-finalize";
-import { repriceUsage } from "../../providers/usage";
+import { repriceUsage, usageFromProvider } from "../../providers/usage";
 import { runAttemptLoop } from "./attempt-loop";
 
 /**
@@ -131,8 +131,27 @@ export function createResponsesCompactHandler(deps: ResponsesCompactHandlerDeps)
               }
             : {}),
         });
+        // Prefer the usage the compaction endpoint actually reported. The
+        // estimate is a fixed 1024+1024 reserve, and compaction is by
+        // construction a large-input operation, so charging it unconditionally
+        // let real spend run far past the counter. `usageFromProvider` returns
+        // undefined when the body reported nothing, which keeps the estimate as
+        // the fallback. `response.clone()` leaves the body readable for the
+        // client.
+        let reportedUsage: ReturnType<typeof usageFromProvider>;
+        try {
+          const parsed: unknown = await response.clone().json();
+          reportedUsage = usageFromProvider(
+            typeof parsed === "object" && parsed !== null
+              ? (parsed as Record<string, unknown>)["usage"]
+              : undefined,
+          );
+        } catch {
+          reportedUsage = undefined;
+        }
         const usage = repriceUsage(
-          estimatedUsage(prepared.estimatedInputTokens, prepared.estimatedOutputTokens),
+          reportedUsage ??
+            estimatedUsage(prepared.estimatedInputTokens, prepared.estimatedOutputTokens),
           candidate.provider_id,
           candidate.model_id,
         );

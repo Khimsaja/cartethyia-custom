@@ -161,16 +161,16 @@ export async function runAttemptLoop<TResult, TAdapter>(
         ...(networkPoolId ? { networkPoolId } : {}),
         error,
         ...(lease ? { lease } : {}),
+        // A failed attempt may have sent bytes upstream, so it is not free —
+        // but it must not be charged the full input estimate plus a full
+        // output reserve either, because a request that walks N candidates
+        // would then leave N estimates on the counters for one client request.
+        // Commit the input estimate only: nothing was generated, and the
+        // `finally` release then refunds the (uncommitted) output reserve.
         ...(!cancelled && bindingEstablished
           ? {
-              // Repriced against the candidate that actually ran: a failed
-              // attempt still consumed its tokens, and committing the raw
-              // estimate left `estimated_cost` null for every failover.
               commitUsage: repriceUsage(
-                estimatedUsage(
-                  leaseSource.estimatedInputTokens,
-                  leaseSource.estimatedOutputTokens,
-                ),
+                estimatedUsage(leaseSource.estimatedInputTokens, 0),
                 candidate.provider_id,
                 candidate.model_id,
               ),

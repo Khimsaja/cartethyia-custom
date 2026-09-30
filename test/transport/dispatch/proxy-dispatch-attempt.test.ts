@@ -651,6 +651,29 @@ describe("createResponsesCompactHandler — shared attempt loop", () => {
     expect(rows[0]).toMatchObject({ status: "completed", requestedModel: "unknown" });
   });
 
+  test("charges the usage the compaction response reports, not the flat estimate", async () => {
+    const rows: Array<Record<string, unknown>> = [];
+    const commits: unknown[] = [];
+    const { request, handler } = compactHarness({
+      candidates: [codexRouteCandidate(COMPACT_MODEL)],
+      // A real compaction is a large-input operation; the fixed 1024+1024
+      // reserve is nowhere near what it actually consumed.
+      compact: async () =>
+        new Response(
+          JSON.stringify({ output: "compacted", usage: { input_tokens: 50_000, output_tokens: 3_000 } }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      rows,
+      commits,
+    });
+
+    const response = await handler({ request });
+    expect(response.status).toBe(200);
+    expect(commits).toHaveLength(1);
+    expect((commits[0] as { input_tokens: number }).input_tokens).toBe(50_000);
+    expect((commits[0] as { output_tokens: number }).output_tokens).toBe(3_000);
+  });
+
   test("fails over to the next Codex candidate on a retryable failure", async () => {
     const rows: Array<Record<string, unknown>> = [];
     const commits: unknown[] = [];
@@ -682,11 +705,14 @@ describe("createResponsesCompactHandler — shared attempt loop", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ status: "completed", requestedModel: "unknown" });
     // Each attempt reconciled the lease it held, repriced against the candidate
-    // that ran. The failed candidate's id is not in the catalog, so its
-    // estimate is unpriced (`null`) — an honest "unknown", not a fake `$0.00`;
-    // the served one carries the model's real rate.
+    // that ran. The failed attempt charges its input estimate only — it may
+    // have sent bytes upstream, but nothing was generated, so reserving a full
+    // output budget for it would leave N full estimates on the counters for
+    // one client request. The failed candidate's id is not in the catalog, so
+    // its estimate is unpriced (`null`) — an honest "unknown", not a fake
+    // `$0.00`; the served one carries the model's real rate.
     expect(commits).toEqual([
-      { ...ESTIMATED_USAGE, estimated_cost: null },
+      { ...ESTIMATED_USAGE, output_tokens: 0, estimated_cost: null },
       ESTIMATED_USAGE,
     ]);
   });
