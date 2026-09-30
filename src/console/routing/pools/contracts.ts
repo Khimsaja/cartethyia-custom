@@ -11,6 +11,12 @@ import type { SsrfPolicy } from "../../../config";
 import type { NetworkPoolSelector } from "../../../network/pool/selector";
 import type { PoolHealthEvent } from "../../../network/pool-health-machine";
 import { literalUnion } from "../../shared/elysia-schema";
+import { SPEED_TEST_DEFAULT_BYTES, SPEED_TEST_MAX_BYTES, SPEED_TEST_MIN_BYTES } from "./speed-test-sizes";
+export {
+  SPEED_TEST_DEFAULT_BYTES,
+  SPEED_TEST_MAX_BYTES,
+  SPEED_TEST_MIN_BYTES,
+} from "./speed-test-sizes";
 
 export interface CreateNetworkPoolRequest {
   kind: TransportKind;
@@ -71,6 +77,25 @@ export interface HealthCheckResult {
   errorMessage?: string;
   /** Public address the pool egressed from, when the probe could read one. */
   egressIp?: string;
+}
+/**
+ * Throughput measured by dialing a fixed-size download through the pool.
+ *
+ * Distinct from `HealthCheckResult`: a health check asks "can this pool carry
+ * traffic at all", a speed test asks "how fast". A pool can be perfectly
+ * healthy and still measure a slow or failed transfer.
+ */
+export interface PoolSpeedTestResult {
+  poolId: string;
+  status: "ok" | "failed";
+  /** Payload actually transferred, in bytes. */
+  bytes: number;
+  /** Wall-clock duration of the transfer, in milliseconds. */
+  durationMs: number;
+  /** Decimal (1 MB = 1_000_000) to match how operators read proxy plans. */
+  bytesPerSecond?: number;
+  megabitsPerSecond?: number;
+  errorMessage?: string;
 }
 export function validateTransportConfig(
   kind: TransportKind,
@@ -229,6 +254,9 @@ export interface NetworkPoolStore {
   ): Promise<NetworkPoolRecord | undefined>;
   delete(tenantId: string, poolId: string): Promise<boolean>;
   healthCheck(tenantId: string, poolId: string): Promise<HealthCheckResult>;
+  /** Measures download throughput through the pool; never throws for a slow
+   * or refused transfer — a failed measurement is itself the result. */
+  speedTest?(tenantId: string, poolId: string, bytes: number): Promise<PoolSpeedTestResult>;
   probeAdHoc?(
     tenantId: string,
     request: CreateNetworkPoolRequest,
@@ -582,6 +610,31 @@ export function createNetworkPoolOperations(config: NetworkPoolConfig) {
         }
         return result;
       },
+    /**
+     * Measures download throughput through one saved pool.
+     *
+     * Read-scoped like the health check: it dials the tenant's own pool and
+     * changes no state. A pool that cannot be dialed reports `failed` rather
+     * than throwing, so a batch of these returns a per-pool verdict.
+     */
+    async speedTest(
+      access: AccessDecision | undefined,
+      poolId: string,
+      bytes: number,
+    ): Promise<PoolSpeedTestResult> {
+      const a = requireTenantScope(access, "dashboard:read");
+      if (!config.store.speedTest) {
+        throw new ConsoleDomainError("not_supported", 400, "Speed tests are unavailable");
+      }
+      if (!Number.isInteger(bytes) || bytes < SPEED_TEST_MIN_BYTES || bytes > SPEED_TEST_MAX_BYTES) {
+        throw new ConsoleDomainError(
+          "invalid_speed_test_size",
+          422,
+          `Payload must be between ${SPEED_TEST_MIN_BYTES} and ${SPEED_TEST_MAX_BYTES} bytes`,
+        );
+      }
+      return config.store.speedTest(a.tenantId, poolId, bytes);
+    },
     async probeAdHocPool(
       access: AccessDecision | undefined,
       request: CreateNetworkPoolRequest,
@@ -710,6 +763,17 @@ export function createNetworkPoolRoutes(config: NetworkPoolConfig): Elysia {
     .post("/:poolId/health-check", async ({ request, params }) => {
       return await factory.healthCheck(config.accessResolver(request), params.poolId);
 })
+    .post(
+      "/:poolId/speed-test",
+      { body: t.Optional(t.Object({ bytes: t.Optional(t.Number()) })) },
+      async ({ request, params, body }) => {
+        return await factory.speedTest(
+          config.accessResolver(request),
+          params.poolId,
+          body?.bytes ?? SPEED_TEST_DEFAULT_BYTES,
+        );
+      },
+    )
     .post("/test", { body: createPoolBody }, async ({ request, body }) => {
       return await factory.probeAdHocPool(
         config.accessResolver(request),

@@ -6,6 +6,7 @@ import type {
   NetworkPoolResponse,
   PoolBatchProbeResult,
   PoolHealthEvent,
+  PoolSpeedTestResult,
   PoolStrategySetting,
 } from "../data/contracts";
 import { queryKeys } from "../data/query-keys";
@@ -155,6 +156,21 @@ export function useHealthCheckNetworkPool() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.network.pools });
     },
+  });
+}
+
+/** Measures download throughput through a network pool. */
+export function useSpeedTestNetworkPool() {
+  return useMutation<
+    PoolSpeedTestResult,
+    ApiErrorShape,
+    { poolId: string; bytes: number }
+  >({
+    mutationFn: ({ poolId, bytes }) =>
+      consoleRequest<PoolSpeedTestResult>(
+        `/network/pools/${encodeURIComponent(poolId)}/speed-test`,
+        { method: "POST", body: JSON.stringify({ bytes }) },
+      ),
   });
 }
 

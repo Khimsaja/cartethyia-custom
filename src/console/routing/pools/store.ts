@@ -8,6 +8,7 @@ import {
   type HealthCheckResult,
   type NetworkPoolRecord,
   type NetworkPoolStore,
+  type PoolSpeedTestResult,
   type PoolStrategySetting,
 } from "./contracts";
 import { classifyPoolConnectError, classifyPoolProbeResponse, parseEgressIp } from "./probe-result";
@@ -34,6 +35,15 @@ import {
 // means by "the proxy's IP" — rather than the local DNS answer for its
 // hostname, which says nothing about where traffic actually leaves.
 const NETWORK_POOL_HEALTH_CANARY = "https://www.cloudflare.com/cdn-cgi/trace";
+// Fixed-size payload for throughput measurement. Cloudflare's speed endpoint
+// streams exactly the requested byte count and answers no-cache, so the number
+// reflects the tunnel rather than a CDN cache hit. The default (5 MB) finishes
+// in a few seconds on a usable proxy and is large enough that TLS setup does
+// not dominate; operators can ask for more when the link is fast enough that
+// a short transfer measures ramp-up instead of throughput.
+const NETWORK_POOL_SPEED_TEST_URL = "https://speed.cloudflare.com/__down?bytes=";
+/** Worst-case wait for the largest allowed payload on a slow link. */
+const NETWORK_POOL_SPEED_TEST_TIMEOUT_MS = 60_000;
 /** Real Drizzle-backed network pool repository. */
 export class DrizzleNetworkPoolStore implements NetworkPoolStore {
   /**
@@ -301,6 +311,77 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
       await disablePoolForProxyHttpStatus(this.db, poolId, result.httpStatus);
     }
     return result;
+  }
+  /**
+   * Measures download throughput by streaming a fixed payload through the pool.
+   *
+   * The transfer runs through the same SSRF-validated agent dispatch uses, so
+   * a measurement cannot be taken over a path production would refuse. The
+   * whole payload is pulled into memory (5 MB) — bounded by the endpoint's
+   * fixed size, not by what the peer chooses to send.
+   */
+  async speedTest(tenantId: string, poolId: string, bytes: number): Promise<PoolSpeedTestResult> {
+    const rows = await this.db
+      .select()
+      .from(networkPools)
+      .where(and(eq(networkPools.tenantId, tenantId), eq(networkPools.id, poolId)))
+      .limit(1);
+    if (!rows[0]) {
+      return { poolId, status: "failed", bytes: 0, durationMs: 0, errorMessage: "Pool not found" };
+    }
+    let agent: PoolAgent;
+    try {
+      agent = await this.poolAgents.resolveAgent(poolId, tenantId);
+    } catch (error) {
+      return {
+        poolId,
+        status: "failed",
+        bytes: 0,
+        durationMs: 0,
+        errorMessage: error instanceof Error ? error.message : "Failed to build pool agent",
+      };
+    }
+    const started = performance.now();
+    try {
+      const response = await createValidatedFetch({ agent })(
+        `${NETWORK_POOL_SPEED_TEST_URL}${bytes}`,
+        { method: "GET", signal: AbortSignal.timeout(NETWORK_POOL_SPEED_TEST_TIMEOUT_MS) },
+      );
+      if (!response.ok) {
+        return {
+          poolId,
+          status: "failed",
+          bytes: 0,
+          durationMs: Math.round(performance.now() - started),
+          errorMessage: `HTTP ${response.status} from speed endpoint`,
+        };
+      }
+      const payload = await response.arrayBuffer();
+      // Stop the clock after the body is fully read: a stalled tail is part of
+      // the throughput, so timing only the response headers would flatter a
+      // slow tunnel.
+      const durationMs = Math.round(performance.now() - started);
+      const transferred = payload.byteLength;
+      if (durationMs <= 0) return { poolId, status: "ok", bytes: transferred, durationMs };
+      const bytesPerSecond = transferred / (durationMs / 1000);
+      return {
+        poolId,
+        status: "ok",
+        bytes: transferred,
+        durationMs,
+        bytesPerSecond,
+        megabitsPerSecond: (bytesPerSecond * 8) / 1_000_000,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Speed test failed";
+      return {
+        poolId,
+        status: "failed",
+        bytes: 0,
+        durationMs: Math.round(performance.now() - started),
+        errorMessage: message,
+      };
+    }
   }
   /**
    * Dials a public canary through an unsaved pool definition.

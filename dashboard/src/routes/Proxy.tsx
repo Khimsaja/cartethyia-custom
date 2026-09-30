@@ -13,7 +13,7 @@ import {
   ShieldCheck,
   Trash2,
 } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { createContext, memo, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
 import { Badge, type BadgeTone } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardBody, CardHeader } from "../components/ui/card";
@@ -22,10 +22,16 @@ import { Dialog } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 import { DataTable, StatCard } from "../components/ui/layout";
 import { EmptyState, ErrorState, LoadingState } from "../components/ui/state";
+import { Select } from "../components/ui/select";
 import { Switch } from "../components/ui/switch";
 import { Inline } from "../components/ui/inline";
 import { Stack } from "../components/ui/stack";
-import type { HealthCheckResult, NetworkPoolResponse } from "../data/contracts";
+import {
+  SPEED_TEST_DEFAULT_BYTES,
+  SPEED_TEST_MAX_BYTES,
+  SPEED_TEST_MIN_BYTES,
+} from "../data/contracts";
+import type { HealthCheckResult, NetworkPoolResponse, PoolSpeedTestResult } from "../data/contracts";
 import {
   useCreateNetworkPool,
   useDeleteNetworkPool,
@@ -34,10 +40,11 @@ import {
   useNetworkPools,
   useProbeNetworkPoolBatch,
   useRecoverNetworkPool,
+  useSpeedTestNetworkPool,
   useUpdateNetworkPool,
   useClearNetworkPoolCooldown,
 } from "../hooks/network";
-import { usePoolUsage } from "../hooks/live";
+import { usePoolUsage, type PoolUsageRow } from "../hooks/live";
 import {
   formatBytes,
   MAX_BATCH_PROBE_TARGETS,
@@ -101,7 +108,18 @@ function poolName(pool: NetworkPoolResponse): string {
 }
 
 const GIB = 1024 ** 3;
-
+// A measurement plus when it was taken. The timestamp is dashboard-only state —
+// the API has no reason to record it — but without it a persisted result cannot
+// say "last measured 20 minutes ago", which is the whole point of keeping it.
+type StoredSpeedResult = PoolSpeedTestResult & { readonly measuredAt?: string };
+// Payload choices for the speed-test split control. Labels are decimal MB
+// (1 MB = 1_000_000 bytes) to match how proxy plans are sold.
+const SPEED_TEST_SIZES = [
+  { value: String(SPEED_TEST_MIN_BYTES), label: "1 MB" },
+  { value: String(SPEED_TEST_DEFAULT_BYTES), label: "5 MB" },
+  { value: String(50_000_000), label: "50 MB" },
+  { value: String(SPEED_TEST_MAX_BYTES), label: "100 MB" },
+];
 /** Parses a GB field into bytes; blank or invalid means "no quota". */
 function parseQuotaGb(value: string): number | null {
   const trimmed = value.trim();
@@ -492,10 +510,97 @@ function proxyResponseLabel(category: string | undefined): string | undefined {
 }
 
 
-function PoolRow({
+/**
+ * Live per-pool usage, held above the page body.
+ *
+ * The stream ticks whenever a pool acquires or releases a slot. Subscribing in
+ * the page component itself re-rendered the whole page — every row, every
+ * handler — on each tick, which is what made a busy Proxy page feel heavy. The
+ * subscription lives here instead and children pass through as a prop, so the
+ * subtree stays referentially stable and a tick re-renders only the two
+ * components that read this context. One stream per open page.
+ */
+const PoolUsageContext = createContext<{
+  readonly byId: ReadonlyMap<string, PoolUsageRow>;
+  readonly live: boolean;
+}>({ byId: new Map(), live: false });
+
+export function ProxyLiveProvider({ children }: { readonly children: ReactNode }): ReactNode {
+  const usage = usePoolUsage();
+  const byId = useMemo(
+    () => new Map((usage.pools ?? []).map((row) => [row.poolId, row] as const)),
+    [usage.pools],
+  );
+  const value = useMemo(
+    () => ({ byId, live: usage.live && usage.pools !== null }),
+    [byId, usage.live, usage.pools],
+  );
+  return <PoolUsageContext.Provider value={value}>{children}</PoolUsageContext.Provider>;
+}
+
+/**
+ * The four summary tiles. Split out because the live stream moves three of
+ * them; keeping them in the page would re-render the table below on every tick.
+ */
+function ProxySummaryTiles({ pools }: { readonly pools: readonly NetworkPoolResponse[] }): ReactNode {
+  const { byId, live } = useContext(PoolUsageContext);
+  const summary = useMemo(
+    () =>
+      summarizePools(
+        pools,
+        live ? new Map([...byId].map(([id, row]) => [id, row.currentInflight] as const)) : undefined,
+      ),
+    [pools, byId, live],
+  );
+  return (
+    <div className="metric-grid" style={{ marginBottom: "14px" }}>
+      <StatCard
+        label="Enabled pool"
+        value={String(summary.active)}
+        detail={`/ ${summary.totalPools} total`}
+        tone="accent"
+        icon={<ShieldCheck size={13} />}
+      />
+      <StatCard
+        label="Route capacity"
+        value={String(summary.totalMaxConcurrency)}
+        detail={`${summary.usedInflight} inflight · ${summary.availableCapacity} available`}
+        tone={summary.availableCapacity === 0 ? "orange" : "teal"}
+        icon={<Gauge size={13} />}
+      />
+      <StatCard
+        label="Latency"
+        value={summary.avgLatencyMs === null ? "—" : `${summary.avgLatencyMs}ms`}
+        detail={latencyDetail(summary)}
+        tone={
+          summary.avgLatencyMs === null
+            ? "accent"
+            : summary.avgLatencyMs > 2000
+              ? "orange"
+              : "teal"
+        }
+        icon={<Activity size={13} />}
+      />
+      <StatCard
+        label="Cooldown"
+        value={summary.cooldown > 0 ? String(summary.cooldown) : "None"}
+        detail={cooldownDetail(summary)}
+        tone={summary.cooldown > 0 ? "orange" : "green"}
+        icon={<Clock size={13} />}
+      />
+    </div>
+  );
+}
+
+/**
+ * One proxy row.
+ *
+ * Memoized: the list re-renders on selection, testing, and sorting, and each
+ * row carries three mutations of its own. Without this every row re-ran those
+ * hooks for a change that touched one of them.
+ */
+const PoolRow = memo(function PoolRow({
   pool,
-  liveInflight,
-  liveBytes,
   isSelected,
   onToggleSelect,
   checkResult,
@@ -504,23 +609,32 @@ function PoolRow({
   onEdit,
   onHealthCheck,
   onActivity,
+  speedResult,
+  isSpeedTesting,
 }: {
   readonly pool: NetworkPoolResponse;
-  readonly liveInflight?: number;
-  /** Live egress bytes for this pool, or null while the stream is down. */
-  readonly liveBytes?: { bytesSent: number; bytesReceived: number } | null;
   readonly isSelected: boolean;
   readonly onToggleSelect: (id: string) => void;
   readonly checkResult?: HealthCheckResult;
   readonly isTesting: boolean;
   readonly onDelete: (id: string) => void;
   readonly onEdit: (pool: NetworkPoolResponse) => void;
-  readonly onHealthCheck: (id: string) => void;
+  readonly onHealthCheck: (pool: NetworkPoolResponse) => void;
   readonly onActivity: (pool: NetworkPoolResponse) => void;
+  readonly speedResult?: StoredSpeedResult;
+  readonly isSpeedTesting: boolean;
 }): ReactNode {
   const updatePool = useUpdateNetworkPool();
   const clearCooldown = useClearNetworkPoolCooldown();
   const recoverPool = useRecoverNetworkPool();
+  // Read live usage here rather than as a prop: the parent would otherwise have
+  // to hand every row a fresh value on each stream tick, which is exactly the
+  // re-render this memo exists to avoid. Only rows whose own pool changed
+  // actually re-render.
+  const live = useContext(PoolUsageContext);
+  const usage = live.live ? live.byId.get(pool.id) : undefined;
+  const liveInflight = usage?.currentInflight;
+  const liveBytes = usage ?? null;
   const display = poolDisplay(pool);
   const poolLabel = poolName(pool);
   const isEnabled = pool.status !== "disabled";
@@ -643,6 +757,34 @@ function PoolRow({
           <span style={{ fontSize: "11px", color: "var(--text-tertiary)" }} title="Test the pool to read its egress address">
             not probed
           </span>
+        )}
+        {(isSpeedTesting || speedResult) && (
+          <div style={{ marginTop: "3px" }}>
+            <Badge
+              tone={isSpeedTesting ? "default" : speedResult?.status === "ok" ? "ok" : "err"}
+              title={
+                isSpeedTesting
+                  ? "Measuring download throughput"
+                  : speedResult?.status === "ok"
+                    ? `${formatBytes(speedResult.bytes)} in ${speedResult.durationMs}ms${
+                        speedResult.measuredAt
+                          ? ` · last measured ${new Date(speedResult.measuredAt).toLocaleString()}`
+                          : ""
+                      }`
+                    : `${speedResult?.errorMessage ?? "Speed test failed"}${
+                        speedResult?.measuredAt
+                          ? ` · last measured ${new Date(speedResult.measuredAt).toLocaleString()}`
+                          : ""
+                      }`
+              }
+            >
+              {isSpeedTesting
+                ? "Speed…"
+                : speedResult?.status === "ok"
+                  ? `${(speedResult.megabitsPerSecond ?? 0).toFixed(1)} Mbps`
+                  : "Speed failed"}
+            </Badge>
+          </div>
         )}
       </td>
       <td style={{ minWidth: "110px" }}>
@@ -775,7 +917,7 @@ function PoolRow({
               icon={
                 isTesting ? <Loader2 size={12} className="animate-spin" /> : <FlaskConical size={12} />
               }
-              onClick={() => onHealthCheck(pool.id)}
+              onClick={() => onHealthCheck(pool)}
               title={checkTooltip ?? "Run health check"}
               label="Test"
             />
@@ -813,7 +955,7 @@ function PoolRow({
       </td>
     </tr>
   );
-}
+});
 
 function PoolHealthDialog({
   pool,
@@ -983,6 +1125,30 @@ export default function Proxy(): ReactNode {
   const [editingPool, setEditingPool] = useState<NetworkPoolResponse | null>(null);
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(new Set());
   const [testingIds, setTestingIds] = useState<ReadonlySet<string>>(new Set());
+  const speedTest = useSpeedTestNetworkPool();
+  const [speedBytes, setSpeedBytes] = useState(SPEED_TEST_DEFAULT_BYTES);
+  // Persisted like `checkResults`: a measurement is expensive to take (it pulls
+  // real bytes through the operator's proxy plan) and is still the last known
+  // throughput after a reload, so throwing it away on navigation is wasteful.
+  const [speedResults, setSpeedResults] = useState<Record<string, StoredSpeedResult>>(() => {
+    try {
+      const saved = localStorage.getItem("cartethyia_proxy_speed_results");
+      return saved ? (JSON.parse(saved) as Record<string, StoredSpeedResult>) : {};
+    } catch {
+      return {};
+    }
+  });
+  const [speedTestingIds, setSpeedTestingIds] = useState<ReadonlySet<string>>(new Set());
+  const rememberSpeedResult = useCallback((poolId: string, result: StoredSpeedResult) => {
+    const stamped = { ...result, measuredAt: new Date().toISOString() };
+    setSpeedResults((prev) => {
+      const next = { ...prev, [poolId]: stamped };
+      try {
+        localStorage.setItem("cartethyia_proxy_speed_results", JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  }, []);
   const [checkResults, setCheckResults] = useState<Record<string, HealthCheckResult>>(() => {
     try {
       const saved = localStorage.getItem("cartethyia_proxy_check_results");
@@ -1021,25 +1187,18 @@ export default function Proxy(): ReactNode {
   const [deleteTargets, setDeleteTargets] = useState<NetworkPoolResponse[] | null>(null);
   const [activityPool, setActivityPool] = useState<NetworkPoolResponse | null>(null);
   const pools = poolsQuery.data ?? [];
-  // Live per-pool usage over SSE (push-on-acquire/release). Falls back to the
-  // polled `inflight` snapshot while the stream is connecting.
-  const poolUsage = usePoolUsage();
-  const liveInflightByPool = poolUsage.live && poolUsage.pools !== null
-    ? new Map(poolUsage.pools.map((row) => [row.poolId, row.currentInflight] as const))
-    : undefined;
-  const summary = summarizePools(pools, liveInflightByPool);
   const sortedPools = useMemo(
     () => sortPools(pools, sort.key, sort.direction, (pool) => poolLatencyMs(pool, checkResults[pool.id])),
     [pools, sort, checkResults],
   );
-  const toggleSort = (key: string) => {
+  const toggleSort = useCallback((key: string) => {
     const next = key as PoolSortKey;
     setSort((prev) =>
       prev.key === next
         ? { key: next, direction: prev.direction === "asc" ? "desc" : "asc" }
         : { key: next, direction: "asc" },
     );
-  };
+  }, []);
   const isPending = poolsQuery.isPending;
   const isError = poolsQuery.isError;
 
@@ -1047,20 +1206,22 @@ export default function Proxy(): ReactNode {
   const toggleSelectAll = () => {
     setSelectedIds(allSelected ? new Set() : new Set(pools.map((p) => p.id)));
   };
-  const toggleSelectOne = (id: string) => {
+  // Stable identities: the memoized rows only skip a re-render when the props
+  // they receive keep the same reference across the parent's renders.
+  const toggleSelectOne = useCallback((id: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
-  };
+  }, []);
 
   const testedCount = Object.keys(checkResults).length;
   const successCount = Object.values(checkResults).filter((r) => r.status === "healthy").length;
   const errorCount = Object.values(checkResults).filter((r) => r.status !== "healthy").length;
 
-  const runCheck = (pool: NetworkPoolResponse) => {
+  const runCheck = useCallback((pool: NetworkPoolResponse) => {
     setTestingIds((prev) => new Set(prev).add(pool.id));
     healthCheck.mutate(pool.id, {
       onSuccess: (result) => {
@@ -1095,7 +1256,7 @@ export default function Proxy(): ReactNode {
         });
       },
     });
-  };
+  }, [healthCheck]);
 
   // Batch "Test all" with bounded concurrency (two workers) so the pool
   // endpoints are not flooded and the UI receives one summary update.
@@ -1149,6 +1310,42 @@ export default function Proxy(): ReactNode {
     toast.success(`Tested ${targets.length} pools · ${healthy} healthy · ${failed} failed`);
   };
 
+  // Speed tests run two at a time: each one pulls 5 MB, and a wide fan-out
+  // would saturate the operator's own uplink and make every measurement wrong.
+  const runSpeedTestSelected = async () => {
+    const targets = pools.filter((p) => selectedIds.has(p.id));
+    if (targets.length === 0) return;
+    let cursor = 0;
+    const worker = async (): Promise<void> => {
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const pool = targets[cursor++];
+        if (!pool) return;
+        setSpeedTestingIds((prev) => new Set(prev).add(pool.id));
+        try {
+          const result = await speedTest.mutateAsync({ poolId: pool.id, bytes: speedBytes });
+          rememberSpeedResult(pool.id, result);
+        } catch (err) {
+          rememberSpeedResult(pool.id, {
+            poolId: pool.id,
+            status: "failed",
+            bytes: 0,
+            durationMs: 0,
+            errorMessage: getErrorMessage(err, "Speed test failed"),
+          });
+        } finally {
+          setSpeedTestingIds((prev) => {
+            const next = new Set(prev);
+            next.delete(pool.id);
+            return next;
+          });
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(2, targets.length) }, () => worker()));
+    toast.success(`Speed tested ${targets.length} pool(s)`);
+  };
+
   const enableSelected = async () => {
     const targets = pools.filter((p) => selectedIds.has(p.id));
     if (targets.length === 0) return;
@@ -1177,10 +1374,13 @@ export default function Proxy(): ReactNode {
     toast.success(`Exported ${targets.length} pool(s)`);
   };
 
-  const requestDeletePool = (id: string) => {
-    const pool = pools.find((p) => p.id === id);
-    if (pool) setDeleteTargets([pool]);
-  };
+  const requestDeletePool = useCallback(
+    (id: string) => {
+      const pool = pools.find((p) => p.id === id);
+      if (pool) setDeleteTargets([pool]);
+    },
+    [pools],
+  );
 
   const requestDeleteSelected = () => {
     const targets = pools.filter((p) => selectedIds.has(p.id));
@@ -1197,7 +1397,8 @@ export default function Proxy(): ReactNode {
   };
 
   return (
-    <Stack gap="16px">
+    <ProxyLiveProvider>
+      <Stack gap="16px">
       <Dialog
         open={showProxyForm}
         onClose={() => setShowProxyForm(false)}
@@ -1239,45 +1440,7 @@ export default function Proxy(): ReactNode {
           }
         />
         <CardBody>
-          <div
-            className="metric-grid"
-            style={{ gridTemplateColumns: "repeat(4, 1fr)", marginBottom: "14px" }}
-          >
-            <StatCard
-              label="Enabled pool"
-              value={String(summary.active)}
-              detail={`/ ${summary.totalPools} total`}
-              tone="accent"
-              icon={<ShieldCheck size={13} />}
-            />
-            <StatCard
-              label="Route capacity"
-              value={String(summary.totalMaxConcurrency)}
-              detail={`${summary.usedInflight} inflight · ${summary.availableCapacity} available`}
-              tone={summary.availableCapacity === 0 ? "orange" : "teal"}
-              icon={<Gauge size={13} />}
-            />
-            <StatCard
-              label="Latency"
-              value={summary.avgLatencyMs === null ? "—" : `${summary.avgLatencyMs}ms`}
-              detail={latencyDetail(summary)}
-              tone={
-                summary.avgLatencyMs === null
-                  ? "accent"
-                  : summary.avgLatencyMs > 2000
-                    ? "orange"
-                    : "teal"
-              }
-              icon={<Activity size={13} />}
-            />
-            <StatCard
-              label="Cooldown"
-              value={summary.cooldown > 0 ? String(summary.cooldown) : "None"}
-              detail={cooldownDetail(summary)}
-              tone={summary.cooldown > 0 ? "orange" : "green"}
-              icon={<Clock size={13} />}
-            />
-          </div>
+          <ProxySummaryTiles pools={pools} />
 
           {/* Selection & Batch Toolbar (Image 2 style) */}
           {pools.length > 0 && (
@@ -1343,6 +1506,51 @@ export default function Proxy(): ReactNode {
                 >
                   Test all
                 </Button>
+                {/* Split control: the primary half runs the test at the
+                    currently-selected payload, the chevron half picks the
+                    payload. Kept as two elements in one bordered shell so it
+                    reads as a single control without a bespoke component. */}
+                <div
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "stretch",
+                    height: "30px",
+                  }}
+                >
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    style={{ borderTopRightRadius: 0, borderBottomRightRadius: 0 }}
+                    disabled={
+                      selectedIds.size === 0 || speedTestingIds.size > 0 || speedTest.isPending
+                    }
+                    icon={
+                      speedTestingIds.size > 0 ? (
+                        <Loader2 size={12} className="animate-spin" />
+                      ) : (
+                        <Gauge size={12} />
+                      )
+                    }
+                    onClick={() => void runSpeedTestSelected()}
+                  >
+                    Speedtest selected
+                  </Button>
+                  <Select
+                    aria-label="Speed test payload size"
+                    value={String(speedBytes)}
+                    onValueChange={(value) => setSpeedBytes(Number(value))}
+                    options={SPEED_TEST_SIZES}
+                    disabled={speedTestingIds.size > 0 || speedTest.isPending}
+                    style={{
+                      width: "auto",
+                      minWidth: "76px",
+                      height: "30px",
+                      borderTopLeftRadius: 0,
+                      borderBottomLeftRadius: 0,
+                      marginLeft: "-1px",
+                    }}
+                  />
+                </div>
                 <Button
                   variant="secondary"
                   size="sm"
@@ -1418,20 +1626,16 @@ export default function Proxy(): ReactNode {
                   <PoolRow
                     key={pool.id}
                     pool={pool}
-                    liveInflight={liveInflightByPool?.get(pool.id)}
-                    liveBytes={
-                      poolUsage.live && poolUsage.pools !== null
-                        ? (poolUsage.pools.find((row) => row.poolId === pool.id) ?? null)
-                        : null
-                    }
                     isSelected={selectedIds.has(pool.id)}
                     onToggleSelect={toggleSelectOne}
                     checkResult={checkResults[pool.id]}
                     isTesting={testingIds.has(pool.id)}
                     onDelete={requestDeletePool}
-                    onEdit={(p) => setEditingPool(p)}
-                    onHealthCheck={() => runCheck(pool)}
+                    onEdit={setEditingPool}
+                    onHealthCheck={runCheck}
                     onActivity={setActivityPool}
+                    speedResult={speedResults[pool.id]}
+                    isSpeedTesting={speedTestingIds.has(pool.id)}
                   />
                 ))}
               </DataTable>
@@ -1458,6 +1662,7 @@ export default function Proxy(): ReactNode {
       {activityPool ? (
         <PoolHealthDialog pool={activityPool} onClose={() => setActivityPool(null)} />
       ) : null}
-    </Stack>
+      </Stack>
+    </ProxyLiveProvider>
   );
 }

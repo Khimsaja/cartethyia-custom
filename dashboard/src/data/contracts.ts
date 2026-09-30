@@ -151,10 +151,20 @@ export interface SessionUser {
   readonly isPlatformAdmin: boolean;
 }
 
+// Speed-test payload bounds are re-exported as values (like `TENANT_KEY_SCOPES`)
+// so the size picker offers exactly what the backend accepts. They come from a
+// pure module: `pools/contracts` imports Elysia and reaches `node:crypto`, which
+// must not enter the browser bundle.
+export {
+  SPEED_TEST_DEFAULT_BYTES,
+  SPEED_TEST_MAX_BYTES,
+  SPEED_TEST_MIN_BYTES,
+} from "../../../src/console/routing/pools/speed-test-sizes";
 export type {
   CreateNetworkPoolRequest,
   NetworkPoolResponse,
   HealthCheckResult,
+  PoolSpeedTestResult,
   PoolStrategySetting,
   PoolBatchProbeResult,
 } from "../../../src/console/routing/pools/contracts";

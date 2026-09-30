@@ -595,4 +595,54 @@ describe("pool operations — CRUD paths (coverage)", () => {
     const factory = opsWith(store);
     await expect(factory.getStrategy(opsAccess)).resolves.toEqual(DEFAULT_POOL_STRATEGY);
   });
+
+  test("speedTest delegates to the store and returns its measurement", async () => {
+    const { store } = opsStore();
+    const calls: string[] = [];
+    store.speedTest = async (tenantId, poolId, bytes) => {
+      calls.push(`${tenantId}:${poolId}:${bytes}`);
+      return { poolId, status: "ok", bytes: 5_000_000, durationMs: 4_000, megabitsPerSecond: 10 };
+    };
+    const factory = opsWith(store);
+    const result = await factory.speedTest(opsAccess, "pool-9", 50_000_000);
+    expect(calls).toEqual(["tenant-1:pool-9:50000000"]);
+    expect(result.megabitsPerSecond).toBe(10);
+  });
+
+  test("speedTest rejects a payload outside the allowed bounds before the store", async () => {
+    const { store } = opsStore();
+    let called = false;
+    store.speedTest = async (_tenantId, poolId) => {
+      called = true;
+      return { poolId, status: "ok", bytes: 1, durationMs: 1 };
+    };
+    const factory = opsWith(store);
+    await expect(factory.speedTest(opsAccess, "pool-9", 10)).rejects.toThrow(
+      expect.objectContaining({ code: "invalid_speed_test_size" }),
+    );
+    await expect(factory.speedTest(opsAccess, "pool-9", 500_000_000)).rejects.toThrow(
+      expect.objectContaining({ code: "invalid_speed_test_size" }),
+    );
+    await expect(factory.speedTest(opsAccess, "pool-9", 1_500_000.5)).rejects.toThrow(
+      expect.objectContaining({ code: "invalid_speed_test_size" }),
+    );
+    expect(called).toBe(false);
+  });
+
+  test("speedTest reports not_supported when the store cannot measure", async () => {
+    const { store } = opsStore();
+    delete store.speedTest;
+    const factory = opsWith(store);
+    await expect(factory.speedTest(opsAccess, "pool-9", 5_000_000)).rejects.toThrow(
+      expect.objectContaining({ code: "not_supported" }),
+    );
+  });
+
+  test("speedTest requires dashboard:read", async () => {
+    const { store } = opsStore();
+    store.speedTest = async (_tenantId, poolId) => ({ poolId, status: "ok", bytes: 1, durationMs: 1 });
+    const factory = opsWith(store);
+    const noScope: AccessDecision = { ...opsAccess, scopes: ["dashboard:write"] };
+    await expect(factory.speedTest(noScope, "pool-9", 5_000_000)).rejects.toThrow();
+  });
 });
