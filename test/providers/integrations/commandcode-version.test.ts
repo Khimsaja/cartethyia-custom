@@ -19,7 +19,7 @@ describe("CommandCode client version", () => {
 
   test("pinned fallback is used before discovery", () => {
     expect(getCommandCodeVersion()).toBe(VERSION_SOURCES.commandcode.fallback);
-    expect(VERSION_SOURCES.commandcode.fallback).toBe("1.66.0");
+    expect(VERSION_SOURCES.commandcode.fallback).toBe("1.73.0");
   });
 
   test("resolves from the npm registry", async () => {

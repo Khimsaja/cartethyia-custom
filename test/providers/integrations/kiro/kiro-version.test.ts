@@ -12,7 +12,7 @@ describe("Kiro IDE client version", () => {
   afterEach(() => _resetKiroVersion());
 
   test("uses the pinned current IDE version before discovery", () => {
-    expect(VERSION_SOURCES.kiro.fallback).toBe("1.1.70");
+    expect(VERSION_SOURCES.kiro.fallback).toBe("1.2.4");
     expect(getKiroVersion()).toBe(VERSION_SOURCES.kiro.fallback);
   });
 
