@@ -44,6 +44,20 @@ export interface AdmissionReserveRequest {
   readonly concurrencyLimit: number | null;
   readonly tenantId: string;
   readonly tenantConcurrencyLimit: number | null;
+  /**
+   * Fresh persisted `lifetime_tokens_consumed` for the family, read on demand.
+   *
+   * The seed for `admission:lifetime:<id>` comes from the auth snapshot, which
+   * is cached for `AUTH_CACHE_TTL_MS` (~3s) and can therefore understate the
+   * true persisted total when another request just committed usage. Once the
+   * counter is seeded low it stays that way for its whole TTL — every future
+   * INCRBY builds on the wrong baseline. This callback is invoked *only when
+   * the store is about to create the counter*, so the fresh value replaces
+   * the possibly-stale snapshot value on exactly the write that would freeze
+   * the mistake in place. The hot path — an existing counter — never calls
+   * it. Optional: without it the caller falls back to `lifetimeConsumed`.
+   */
+  readonly freshLifetimeConsumed?: () => Promise<number | undefined>;
 }
 
 export interface AdmissionLease {
@@ -294,7 +308,7 @@ export class InMemoryAdmissionCounterStore implements AdmissionCounterStore {
   }
 
   async reserve(request: AdmissionReserveRequest): Promise<void> {
-    await this.exclusive(() => {
+    await this.exclusive(async () => {
       this.assertAvailable();
       const existing = this.reservations.get(request.reservationId);
       if (existing) {
@@ -318,7 +332,20 @@ export class InMemoryAdmissionCounterStore implements AdmissionCounterStore {
       const monthly = this.value(this.monthly, monthlyKey);
       const concurrent = this.value(this.concurrent, request.apiKeyId);
       const tenantConcurrent = this.value(this.tenantConcurrent, request.tenantId);
-      const lifetime = this.lifetime.get(request.apiKeyId) ?? request.lifetimeConsumed;
+      // A missing counter is the only path that seeds from the snapshot; on
+      // that path prefer a fresh persisted read over the ≤3s-stale snapshot,
+      // otherwise the counter is frozen at a low baseline for its whole TTL.
+      const cached = this.lifetime.get(request.apiKeyId);
+      let lifetime: number;
+      if (cached !== undefined) {
+        lifetime = cached;
+      } else {
+        const fresh = await request.freshLifetimeConsumed?.();
+        lifetime =
+          typeof fresh === "number" && Number.isFinite(fresh) && fresh >= 0
+            ? Math.floor(fresh)
+            : request.lifetimeConsumed;
+      }
       if (
         !finiteNonNegative(daily) ||
         !finiteNonNegative(monthly) ||
@@ -548,6 +575,13 @@ export type LifetimeUsagePersister = (input: {
 }) => Promise<void>;
 
 /** Performs one atomic pre-dispatch admission and returns an idempotent attempt lease. */
+/** Reads the family's persisted `lifetime_tokens_consumed` fresh from the
+ * durable store — the row plus every child, sum included. Called lazily by the
+ * counter store only when it is about to seed a missing lifetime counter, so
+ * the ≤3s-stale snapshot value cannot freeze a low baseline in place. Injected
+ * so the admission module stays decoupled from Drizzle/Postgres. */
+export type FreshLifetimeConsumedReader = (apiKeyId: string) => Promise<number | undefined>;
+
 export class ApiKeyAdmissionService {
   constructor(
     private readonly store: AdmissionCounterStore,
@@ -556,6 +590,7 @@ export class ApiKeyAdmissionService {
       tenantId: string,
     ) => Promise<number | null> | number | null = () => null,
     private readonly persistLifetimeUsage?: LifetimeUsagePersister,
+    private readonly freshLifetimeConsumed?: FreshLifetimeConsumedReader,
   ) {
     if (!store) throw new Error("ApiKeyAdmissionService requires an admission store");
   }
@@ -632,6 +667,11 @@ export class ApiKeyAdmissionService {
         concurrencyLimit: snapshot.max_concurrent ?? null,
         tenantId: snapshot.tenant_id,
         tenantConcurrencyLimit: tenantLimit,
+        // Fresh lifetime reader is invoked by the store only when the counter
+        // is missing; the hot path reads Redis alone.
+        ...(this.freshLifetimeConsumed
+          ? { freshLifetimeConsumed: () => this.freshLifetimeConsumed!(apiKeyId) }
+          : {}),
       });
     } catch (error) {
       if (error instanceof GatewayError) {
@@ -902,15 +942,32 @@ export class RedisAdmissionCounterStore implements AdmissionCounterStore {
   constructor(private readonly redis: RedisClient) {}
   async reserve(request: AdmissionReserveRequest): Promise<void> {
     const id = request.reservationId ?? `${request.apiKeyId}:${request.now}:${crypto.randomUUID()}`;
+    const lifetimeKey = `admission:lifetime:${request.apiKeyId}`;
     const keys = [
       `admission:rpm:${request.apiKeyId}`,
       `admission:daily:${request.apiKeyId}:${dailyBucket(request.now)}`,
       `admission:monthly:${request.apiKeyId}:${monthlyBucket(request.now)}`,
       `admission:concurrent:${request.apiKeyId}`,
-      `admission:lifetime:${request.apiKeyId}`,
+      lifetimeKey,
       `admission:lease:${id}`,
       `admission:tenant_concurrent:${request.tenantId}`,
     ];
+    // The lifetime seed is the one write the Lua script cannot re-issue: once
+    // the counter exists it never re-reads Postgres. If we are about to create
+    // it, prefer a fresh persisted read over the ≤3s-stale snapshot value,
+    // otherwise a snapshot that missed a recent commit freezes a low baseline
+    // for the counter's whole 35-day TTL. `EXISTS` is a single extra command
+    // and runs only for keys that actually have a lifetime budget.
+    let lifetimeSeed = request.lifetimeConsumed;
+    if (request.lifetimeBudget != null && request.freshLifetimeConsumed) {
+      const exists = await this.redis.exists(lifetimeKey).catch(() => 1);
+      if (exists === 0) {
+        const fresh = await request.freshLifetimeConsumed().catch(() => undefined);
+        if (typeof fresh === "number" && Number.isFinite(fresh) && fresh >= 0) {
+          lifetimeSeed = Math.floor(fresh);
+        }
+      }
+    }
     const result = await redisEvalNumber(
       this.redis,
       RESERVE_SCRIPT,
@@ -924,7 +981,7 @@ export class RedisAdmissionCounterStore implements AdmissionCounterStore {
         request.lifetimeBudget == null ? "" : String(request.lifetimeBudget),
         request.concurrencyLimit == null ? "" : String(request.concurrencyLimit),
         id,
-        String(request.lifetimeConsumed),
+        String(lifetimeSeed),
         request.tenantConcurrencyLimit == null ? "" : String(request.tenantConcurrencyLimit),
         request.tenantId,
         request.apiKeyId,

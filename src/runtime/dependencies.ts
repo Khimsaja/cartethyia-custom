@@ -15,6 +15,7 @@ import { DrizzleProviderCatalogStore } from "../console/providers/catalog/store"
 import { InMemoryRouteSnapshotService } from "../transport/routing/route-model";
 import { RedisAdmissionController, RoutingEngine } from "../transport/routing/router";
 import { ApiKeyAdmissionService, InMemoryAdmissionCounterStore, RedisAdmissionCounterStore, sweepLeases } from "../security/admission";
+import { DrizzleApiKeyStore } from "../persistence/api-key-store";
 import { InMemoryIpAbuseStore, IpAbuseProtectionService, RedisIpAbuseStore } from "../security/abuse";
 import { checkReadiness, resolveRedisMode } from "../persistence/readiness";
 import { ProxyRequestPreparer } from "../transport/request/preparer";
@@ -153,6 +154,17 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
           lifetimeTokensConsumed: sql`COALESCE(${apiKeys.lifetimeTokensConsumed}, 0) + ${delta}`,
         })
         .where(eq(apiKeys.id, apiKeyId));
+    },
+    // Fresh lifetime reader — invoked by the store only when it is about to
+    // seed a missing `admission:lifetime:<id>` counter, so the ≤3s-stale auth
+    // snapshot value cannot freeze a low baseline in place. Family total: the
+    // row plus every child (share recipients admit under the parent id).
+    async (apiKeyId) => {
+      const store = new DrizzleApiKeyStore(db);
+      const row = await store.findActiveById(apiKeyId);
+      if (!row) return undefined;
+      const children = await store.sumChildrenConsumed(apiKeyId);
+      return (row.lifetimeTokensConsumed ?? 0) + children;
     },
   );
   const ipStore = redis

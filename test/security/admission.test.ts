@@ -135,6 +135,72 @@ describe("ApiKeyAdmissionService", () => {
    * `output_tokens`, so the reconciled counter must not add them again. Adding
    * them charged the same tokens twice and made a key hit its budget early.
    */
+  test("seeds the lifetime counter from the fresh reader, not a stale snapshot", async () => {
+    // The auth snapshot is cached for AUTH_CACHE_TTL_MS (~3s), so
+    // `lifetime_tokens_consumed` inside it can lag the true persisted total.
+    // The one write that must not lock in the lag is the very first seed of
+    // `admission:lifetime:<id>` — once written, INCRBYs never re-read the
+    // durable store. The fresh reader is invoked lazily by the store on that
+    // exact write, and only when the counter is missing.
+    const store = new InMemoryAdmissionCounterStore();
+    let readerCalls = 0;
+    const svc = new ApiKeyAdmissionService(
+      store,
+      undefined,
+      undefined,
+      undefined,
+      async () => {
+        readerCalls += 1;
+        return 900;
+      },
+    );
+    // Snapshot says 100 consumed, but the fresh persisted total is 900. The
+    // seed must use 900, so the 100-token budget is already exhausted.
+    const snap = snapshot({ lifetime_token_budget: 1_000, lifetime_tokens_consumed: 100 });
+    await expect(
+      svc.admit({
+        authorization: snap,
+        targetProvider: "openai",
+        targetModel: "gpt-4",
+        estimatedInputTokens: 200,
+      }),
+    ).rejects.toMatchObject({ code: "quota_exceeded" });
+    expect(readerCalls).toBe(1);
+  });
+
+  test("does not call the fresh reader once the lifetime counter exists", async () => {
+    // The whole point of the callback is a one-shot seed. A second reserve
+    // for the same key must read Redis/memory alone: no more Postgres.
+    const store = new InMemoryAdmissionCounterStore();
+    let readerCalls = 0;
+    const svc = new ApiKeyAdmissionService(
+      store,
+      undefined,
+      undefined,
+      undefined,
+      async () => {
+        readerCalls += 1;
+        return 0;
+      },
+    );
+    const snap = snapshot({ lifetime_token_budget: 100_000 });
+    const first = await svc.admit({
+      authorization: snap,
+      targetProvider: "openai",
+      targetModel: "gpt-4",
+      estimatedInputTokens: 10,
+    });
+    const second = await svc.admit({
+      authorization: snap,
+      targetProvider: "openai",
+      targetModel: "gpt-4",
+      estimatedInputTokens: 10,
+    });
+    expect(readerCalls).toBe(1);
+    await first.release();
+    await second.release();
+  });
+
   test("reconcile charges cache writes and reasoning only once", async () => {
     const store = new InMemoryAdmissionCounterStore();
     const svc = new ApiKeyAdmissionService(store);

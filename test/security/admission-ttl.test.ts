@@ -137,6 +137,43 @@ redisDescribe("admission counter TTLs (live Redis)", () => {
     expect(ttl).toBeGreaterThan(0);
   });
 
+  test("seeds the lifetime counter from the fresh reader when it is missing", async () => {
+    // Snapshot understates the persisted total; the seed must use the fresh
+    // number, otherwise a request could exceed its budget by whatever amount
+    // committed inside the ≤3s auth-cache window, and stay wrong for 35 days.
+    let readerCalls = 0;
+    const request = {
+      ...lifetimeRequest("fresh-seed"),
+      lifetimeConsumed: 0,
+      freshLifetimeConsumed: async () => {
+        readerCalls += 1;
+        return 750;
+      },
+    };
+    await store.reserve(request);
+    expect(readerCalls).toBe(1);
+    // Reserve script SETs the seed, then INCRBYs `estimatedTokens` (100).
+    expect(await redis.get(`admission:lifetime:${request.apiKeyId}`)).toBe(String(750 + 100));
+    await store.release(request.apiKeyId, request.estimatedTokens, request.reservationId);
+  });
+
+  test("does not call the fresh reader when the lifetime counter already exists", async () => {
+    // A second reserve for the same key: the counter is already there, so the
+    // callback must not fire — Postgres is off the hot path.
+    let readerCalls = 0;
+    const first = { ...lifetimeRequest("hot-path"), freshLifetimeConsumed: async () => { readerCalls += 1; return 500; } };
+    await store.reserve(first);
+    await store.release(first.apiKeyId, first.estimatedTokens, first.reservationId);
+    const second = {
+      ...first,
+      reservationId: `${first.reservationId}-2`,
+      freshLifetimeConsumed: async () => { readerCalls += 1; return 500; },
+    };
+    await store.reserve(second);
+    expect(readerCalls).toBe(1);
+    await store.release(second.apiKeyId, second.estimatedTokens, second.reservationId);
+  });
+
   test("reconcile keeps the counter TTL instead of stripping it", async () => {
     const request = lifetimeRequest("reconcile");
     await store.reserve(request);

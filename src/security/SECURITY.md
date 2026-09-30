@@ -129,6 +129,13 @@ produces. A request with no `model`, or a blank one, is rejected 400 `invalid_re
    live lease), and `seedBuckets` lets an operator who adds a daily/monthly
    ceiling have it enforced against spend already recorded in the current
    bucket (`SET NX` — a live counter is never overwritten).
+   Lifetime counter's initial seed reads a fresh `lifetime_tokens_consumed`
+   from Postgres, not the ≤3s-stale auth snapshot value — the auth cache is
+   fine for enforcement (Redis is the authority), but the one write that
+   *creates* `admission:lifetime:<id>` locks in a baseline for the counter's
+   whole 35-day TTL, so it must come from the durable store. The reader is
+   invoked lazily by the counter store only when the counter is missing, so
+   the hot path stays Redis-only.
 
 `csrf.ts: isCsrfValid` is not a data-plane layer: it guards unsafe
 `/console/api/*` mutations only (session-cookie present: the readable

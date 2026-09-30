@@ -32,6 +32,16 @@ implying a billing period, and nothing is flushed to the database. And the
 figure covers the tunneled connection: for SOCKS5 the negotiation handshake is
 not counted, only the tunnel that follows.
 
+### Quota enforcement: fresh lifetime seed on the one write that matters
+
+The reserve script seeds `admission:lifetime:<id>` from the auth snapshot's
+`lifetime_tokens_consumed`, and thereafter every INCRBY builds on that baseline
+for the counter's whole 35-day TTL. The snapshot is cached for ~3s, so if
+another request committed usage inside that window the seed was low — and
+stayed low. The fresh persisted total is read from Postgres now, lazily, by the
+counter store on the exact write that would freeze the mistake in place. The
+hot path — an existing counter — never touches Postgres.
+
 ### Quota enforcement: the rest of the accounting defects
 
 Five more, found by the same audit. The pre-dispatch estimate now counts tool
