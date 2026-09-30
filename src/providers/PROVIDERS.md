@@ -614,7 +614,10 @@ deadlines. Routing, console, and discovery consume providers through these servi
   (triggering the refresh service when due); `resolveAccountSecretString` is the string-typed read beside it.
 - **Dispatch-time request context.** `resolveCustomCliHeaders` stamps Codex-CLI identity
   (`codex_cli_rs/<version>`) on chat/responses traffic and Claude-CLI identity (`x-app: cli` + stainless
-  headers) on messages traffic so upstream sees realistic first-party tooling.
+  headers) on messages traffic so upstream sees realistic first-party tooling. Both versions come from the
+  live resolver getters (`getCodexVersion`, `getClaudeCliVersion`, `getClaudeSdkVersion`), not the frozen
+  `claude-fingerprint` constants, so a custom Anthropic endpoint tracks discovery instead of the pinned
+  fallback it was built with.
   Probe dispatch preserves adapter-native `User-Agent` without injecting gateway-level markers.
   `resolveInboundSessionId` extracts affinity from session headers in declaration order (`x-conversation-id`, `x-session-id`,
   `x-session-affinity`, `x-opencode-session`, `x-claude-code-session-id`, `prompt_cache_key`,

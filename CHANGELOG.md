@@ -5,6 +5,30 @@
 > All changes below are pre-release. Cartethyia has not been tagged or
 > released; this document reflects the current production codebase architecture and capabilities.
 
+### Termination notice distinguishes a stop from an in-place update
+
+A draining process answered every caller the same generic `503 shutting_down:
+Service is shutting down`, whether it was being stopped or swapped for a new
+image that would be serving again in seconds. Operators reading a client error
+could not tell the two apart.
+
+The drain now carries a reason. `ShutdownCoordinator.shutdownReason()` records
+it (default `SIGTERM`), `SIGUSR2` begins a drain with the `update` reason, and
+`transport/shutdown-notice.ts` renders both the request gate and the readiness
+probe from it: `update` produces `503 restart_for_update: system will be back in
+a minute`, anything else keeps the existing `shutting_down` notice. The
+dashboard's usage detail maps both codes.
+
+### Custom Anthropic-compatible endpoints track the resolved Claude CLI version
+
+`buildCustomClaudeCliHeaders` read the frozen `claude-fingerprint` constants,
+which are evaluated once at module load from the pinned fallback and never move.
+A custom Anthropic endpoint therefore shipped the pinned Claude CLI version
+forever, even after discovery resolved a newer one — while the OpenAI-compatible
+side already read the live `getCodexVersion()`. Both sides now read their live
+resolver getters (`getClaudeCliVersion`, `getClaudeSdkVersion`, `getCodexVersion`),
+so custom provider CLI identity updates automatically with discovery.
+
 ### Non-chat protocols get a native route, starting with System One (Jev)
 
 Some upstreams expose a protocol that is not chat-shaped at all. The System One

@@ -31,7 +31,8 @@
  *   rule as well, so it needs no special case.
  * - **`503`** is capacity or availability: the gateway *correctly* refusing work
  *   it cannot do right now (`admission_unavailable`, `accounts_unavailable`,
- *   `shutting_down`, `platform_unavailable`). Retryable, self-inflicted, and an
+ *   `shutting_down`, `restart_for_update`, `platform_unavailable`). Retryable,
+ *   self-inflicted, and an
  *   operator-capacity signal rather than a defect. It is the one `5xx` that is
  *   not a gateway defect, so it is named explicitly.
  * - **`500`, `502`, `504`** — an internal error, a stream that ended before

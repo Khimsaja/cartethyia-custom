@@ -69,6 +69,28 @@ describe("readiness in single_instance_local mode", () => {
       reason: "shutting_down",
     });
   });
+
+  test("/health/ready reports restart_for_update while draining for an in-place update", async () => {
+    const app = createGatewayShell({
+      readiness: async () => ({
+        status: "ready" as const,
+        db: "connected" as const,
+        migrations: "applied" as const,
+        redis: "not_configured" as const,
+      }),
+      shutdownCoordinator: {
+        track: () => undefined,
+        untrack: () => undefined,
+        isDraining: () => true,
+        shutdownReason: () => "update",
+      },
+    });
+    const response = await app.handle(new Request("http://localhost/health/ready"));
+    expect(response.status).toBe(503);
+    expect((await response.json()) as Record<string, unknown>).toMatchObject({
+      reason: "restart_for_update",
+    });
+  });
 });
 
 describe("payload capture redaction", () => {
@@ -144,6 +166,33 @@ describe("draining shutdown", () => {
     expect((await response.json()) as Record<string, unknown>).toMatchObject({
       error: { code: "shutting_down" },
     });
+    expect(harness.dispatchCounter.count).toBe(0);
+  });
+
+  // An in-place update is a different 503 from a stop: the replacement is
+  // seconds away, so the caller gets its own code and a "back shortly" message
+  // instead of the generic shutdown text. The reason rides on the coordinator,
+  // which the pipeline only reads through `isDraining`/`shutdownReason`.
+  test("reports restart_for_update when the drain reason is an update", async () => {
+    const harness = buildPipelineHarness({
+      shutdownCoordinator: {
+        track: () => {},
+        untrack: () => {},
+        isDraining: () => true,
+        shutdownReason: () => "update",
+      },
+    });
+    const response = await harness.app.handle(
+      new Request("http://cartethyia.test/v1/chat/completions", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer x" },
+        body: JSON.stringify({ model: "m", messages: [] }),
+      }),
+    );
+    expect(response.status).toBe(503);
+    const body = (await response.json()) as { error: { code: string; message: string } };
+    expect(body.error.code).toBe("restart_for_update");
+    expect(body.error.message).toContain("back in a minute");
     expect(harness.dispatchCounter.count).toBe(0);
   });
 });

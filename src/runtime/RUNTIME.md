@@ -65,7 +65,9 @@ over the registry, so heavy provider modules stay off the boot path.
 `track`/`untrack`/`isDraining`/`stopAdmitting`/`setAbortInflight`, and an
 idempotent `begin(reason)` that stops admitting, aborts in-flight work, waits
 for the drain (10ms spin, 8s budget), flushes telemetry (1s budget — a
-deadline overrun still proceeds), then closes pools.
+deadline overrun still proceeds), then closes pools. `shutdownReason()` returns
+the reason of the most recent `begin` (default `SIGTERM`) so the public
+termination notice can distinguish a stop from an in-place update.
 
 `bootstrap()` supplies the hooks: `flushTelemetry` is
 `deps.telemetryBuffer.flush`, and `closePools` stops the server, stops
@@ -73,7 +75,11 @@ scheduled tasks, stops the telemetry buffer with a final flush, then settles
 `closeDb()`, `closeRedis()`, and `poolAgentResolver.closeAll()`. `app.ts` wires
 `setAbortInflight(() => requestStateStore.abortAll())` so the bounded drain
 observes cancellation and finalizers run before the flush. `main.ts` adds
-SIGINT/SIGTERM handlers with a 10s forced-exit backstop.
+SIGINT/SIGTERM handlers with a 10s forced-exit backstop, plus a SIGUSR2 handler
+that drains with the `update` reason so an in-place image swap can tell callers
+the replacement is seconds away. The reason reaches the wire through
+`transport/shutdown-notice.ts`: `update` renders `restart_for_update` ("system
+will be back in a minute"), anything else renders the generic `shutting_down`.
 
 ## Primitives
 

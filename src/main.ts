@@ -61,7 +61,7 @@ const app = boot
   : createGatewayShell();
 export { app };
 
-function shutdown(signal: "SIGINT" | "SIGTERM"): void {
+function shutdown(signal: "SIGINT" | "SIGTERM", reason: "SIGINT" | "SIGTERM" | "update" = signal): void {
   if (!boot) return;
   log.info(`[shutdown] ${signal} received, draining...`);
   const forceExit = setTimeout(() => {
@@ -70,7 +70,7 @@ function shutdown(signal: "SIGINT" | "SIGTERM"): void {
   }, 10_000);
   forceExit.unref();
   boot.shutdownCoordinator
-    .begin(signal)
+    .begin(reason)
     .then(() => {
       log.info("[shutdown] complete");
       process.exit(0);
@@ -110,5 +110,15 @@ if (boot) {
     globalThis.__cartethyiaSignalsRegistered = true;
     process.on("SIGINT", () => shutdown("SIGINT"));
     process.on("SIGTERM", () => shutdown("SIGTERM"));
+    // An in-place update signals SIGUSR2 before swapping the image so the old
+    // process drains with the `update` reason and its callers are told the
+    // replacement is seconds away instead of seeing a generic shutdown. Not
+    // available on Windows, where the listener is simply never registered —
+    // production runs in Linux containers, which is where an update happens.
+    try {
+      process.on("SIGUSR2", () => shutdown("SIGTERM", "update"));
+    } catch {
+      // Platform without SIGUSR2: update drains fall back to the SIGTERM notice.
+    }
   }
 }

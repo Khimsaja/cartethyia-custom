@@ -6,6 +6,11 @@ import {
 } from "../../../src/providers/operations/custom-cli-headers";
 import { registerByokProviders } from "../../../src/providers/operations/provider-catalog-service";
 import {
+  _resetClaudeVersionCache,
+  _resetCodexVersion,
+  VERSION_SOURCES,
+} from "../../../src/providers/operations/client-versions";
+import {
   ProviderRegistry,
   parseCustomProviderId,
   type ProviderDispatchContext,
@@ -27,6 +32,31 @@ describe("Custom Provider CLI Identity Headers", () => {
     expect(headers["x-app"]).toBe("cli");
     expect(headers["X-Stainless-Runtime"]).toBe("node");
     expect(headers["X-Stainless-Package-Version"]).toBeDefined();
+  });
+
+  // The custom-provider headers must track discovery, not the frozen
+  // `claude-fingerprint` constants. Regression guard: seeding the resolver with
+  // a version distinct from the pinned fallback must show up in the emitted
+  // headers, which a constant read could never do.
+  test("Claude CLI headers reflect the live resolved version, not the pinned fallback", () => {
+    const pinned = VERSION_SOURCES.claudeCli.fallback;
+    try {
+      _resetClaudeVersionCache("9.9.9-probe");
+      const headers = buildCustomClaudeCliHeaders();
+      expect(headers["User-Agent"]).toBe("claude-cli/9.9.9-probe (external, cli)");
+      expect(headers["User-Agent"]).not.toBe(`claude-cli/${pinned} (external, cli)`);
+    } finally {
+      _resetClaudeVersionCache(null);
+    }
+  });
+
+  test("Codex CLI headers reflect the live resolved version, not the pinned fallback", () => {
+    try {
+      _resetCodexVersion("9.9.9-probe");
+      expect(buildCustomCodexCliHeaders()["user-agent"]).toBe("codex_cli_rs/9.9.9-probe");
+    } finally {
+      _resetCodexVersion();
+    }
   });
 
   test("resolveCustomCliHeaders branches by wire family", () => {

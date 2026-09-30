@@ -40,7 +40,8 @@ export type GatewayErrorCode =
   | "proxy_unreachable"
   | "tool_call_loop_detected"
   | "client_router_denied"
-  | "shutting_down";
+  | "shutting_down"
+  | "restart_for_update";
 
 /** Identifies which boundary produced a safe public error. */
 export type GatewayErrorOrigin = "cartethyia" | "upstream" | "network";

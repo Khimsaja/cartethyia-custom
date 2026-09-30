@@ -11,6 +11,7 @@ import { messagesAdapter } from "./transport/surface/messages/adapter";
 import { completionAdapter } from "./transport/surface/completion";
 import { SurfaceAdapterRegistry } from "./transport/surface/adapters";
 import { GatewayError } from "./transport/gateway-error";
+import { shutdownNotice } from "./transport/shutdown-notice";
 import type { CanonicalAdapter } from "./transport/middleware/request-context";
 import type { ApiKeyAuthorizationSnapshot } from "./security/api-key-auth";
 import { getPool } from "./persistence/postgres";
@@ -53,6 +54,8 @@ export interface ShutdownCoordinatorLike {
   track(id: string): void;
   untrack(id: string): void;
   isDraining(): boolean;
+  /** Why the drain began, so the termination notice can tell a stop from an update. */
+  shutdownReason?(): string;
   setAbortInflight?: (handler: (() => void) | undefined) => void;
 }
 
@@ -222,8 +225,12 @@ export function createGatewayApp(deps: GatewayAppDeps) {
       // sending it traffic and the replacement takes over without the old
       // one crashing first: SIGTERM → draining → 503 here → Docker routes
       // to the new container → old one finishes in flight and exits 0.
+      // The reason distinguishes an ordinary stop from an in-place update,
+      // whose replacement is seconds away, so a probe consumer can back off
+      // briefly instead of treating the drain as a permanent outage.
       if (deps.shutdownCoordinator?.isDraining()) {
-        return new Response(JSON.stringify({ status: "not_ready" as const, reason: "shutting_down" }), {
+        const notice = shutdownNotice(deps.shutdownCoordinator.shutdownReason?.());
+        return new Response(JSON.stringify({ status: "not_ready" as const, reason: notice.code }), {
           status: 503,
           headers: { "content-type": "application/json" },
         });

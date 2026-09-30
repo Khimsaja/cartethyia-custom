@@ -16,6 +16,7 @@ import { createAccessDecision } from "../../security/access-control";
 import { parseCookieValue, SESSION_COOKIE_NAME, isCsrfValid } from "../../security/csrf";
 import type { IpAbuseProtectionService } from "../../security/abuse";
 import type { ReadinessCheckResult } from "../../persistence/readiness";
+import { shutdownNotice } from "../shutdown-notice";
 
 /**
  * Stateless Elysia `beforeHandle` gateway checks: API-key authentication,
@@ -169,6 +170,8 @@ export function createConsoleMutationLimiterMiddleware(): Elysia {
 
 export interface ShutdownDrainSource {
   isDraining(): boolean;
+  /** Why the drain began, so the notice can tell a stop from an update. */
+  shutdownReason?(): string;
 }
 
 export interface ReadinessMiddlewareDeps {
@@ -185,8 +188,10 @@ export function createDependencyReadinessMiddleware(deps: ReadinessMiddlewareDep
         (!path.startsWith("/v1/") && !path.startsWith("/console/api/"))
       )
         return;
-      if (deps.shutdownCoordinator?.isDraining())
-        throw new GatewayError("shutting_down", 503, "Service is shutting down");
+      if (deps.shutdownCoordinator?.isDraining()) {
+        const notice = shutdownNotice(deps.shutdownCoordinator.shutdownReason?.());
+        throw new GatewayError(notice.code, 503, notice.message);
+      }
       const readiness = await deps.readiness();
       if (readiness.status !== "ready")
         throw new GatewayError("platform_unavailable", 503, "Service dependencies are unavailable");

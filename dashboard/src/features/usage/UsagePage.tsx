@@ -378,6 +378,8 @@ function errorMessageFor(errorKind: string | undefined): string {
     tool_call_loop_detected: "the request looped on the same tool call",
     tunnel_setup_failed: "the tunnel could not be established",
     unsupported_field: "the request carried a field this route rejects",
+    shutting_down: "the gateway was draining for a restart",
+    restart_for_update: "the gateway was restarting for an update; retry shortly",
   };
   if (errorKind && messages[errorKind]) return messages[errorKind];
   if (errorKind) return errorKind.replaceAll("_", " ");

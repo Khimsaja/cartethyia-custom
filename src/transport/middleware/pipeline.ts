@@ -43,6 +43,8 @@ export interface TransportPipelineContext {
   readonly verifiedHttps?: boolean;
   readonly shutdownCoordinator?: {
     isDraining(): boolean;
+    /** Why the drain began, so the termination notice can tell a stop from an update. */
+    shutdownReason?(): string;
   };
   readonly telemetry?: TelemetryBatchBuffer;
 }

@@ -4,7 +4,7 @@ import { buildProductionDeps } from "./dependencies";
 import type { ProductionDeps } from "./dependencies";
 import { withTimeout } from "./timeout";
 
-export type ShutdownReason = "SIGTERM" | "SIGINT" | "reload";
+export type ShutdownReason = "SIGTERM" | "SIGINT" | "reload" | "update";
 export type ShutdownState =
   "idle" | "stop_admitting" | "bounded_drain_wait" | "flush_telemetry" | "close_pools" | "done";
 
@@ -20,6 +20,7 @@ export class ShutdownCoordinator {
   private inflight = new Set<string>();
   private started = false;
   private beginPromise: Promise<void> | undefined;
+  private reason: ShutdownReason = "SIGTERM";
   private hooks: ShutdownHooks;
   private drainTimeoutMs: number;
   private flushTimeoutMs: number;
@@ -43,6 +44,16 @@ export class ShutdownCoordinator {
     return this.draining;
   }
 
+  /**
+   * Why the process began draining, for the public termination notice. Defaults
+   * to `SIGTERM` (the orchestrator's ordinary stop) and is overwritten by
+   * `begin(reason)` — `update` is the in-place image swap, whose callers must
+   * see "back shortly" rather than a generic shutdown.
+   */
+  shutdownReason(): ShutdownReason {
+    return this.reason;
+  }
+
   stopAdmitting(): void {
     if (this.state === "idle") {
       this.state = "stop_admitting";
@@ -51,7 +62,8 @@ export class ShutdownCoordinator {
   }
 
   // idempotent begin
-  async begin(_reason: ShutdownReason = "SIGTERM"): Promise<void> {
+  async begin(reason: ShutdownReason = "SIGTERM"): Promise<void> {
+    this.reason = reason;
     if (this.started) return this.beginPromise;
     this.started = true;
     const { promise, resolve, reject } = Promise.withResolvers<void>();

@@ -591,7 +591,8 @@ Structured provider types may normalize the public code/status; the original HTT
 | `proxy_pool_unhealthy` | 503 | network | yes | the selected pool could not establish a tunnel |
 | `admission_unavailable` | 503 | cartethyia | yes | the admission store is unreachable |
 | `accounts_unavailable` | 503 | cartethyia | yes | no account is available for this route |
-| `shutting_down` | 503 | cartethyia | yes | the process is draining |
+| `shutting_down` | 503 | cartethyia | yes | the process is draining (stop/reload) |
+| `restart_for_update` | 503 | cartethyia | yes | draining for an in-place update; back in ~a minute |
 | `platform_unavailable` | 5xx fallback | cartethyia/upstream | yes | the provider or gateway failed; the network pool is not blamed |
 | `transport_unavailable` | 502 | cartethyia/upstream/network | yes | the upstream stream failed or ended early |
 | `tool_call_loop_detected` | 502 | cartethyia | yes | the model repeated the same tool call |

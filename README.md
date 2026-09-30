@@ -223,6 +223,13 @@ The Docker image builds the dashboard and compiled backend, exposes port
 `10001`). PostgreSQL must be reachable through `DATABASE_URL`; Compose manages
 Redis only.
 
+`docker compose up --build -d` recreates the container, which sends `SIGTERM`:
+the old process drains and answers callers `503 shutting_down` while the new one
+starts. To tell clients the process is coming straight back — an in-place image
+swap rather than a stop — send `SIGUSR2` to the old process first
+(`docker kill -s SIGUSR2 <container>`); it drains with the `update` reason and
+answers `503 restart_for_update: system will be back in a minute` instead.
+
 If you bind-mount or attach a volume at the data directory for telemetry payload
 capture, the mount's ownership overrides the image's. The entrypoint starts as
 root, takes ownership of that directory for uid/gid `10001`, and only then drops
