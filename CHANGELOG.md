@@ -5,6 +5,26 @@
 > All changes below are pre-release. Cartethyia has not been tagged or
 > released; this document reflects the current production codebase architecture and capabilities.
 
+### Adjacent assistant turns merge on the Messages wire, fixing the prefill 400
+
+A Responses conversation that called a tool more than once — with the model's
+text reply replayed as its own item — decoded into two **adjacent assistant
+turns**: a `reasoning`+`function_call` turn, then the `text` turn that produced
+the same reply. Emitted verbatim, the second turn wedged between the `tool_use`
+and its `tool_result`. Anthropic requires the turn immediately after a
+`tool_use` to carry its `tool_result`, so the result was orphaned and the
+history read as ending on an assistant turn; the upstream rejected the whole
+request with `This model does not support assistant message prefills. The
+conversation must end with a user message` (verified live: one tool group
+passed, two failed; the merged single-turn shape passed).
+
+`canonicalToClaudeMessagesPayload` now merges consecutive assistant turns into
+one before emitting, so a `tool_use` is always immediately followed by the user
+turn carrying its result. The blocks keep their order, and the `tool_use`
+stable-partition runs once on the merged turn. This is the shared builder for
+every Messages-wire adapter (`claude`, `anthropic`, `kimi`), so all of them are
+fixed together.
+
 ### Termination notice distinguishes a stop from an in-place update
 
 A draining process answered every caller the same generic `503 shutting_down:

@@ -81,3 +81,54 @@ describe("canonical tool-result placement", () => {
     expect(repairRequestToolCalls(request)).toBe(request);
   });
 });
+
+/**
+ * A Responses history can decode into two adjacent assistant turns: a
+ * `reasoning`+`function_call` item folded into one turn, then the `text` item
+ * that produced the same reply. Emitted verbatim, the second turn wedges
+ * between the `tool_use` and its `tool_result` — the result is orphaned and the
+ * history ends on an assistant turn, which Anthropic rejects with "This model
+ * does not support assistant message prefills" (verified live: one group
+ * passes, two groups fail; the merged single-turn shape passes).
+ */
+describe("adjacent assistant turns merge on the Messages wire", () => {
+  const wedged: CanonicalRequest = {
+    model: "m",
+    messages: [
+      { role: "user", content: [{ kind: "text", text: "hi" }] },
+      {
+        role: "assistant",
+        content: [{ kind: "toolCall", call_id: "c1", name: "bash", arguments: "{}" }],
+      },
+      // The second assistant turn that produced the same reply — the wedge.
+      { role: "assistant", content: [{ kind: "text", text: "let me check" }] },
+      { role: "user", content: [{ kind: "toolResult", call_id: "c1", content: "ok" }] },
+    ],
+    generation_controls: {},
+    stream: true,
+    source_surface: "responses",
+  };
+
+  test("a tool_use is immediately followed by the turn carrying its result", () => {
+    const wire = canonicalToClaudeMessagesPayload(wedged).messages as Array<Record<string, unknown>>;
+    // user | assistant(tool_use + text merged) | user(tool_result)
+    expect(wire.map((m) => m["role"])).toEqual(["user", "assistant", "user"]);
+    const assistant = wire[1]!;
+    const blocks = assistant["content"] as Array<Record<string, unknown>>;
+    expect(blocks.map((b) => b["type"])).toEqual(["text", "tool_use"]);
+    // The turn after the assistant one is the tool_result, never another
+    // assistant turn.
+    expect(wire[2]!["role"]).toBe("user");
+    expect((wire[2]!["content"] as Array<Record<string, unknown>>)[0]?.["type"]).toBe("tool_result");
+  });
+
+  test("the merged turn keeps the tool_use ahead of the trailing text", () => {
+    const wire = canonicalToClaudeMessagesPayload(wedged).messages as Array<Record<string, unknown>>;
+    const blocks = wire[1]!["content"] as Array<Record<string, unknown>>;
+    const toolUseIndex = blocks.findIndex((b) => b["type"] === "tool_use");
+    const textIndex = blocks.findIndex((b) => b["type"] === "text");
+    expect(toolUseIndex).toBeGreaterThanOrEqual(0);
+    // Partition puts non-tool content first, so the tool_use trails the text.
+    expect(textIndex).toBeLessThan(toolUseIndex);
+  });
+});

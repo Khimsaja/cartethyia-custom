@@ -89,7 +89,10 @@ builders/parsers called directly by their adapters
   `extension:responses.*` passthrough.
 - `request/messages.ts` — `canonicalToClaudeMessagesPayload(request,
   { isOAuth })`: system/developer hoisting to top-level `system`; `tool` role
-  → `user`; stable-partition trailing `tool_use`; sampling-param strip when
+  → `user`; adjacent assistant turns merged into one (a `reasoning`+`toolCall`
+  turn followed by the `text` turn that produced the same reply would otherwise
+  wedge a `tool_use` from its `tool_result`, which Anthropic rejects as an
+  assistant-prefill); stable-partition trailing `tool_use`; sampling-param strip when
   thinking is enabled; `stop_sequences` cap 4; `thinking{type,budget_tokens,
   display,block_binding}` + default `context_management`;
   `output_config{effort,task_budget}`; `container`, `inference_geo`,

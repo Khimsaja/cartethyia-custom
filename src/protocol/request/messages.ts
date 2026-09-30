@@ -385,15 +385,35 @@ export function canonicalToClaudeMessagesPayload(
       const block = partToClaudeBlock(p, ctx);
       return block === undefined ? [] : [block];
     });
-    // Stable-partition so all tool_use blocks trail non-tool content (S6)
-    // Anthropic rejects tool_use ids that don't immediately precede tool_results.
-    if (message.role === "assistant" && Array.isArray(content)) {
-      stablePartitionToolUse(content as ClaudeWireObject[]);
+    // Anthropic requires strictly alternating turns: the turn immediately
+    // after an assistant `tool_use` must be the user turn carrying its
+    // `tool_result`. A Responses-origin request can decode into two adjacent
+    // assistant turns — a `reasoning`+`function_call` item folded into one
+    // turn, followed by the `text` item that produced the same assistant
+    // reply — and the second turn then sits between the `tool_use` and its
+    // `tool_result`. The result is orphaned, the history effectively ends on
+    // an assistant turn, and the upstream rejects the whole request with
+    // "This model does not support assistant message prefills". Merging
+    // adjacent assistant turns into one restores the contract; the blocks
+    // keep their order, so the `tool_use` still precedes the trailing text.
+    const previous = messages[messages.length - 1];
+    if (previous !== undefined && previous["role"] === "assistant" && message.role === "assistant") {
+      (previous["content"] as ClaudeWireObject[]).push(...content);
+      continue;
     }
     messages.push({
       role: message.role === "tool" ? "user" : message.role,
       content,
     });
+  }
+  // Stable-partition so all tool_use blocks trail non-tool content (S6)
+  // Anthropic rejects tool_use ids that don't immediately precede tool_results.
+  // Applied after the merge above so a turn assembled from several canonical
+  // messages is partitioned once, on its final block order.
+  for (const message of messages) {
+    if (message["role"] === "assistant" && Array.isArray(message["content"])) {
+      stablePartitionToolUse(message["content"] as ClaudeWireObject[]);
+    }
   }
   // Caller-driven cache breakpoints only: no implicit TTL/scope is added,
   // so Anthropic's own 5m default applies unless the caller asked otherwise.
