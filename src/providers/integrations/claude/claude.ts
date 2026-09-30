@@ -14,9 +14,7 @@
  * (thinking blocks, cache_control, beta negotiation) is outside the
  * OpenAI-compatible factory's reach — stays bespoke, never re-audit.
  */
-import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { createHash } from "node:crypto";
 import type { CanonicalEvent, CanonicalRequest } from "../../../transport/canonical-model";
 import { GatewayError } from "../../../transport/gateway-error";
 import { firstUserText, getHeader } from "../../../transport/canonical-model";
@@ -36,6 +34,7 @@ import {
   patchClaudeCchBody,
 } from "./claude-cch";
 import { resolveClaudeCliVersion, resolveClaudeSdkVersion } from "../../operations/client-versions";
+import { getOrCreateInstallId } from "../install-id";
 import { canonicalToClaudeMessagesPayload } from "../../../protocol/request/messages";
 import { CLAUDE_BILLING_HEADER_PREFIX, endpointUrl } from "../../../protocol/primitives";
 import { sendClaudeMessagesRequest } from "../../../protocol/transport/messages";
@@ -89,38 +88,17 @@ export const CLAUDE_MODELS: readonly ModelDefinition[] = [
 
 const CLAUDE_DEVICE_ID_DOMAIN = "cartethyia-claude-device-id-v1";
 
-function claudeInstallIdPath(): string {
-  const home = process.env["HOME"] ?? process.env["USERPROFILE"] ?? ".";
-  return join(home, ".cartethyia", "claude-install-id");
-}
-
 /**
  * Stable per-installation id, persisted once like the Codex install id. The
- * the assistant metadata `device_id` is derived from it so a machine keeps one
+ * assistant metadata `device_id` is derived from it so a machine keeps one
  * identity across restarts instead of minting a new one per request.
+ *
+ * The persistence lives in the shared install-id module: it owns the writable-
+ * location fallback (a container runs with `HOME=/root` but as uid 10001) and
+ * the policy that a telemetry identity never fails a request.
  */
 async function getClaudeInstallId(): Promise<string> {
-  const path = claudeInstallIdPath();
-  try {
-    const existing = (await readFile(path, "utf8")).trim();
-    if (existing.length > 0) return existing;
-  } catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const id = randomUUID();
-  try {
-    const handle = await open(path, "wx", 0o600);
-    try {
-      await handle.writeFile(`${id}\n`, "utf8");
-    } finally {
-      await handle.close();
-    }
-    return id;
-  } catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    return (await readFile(path, "utf8")).trim();
-  }
+  return getOrCreateInstallId("claude");
 }
 
 /** The stable device id the assistant metadata carries for this installation. */

@@ -1,44 +1,17 @@
-import { mkdir, open, readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { randomUUID } from "node:crypto";
+/**
+ * Grok's per-installation agent id.
+ *
+ * The persistence and failure handling live in the shared install-id module;
+ * this file only names the id. Previously each provider carried its own copy of
+ * the read/mkdir/open dance, and a failure to write it escaped into dispatch and
+ * failed the request.
+ */
+import { getOrCreateInstallId, installIdPath } from "../install-id";
 
-function homeDirectory(): string {
-  return process.env["HOME"] ?? process.env["USERPROFILE"] ?? ".";
+export function getGrokInstallIdPath(directory?: string): string {
+  return installIdPath("grok", directory);
 }
 
-export function getGrokInstallIdPath(homeDir = homeDirectory()): string {
-  return join(homeDir, ".cartethyia", "grok-install-id");
-}
-
-export async function getGrokInstallId(path = getGrokInstallIdPath()): Promise<string> {
-  try {
-    const existing = (await readFile(path, "utf8")).trim();
-    if (existing.length > 0) return existing;
-  } catch (error: unknown) {
-    if (
-      !(error instanceof Error) ||
-      !("code" in error) ||
-      (error as NodeJS.ErrnoException).code !== "ENOENT"
-    )
-      throw error;
-  }
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const id = randomUUID();
-  try {
-    const handle = await open(path, "wx", 0o600);
-    try {
-      await handle.writeFile(`${id}\n`, "utf8");
-    } finally {
-      await handle.close();
-    }
-    return id;
-  } catch (error: unknown) {
-    if (
-      !(error instanceof Error) ||
-      !("code" in error) ||
-      (error as NodeJS.ErrnoException).code !== "EEXIST"
-    )
-      throw error;
-    return (await readFile(path, "utf8")).trim();
-  }
+export function getGrokInstallId(path?: string): Promise<string> {
+  return getOrCreateInstallId("grok", path);
 }

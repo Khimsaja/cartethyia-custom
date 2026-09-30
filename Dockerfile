@@ -56,6 +56,9 @@ COPY --from=builder --chown=cartethyia:cartethyia /build/dist/cartethyia ./carte
 ENV CARTETHYIA_VERSION=2.0
 ENV NODE_ENV=production
 ENV DASHBOARD_DIST=/app/dist/dashboard
+# The runtime user (10001) does not own the image's default HOME, so provider
+# install ids go under the data directory the entrypoint already repairs.
+ENV CARTETHYIA_INSTALL_ID_DIR=/app/data/.cartethyia
 EXPOSE 12800
 STOPSIGNAL SIGTERM
 

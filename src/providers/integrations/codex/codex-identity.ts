@@ -1,7 +1,7 @@
-import { mkdir, open, readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { decodeJwtPayload } from "../../authentication/oauth-flow-store";
+import { getOrCreateInstallId, installIdPath } from "../install-id";
 
 export const CODEX_RESERVED_METADATA_KEYS = [
   "session_id",
@@ -29,40 +29,20 @@ function homeDirectory(): string {
 }
 
 export function getCodexInstallIdPath(homeDir = homeDirectory()): string {
-  return join(homeDir, ".cartethyia", "codex-install-id");
+  return installIdPath("codex", join(homeDir, ".cartethyia"));
 }
 
-export async function getCodexInstallId(path = getCodexInstallIdPath()): Promise<string> {
-  try {
-    const existing = (await readFile(path, "utf8")).trim();
-    if (existing.length > 0) return existing;
-  } catch (error: unknown) {
-    if (
-      !(error instanceof Error) ||
-      !("code" in error) ||
-      (error as NodeJS.ErrnoException).code !== "ENOENT"
-    )
-      throw error;
-  }
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const id = randomUUID();
-  try {
-    const handle = await open(path, "wx", 0o600);
-    try {
-      await handle.writeFile(`${id}\n`, "utf8");
-    } finally {
-      await handle.close();
-    }
-    return id;
-  } catch (error: unknown) {
-    if (
-      !(error instanceof Error) ||
-      !("code" in error) ||
-      (error as NodeJS.ErrnoException).code !== "EEXIST"
-    )
-      throw error;
-    return (await readFile(path, "utf8")).trim();
-  }
+/**
+ * The Codex installation id. Persistence, fallback, and the "never throw for a
+ * telemetry identity" policy live in the shared install-id module; a path
+ * argument stays supported because the tests and the identity store resolve
+ * their own location.
+ */
+export function getCodexInstallId(path?: string): Promise<string> {
+  // No argument means "try the standard locations", which the shared resolver
+  // does in order. Resolving one path here would skip the writable-directory
+  // fallback the container depends on.
+  return getOrCreateInstallId("codex", path);
 }
 export function createCodexIdentity(
   sessionId: string = randomUUID(),
