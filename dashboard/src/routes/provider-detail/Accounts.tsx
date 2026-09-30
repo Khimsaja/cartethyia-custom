@@ -758,6 +758,10 @@ export function AccountsList({
 
 
 
+/** Cap on an imported credential file; a mis-picked file must not stall the tab. */
+const CREDENTIAL_FILE_MAX_BYTES = 2 * 1024 * 1024;
+const CREDENTIAL_FILE_MAX_MB = CREDENTIAL_FILE_MAX_BYTES / (1024 * 1024);
+
 export function AddAccountModal({
   providerId,
   accounts,
@@ -797,6 +801,42 @@ export function AddAccountModal({
     } catch {
       toast.error("Clipboard access denied");
     }
+  };
+
+  /**
+   * Reads a picked `.txt`/`.json` file into the same field the paste path fills.
+   *
+   * The parser already accepts a JSON array, one credential per line, and
+   * newline-delimited JSON exports, so the file only has to become text — the
+   * detection, labelling, and batch preview are the shared path, not a second
+   * implementation. Size is capped so a mis-picked file cannot freeze the tab
+   * building a preview it will never submit.
+   */
+  const handleFile = (file: File) => {
+    if (file.size > CREDENTIAL_FILE_MAX_BYTES) {
+      toast.error("File too large", `Credential files must be ${CREDENTIAL_FILE_MAX_MB} MB or smaller.`);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = typeof reader.result === "string" ? reader.result : "";
+      setSecret(text);
+      const parsed = parseCredentialBatch(text);
+      if (parsed.length === 0) {
+        toast.error("Nothing to import", "That file held no credential the gateway recognises.");
+        return;
+      }
+      toast.success(
+        `Imported ${file.name}`,
+        parsed.length > 1
+          ? `Detected ${parsed.length} credentials`
+          : parsed[0]?.kind === "oauth"
+            ? "Detected: OAuth export"
+            : "Detected: API key",
+      );
+    };
+    reader.onerror = () => toast.error("Could not read that file");
+    reader.readAsText(file);
   };
 
   const handleSubmit = async () => {
@@ -931,6 +971,26 @@ export function AddAccountModal({
             >
               Paste
             </Button>
+            {/* Same field, same parser — the file only replaces typing. Accepts
+                the JSON export this dialog produces, plus .txt/.jsonl carrying
+                one credential per line. */}
+            <label
+              className="btn btn-secondary"
+              style={{ flexShrink: 0, cursor: "pointer" }}
+            >
+              <input
+                type="file"
+                accept=".json,.txt,.jsonl,.ndjson,application/json,text/plain"
+                aria-label="Import credentials from a file"
+                style={{ display: "none" }}
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = "";
+                  if (file) handleFile(file);
+                }}
+              />
+              Import file
+            </label>
           </Inline>
         </Stack>
         {isBatch && (

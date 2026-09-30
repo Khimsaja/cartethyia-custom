@@ -201,7 +201,6 @@ describe("Cline model catalog", () => {
       "stealth/space-bunny-alpha",
       "cline-free/mimo-v2.6-flash",
       "cline-free/deepseek-v4.1-flash",
-      "cline-free/gemini-3.8-flash",
       "cline-free/muse-spark-1.3-contributor",
     ]);
     expect(CLINE_MODELS.every((model) => model.cost.input === 0 && model.cost.output === 0)).toBe(true);

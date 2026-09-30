@@ -82,6 +82,14 @@ export type { AccountHealthEventRecord } from "../../../src/providers/operations
 export { PROBE_REASONING_EFFORTS } from "../../../src/providers/discovery/discovery-types";
 export type { ProbeReasoningEffort } from "../../../src/providers/discovery/discovery-types";
 
+/**
+ * The `model(level)` naming rule, re-exported from the backend parser so the
+ * dashboard renders exactly the id a client should send. A hand-written
+ * `(level)` string here would drift from `parseThinkingSuffix` the moment
+ * either side changes.
+ */
+export { formatThinkingSuffix } from "../../../src/transport/translation/thinking";
+
 export type {
   ComboStrategy,
   ModelAliasRow,

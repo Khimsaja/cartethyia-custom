@@ -230,6 +230,43 @@ describe("ChatAdapter.parse", () => {
     expect("max_tokens" in canonicalToChatPayload(absent)).toBe(false);
   });
 
+  /**
+   * A `file` part must reach the Chat wire as a `data:` URI in `file_data`.
+   * OpenAI-compatible backends (OpenCode Zen/Free) reject a bare-base64
+   * `file_data` with "Invalid content" — the `file` block has no sibling
+   * `mime_type`, so the media type has to travel inside the URI. The canonical
+   * part keeps bytes and media type separate, so the outbound builder re-wraps.
+   */
+  test("re-wraps a canonical file part into a data-URI file_data", () => {
+    const request = {
+      model: "m",
+      messages: [
+        {
+          role: "user" as const,
+          content: [
+            { kind: "text" as const, text: "ringkas" },
+            {
+              kind: "file" as const,
+              data: "QUJD",
+              media_type: "application/pdf",
+              filename: "doc.pdf",
+            },
+          ],
+        },
+      ],
+      generation_controls: {},
+      stream: false,
+      source_surface: "chat" as const,
+    };
+    const payload = canonicalToChatPayload(request as never) as Record<string, unknown>;
+    const messages = payload["messages"] as Array<{ content: Array<Record<string, unknown>> }>;
+    const filePart = messages[0]!.content.find((part) => part["type"] === "file");
+    expect(filePart).toMatchObject({
+      type: "file",
+      file: { file_data: "data:application/pdf;base64,QUJD", filename: "doc.pdf" },
+    });
+  });
+
   test("parses the caller omit flag and top_p/logprobs sampling knobs", () => {
     const adapter = new ChatAdapter();
     const request = adapter.parse({

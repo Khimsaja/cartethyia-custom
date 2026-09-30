@@ -1,4 +1,4 @@
-# Cartethyia
+# ![](orca-paste-1790786723417-099ae9d3-f3a2-4dac-9c24-74887febf6fa.png)Cartethyia
 
 <img width="1760" height="576" alt="Cartethyia banner" src="https://github.com/user-attachments/assets/666f3a3d-136e-49d7-8bec-ff967f93b78f" />
 
@@ -21,7 +21,7 @@ Built with Bun, TypeScript, Elysia, PostgreSQL, and optional Redis coordination.
 ## Highlights
 
 - **Bundled provider integrations** — OpenAI, Anthropic, Codex, Gemini, Grok,
-  xAI Grok Subscription, Devin, Mistral, Groq, OpenRouter, Cerebras, NVIDIA,
+  xAI Grok Subscription, Devin, Mistral, OpenRouter, Cerebras, NVIDIA,
   DeepSeek-family gateways, and more, each with its own authentication, wire
   quirks, and identity headers. The set is declared once in
   `src/providers/provider-metadata.ts`; mirrors (registry, capabilities, dashboard

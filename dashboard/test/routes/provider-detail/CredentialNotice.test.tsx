@@ -5,7 +5,7 @@ import type { ProviderResponse } from "../../../src/data/contracts";
 
 function provider(overrides: Partial<ProviderResponse> = {}): ProviderResponse {
   return {
-    providerId: "groq",
+    providerId: "mistral",
     enabled: true,
     isBuiltIn: true,
     requiresAccount: true,
@@ -18,7 +18,7 @@ function provider(overrides: Partial<ProviderResponse> = {}): ProviderResponse {
 describe("CredentialNotice", () => {
   test("renders the guidance and a Get API Key action for a key-based provider", () => {
     const html = renderToStaticMarkup(
-      <CredentialNotice provider={provider({ credentialUrl: "https://console.groq.com/keys" })} />,
+      <CredentialNotice provider={provider({ credentialUrl: "https://console.mistral.ai/api-keys" })} />,
     );
     expect(html).toContain("Create a credential on the provider site");
     expect(html).toContain("Get API Key");

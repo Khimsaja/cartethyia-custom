@@ -243,6 +243,12 @@ export const models = pgTable(
       .references(() => providers.id, { onDelete: "cascade" }),
     modelId: text("model_id").notNull(),
     wireFamily: wireFamily("wire_family").notNull(),
+    // Which protocol shape at all (`llm` = the canonical chat pipeline). A
+    // non-`llm` row (System One) is served by its native passthrough route, not
+    // by the surface codecs. Kept a plain text column with a default rather than
+    // a pgEnum: unlike `wire_family`, the set is expected to grow (embeddings,
+    // tts, …) and a widened enum needs a migration per addition.
+    serviceKind: text("service_kind").notNull().default("llm"),
     endpointPath: text("endpoint_path").notNull(),
     contextLimit: integer("context_limit"),
     outputLimit: integer("output_limit"),

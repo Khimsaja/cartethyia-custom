@@ -135,7 +135,12 @@ describe("blockFromPart", () => {
     expect(blockFromPart({ kind: "refusal", text: "no" })).toEqual({ type: "text", text: "no" });
   });
 
-  test("a tool call decodes its arguments and carries the index", () => {
+  test("a tool call decodes its arguments and drops the canonical stream index", () => {
+    // `index` is a streaming-position field. The Anthropic `tool_use` block has
+    // no such key in either direction, and the API rejects the whole body with
+    // `tool_use.index: Extra inputs are not permitted`. A canonical `toolCall`
+    // carries one because the Chat/Responses parsers stamp every call with its
+    // array position, so it must not be copied onto the block.
     expect(
       blockFromPart({
         kind: "toolCall",
@@ -144,7 +149,7 @@ describe("blockFromPart", () => {
         arguments: '{"k":1}',
         index: 3,
       }),
-    ).toEqual({ type: "tool_use", id: "c1", name: "lookup", input: { k: 1 }, index: 3 });
+    ).toEqual({ type: "tool_use", id: "c1", name: "lookup", input: { k: 1 } });
   });
 
   test("a tool result keeps string content and recurses into part content", () => {

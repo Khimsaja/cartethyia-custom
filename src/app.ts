@@ -29,6 +29,7 @@ import {
   type ProviderProxyHandlerDeps,
 } from "./transport/dispatch/proxy-request";
 import { createResponsesCompactHandler } from "./transport/dispatch/responses-compact";
+import { createSystemoneHandler } from "./transport/dispatch/systemone";
 
 import { createTransportPipeline } from "./transport/middleware/pipeline";
 import { PublicModelCatalogStore, type AllowedModelEntry } from "./console/providers/catalog/public-model-store";
@@ -393,6 +394,22 @@ export function createGatewayApp(deps: GatewayAppDeps) {
       telemetryBuffer: deps.telemetryBuffer,
     });
 
+    const handleSystemone = createSystemoneHandler({
+      db: deps.db,
+      providerAdapters: deps.providerAdapters ?? new Map(),
+      resolveProviderAdapter: deps.resolveProviderAdapter,
+      proxyPreparer: deps.proxyPreparer,
+      stateStore: requestStateStore,
+      poolSelector: deps.poolSelector,
+      networkBindingFactory: deps.networkBindingFactory,
+      snapshotService: deps.snapshotService,
+      resolveOAuthRefresher: deps.resolveOAuthRefresher,
+      oauthRefreshService: deps.oauthRefreshService,
+      // Same reasoning as compact: the handler finalizes telemetry itself, so
+      // the buffer must be threaded here or the route emits no row.
+      telemetryBuffer: deps.telemetryBuffer,
+    });
+
     // Gateway mounting: the pipeline owner composes stages, telemetry, and
     // cleanup; app only registers the public route table.
     app.use(
@@ -402,6 +419,7 @@ export function createGatewayApp(deps: GatewayAppDeps) {
         routes.post("/responses/compact", handleResponsesCompact);
         routes.post("/messages", proxyHandler);
         routes.post("/completions", proxyHandler);
+        routes.post("/systemone", handleSystemone);
         routes.get("/models", handleModelsList);
         routes.get("/models/info", handleModelsDetail);
         routes.get("/models/*", handleModelsDetail);

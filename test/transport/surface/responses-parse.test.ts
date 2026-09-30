@@ -60,6 +60,24 @@ describe("parseResponsesRequest content blocks", () => {
     });
   });
 
+  test("splits a data-URI file_data into bare base64 plus its declared media type", () => {
+    // The regression: a `file_data` sent as a whole `data:application/pdf;base64,…`
+    // URI kept the entire URI as `data` while `media_type` fell to the
+    // octet-stream default — so the re-encoded Anthropic document and the
+    // Responses input_file both carried the wrong type and the upstream rejected
+    // the request. The URI's media type must win over the default.
+    const request = parseResponsesRequest(
+      messageInput([
+        { type: "input_file", filename: "doc.pdf", file_data: "data:application/pdf;base64,QUJD" },
+      ]),
+    );
+    expect(request.messages[0]!.content[0]).toMatchObject({
+      kind: "file",
+      data: "QUJD",
+      media_type: "application/pdf",
+    });
+  });
+
   test("maps a document block and keeps its declared source_type", () => {
     const request = parseResponsesRequest(
       messageInput([

@@ -54,11 +54,11 @@ describe("flagPoolCooldown", () => {
     const selector = new NetworkPoolSelector();
     const rows: Array<Record<string, unknown>> = [];
     const db = fakeDb(rows);
-    flagPoolCooldown(selector, db, "pool-health-c", "groq", rateLimitError(5_000));
+    flagPoolCooldown(selector, db, "pool-health-c", "mistral", rateLimitError(5_000));
     // Let the first audit write land its coalescing stamp before the repeat:
     // both flag paths are void-fired, so a synchronous second call races it.
     await Bun.sleep(10);
-    flagPoolCooldown(selector, db, "pool-health-c", "GROQ", rateLimitError(5_000));
+    flagPoolCooldown(selector, db, "pool-health-c", "MISTRAL", rateLimitError(5_000));
     await Bun.sleep(10);
     // Same pair (provider lowercased) inside the 15-min window: one row.
     expect(rows).toHaveLength(1);

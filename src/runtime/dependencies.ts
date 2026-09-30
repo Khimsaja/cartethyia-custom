@@ -3,7 +3,13 @@ import { assertPoolFitsServerCapacity, ensureMigrated, getDb, poolMaxFromEnv } f
 import type { CartethyiaDatabase } from "../persistence/postgres";
 import { getRedis } from "../persistence/redis";
 import type { RedisClient } from "../persistence/redis";
-import { seedBundledProviders, registerByokProviders, liveProviderUpstreamHosts, bundledModelCatalog } from "../providers/operations/provider-catalog-service";
+import {
+  bundledModelCatalog,
+  liveProviderUpstreamHosts,
+  registerByokProviders,
+  retireUnbundledProviders,
+  seedBundledProviders,
+} from "../providers/operations/provider-catalog-service";
 import type { BundledProviderCatalog } from "../providers/operations/provider-catalog-service";
 import { createDefaultProviderRegistry } from "../providers/default-registry";
 import { OAuthRefreshService, loadDueOAuthAccounts } from "../providers/authentication/oauth-refresh-service";
@@ -90,6 +96,11 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
   await ensureMigrated();
   await assertPoolFitsServerCapacity(poolMaxFromEnv());
   await seedBundledProviders(db);
+  // Boot-only: retire global rows for providers the bundle has dropped, so a
+  // retired provider cannot linger as a card the console can no longer delete.
+  // Kept off the test harness path, which shares one database across suites and
+  // installs its own global fixtures.
+  await retireUnbundledProviders(db);
   const registry = createDefaultProviderRegistry();
   // Live view, not a snapshot: custom providers registered after boot (or
   // edited from the console) must resolve their SSRF binding immediately.

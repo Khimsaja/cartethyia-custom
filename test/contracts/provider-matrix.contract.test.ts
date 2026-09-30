@@ -424,9 +424,7 @@ describe("spec-driven api-key matrix", () => {
     },
     ...(
       [
-        ["groq", "api.groq.com"],
         ["mistral", "api.mistral.ai"],
-        ["sifo", "api.siliconflow.cn"],
         ["fireworks", "api.fireworks.ai"],
         ["nvidia", "integrate.api.nvidia.com"],
         ["gmi", "api.gmi-serving.com"],

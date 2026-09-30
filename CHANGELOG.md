@@ -5,6 +5,165 @@
 > All changes below are pre-release. Cartethyia has not been tagged or
 > released; this document reflects the current production codebase architecture and capabilities.
 
+### Non-chat protocols get a native route, starting with System One (Jev)
+
+Some upstreams expose a protocol that is not chat-shaped at all. The System One
+decision API takes `{model, state, questions}` and answers `{answers}` — no
+messages, tools, or streaming — so forcing it through the canonical
+`CanonicalRequest`/`CanonicalEvent` pipeline would add fields and events used by
+exactly one protocol.
+
+A new **`service_kind`** dimension separates protocol shapes from wire families:
+`wire_family` says which chat-shaped wire a model speaks; `service_kind` says
+which protocol shape at all. `llm` is every existing row and the default; a
+non-`llm` row is served by a **native route** (`NATIVE_SERVICES`) whose body
+stays opaque but which still runs routing, admission, retry, accounting, and
+telemetry through the shared attempt loop — the same shape as the native
+Responses-compact route.
+
+`POST /v1/systemone` is the first entry, backed by `ProviderAdapter.systemone`
+(implemented by the OpenAI-compatible adapter: it posts the caller's body
+untouched to the row's own endpoint). OpenRouter (`typesafe/jev-1.13`) and the
+OpenCode family (`jev-1.13`, `jev-1.13-free`) are catalogued as `systemone`
+rows; OpenCode discovery reclassifies `jev-1.13-free` onto `/zen/v1/systemone`
+instead of admitting it as a chat model, and the probe dispatches a decision
+body and asserts `answers`. A chat model named on the native route (or a
+decision body sent to a chat endpoint) fails closed with `capability_unsupported`.
+
+Adding the next non-chat protocol is one `NATIVE_SERVICES` row, one
+`ServiceKind` member, and one adapter method.
+
+### Claude requests stop failing on a field, a capability name, and a parameter
+
+Four independent defects made the Claude routes answer errors the upstream
+never asked for. All four are fixed.
+
+**`stream_options` no longer rides the Messages wire.** It is an OpenAI field,
+and the native Anthropic API rejects the whole body when it is present
+(`stream_options: Extra inputs are not permitted`) — which 400'd every streamed
+`claude`/`anthropic` request. The Messages codec emitted it unconditionally for
+streaming; `compatible-adapter.ts` did the same for BYOK routes. Both are gone
+for that wire. Nothing is lost: Anthropic reports usage natively through
+`message_start.message.usage` and `message_delta.usage`, which the Messages
+decoder already reads. A custom Anthropic-compatible reseller that genuinely
+wants the OpenAI field still gets it from `compatible-adapter.ts` on the chat
+and responses wires, where the field is legitimate.
+
+**The capability gate now agrees with the route profile's spelling.** The
+profile is built by `buildCapabilityProfile`, which spells its keys in camelCase
+(`promptCaching`, `parallelToolCalls`, `reasoningEncryptedContent`,
+`responseJsonObject`), while the Claude compatibility gate and the Anthropic
+beta map use snake_case (`prompt_caching`, `parallel_tool_calls`). Comparing the
+two literally matched nothing — `promptcaching` is not `prompt_caching` — so
+every Claude route rejected `prompt_caching`, `response_format`,
+`redacted_thinking`, and `server_tool_use`. That hit **live traffic**, not just
+probes: a Claude Code request carrying `cache_control` answered
+`capability_unsupported: prompt_caching`. Both sides now fold case and
+separators before comparing, and an explicit `promptCaching: false` is finally
+honoured instead of being ignored by the beta resolver.
+
+**Probes dispatch under the route's real capability profile.** A probe builds a
+dispatch candidate and runs the production adapter, and that adapter gates on
+capabilities. The candidate carried `capabilities: {}`, so the Claude adapter
+rejected the probe over capabilities the route actually has — reporting a
+healthy provider as broken. The probe now resolves the profile from the same
+model row the router reads.
+
+**Sampling parameters are stripped only on the generations that reject them.**
+`claude-opus-4-7` and later, plus `claude-sonnet`/`claude-fable`/`claude-mythos`
+at generation 5 or later, answer `` `temperature` is deprecated for this model ``
+with a 400 — regardless of whether thinking is on. Older generations accept
+sampling normally, so the strip is keyed on the model generation rather than the
+whole family: `claude-opus-4-6` and `claude-sonnet-4-6` keep receiving
+`temperature`. The rule lives in the existing `PARAM_QUIRKS` table, and the
+Claude Code OAuth adapter now actually consults that table — it never did, so it
+had no strip at all.
+
+
+
+Groq (`groq`) and SiliconFlow (`sifo`) are removed from the gateway. They were
+neither bundled integrations with their own behaviour nor wanted: both were
+plain bearer-auth hosts behind the shared `configured-openai-providers` spec, so
+the entries in `provider-metadata.ts`, `default-registry.ts`,
+`configured-openai-providers.ts`, and the `models.dev` id map (`sifo` →
+`siliconflow`) all go with them. The console mirrors — display names, icons —
+drop their rows too. The catalog seed also retires their `providers` rows on the
+next boot (see below), and any account saved against either id cascades away
+with the row; re-adding a provider is the same four edits in reverse.
+
+The free-provider sections are regrouped around what is actually free.
+`opencodezen` and `opencodego` are no longer listed as free — they are
+paid/keyed tiers — so they fall through to **API Key Providers**. `opencodeft`
+(OpenCode Free) stays, and moves out of **Free Limited Providers** into **Free
+Available API Key Providers**, where its standing no-account allowance belongs.
+**Free Limited Providers** now holds only `cerebras`, `bai`, and `tokenharbor`.
+
+### Retiring a provider no longer leaves an undeletable card behind
+
+A new boot step, `retireUnbundledProviders`, deletes the global
+(`tenant_id IS NULL`) `providers` rows whose id the bundle no longer declares. It
+is the only writer of global rows — every console-created provider carries a
+tenant — so an unowned id absent from the bundle is an orphan by construction,
+and the step cannot reach a tenant-owned BYOK row.
+
+Without it, removing a provider from `provider-metadata.ts` left its `providers`
+row in place forever: the seed only ever added. That row still satisfied
+`list()`'s `globalOrOwnedBy`, but `isBundledProviderId` — the predicate behind
+`isBuiltIn` — answered `false` for it, so the console rendered it as a **custom**
+provider. The trash button could not remove it: `DELETE /providers/:providerId`
+scopes to `tenant_id = <tenant>`, and a global row is `NULL`, so it matched
+nothing and surfaced as `provider_not_found`. The `/platform/global/:providerId`
+path that *can* delete such a row has no dashboard control. Groq and SiliconFlow
+exposed this the moment they were dropped, and `autoclaw` showed it was not a
+one-off — migration `0011` had already deleted that row, and the next boot
+recreated it.
+
+It is a separate step from `seedBundledProviders` rather than folded into it,
+because the test harness calls that seeder on import to converge one database
+shared by every suite: a delete there would race the global fixtures other suites
+are installing, which it measurably did. The seeder stays additive; retirement
+runs once on the boot path. This is the provider-level half of a rule the model
+seeder already followed (`seedBundledModels` drops retired `builtin` rows), so
+the two can no longer disagree about what the bundle owns.
+
+### Thinking effort can be requested on the model name
+
+A caller can now write the reasoning level onto the model name —
+`claude-opus-4-6(max)`, `gpt-5.1-codex(low)`, `mimo-v2.6(8192)` — and the
+gateway strips it before routing and applies it to the request. The level
+vocabulary is the full six-tier ladder plus `none` (off) and `auto` (provider
+decides); a number is read as a token budget and normalized to the nearest tier.
+
+The syntax is parentheses, not a dash, and that is a correctness decision rather
+than a style one. The catalog contains 73 ids ending in a level word, and for 22
+of them the truncated prefix is *itself* a real model — `gemini-3.1-pro-high` →
+`gemini-3.1-pro`, `gpt-5.1-codex-max` → `gpt-5.1-codex`, `o3-mini-high` →
+`o3-mini`. A dash suffix would have to consult the catalog to disambiguate, and
+would still silently redirect the request when it guessed wrong. No model id
+contains a parenthesis, so this form is unambiguous on its own.
+
+The parse happens on the canonical request in the preparer, before alias
+resolution, the allowlist, and route planning — all of which match against
+registered ids and would reject a name carrying `(high)`. Doing it there rather
+than in a provider adapter is what makes it global: at that point no provider has
+been chosen, and the level describes the request, not any one upstream. A
+suffix wins over a `reasoning_effort` already in the body.
+
+Normalization stays where it already was: each model's own ladder is applied
+after routing, so `(max)` against a model that tops out at `high` runs at `high`
+instead of failing. One suffix, one meaning, whatever the target. An
+unrecognized value leaves the model untouched — a typo must not fail a request.
+
+The `/v1/responses/compact` route has its own handler and never reaches the
+preparer, so it strips the suffix too; compaction is a context operation with no
+reasoning effort to shape, and a client appending the suffix to every request
+should not get a misleading model-not-found there.
+
+The budget↔level table replaces a coarse heuristic that read anything from 4 096
+tokens up as `high`. Thresholds now match the reference implementation, so a
+4 096-token budget reads as `low` and 31 999 as `xhigh` rather than both
+collapsing upward.
+
 ### Provider requests stop failing when the install id cannot be written
 
 Grok Build, Claude, and Codex each stamp a stable per-installation id on their

@@ -64,6 +64,7 @@ function mapModelRow(
     route: row.endpointPath,
     provider: row.providerId,
     wireFamily: row.wireFamily,
+    serviceKind: row.serviceKind,
     enabled: disabled ? false : row.enabled,
     contextLimit: row.contextLimit,
     outputLimit: row.outputLimit,

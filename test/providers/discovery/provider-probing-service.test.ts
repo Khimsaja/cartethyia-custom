@@ -4,7 +4,7 @@ import { encryptCredential } from "../../../src/security/crypto";
 import { models, providerAccounts, providers } from "../../../src/persistence/schema";
 import { createProviderProbingServiceForTests } from "../../../src/providers/discovery/probing-service";
 import { applyDiscoveredWire, constrainWireFamily, resolveDiscoveredWire, staticEndpointForWire, supportedWireFamiliesForProvider } from "../../../src/providers/discovery/probe-wire";
-import { buildProbeCanonicalRequest, loadProbePreferences } from "../../../src/providers/discovery/probe-phases";
+import { buildProbeCanonicalRequest, loadProbePreferences, resolveProbeTarget } from "../../../src/providers/discovery/probe-phases";
 import { CLINE_MODELS } from "../../../src/providers/integrations/cline/cline";
 import { createDefaultProviderRegistry } from "../../../src/providers/default-registry";
 
@@ -683,7 +683,7 @@ describe("supportedWireFamiliesForProvider", () => {
   });
 
   test("a built-in with no declared paths resolves to undefined", () => {
-    expect(supportedWireFamiliesForProvider("groq", null, null)).toBeUndefined();
+    expect(supportedWireFamiliesForProvider("mistral", null, null)).toBeUndefined();
   });
 });
 
@@ -1003,7 +1003,7 @@ describe("probeModel respects the provider's wire contract", () => {
     // `undefined` means "this provider declares nothing", not "no wires": the
     // gate must not second-guess a row when there is no contract to check it
     // against. A bundled provider without registry paths is that case.
-    expect(supportedWireFamiliesForProvider("groq", null, null)).toBeUndefined();
+    expect(supportedWireFamiliesForProvider("mistral", null, null)).toBeUndefined();
     expect(constrainWireFamily("chat", undefined)).toEqual({ wireFamily: "chat", corrected: false });
     expect(constrainWireFamily("messages", undefined)).toEqual({
       wireFamily: "messages",
@@ -1225,5 +1225,58 @@ describe("testByokConnection", () => {
     });
     expect(result.ok).toBe(false);
     expect(result.error).toContain("connection refused");
+  });
+});
+
+describe("resolveProbeTarget — capability profile", () => {
+  // A probe runs the production adapter, which gates on capabilities. Building
+  // the candidate with `capabilities: {}` made the Claude adapter reject the
+  // probe over capabilities the route actually has (`prompt_caching`, `tools`,
+  // `reasoning`) — reporting a healthy provider as broken over a gate live
+  // traffic passes. The probe must dispatch under the route's real profile.
+  const bundledCatalog = new Map([
+    [
+      "claude",
+      [
+        {
+          modelId: "claude-haiku-4-5",
+          wireFamily: "messages" as const,
+          endpointPath: "/v1/messages",
+          contextLimit: 200_000,
+          outputLimit: 64_000,
+          modalities: { input: ["text", "image"], output: ["text"] },
+          reasoning: true,
+          toolCall: true,
+          webSearch: true,
+          cost: { input: 1, output: 5 },
+        },
+      ],
+    ],
+  ]);
+
+  test("a bundled row's probe inherits that row's capability profile", async () => {
+    const target = await resolveProbeTarget({
+      db: { select: () => ({ from: () => ({ where: () => ({ limit: async () => [] }) }) }) } as never,
+      bundledModelCatalog: bundledCatalog as never,
+      defaultEndpoints: { chat: "/v1/chat/completions", responses: "/v1/responses", messages: "/v1/messages" },
+      providerId: "claude",
+      modelId: "claude-haiku-4-5",
+      request: {} as never,
+      providerWireRow: {
+        baseUrl: "https://api.anthropic.com",
+        wireFamilyDefault: "messages",
+        compatibilityProfile: null,
+        requiresAccount: true,
+      },
+    });
+
+    // The profile must not be empty, and must carry the capabilities the route
+    // genuinely declares — the exact ones the empty profile used to reject.
+    expect(Object.keys(target.capabilityProfile).length).toBeGreaterThan(0);
+    expect(target.capabilityProfile.promptCaching).toBe(true);
+    expect(target.capabilityProfile.tools).toBe(true);
+    expect(target.capabilityProfile.reasoning).toBe(true);
+    expect(target.capabilityProfile.webSearch).toBe(true);
+    expect(target.wireFamily).toBe("messages");
   });
 });

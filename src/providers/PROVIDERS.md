@@ -121,10 +121,17 @@ auth header for `GET <base>/v1/models` before anything is persisted.
    row's recorded flags or its `source`. A `false` there — a discovered row with no metadata, or a catalog row
    set explicitly — must not silently rewrite a request the caller asked for. The upstream decides whether it
    can serve them and returns its own error if it cannot.
-2. **DB materialization**: `seedBundledProviders()` upserts `providers` rows; `bundledModelCatalog(registry)`
-   aggregates `modelsByProvider` (conflicting endpoint paths for one wire family throw); `seedBundledModels()`
-   reconciles `models` rows keyed `(provider, model, endpoint)` — deletes drifted builtin pairs, upserts with
-   capability/cost reconciliation, never touches operator `enabled`.
+2. **DB materialization**: `seedBundledProviders()` upserts `providers` rows — additive only, because the
+   test harness calls it on import to converge a shared database. `retireUnbundledProviders()` runs once on
+   the boot path and deletes the global (`tenant_id IS NULL`) rows the bundle no longer declares: it is the
+   only writer of global rows, so an unowned id absent from the bundle is an orphan by construction, while a
+   tenant-owned BYOK row is never in scope. Without that step a retired provider kept a row `list()` still
+   returned while `isBundledProviderId` no longer called it built-in, so the console drew it as an
+   undeletable custom provider (the tenant-scoped `DELETE` matches `tenant_id = <tenant>`, never `NULL`);
+   `bundledModelCatalog(registry)` aggregates `modelsByProvider` (conflicting endpoint paths for one wire
+   family throw); `seedBundledModels()` reconciles `models` rows keyed `(provider, model, endpoint)` —
+   deletes drifted builtin pairs, upserts with capability/cost reconciliation, never touches operator
+   `enabled`.
 3. **Live discovery**: credential-free providers are TTL-cached, credential-scoped discovery is always live.
    Generic path is `fetchOpenAICompatibleModels()`; one-shot connectivity probes go through
    `discovery/probing-service.ts`, sharing the catalog contract with console routes.
@@ -505,7 +512,9 @@ deadlines. Routing, console, and discovery consume providers through these servi
 `integrations/` or hardcoding hosts, versions, or health thresholds.
 
 - **Catalog materialization.** `seedBundledProviders` idempotently inserts every `BUNDLED_PROVIDER_MODULES`
-  row (`onConflictDoNothing`, then a compatibility-profile merge `UPDATE`). `seedBundledModels` persists the
+  row (`onConflictDoNothing`, then a compatibility-profile merge `UPDATE`), and `retireUnbundledProviders`
+  prunes the global rows whose id the bundle has retired, so a provider removed from `provider-metadata.ts`
+  cannot leave a card behind. `seedBundledModels` persists the
   compiled `ModelDefinition` maps and deletes stale `builtin` rows by the `(model, endpoint)` composite key,
   so a moved endpoint never leaves a duplicate dead route. That deletion makes a static catalog list the
   *owner* of its `builtin` rows: nothing else prunes one, so an id the upstream has retired keeps its
@@ -651,7 +660,7 @@ and `loadModelDiscovery` is a dynamic import — so nothing here may run at star
 `createApiKeyAdapter(spec)` builds the `OpenAICompatibleAdapter`, and `base_url` defaults to
 `providerBaseUrl(provider_id)` so the origin has exactly one declaration. `GENERIC_API_KEY_SPECS` (in
 `integrations/configured-openai-providers.ts`) covers the zero-hook
-hosts (`groq`, `mistral`, `sifo`, `fireworks`, `nvidia`, `gmi`, `ollamacloud`,
+hosts (`mistral`, `fireworks`, `nvidia`, `gmi`, `ollamacloud`,
 `deepseek`); other single-file specs add hooks only where needed. A zero-hook host declares no
 `loadModels`, so any model list it offers is live discovery only — `ollamacloud` and `deepseek`
 both pair the shared spec with an `openAIModelDiscovery` loader for exactly that reason.
@@ -1016,3 +1025,10 @@ stays unchanged — probing and syncing
 come free through `ProviderProbingService`. New catalog rows go through the seeder, new cacheable lookups
 through `getCachedVersion` / `getCachedModelDiscovery` (never a bespoke `Map` with its own TTL), and new
 failure modes through `classifyAccountError` categories — not inline status checks at call sites.
+
+A provider that fronts a non-chat protocol (the System One decision API) declares those models with
+`serviceKind` on `defineModel` and implements the matching optional adapter method (`ProviderAdapter.systemone`
+— `OpenAICompatibleAdapter` already does, posting the opaque body to the row's own `endpointPath`). The row's
+`wireFamily` stays `chat` as an inert placeholder (the column is `NOT NULL`); the native route dispatches by
+`serviceKind`, never by `wireFamily`. Adding a whole new protocol is one `NATIVE_SERVICES` row, one
+`ServiceKind` member, and one adapter method — see `transport/TRANSPORT.md` ("Native service routes").

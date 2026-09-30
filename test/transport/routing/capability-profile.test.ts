@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
 import { buildCapabilityProfile } from "../../../src/transport/routing/route-catalog";
+import { negotiateAnthropicBetas } from "../../../src/providers/integrations/claude/claude-betas";
+import { assessClaudeCodeCompatibility } from "../../../src/providers/integrations/claude/claude-compatibility";
 import type { CanonicalRequest } from "../../../src/transport/canonical-model";
 import {
   candidateSupportsRequest,
@@ -208,5 +210,101 @@ describe("buildCapabilityProfile", () => {
       kind: "image",
       payload: { url: "https://example.test/image.png" },
     });
+  });
+});
+
+describe("Claude capability gate agrees with the route profile's spelling", () => {
+  // `buildCapabilityProfile` spells its keys in camelCase (`promptCaching`,
+  // `parallelToolCalls`, `reasoningEncryptedContent`, `responseJsonObject`),
+  // while the Claude compatibility gate and the Anthropic beta map use
+  // snake_case (`prompt_caching`, `parallel_tool_calls`). Comparing the two
+  // literally matched nothing — `promptcaching` is not `prompt_caching` — so
+  // every Claude route rejected `prompt_caching`, `response_format`,
+  // `redacted_thinking`, and `server_tool_use` on live traffic, not merely on
+  // probes. These assertions pin the two vocabularies together.
+  const claudeProfile = buildCapabilityProfile({
+    modalities: { input: ["text", "image"], output: ["text"] },
+    reasoning: true,
+    toolCall: true,
+    webSearch: true,
+    providerId: "claude",
+  });
+
+  test("a request needing prompt_caching is accepted on a route that grants it", () => {
+    const assessment = assessClaudeCodeCompatibility(
+      {
+        model: "claude-haiku-4-5",
+        messages: [{ role: "user", content: [{ kind: "text", text: "hi" }] }],
+        generation_controls: { max_tokens: 1024 },
+        cache_hint: "stable_prefix",
+        stream: true,
+        source_surface: "messages",
+      },
+      {
+        capabilities: claudeProfile,
+        beta_policy: "reject",
+        credential_kind: "oauth",
+        target_provider: "claude",
+      },
+    );
+    expect(assessment.rejected).toEqual([]);
+  });
+
+  test("a request needing response_format is accepted on a route that grants structured output", () => {
+    const assessment = assessClaudeCodeCompatibility(
+      {
+        model: "claude-haiku-4-5",
+        messages: [{ role: "user", content: [{ kind: "text", text: "hi" }] }],
+        generation_controls: { max_tokens: 1024 },
+        response_format: { type: "json_schema", schema: { type: "object" } },
+        stream: false,
+        source_surface: "messages",
+      } as never,
+      {
+        capabilities: claudeProfile,
+        beta_policy: "reject",
+        credential_kind: "oauth",
+        target_provider: "claude",
+      },
+    );
+    expect(assessment.rejected).toEqual([]);
+  });
+
+  test("an empty profile still rejects, so the gate has not been hollowed out", () => {
+    const assessment = assessClaudeCodeCompatibility(
+      {
+        model: "claude-haiku-4-5",
+        messages: [{ role: "user", content: [{ kind: "text", text: "hi" }] }],
+        generation_controls: { max_tokens: 1024 },
+        cache_hint: "stable_prefix",
+        stream: true,
+        source_surface: "messages",
+      },
+      {
+        capabilities: {},
+        beta_policy: "reject",
+        credential_kind: "oauth",
+        target_provider: "claude",
+      },
+    );
+    expect(assessment.rejected.map((issue) => issue.capability)).toEqual(["prompt_caching"]);
+  });
+});
+
+describe("Anthropic beta negotiation honours a disabled capability", () => {
+  test("a route that declares promptCaching:false rejects the prompt-caching beta", () => {
+    // The profile's camelCase spelling must reach the beta resolver's
+    // snake_case aliases; otherwise an explicit opt-out was silently ignored and
+    // the beta forwarded anyway.
+    const negotiation = negotiateAnthropicBetas(["prompt-caching-scope-2026-01-05"], {
+      unsupported: "reject",
+      credential_kind: "oauth",
+      target_provider: "claude",
+      capabilities: { promptCaching: false },
+    });
+    expect(negotiation.accepted).toEqual([]);
+    expect(negotiation.rejected.map((issue) => issue.beta)).toEqual([
+      "prompt-caching-scope-2026-01-05",
+    ]);
   });
 });

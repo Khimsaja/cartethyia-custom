@@ -233,6 +233,19 @@ describe("SQL migration integrity", () => {
     expect(migration).not.toContain("cleanup_expired_telemetry_payloads");
   });
 
+  test("models.service_kind is present in the baseline and added on upgrade", async () => {
+    // A non-chat service model (System One) is classified by `service_kind`,
+    // not `wire_family`. A fresh database gets the column from the baseline; an
+    // existing one gets it from the forward migration.
+    const baseline = await readFile(resolve(migrationsDir, "0000_baseline.sql"), "utf8");
+    expect(baseline).toContain(`"service_kind" text DEFAULT 'llm' NOT NULL`);
+    const migration = await readFile(
+      resolve(migrationsDir, "0023_model_service_kind.sql"),
+      "utf8",
+    );
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS "service_kind" text');
+  });
+
   test("telemetry_payloads is a typed file-ref index, never a jsonb body column", async () => {
     // Cutoff: captured bodies live only in on-disk frames. The Postgres row is
     // a typed reference so a body cannot be written into the table by accident.

@@ -1766,7 +1766,12 @@ describe("codex payload P0 fixes", () => {
       stream: true,
       source_surface: "messages",
     });
-    expect(payload["reasoning"]).toEqual({ effort: "max", summary: "auto" });
+    // 31_999 tokens sits in the `xhigh` band of the shared budget table (the
+    // band runs 28_673–80_384), so that is the tier the wire carries. The
+    // assertion is about the tier derived from a Messages-shaped intent and
+    // about canonical-only keys never reaching the wire; the exact band is the
+    // budget table's business, tested in thinking.test.ts.
+    expect(payload["reasoning"]).toEqual({ effort: "xhigh", summary: "auto" });
     const serialized = JSON.stringify(payload["reasoning"]);
     for (const canonicalOnly of [
       "budget_tokens",
@@ -1793,6 +1798,46 @@ describe("codex payload P0 fixes", () => {
     // `none` is a real wire tier, so it IS emitted — but as an effort, not the
     // canonical object.
     expect(payload["reasoning"]).toEqual({ effort: "none" });
+  });
+
+  test("a file/document part reaches the wire as an input_file with a data-URI payload", () => {
+    // The regression: the user-turn renderer only handled `text` and `image`,
+    // so a `file`/`document` part was silently dropped — the model answered as
+    // if no attachment had been sent (the observed "PDF-nya belum terlihat"
+    // reply, at ~25 input tokens). The Codex backend also rejects a sibling
+    // `mime_type` field ("Unknown parameter: input[0].content[1].mime_type"),
+    // so the media type must ride inside the `data:` URI.
+    const payload = canonicalToCodexResponsesPayload({
+      model: "gpt-6-luna",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { kind: "text", text: "ringkas" },
+            {
+              kind: "file",
+              data: "QUJD",
+              media_type: "application/pdf",
+              filename: "doc.pdf",
+            },
+          ],
+        },
+      ],
+      generation_controls: {},
+      stream: true,
+      source_surface: "messages",
+    });
+    const input = payload["input"] as Array<Record<string, unknown>>;
+    const message = input.find((item) => item["role"] === "user");
+    const content = message!["content"] as Array<Record<string, unknown>>;
+    const fileBlock = content.find((part) => part["type"] === "input_file");
+    expect(fileBlock).toMatchObject({
+      type: "input_file",
+      file_data: "data:application/pdf;base64,QUJD",
+      filename: "doc.pdf",
+    });
+    // No sibling `mime_type`: the backend rejects it as an unknown parameter.
+    expect(fileBlock).not.toHaveProperty("mime_type");
   });
 
   test("buildCodexIdentityHeaders includes all parity headers deterministically", () => {

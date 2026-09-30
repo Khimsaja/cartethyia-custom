@@ -678,24 +678,20 @@ function CustomProvidersSection({
 
 const FOUNDING_IDS = new Set(["inferhub"]);
 /** Free tiers that are metered (a few requests per day) rather than a standing
- * free allowance. They are listed in {@link FREE_AVAILABLE_IDS} too, but get
- * their own section instead of the general free-available one. */
-const FREE_LIMITED_IDS = new Set(["sifo", "cerebras", "groq", "opencodeft", "opencodezen", "opencodego", "bai", "tokenharbor"]);
+ * free allowance, so they get their own section instead of the general
+ * free-available one. */
+const FREE_LIMITED_IDS = new Set(["cerebras", "bai", "tokenharbor"]);
 const FREE_AVAILABLE_IDS = new Set([
   "qoder",
   "agentrouter",
   "mistral",
   "gemini",
   "openrouter",
-  "sifo",
   "cb",
   "cbcn",
-  "groq",
   "nvidia",
   "hermes",
   "opencodeft",
-  "opencodezen",
-  "opencodego",
   "tokenharbor",
   "bai",
   "gmi",

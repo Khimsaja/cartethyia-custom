@@ -50,6 +50,7 @@ function entry(overrides: Partial<ModelCatalogEntry> & { modelId: string }): Mod
     route: "",
     provider: "vendor",
     wireFamily: "chat",
+    serviceKind: "llm",
     enabled: true,
     contextLimit: null,
     outputLimit: null,

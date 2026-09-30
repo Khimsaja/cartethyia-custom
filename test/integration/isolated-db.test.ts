@@ -134,6 +134,7 @@ const expectedColumns: Record<string, readonly ExpectedColumn[]> = {
     column("provider_id", "text", "text", "NO"),
     column("model_id", "text", "text", "NO"),
     column("wire_family", "USER-DEFINED", "wire_family", "NO"),
+    column("service_kind", "text", "text", "NO"),
     column("endpoint_path", "text", "text", "NO"),
     column("context_limit", "integer", "int4", "YES"),
     column("output_limit", "integer", "int4", "YES"),

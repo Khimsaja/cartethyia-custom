@@ -874,7 +874,7 @@ export async function handleProviderProxyRequest(
         canonicalRequest.source_surface === "chat"
           ? chatAdapter.encode(events, options)
           : canonicalRequest.source_surface === "responses"
-            ? responsesAdapter.encodeOutput(events, options as never)
+            ? responsesAdapter.encodeOutput(events, { ...options, model: canonicalRequest.model })
             : canonicalRequest.source_surface === "messages"
               ? messagesAdapter.encodeOutput(events, options as never)
               : completionAdapter.encodeOutput(events, {

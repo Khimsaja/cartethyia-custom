@@ -79,6 +79,7 @@ CREATE TABLE "models" (
   "provider_id" text NOT NULL,
   "model_id" text NOT NULL,
   "wire_family" "wire_family" NOT NULL,
+  "service_kind" text DEFAULT 'llm' NOT NULL,
   "endpoint_path" text NOT NULL,
   "context_limit" integer,
   "output_limit" integer,

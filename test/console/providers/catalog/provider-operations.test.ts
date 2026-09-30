@@ -286,9 +286,9 @@ describe("sanitizeProviderResponse", () => {
   });
 
   test("projects the credential page and hint from bundled metadata, never from the record", () => {
-    const groq = sanitizeProviderResponse({ providerId: "groq" });
-    expect(groq.credentialUrl).toBe("https://console.groq.com/keys");
-    expect(groq.credentialHint).toBeUndefined();
+    const mistral = sanitizeProviderResponse({ providerId: "mistral" });
+    expect(mistral.credentialUrl).toBe("https://console.mistral.ai/api-keys");
+    expect(mistral.credentialHint).toBeUndefined();
 
     // A provider whose sign-in is not a plain paste carries guidance too.
     const studio = sanitizeProviderResponse({ providerId: "mimostudio" });
@@ -298,11 +298,11 @@ describe("sanitizeProviderResponse", () => {
     // The record cannot supply or override either field: they are canonical
     // metadata, so a stale or hostile row cannot point the dashboard elsewhere.
     const spoofed = sanitizeProviderResponse({
-      providerId: "groq",
+      providerId: "mistral",
       credentialUrl: "https://attacker.test/keys",
       credentialHint: "Paste your key here",
     });
-    expect(spoofed.credentialUrl).toBe("https://console.groq.com/keys");
+    expect(spoofed.credentialUrl).toBe("https://console.mistral.ai/api-keys");
     expect(spoofed.credentialHint).toBeUndefined();
 
     // A provider with no published page and a BYOK row omit both.

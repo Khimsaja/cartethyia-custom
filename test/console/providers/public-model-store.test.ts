@@ -218,6 +218,7 @@ dbDescribe("PublicModelCatalogStore — emitted metadata", () => {
   const providerId = `meta-emit-${randomUUID().slice(0, 8)}`;
   const richModel = `rich-${randomUUID().slice(0, 8)}`;
   const plainModel = `plain-${randomUUID().slice(0, 8)}`;
+  const systemoneModel = `sys-${randomUUID().slice(0, 8)}`;
   const aliasName = `emit-alias-${randomUUID().slice(0, 8)}`;
 
   beforeAll(async () => {
@@ -260,6 +261,23 @@ dbDescribe("PublicModelCatalogStore — emitted metadata", () => {
         cost: null,
         enabled: true,
       },
+      {
+        // A native-service row (System One) is not served on a chat wire; the
+        // public list must label it so a chat client can tell it apart.
+        providerId,
+        modelId: systemoneModel,
+        wireFamily: "chat",
+        serviceKind: "systemone",
+        endpointPath: "/zen/v1/systemone",
+        contextLimit: 200_000,
+        outputLimit: 8_192,
+        modalities: { input: ["text"], output: ["text"] },
+        reasoning: false,
+        toolCall: false,
+        webSearch: false,
+        cost: null,
+        enabled: true,
+      },
     ]);
     await db.insert(modelAliases).values({ tenantId, alias: aliasName, targetModel: `${providerId}/${richModel}` });
   });
@@ -275,7 +293,7 @@ dbDescribe("PublicModelCatalogStore — emitted metadata", () => {
     return {
       api_key_id: randomUUID(),
       tenant_id: tenantId,
-      model_allowlist: [`${providerId}/${richModel}`, `${providerId}/${plainModel}`, aliasName],
+      model_allowlist: [`${providerId}/${richModel}`, `${providerId}/${plainModel}`, `${providerId}/${systemoneModel}`, aliasName],
       model_denylist: null,
     };
   }
@@ -294,6 +312,21 @@ dbDescribe("PublicModelCatalogStore — emitted metadata", () => {
     expect(entry?.tool_call).toBe(true);
     expect(entry?.web_search).toBe(true);
     expect(entry?.cost).toEqual({ input: 3, output: 15, cache_read: 0.3 });
+  });
+
+  test("a native-service row is labelled with its service_kind", async () => {
+    // A System One row is not served on the chat wire. Publishing its
+    // `service_kind` lets a chat client label it instead of offering a route
+    // that only answers `capability_unsupported`.
+    const store = new PublicModelCatalogStore(db);
+    const listed = await store.listPublicModels(tenantId, snapshot());
+    const entry = listed.find((m) => m.id === `${providerId}/${systemoneModel}`);
+
+    expect(entry).toBeDefined();
+    expect(entry?.service_kind).toBe("systemone");
+    // An ordinary chat row stays unlabelled (absence means `llm`).
+    const chatEntry = listed.find((m) => m.id === `${providerId}/${richModel}`);
+    expect(chatEntry?.service_kind).toBeUndefined();
   });
 
   test("a bare row omits capabilities and the false flags rather than publishing defaults", async () => {

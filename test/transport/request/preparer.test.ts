@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { ProxyRequestPreparer } from "../../../src/transport/request/preparer";
 import { GatewayError } from "../../../src/transport/gateway-error";
+import type { CanonicalRequest } from "../../../src/transport/canonical-model";
 import type { RouteCandidate, RoutePlan } from "../../../src/transport/routing/route-model";
 import type { ResolvedApiKey } from "../../../src/security/api-key-auth";
 
@@ -535,5 +536,115 @@ describe("canonical request preparation", () => {
     });
     expect(result.candidate.provider_id).toBe("acme");
     expect(result.canonicalRequest.generation_controls.stop).toEqual(["END"]);
+  });
+});
+
+describe("thinking suffix on the model name", () => {
+  /** A plan whose single candidate carries the requested model through. */
+  function suffixPreparer(seen: { model?: string } = {}): ProxyRequestPreparer {
+    return new ProxyRequestPreparer({
+      snapshotService: { getSnapshot: async () => ({ revision: 1 }) } as never,
+      routingEngine: {
+        plan: async (requested: string) => {
+          seen.model = requested;
+          return {
+            revision: 1,
+            requested_model: requested,
+            resolved_model: requested,
+            provider_id: "openai",
+            candidates: [
+              {
+                provider_id: "openai",
+                model_id: requested,
+                wire_family: "chat",
+                endpoint: "/v1/chat/completions",
+                // `reasoning: true` so a request carrying a thinking intent
+                // projects cleanly; without it the router correctly refuses a
+                // reasoning request against a reasoning-less route.
+                capability_profile: { reasoning: true },
+              },
+            ],
+          } as RoutePlan;
+        },
+      } as never,
+      admissionService: {} as never,
+    });
+  }
+
+  function chatRequest(model: string, reasoning?: CanonicalRequest["reasoning"]): CanonicalRequest {
+    return {
+      model,
+      messages: [],
+      generation_controls: {},
+      stream: false,
+      source_surface: "chat",
+      ...(reasoning === undefined ? {} : { reasoning }),
+    };
+  }
+
+  test("strips the suffix from the model the router and allowlist see", async () => {
+    const seen: { model?: string } = {};
+    const preparer = suffixPreparer(seen);
+    const prepared = await preparer.prepare({
+      canonicalRequest: chatRequest("gpt-4o(high)"),
+      authorization: {
+        ...authorization,
+        snapshot: { ...authorization.snapshot, model_allowlist: ["gpt-4o"] },
+      },
+      deadlineMs: 60_000,
+    });
+    // The allowlist contains the bare id, so a name carrying `(high)` would
+    // have been rejected here. That it was not is the point of the test.
+    expect(prepared.canonicalRequest.model).toBe("gpt-4o");
+    expect(seen.model).toBe("gpt-4o");
+    expect(prepared.canonicalRequest.reasoning?.effort).toBe("high");
+  });
+
+  test("carries the level through to the prepared request", async () => {
+    const preparer = suffixPreparer();
+    const prepared = await preparer.prepare({
+      canonicalRequest: chatRequest("gpt-4o(128000)"),
+      authorization: { ...authorization, snapshot: { ...authorization.snapshot, model_allowlist: ["gpt-4o"] } },
+      deadlineMs: 60_000,
+    });
+    // A numeric budget is normalized to a tier before it reaches the wire.
+    expect(prepared.canonicalRequest.reasoning?.effort).toBe("max");
+  });
+
+  test("overrides an effort the body already carried", async () => {
+    const preparer = suffixPreparer();
+    const prepared = await preparer.prepare({
+      canonicalRequest: chatRequest("gpt-4o(low)", { effort: "max" }),
+      authorization: { ...authorization, snapshot: { ...authorization.snapshot, model_allowlist: ["gpt-4o"] } },
+      deadlineMs: 60_000,
+    });
+    expect(prepared.canonicalRequest.reasoning?.effort).toBe("low");
+  });
+
+  test("leaves a model without a suffix and without reasoning untouched", async () => {
+    const preparer = suffixPreparer();
+    const prepared = await preparer.prepare({
+      canonicalRequest: chatRequest("gpt-4o"),
+      authorization: { ...authorization, snapshot: { ...authorization.snapshot, model_allowlist: ["gpt-4o"] } },
+      deadlineMs: 60_000,
+    });
+    expect(prepared.canonicalRequest.model).toBe("gpt-4o");
+    expect(prepared.canonicalRequest.reasoning).toBeUndefined();
+  });
+
+  test("an unrecognized suffix does not rescue a disallowed model", async () => {
+    // The suffix is ignored, so the full name — parentheses and all — is what
+    // the allowlist sees, and it correctly rejects it.
+    const preparer = suffixPreparer();
+    expect(
+      preparer.prepare({
+        canonicalRequest: chatRequest("gpt-4o(bogus)"),
+        authorization: {
+          ...authorization,
+          snapshot: { ...authorization.snapshot, model_allowlist: ["gpt-4o"] },
+        },
+        deadlineMs: 60_000,
+      }),
+    ).rejects.toMatchObject({ code: "model_not_found", status: 404 });
   });
 });

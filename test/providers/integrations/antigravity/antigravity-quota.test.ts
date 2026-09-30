@@ -53,8 +53,8 @@ function modelEntry(remainingFraction: number, resetTime: string): Record<string
   return { quotaInfo: { remainingFraction, resetTime } };
 }
 
-describe("antigravity quota — weekly summary", () => {
-  test("reads the weekly groups the summary endpoint returns", async () => {
+describe("antigravity quota — summary windows", () => {
+  test("reads both the session and weekly groups the summary endpoint returns", async () => {
     const { fetcher } = stubFetcher({
       summary: {
         groups: [
@@ -66,6 +66,12 @@ describe("antigravity quota — weekly summary", () => {
                 displayName: "Gemini weekly",
                 remainingFraction: 0.25,
                 resetTime: "2026-03-02T00:00:00Z",
+              },
+              {
+                bucketId: "gemini-5h",
+                displayName: "5 hour window",
+                remainingFraction: 0.75,
+                resetTime: "2026-03-01T05:00:00Z",
               },
             ],
           },
@@ -85,19 +91,22 @@ describe("antigravity quota — weekly summary", () => {
     });
 
     const result = await fetchAntigravityQuota(CREDENTIAL, fetcher);
-    const weekly = result.windows.filter((window) => window.kind.startsWith("weekly:"));
-    expect(weekly.map((window) => window.label)).toEqual([
-      "Gemini (Weekly)",
+    const byLabel = new Map(result.windows.map((window) => [window.label, window]));
+    // Both windows are read, per family, and labelled with the same shape.
+    expect([...byLabel.keys()].sort()).toEqual([
       "Claude & GPT (Weekly)",
+      "Gemini (5 Hour)",
+      "Gemini (Weekly)",
     ]);
     // remainingFraction 0.25 → 25% remaining, 75% used.
-    expect(weekly[0]?.remainingPercent).toBeCloseTo(25, 5);
-    expect(weekly[0]?.usedPercent).toBeCloseTo(75, 5);
-    expect(weekly[1]?.remainingPercent).toBeCloseTo(50, 5);
-    expect(weekly[0]?.resetsAt).toBe("2026-03-02T00:00:00.000Z");
+    expect(byLabel.get("Gemini (Weekly)")?.remainingPercent).toBeCloseTo(25, 5);
+    expect(byLabel.get("Gemini (Weekly)")?.usedPercent).toBeCloseTo(75, 5);
+    expect(byLabel.get("Gemini (5 Hour)")?.remainingPercent).toBeCloseTo(75, 5);
+    expect(byLabel.get("Claude & GPT (Weekly)")?.remainingPercent).toBeCloseTo(50, 5);
+    expect(byLabel.get("Gemini (Weekly)")?.resetsAt).toBe("2026-03-02T00:00:00.000Z");
   });
 
-  test("a free-tier account reports its weekly windows even with no per-model quota", async () => {
+  test("a free-tier account reports its summary windows even with no per-model quota", async () => {
     // The upstream omits per-model quota for free-tier accounts, so a parser
     // that read only `models` reported no windows at all for them.
     const { fetcher } = stubFetcher({
@@ -123,25 +132,15 @@ describe("antigravity quota — weekly summary", () => {
     expect(result.windows[0]?.label).toBe("Gemini (Weekly)");
   });
 
-  test("ignores non-weekly buckets in the same group", async () => {
-    // The summary carries shorter windows too; only the weekly one is the
-    // allowance this row means.
+  test("keeps both a session and a weekly bucket in the same group", async () => {
     const { fetcher } = stubFetcher({
       summary: {
         groups: [
           {
             displayName: "Gemini",
             buckets: [
-              {
-                bucketId: "gemini-5h",
-                displayName: "5 hour window",
-                remainingFraction: 0.1,
-              },
-              {
-                bucketId: "gemini-weekly",
-                displayName: "Weekly",
-                remainingFraction: 0.9,
-              },
+              { bucketId: "gemini-5h", displayName: "5 hour window", remainingFraction: 0.1 },
+              { bucketId: "gemini-weekly", displayName: "Weekly", remainingFraction: 0.9 },
             ],
           },
         ],
@@ -149,17 +148,24 @@ describe("antigravity quota — weekly summary", () => {
     });
 
     const result = await fetchAntigravityQuota(CREDENTIAL, fetcher);
-    expect(result.windows).toHaveLength(1);
-    expect(result.windows[0]?.remainingPercent).toBeCloseTo(90, 5);
+    expect(result.windows).toHaveLength(2);
+    const weekly = result.windows.find((window) => window.label === "Gemini (Weekly)");
+    const session = result.windows.find((window) => window.label === "Gemini (5 Hour)");
+    expect(weekly?.remainingPercent).toBeCloseTo(90, 5);
+    expect(session?.remainingPercent).toBeCloseTo(10, 5);
   });
 
-  test("skips a disabled weekly bucket", async () => {
+  test("keeps a disabled session bucket at 0% and skips a disabled weekly bucket", async () => {
+    // A disabled session bucket means the 5-hour lane is blocked (usually
+    // because the weekly was hit); the operator still needs to see that row.
+    // A disabled weekly bucket is genuinely gone.
     const { fetcher } = stubFetcher({
       summary: {
         groups: [
           {
             displayName: "Gemini",
             buckets: [
+              { bucketId: "gemini-5h", displayName: "5 hour window", remainingFraction: 0.4, disabled: true },
               { bucketId: "weekly", displayName: "Weekly", remainingFraction: 0.4, disabled: true },
             ],
           },
@@ -168,7 +174,9 @@ describe("antigravity quota — weekly summary", () => {
     });
 
     const result = await fetchAntigravityQuota(CREDENTIAL, fetcher);
-    expect(result.windows).toEqual([]);
+    expect(result.windows).toHaveLength(1);
+    expect(result.windows[0]?.label).toBe("Gemini (5 Hour)");
+    expect(result.windows[0]?.remainingPercent).toBeCloseTo(0, 5);
   });
 });
 

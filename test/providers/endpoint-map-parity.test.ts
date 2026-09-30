@@ -15,7 +15,9 @@ import type { WireFamily } from "../../src/transport/canonical-model";
  */
 type Capability = {
   readonly endpointPathsByWireFamily?: Readonly<Partial<Record<WireFamily, string>>>;
-  readonly loadModels?: () => Promise<readonly { wireFamily: WireFamily; endpointPath: string }[]>;
+  readonly loadModels?: () => Promise<
+    readonly { wireFamily: WireFamily; endpointPath: string; serviceKind?: string }[]
+  >;
 };
 
 const entries = Object.entries(PROVIDER_CAPABILITIES as unknown as Record<string, Capability>)
@@ -38,7 +40,12 @@ describe("registry endpoint map ↔ model catalog parity", () => {
       // does not exist for it.
       if (models.length === 0) return;
       for (const [wireFamily, registryPath] of Object.entries(cap.endpointPathsByWireFamily!)) {
-        const served = models.filter((m) => m.wireFamily === wireFamily);
+        // A native-service row (System One) is not served on a chat wire: its
+        // `wireFamily` is an inert placeholder and its endpoint belongs to the
+        // native route, so the wire-family path map does not describe it.
+        const served = models.filter(
+          (m) => m.wireFamily === wireFamily && (m.serviceKind ?? "llm") === "llm",
+        );
         expect(served.length).toBeGreaterThan(0);
         for (const model of served) {
           expect(model.endpointPath).toBe(registryPath);

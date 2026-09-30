@@ -108,3 +108,62 @@ describe("createValidatedFetch transport selection", () => {
     }
   });
 });
+
+describe("createValidatedFetch response decompression", () => {
+  // `node:http` does not decode `content-encoding`, unlike `fetch`/Undici, so the
+  // pinned path must decode it itself. Rebuilding a `Response` around the raw
+  // compressed stream made `response.text()` return binary garbage — which
+  // surfaced as `platform_unavailable: <provider> response is not valid JSON`
+  // for the upstreams that compress (Anthropic answers `br`).
+  function startCompressedServer(encoding: string, body: string, encode: (s: string) => Buffer) {
+    return new Promise<number>((resolve) => {
+      const server = http.createServer((_req, res) => {
+        const compressed = encode(body);
+        res.writeHead(200, {
+          "content-type": "application/json",
+          "content-encoding": encoding,
+        });
+        res.end(compressed);
+      });
+      servers.push(server);
+      server.listen(0, "127.0.0.1", () => resolve((server.address() as AddressInfo).port));
+    });
+  }
+
+  test("decodes a brotli body and drops the content-encoding header", async () => {
+    const { brotliCompressSync } = await import("node:zlib");
+    const payload = JSON.stringify({ type: "message", content: [{ type: "text", text: "OK" }] });
+    const port = await startCompressedServer("br", payload, (s) => brotliCompressSync(s));
+    const fetchFn = createValidatedFetch({ policy: loopbackPolicy, resolveFn: resolveLoopback });
+
+    const response = await fetchFn(`http://127.0.0.1:${port}/`);
+    expect(response.status).toBe(200);
+    // The header must not survive, or a caller would decode a decoded body.
+    expect(response.headers.get("content-encoding")).toBeNull();
+    // The body must be the real JSON, not raw brotli bytes.
+    expect(JSON.parse(await response.text())).toEqual({
+      type: "message",
+      content: [{ type: "text", text: "OK" }],
+    });
+  });
+
+  test("decodes a gzip body", async () => {
+    const { gzipSync } = await import("node:zlib");
+    const port = await startCompressedServer("gzip", "hello-gzip", (s) => gzipSync(s));
+    const fetchFn = createValidatedFetch({ policy: loopbackPolicy, resolveFn: resolveLoopback });
+
+    const response = await fetchFn(`http://127.0.0.1:${port}/`);
+    expect(await response.text()).toBe("hello-gzip");
+    expect(response.headers.get("content-encoding")).toBeNull();
+  });
+
+  test("leaves an un-decodable encoding header in place for the caller", async () => {
+    // zstd is not decoded here; forwarding the header with the raw body keeps
+    // the caller's own decoder in charge rather than claiming a plain body.
+    const port = await startCompressedServer("zstd", "ignored", (s) => Buffer.from(s));
+    const fetchFn = createValidatedFetch({ policy: loopbackPolicy, resolveFn: resolveLoopback });
+
+    const response = await fetchFn(`http://127.0.0.1:${port}/`);
+    expect(response.headers.get("content-encoding")).toBe("zstd");
+  });
+});

@@ -31,8 +31,8 @@ src/persistence/
 - **Identity:** `tenants(id, name, status, created_at)` — root of all FKs.
 - **Catalog:** `providers(id, tenant_id NULL=global, capability_profile,
   base_url/compatibility_profile BYOK-only, enabled, requires_account)`;
-  `models(provider_id, model_id, endpoint_path, wire_family, limits,
-  modalities, reasoning/tool_call/web_search, cost, source, enabled)` with
+  `models(provider_id, model_id, endpoint_path, wire_family, service_kind,
+  limits, modalities, reasoning/tool_call/web_search, cost, source, enabled)` with
   `models_provider_model_route_uidx`; `tenant_disabled_models` (tenant
   suppression of global/builtin rows; tenant-owned and BYOK rows are toggled
   directly on `models.enabled` instead).

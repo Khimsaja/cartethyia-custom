@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MODEL_GROUPS, ThinkingSelect, probeThinkingOptions } from "../../../src/routes/provider-detail/Models";
-import { PROBE_REASONING_EFFORTS } from "../../../src/data/contracts";
+import { PROBE_REASONING_EFFORTS, formatThinkingSuffix } from "../../../src/data/contracts";
 
 /**
  * The Models section carries one reasoning-effort selector, and it must offer
@@ -45,6 +45,22 @@ describe("ThinkingSelect", () => {
     );
     expect(html).toContain('id="models-section-thinking-effort"');
     expect(html).not.toContain('id="probe-thinking-effort"');
+  });
+});
+
+/**
+ * The model name shown on a card carries the section's thinking setting as a
+ * `(level)` suffix — the same syntax the backend parses off the model name. The
+ * dashboard must not re-implement that rule: `formatThinkingSuffix` is the
+ * backend writer, re-exported so the copy button hands back the id a client
+ * would actually send. A `null` level (what the card passes for `auto`, i.e.
+ * "no reasoning intent") leaves the id bare.
+ */
+describe("model card thinking suffix", () => {
+  test("appends the chosen level, and leaves the id bare when no level is set", () => {
+    expect(formatThinkingSuffix("claude-fable-5-1", "low")).toBe("claude-fable-5-1(low)");
+    expect(formatThinkingSuffix("claude-fable-5-1", "high")).toBe("claude-fable-5-1(high)");
+    expect(formatThinkingSuffix("claude-fable-5-1", null)).toBe("claude-fable-5-1");
   });
 });
 

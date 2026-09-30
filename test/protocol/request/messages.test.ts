@@ -48,9 +48,14 @@ describe("billing attestation is never forwarded upstream", () => {
 });
 
 describe("messages streaming usage", () => {
-  test("a streamed request asks the upstream for token usage", () => {
+  // `stream_options` is an OpenAI field. The native Anthropic API rejects the
+  // whole body when it is present (`stream_options: Extra inputs are not
+  // permitted`), and Anthropic reports usage without an opt-in — see
+  // `protocol/response/messages.ts`, which reads `message_start.message.usage`
+  // and `message_delta.usage`. So the Messages codec must never emit it.
+  test("a streamed request never carries the OpenAI stream_options field", () => {
     const payload = canonicalToClaudeMessagesPayload({ ...request(), stream: true });
-    expect(payload.stream_options).toEqual({ include_usage: true });
+    expect(payload.stream_options).toBeUndefined();
   });
 
   test("a non-streamed request does not send stream options", () => {
@@ -227,5 +232,105 @@ describe("the Messages wire carries no audio block", () => {
       data: "QUJD",
       media_type: "audio/wav",
     });
+  });
+});
+
+describe("tool_use blocks on the Messages request body", () => {
+  test("never carry the canonical stream index", () => {
+    // Studio (and any Chat/Responses client) sends `tool_calls` in history, and
+    // those parsers stamp every call with its array position. Copying that onto
+    // the `tool_use` block leaked a stream-only field into the request, and
+    // Anthropic rejected the whole body:
+    // `messages.2.content.0.tool_use.index: Extra inputs are not permitted`.
+    const payload = canonicalToClaudeMessagesPayload({
+      model: "claude-sonnet-5",
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            { kind: "toolCall", call_id: "c1", name: "lookup", arguments: '{"k":1}', index: 0 },
+            { kind: "toolCall", call_id: "c2", name: "lookup", arguments: '{"k":2}', index: 1 },
+          ],
+        },
+      ],
+      generation_controls: { max_tokens: 1024 },
+      stream: false,
+      source_surface: "chat",
+    } as never);
+
+    const content = (payload.messages as Array<Record<string, unknown>>)[0]?.["content"] as Array<
+      Record<string, unknown>
+    >;
+    expect(content).toHaveLength(2);
+    for (const block of content) {
+      expect(block["type"]).toBe("tool_use");
+      expect(block).not.toHaveProperty("index");
+      // The block order still expresses the position the index used to carry.
+      expect(block).toHaveProperty("input");
+      expect(block).toHaveProperty("id");
+    }
+  });
+});
+
+/**
+ * The `thinking` block shape is chosen by model generation, not copied from the
+ * canonical intent. Adaptive-era models take `type: "adaptive"` with depth on
+ * `output_config.effort`; budget-era models take `type: "enabled"` with a
+ * `budget_tokens`. The two reject each other's shape (verified live: an adaptive
+ * block on opus-4-5/sonnet-4-5/haiku-4-5 → "adaptive thinking is not supported
+ * on this model"; a budget-less enabled block → "thinking.enabled.budget_tokens:
+ * Field required").
+ */
+describe("claude thinking block shape follows the model generation", () => {
+  const withReasoning = (model: string, reasoning: Record<string, unknown>): CanonicalRequest =>
+    ({
+      model,
+      messages: [{ role: "user", content: [{ kind: "text", text: "hi" }] }],
+      generation_controls: { max_tokens: 8192 },
+      stream: false,
+      source_surface: "chat",
+      reasoning,
+    }) as CanonicalRequest;
+
+  test("an adaptive-era model gets `adaptive` with no budget_tokens", () => {
+    const payload = canonicalToClaudeMessagesPayload(
+      withReasoning("claude-sonnet-5-5", { effort: "high" }),
+    );
+    const thinking = payload.thinking as Record<string, unknown>;
+    expect(thinking["type"]).toBe("adaptive");
+    expect(thinking).not.toHaveProperty("budget_tokens");
+    // Depth rides on output_config.effort for adaptive models.
+    expect((payload.output_config as Record<string, unknown>)["effort"]).toBe("high");
+  });
+
+  test("a budget-era model gets `enabled` with a budget_tokens derived from the level", () => {
+    const payload = canonicalToClaudeMessagesPayload(
+      withReasoning("claude-opus-4-5", { effort: "high" }),
+    );
+    const thinking = payload.thinking as Record<string, unknown>;
+    expect(thinking["type"]).toBe("enabled");
+    expect(thinking["budget_tokens"]).toBe(24_576);
+    // The effort still rides along: budget-era models accept
+    // `output_config.effort` alongside `thinking.enabled` (verified live:
+    // opus-4-5 / sonnet-4-5 / haiku-4-5 all 200). Only the *thinking* shape is
+    // generation-gated.
+    expect((payload.output_config as Record<string, unknown>)["effort"]).toBe("high");
+  });
+
+  test("a budget-era model floors the derived budget at the upstream minimum", () => {
+    const payload = canonicalToClaudeMessagesPayload(
+      withReasoning("claude-haiku-4-5", { effort: "minimal" }),
+    );
+    // LEVEL_TO_BUDGET.minimal is 512, below the upstream floor of 1024.
+    expect((payload.thinking as Record<string, unknown>)["budget_tokens"]).toBe(1024);
+  });
+
+  test("an adaptive-era model opts into summarized thinking display", () => {
+    // 4.7+/5-series omit thinking content by default; the summarized display is
+    // what keeps human-readable thinking text streaming.
+    const payload = canonicalToClaudeMessagesPayload(
+      withReasoning("claude-opus-5", { effort: "high" }),
+    );
+    expect((payload.thinking as Record<string, unknown>)["display"]).toBe("summarized");
   });
 });

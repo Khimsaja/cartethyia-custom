@@ -136,13 +136,13 @@ describe("agentrouter request wire bytes", () => {
     // shared with anthropic/kimi/claude-code. JSON objects are unordered per
     // RFC 8259, so the previous bespoke `reorderBody` ordering was not a wire
     // guarantee AgentRouter depended on; see the change report.
-    expect(Object.keys(body)).toEqual([
-      "model",
-      "max_tokens",
-      "messages",
-      "stream",
-      "stream_options",
-    ]);
+    //
+    // No `stream_options`: it is an OpenAI field, and a strict
+    // Anthropic-compatible upstream rejects the body when it is present. The
+    // Messages wire reports usage natively (`message_start`/`message_delta`),
+    // so the field was never needed here.
+    expect(Object.keys(body)).toEqual(["model", "max_tokens", "messages", "stream"]);
+    expect(body["stream_options"]).toBeUndefined();
     expect(body["model"]).toBe("claude-sonnet-4-5");
     expect(body["stream"]).toBe(true);
   });

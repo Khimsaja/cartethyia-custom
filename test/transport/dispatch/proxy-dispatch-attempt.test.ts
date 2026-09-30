@@ -716,6 +716,29 @@ describe("createResponsesCompactHandler — shared attempt loop", () => {
       ESTIMATED_USAGE,
     ]);
   });
+  test("strips the suffix so a uniform client does not get a 404", async () => {
+    const rows: Array<Record<string, unknown>> = [];
+    const commits: unknown[] = [];
+    const { request, state, handler } = compactHarness({
+      candidates: [codexRouteCandidate(COMPACT_MODEL)],
+      compact: async () =>
+        new Response('{"output":"compacted"}', {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      rows,
+      commits,
+    });
+    // The allowlist in the harness snapshot is empty, so `isModelAllowed`
+    // permits any model. The suffix must still be gone before the upstream
+    // call, because the upstream would not recognize a parenthesized id.
+    state.ingressBody = { model: `${COMPACT_MODEL}(high)`, input: "summarize" };
+
+    const response = await handler({ request });
+
+    expect(response.status).toBe(200);
+    expect(state.outcome).toMatchObject({ status: "completed" });
+  });
 });
 
 describe("handleProviderProxyRequest — tenant compression settings", () => {

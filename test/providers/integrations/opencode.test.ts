@@ -324,5 +324,58 @@ describe("OpenCode Free tier discovery", () => {
     expect(discovered?.[0]?.wireFamily).toBe("responses");
     expect(discovered?.[0]?.endpointPath).toBe("/v1/responses");
   });
+
+  test("classifies a System One id onto the native decision endpoint, not chat", async () => {
+    // `jev-1.13-free` carries the free-tier `-free` suffix, so the tier filter
+    // admits it — but it is a decision model. Sending its body to
+    // `/zen/v1/chat/completions` answers 500, so discovery must reclassify it as
+    // `systemone` and point it at `/zen/v1/systemone`.
+    const discovered = await discoverOpenCodeFreeModels({
+      baseUrl: "https://opencode.ai/zen/v1",
+      fetcher: zenListing(["jev-1.13-free", "mimo-v2.5-free"]),
+    });
+
+    const jev = discovered?.find((model) => model.modelId === "jev-1.13-free");
+    expect(jev?.serviceKind).toBe("systemone");
+    expect(jev?.endpointPath).toBe("/zen/v1/systemone");
+    // The chat model beside it is untouched.
+    const mimo = discovered?.find((model) => model.modelId === "mimo-v2.5-free");
+    expect(mimo?.serviceKind ?? "llm").toBe("llm");
+    expect(mimo?.endpointPath).toBe("/v1/chat/completions");
+  });
+
+  test("the bundled catalogs carry jev as a systemone row", () => {
+    const freeJev = OPENCODE_FREE_MODELS.find((model) => model.modelId === "jev-1.13-free");
+    expect(freeJev?.serviceKind).toBe("systemone");
+    expect(freeJev?.endpointPath).toBe("/zen/v1/systemone");
+    const zenJev = OPENCODE_ZEN_MODELS.find((model) => model.modelId === "jev-1.13");
+    expect(zenJev?.serviceKind).toBe("systemone");
+    expect(zenJev?.endpointPath).toBe("/zen/v1/systemone");
+  });
+
+  test("declares the free-tier chat models the listing advertises", () => {
+    // Each of these was dispatched through this adapter and answered, so the
+    // row is routable — not merely listed. A row that can only fail a probe
+    // belongs in `UNAVAILABLE_FREE_ZEN_IDS`, not here.
+    const freeIds = OPENCODE_FREE_MODELS.map((model) => model.modelId);
+    for (const id of [
+      "space-bunny-free",
+      "nemotron-3-ultra-free",
+      "nemotron-3.5-lightning-free",
+      "longcat-2.5-preview-free",
+    ]) {
+      const row = OPENCODE_FREE_MODELS.find((model) => model.modelId === id);
+      expect({ id, present: row !== undefined }).toEqual({ id, present: true });
+      expect({ id, chat: row?.wireFamily }).toEqual({ id, chat: "chat" });
+      expect({ id, path: row?.endpointPath }).toEqual({
+        id,
+        path: "/zen/v1/chat/completions",
+      });
+      expect({ id, free: row?.cost.input }).toEqual({ id, free: 0 });
+    }
+    // The unavailable id is excluded from both the catalog and the free filter.
+    expect(freeIds).not.toContain("ling-3.0-flash-fin-free");
+    expect(isFreeTierZenModel("ling-3.0-flash-fin-free")).toBe(false);
+  });
 });
 

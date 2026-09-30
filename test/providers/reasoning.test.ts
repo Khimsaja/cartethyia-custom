@@ -20,8 +20,18 @@ const request = (reasoning: CanonicalRequest["reasoning"]): CanonicalRequest => 
 describe("shared provider reasoning normalization", () => {
   test("projects canonical effort and budget onto OpenAI controls", () => {
     const payload: Record<string, unknown> = {};
+    // 4096 is the `low` tier's ceiling — the shared table reads a budget as the
+    // tier it sits in, not as the next one up.
     applyOpenAIReasoning(payload, request({ thinking_type: "enabled", budget_tokens: 4096 }));
-    expect(payload.reasoning_effort).toBe("high");
+    expect(payload.reasoning_effort).toBe("low");
+
+    const larger: Record<string, unknown> = {};
+    applyOpenAIReasoning(larger, request({ thinking_type: "enabled", budget_tokens: 20_000 }));
+    expect(larger.reasoning_effort).toBe("high");
+
+    const unsized: Record<string, unknown> = {};
+    applyOpenAIReasoning(unsized, request({ thinking_type: "enabled" }));
+    expect(unsized.reasoning_effort).toBe("high");
   });
 
   test("applies DeepSeek thinking and assistant replay requirements", () => {

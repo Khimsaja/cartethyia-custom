@@ -4,15 +4,17 @@ import { ProviderRegistry, parseProviderId } from "../../../src/providers/provid
 import { BUNDLED_PROVIDER_MODULES } from "../../../src/providers/default-registry";
 import {
   bundledModelCatalog,
+  retireUnbundledProviders,
   seedBundledProviders,
   registerByokProviders,
   syncByokProvider,
 } from "../../../src/providers/operations/provider-catalog-service";
 import { defineModel } from "../../../src/providers/model-definition";
 import { resolveByokWireProfile } from "../../../src/providers/operations/byok-wire-profile";
-import { inArray } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
 import { getDb } from "../../../src/persistence/postgres";
-import { providers } from "../../../src/persistence/schema";
+import { providers, tenants } from "../../../src/persistence/schema";
 import { dbDescribe } from "../../helpers/db-gate";
 
 describe("provider-registry.test.ts", () => {
@@ -229,5 +231,70 @@ dbDescribe("seedBundledProviders", () => {
 
     expect(rows).toHaveLength(BUNDLED_PROVIDER_MODULES.length);
     expect(rows.every((row) => row.enabled)).toBe(true);
+  });
+
+  test("does not retire an unbundled global row — retirement is boot-only", async () => {
+    const db = getDb();
+    const fixtureId = `seed-fixture-${randomUUID().slice(0, 8)}`;
+    // The harness calls this seeder on import to converge one shared database,
+    // so it must stay additive: a suite that installs a global fixture must not
+    // lose it to another suite's import. Retirement is `retireUnbundledProviders`,
+    // exercised below.
+    await db.insert(providers).values({ id: fixtureId, tenantId: null, enabled: true });
+
+    await seedBundledProviders(db);
+
+    const survived = await db
+      .select({ id: providers.id })
+      .from(providers)
+      .where(eq(providers.id, fixtureId));
+    expect(survived.map((row) => row.id)).toEqual([fixtureId]);
+
+    await db.delete(providers).where(eq(providers.id, fixtureId));
+  });
+});
+
+dbDescribe("retireUnbundledProviders", () => {
+  test("retires a global row the bundle no longer declares, and leaves a tenant-owned row alone", async () => {
+    const db = getDb();
+    const retiredId = `retired-${randomUUID().slice(0, 8)}`;
+    const ownedId = `owned-${randomUUID().slice(0, 8)}`;
+    const tenantId = randomUUID();
+    await db
+      .insert(tenants)
+      .values({ id: tenantId, name: "retire-unbundled-test", status: "active" })
+      .onConflictDoNothing();
+    // Neither id is in the bundle. The global one stands in for a provider the
+    // bundle retired: it must not survive a boot, or the console draws a card
+    // no one can delete (a global row is not tenant-owned, so the tenant-scoped
+    // DELETE matches nothing). The tenant-owned one is a real BYOK provider
+    // whose id is also absent from the bundle, and must survive untouched.
+    await db.insert(providers).values([
+      { id: retiredId, tenantId: null, enabled: true },
+      { id: ownedId, tenantId, enabled: true },
+    ]);
+
+    const retired = await retireUnbundledProviders(db);
+
+    expect(retired).toBeGreaterThanOrEqual(1);
+    const remaining = await db
+      .select({ id: providers.id })
+      .from(providers)
+      .where(inArray(providers.id, [retiredId, ownedId]));
+    expect(remaining.map((row) => row.id)).toEqual([ownedId]);
+
+    await db.delete(providers).where(eq(providers.id, ownedId));
+    await db.delete(tenants).where(eq(tenants.id, tenantId));
+  });
+
+  test("is idempotent and keeps every bundled provider", async () => {
+    const db = getDb();
+    await retireUnbundledProviders(db);
+    await retireUnbundledProviders(db);
+    const rows = await db
+      .select({ id: providers.id })
+      .from(providers)
+      .where(inArray(providers.id, BUNDLED_PROVIDER_MODULES.map((provider) => provider.id)));
+    expect(rows).toHaveLength(BUNDLED_PROVIDER_MODULES.length);
   });
 });

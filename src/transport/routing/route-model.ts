@@ -1,6 +1,6 @@
 // Routing contracts and snapshots.
 import { GatewayError } from "../gateway-error";
-import { type WireFamily } from "../canonical-model";
+import { type ServiceKind, type WireFamily } from "../canonical-model";
 
 
 export type RoutingRevision = number;
@@ -11,6 +11,13 @@ export interface RouteCandidate {
   readonly provider_id: string;
   readonly model_id: string;
   readonly wire_family: WireFamily;
+  /**
+   * Protocol shape of the model. `llm` (the default) flows through the
+   * canonical surface pipeline; a non-`llm` model is dispatched by its native
+   * route handler, which reads `endpoint` directly and never encodes a
+   * canonical request. Absent means `llm` — every pre-existing row.
+   */
+  readonly service_kind?: ServiceKind;
   readonly endpoint: string;
   readonly capability_profile: CapabilityProfile;
   /** Route-selected User-Agent fallback; provider-supplied identities remain authoritative. */

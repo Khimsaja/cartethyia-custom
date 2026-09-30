@@ -390,7 +390,8 @@ provider registry, not here.
 ## Dispatch (`dispatch/`)
 
 Walks the preparer's ordered candidates in `runAttemptLoop` and settles each attempt through one shared completion path; the
-native Responses-compact route (`createResponsesCompactHandler`) drives the same loop. Per request,
+native Responses-compact route (`createResponsesCompactHandler`) and the native System One route
+(`createSystemoneHandler`) drive the same loop. Per request,
 `handleProviderProxyRequest` applies tenant preferences (`applyTenantPreferences` — thinking normalization, Responses
 reasoning-summary override; non-fatal), allowlists inbound headers once (`forwardedRequestHeaders`, the
 `FORWARDED_REQUEST_HEADERS` set in `upstream.ts`: `user-agent`, `anthropic-beta`,
@@ -504,6 +505,38 @@ missing slot tolerates direct egress). Exchange capture is bounded (256 KiB, JSO
 (clone branch). New route types reuse `runAttemptLoop` with their own `prepare`/`attempt` closures and never fork
 retry/cooldown/refresh; new failure signals extend `classifyUpstreamFailure` (the loop only reads `retryable`); new terminal
 bookkeeping goes in `completeAttempt`, after the idempotency guard.
+
+## Native service routes (`dispatch/native-services.ts`)
+
+The canonical pipeline assumes a chat-shaped wire: a caller's body is parsed into `CanonicalRequest`, dispatched, and the
+upstream stream is re-encoded into the caller's surface. A protocol that is not chat-shaped gets a **native route** instead,
+declared once in `NATIVE_SERVICES`. Its body stays opaque — neither parsed nor projected — but routing, admission, retry,
+accounting, and telemetry run through the same `runAttemptLoop` as every canonical route, so a native route never forks
+retry or bookkeeping.
+
+`service_kind` is the dimension that separates them. `wire_family` says which *chat-shaped wire* a model speaks
+(`chat`/`responses`/`messages`); `service_kind` says which *protocol shape at all*. `llm` (the default, every pre-existing
+row) flows through the canonical pipeline; a non-`llm` row is served by its native route, and its `wire_family` is an inert
+placeholder (`chat`) because `models.wire_family` is `NOT NULL`. The column is plain text with a default rather than a
+pgEnum, so the set can grow (embeddings, tts) without an enum migration; validation lives in `SERVICE_KINDS`
+(`canonical-model.ts`) projected into the console validator.
+
+-  **Routing** — the snapshot builder carries `service_kind` onto `RouteCandidate`. `prepareNativeService` keeps only the
+  candidates whose row classifies as the requested kind, so a chat model named on a native route (or vice versa) finds no
+  candidate and fails closed with `capability_unsupported` rather than dispatching a mismatched body.
+-  **Adapter** — `ProviderAdapter.systemone?` is the optional native capability. A provider without it is simply not
+  eligible. `OpenAICompatibleAdapter.systemone` posts the caller's body untouched to the candidate's own `endpoint_path`
+  with the provider's normal auth/identity headers (it passes a minimal stand-in request to the header hooks, which read
+  only `stream`).
+-  **Ingress** — `body-policy.ts` includes `NATIVE_SERVICE_PATHS` in the JSON-route table so a native body is read through
+  the same policy, and `request-context.ts` skips the canonical parse/prepare stages for those paths (as it already does for
+  `/v1/responses/compact`).
+-  **Probe** — `resolveProbeTarget` reports the row's `service_kind`; a `systemone` probe dispatches the provider's native
+  method with a decision body and asserts `answers`, instead of running the canonical pipeline.
+
+System One (`POST /v1/systemone`) is the first entry: `{model, state, questions}` → `{answers}`. A chat body sent to the
+System One endpoint (or a decision body to a chat endpoint) is meaningless — the split is what keeps them apart. Adding the
+next native protocol is one `NATIVE_SERVICES` row, one `ServiceKind` member, and one adapter method.
 
 ## Error taxonomy
 

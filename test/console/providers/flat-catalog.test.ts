@@ -10,6 +10,7 @@ function entry(modelId: string, provider: string): ModelCatalogEntry {
     route: "/v1/chat/completions",
     provider,
     wireFamily: "chat",
+    serviceKind: "llm",
     enabled: true,
     contextLimit: 128_000,
     outputLimit: 16_000,
