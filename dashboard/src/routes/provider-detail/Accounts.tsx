@@ -29,7 +29,7 @@ import {
   useUpdateProviderAccount,
 } from "../../hooks/providers";
 import { useProviderAccountInflight } from "../../hooks/routing";
-import { useRefreshAccountQuota } from "../../hooks/quota";
+import { useRefreshAccountQuota, type AccountTestResult } from "../../hooks/quota";
 import { queryKeys } from "../../data/query-keys";
 import {
   assignAccountNames,
@@ -46,8 +46,6 @@ import { toast } from "../../shared/toast";
 import type { ProviderAccountResponse } from "../../data/contracts";
 
 
-
-const ACCOUNTS_PAGE_SIZE = 5;
 
 function accountStatusRank(status: string): number {
   if (status === "active") return 0;
@@ -399,10 +397,10 @@ function AccountRow({
   );
 }
 
-type AccountSortKey = "createdAt" | "label" | "status" | "lastCheck";
+type AccountSortKey = "added" | "label" | "status" | "lastCheck";
 
 const ACCOUNT_SORT_OPTIONS: ReadonlyArray<{ value: AccountSortKey; label: string }> = [
-  { value: "createdAt", label: "Created" },
+  { value: "added", label: "Added" },
   { value: "label", label: "Name" },
   { value: "status", label: "Status" },
   { value: "lastCheck", label: "Last check" },
@@ -417,8 +415,14 @@ function compareAccounts(
     (left.label || left.id).localeCompare(right.label || right.id) ||
     left.createdAt.localeCompare(right.createdAt) ||
     left.id.localeCompare(right.id);
-  if (key === "createdAt") {
-    return a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id);
+  if (key === "added") {
+    // The server's stable list position; falls back to creation order for
+    // payloads that predate the index.
+    return (
+      a.sortIndex - b.sortIndex ||
+      a.createdAt.localeCompare(b.createdAt) ||
+      a.id.localeCompare(b.id)
+    );
   }
   if (key === "label") return stableTie(a, b);
   if (key === "status") {
@@ -452,7 +456,7 @@ export function AccountsList({
   const inflightByAccount = inflightQuery.data ?? new Map<string, number>();
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
-  const [sortKey, setSortKey] = useState<AccountSortKey>("createdAt");
+  const [sortKey, setSortKey] = useState<AccountSortKey>("added");
   const [sortAsc, setSortAsc] = useState(true);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
@@ -519,6 +523,38 @@ export function AccountsList({
       recover.mutateAsync({ providerId, accountId: account.id }),
     );
 
+  /**
+   * Tests every selected account. Unlike the other bulk actions a failed test
+   * is a 200 with `ok: false`, not a rejected promise, so it counts `ok`
+   * itself instead of going through `runBulk`.
+   */
+  const bulkTest = async () => {
+    if (selectedAccounts.length === 0) return;
+    setBulkBusy(true);
+    const results = await Promise.allSettled(
+      selectedAccounts.map((account) =>
+        consoleRequest<AccountTestResult>(
+          `/accounts/${encodeURIComponent(account.id)}/quota/refresh`,
+          { method: "POST" },
+        ),
+      ),
+    );
+    let passed = 0;
+    let failed = 0;
+    for (const result of results) {
+      if (result.status === "fulfilled" && result.value?.ok) passed += 1;
+      else failed += 1;
+    }
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.quota.all }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.providers.all }),
+    ]);
+    setBulkBusy(false);
+    if (failed === 0) toast.success("Test complete", `${passed} passed`);
+    else if (passed === 0) toast.error("Test failed", `${failed} account${failed === 1 ? "" : "s"} failed`);
+    else toast.error("Test partially failed", `${passed} passed, ${failed} failed`);
+  };
+
   const bulkSetActive = (active: boolean) =>
     runBulk(active ? "Enable" : "Disable", (account) =>
       update.mutateAsync({
@@ -579,8 +615,7 @@ export function AccountsList({
   return (
     <Stack gap="8px">
       <div className="account-toolbar">
-        {accounts.length > ACCOUNTS_PAGE_SIZE ? (
-          <div style={{ position: "relative", flex: "1 1 200px", minWidth: "160px" }}>
+        <div style={{ position: "relative", flex: "1 1 200px", minWidth: "160px" }}>
             <Search
               size={13}
               aria-hidden="true"
@@ -602,9 +637,7 @@ export function AccountsList({
               style={{ paddingLeft: "30px" }}
             />
           </div>
-        ) : (
-          <span />
-        )}
+        <div className="account-toolbar-actions">
         <label className="account-sort">
           <span>Sort</span>
           <Select
@@ -643,10 +676,10 @@ export function AccountsList({
             checked={allFilteredSelected}
             onChange={toggleSelectAll}
             aria-label="Select all accounts"
-            style={{ cursor: "pointer" }}
           />
-          <span>All</span>
+          <span>Select all</span>
         </label>
+        </div>
       </div>
 
       {selectedAccounts.length > 0 ? (
@@ -655,6 +688,9 @@ export function AccountsList({
             {selectedAccounts.length} selected
           </span>
           <Inline gap="6px" style={{ flexWrap: "wrap", marginLeft: "auto" }}>
+            <Button size="sm" variant="secondary" icon={<FlaskConical size={12} />} disabled={bulkBusy} onClick={bulkTest}>
+              Test
+            </Button>
             <Button size="sm" variant="secondary" icon={<RotateCcw size={12} />} disabled={bulkBusy} onClick={bulkRecover}>
               Recover
             </Button>

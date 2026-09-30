@@ -670,6 +670,49 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
     return readings;
   }
 
+  /**
+   * Next free list position for a new account in this provider's list.
+   *
+   * Scoped to (provider, tenant) because the list is per provider: a tenant
+   * with accounts under two providers must not have the second provider's
+   * first account land at a high index.
+   */
+  private async nextAccountSortIndex(
+    db: CartethyiaDatabase | Parameters<Parameters<CartethyiaDatabase["transaction"]>[0]>[0],
+    providerId: string,
+    tenantId: string,
+  ): Promise<number> {
+    const rows = await db
+      .select({ max: sql<number>`coalesce(max(${providerAccounts.sortIndex}), -1)` })
+      .from(providerAccounts)
+      .where(
+        and(eq(providerAccounts.providerId, providerId), globalOrOwnedBy(providerAccounts.tenantId, tenantId)),
+      );
+    return Number(rows[0]?.max ?? -1) + 1;
+  }
+
+  /** Rewrites one provider's account order; `accountIds` is the full order. */
+  async reorderAccounts(
+    tenantId: string,
+    providerId: string,
+    accountIds: readonly string[],
+  ): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      for (const [index, accountId] of accountIds.entries()) {
+        await tx
+          .update(providerAccounts)
+          .set({ sortIndex: index })
+          .where(
+            and(
+              eq(providerAccounts.providerId, providerId),
+              eq(providerAccounts.id, accountId),
+              globalOrOwnedBy(providerAccounts.tenantId, tenantId),
+            ),
+          );
+      }
+    });
+  }
+
   async listAccounts(
     tenantId: string,
     providerId: string,
@@ -683,7 +726,10 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
           globalOrOwnedBy(providerAccounts.tenantId, tenantId),
         ),
       )
-      .orderBy(asc(providerAccounts.createdAt), asc(providerAccounts.id));
+      // Stable list position, not `created_at`: two accounts created in the
+      // same millisecond could swap between loads. `id` breaks a tie so the
+      // order is total even before a reorder assigns distinct indices.
+      .orderBy(asc(providerAccounts.sortIndex), asc(providerAccounts.createdAt), asc(providerAccounts.id));
     return this.accountsWithUsage(tenantId, rows);
   }
 
@@ -692,7 +738,7 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
       .select()
       .from(providerAccounts)
       .where(globalOrOwnedBy(providerAccounts.tenantId, tenantId))
-      .orderBy(asc(providerAccounts.createdAt), asc(providerAccounts.id));
+      .orderBy(asc(providerAccounts.sortIndex), asc(providerAccounts.createdAt), asc(providerAccounts.id));
     return this.accountsWithUsage(tenantId, rows);
   }
 
@@ -732,11 +778,15 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
           }
         }
 
+        // Append to the end of this provider's list rather than relying on
+        // creation time, so a new account never displaces existing positions.
+        const nextSortIndex = await this.nextAccountSortIndex(tx, providerId, tenantId);
         const rows = await tx
           .insert(providerAccounts)
           .values({
             providerId,
             tenantId,
+            sortIndex: nextSortIndex,
             label: request.label ?? `${providerId} account`,
             credentialCiphertext: encryptCredential(effectiveSecret),
             ...(credentialFingerprint ? { credentialFingerprint } : {}),
@@ -856,6 +906,7 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
       ...(liveModelCooldowns(row.modelCooldowns) ?? {}),
       ...(row.lastRecoveredAt ? { lastRecoveredAt: row.lastRecoveredAt.toISOString() } : {}),
       createdAt: row.createdAt.toISOString(),
+      sortIndex: row.sortIndex,
     };
   }
 

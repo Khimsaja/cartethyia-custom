@@ -41,6 +41,7 @@ import { providerCanConfigureUserAgent } from "../shared/provider-user-agent";
 import { RoutingStrategyCard } from "./provider-detail/RoutingStrategyCard";
 import { CredentialNotice } from "./provider-detail/CredentialNotice";
 import { AccountsList, AddAccountModal } from "./provider-detail/Accounts";
+import { CreditPoolCard } from "./provider-detail/CreditPool";
 import { DeviceCodeDialog, OAuthBrowserDialog } from "./provider-detail/OAuthDialogs";
 import {
   ImportCredentialDialog,
@@ -383,6 +384,7 @@ export default function ProviderDetail(): ReactNode {
             }
           />
           <CardBody style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+            <CreditPoolCard providerId={id} />
             {accountsQuery.isPending ? (
               <LoadingState label="Loading accounts..." />
             ) : accountsQuery.isError ? (

@@ -182,6 +182,12 @@ export const providerAccounts = pgTable("provider_accounts", {
   modelCooldowns: jsonb("model_cooldowns").notNull().default({}),
   /** Legacy per-account ceiling retained for stored rows only. Routing ignores it. */
   maxInflight: integer("max_inflight"),
+  /**
+   * Stable list position within (tenant, provider). Accounts were ordered by
+   * `created_at`, which let two same-millisecond rows swap between loads; this
+   * is explicit and can be rewritten when the operator reorders or appends.
+   */
+  sortIndex: integer("sort_index").notNull().default(0),
 
   },
   (table) => [

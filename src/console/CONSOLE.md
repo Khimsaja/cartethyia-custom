@@ -242,6 +242,19 @@ template *plus every key it issued*, because the quota is shared — a per-recip
 understate the link's spend. Client IPs are always masked in this payload (`maskClientIp`); the
 recipient is outside the tenant, so the console's IP-privacy preference does not apply.
 
+The provider detail Accounts toolbar keeps a search box on the left and the sort control (label + select +
+direction toggle) in a right-aligned cluster behind a divider. The search is always rendered. The sort's
+default is **Added**, backed by `provider_accounts.sort_index` — a stable per-`(tenant, provider)` position
+that a new account appends to, so the list no longer reorders itself when two rows share a `created_at`
+(or one is updated). `DrizzleProviderCatalogStore.reorderAccounts` rewrites the order atomically.
+
+On the provider detail page, the Accounts card leads with a **credit pool** line for providers whose
+accounts report a credit balance: every account's windows summed into one `used / limit` bar with a
+`N% used across M accounts` caption. It reads the already-polled `/quota/overview`, so no backend
+endpoint is added; windows without a positive `limit` are skipped (a rate limit is not a credit) and
+a single account's over-reported `used` is clamped to its own limit. Providers reporting no credit
+window render no card.
+
 Pool selection strategy is per-tenant (`GET`/`PATCH /strategy`): `least_loaded` (default, absent
 row reads as default) or `round_robin`, striding the per-tenant pool cursor by `rotateCount`
 (`POOL_ROUTING_STRATEGIES`, `PoolStrategySetting`, `DEFAULT_POOL_STRATEGY`; persisted in

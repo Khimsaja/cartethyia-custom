@@ -591,7 +591,6 @@ function PoolRow({
           checked={isSelected}
           onChange={() => onToggleSelect(pool.id)}
           aria-label={`Select ${poolLabel}`}
-          style={{ width: "13px", height: "13px", cursor: "pointer" }}
         />
       </td>
       <td style={{ minWidth: 0, maxWidth: "300px" }}>
@@ -1312,7 +1311,6 @@ export default function Proxy(): ReactNode {
                     checked={allSelected}
                     onChange={toggleSelectAll}
                     aria-label="Select all proxies"
-                    style={{ width: "13px", height: "13px", cursor: "pointer" }}
                   />
                   Select all
                   {selectedIds.size > 0 && (

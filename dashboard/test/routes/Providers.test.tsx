@@ -35,6 +35,7 @@ function account(overrides: Partial<ProviderAccountResponse>): ProviderAccountRe
     usageToday: USAGE,
     usageAllTime: USAGE,
     createdAt: "2026-01-01T00:00:00.000Z",
+    sortIndex: 0,
     ...overrides,
   };
 }

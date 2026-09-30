@@ -118,6 +118,7 @@ const expectedColumns: Record<string, readonly ExpectedColumn[]> = {
     column("last_recovered_at", "timestamp with time zone", "timestamptz", "YES"),
     column("model_cooldowns", "jsonb", "jsonb", "NO"),
     column("max_inflight", "integer", "int4", "YES"),
+    column("sort_index", "integer", "int4", "NO"),
     column("created_at", "timestamp with time zone", "timestamptz", "NO"),
   ],
   provider_oauth_states: [

@@ -387,6 +387,8 @@ export interface ProviderAccountResponse {
   modelCooldowns?: Readonly<Record<string, string>>;
   lastRecoveredAt?: string;
   createdAt: string;
+  /** Stable list position within this provider; the console's "Added" order. */
+  sortIndex: number;
 }
 /**
  * Plaintext export of one account's decrypted provider tokens.

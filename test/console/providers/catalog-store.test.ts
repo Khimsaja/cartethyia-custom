@@ -110,6 +110,61 @@ dbDescribe("DrizzleProviderCatalogStore CRUD", () => {
   test("tenant scoping: another tenant cannot see the row", async () => {
     expect(await store.get(randomUUID(), providerId)).toBeUndefined();
   });
+
+  test("accounts append in order and a reorder rewrites it", async () => {
+    const p = `catalog-order-${randomUUID().slice(0, 8)}`;
+    await store.create({
+      providerId: p,
+      tenantId,
+      enabled: true,
+      isBuiltIn: false,
+      requiresAccount: true,
+      supportsModelDiscovery: false,
+    });
+    const first = await store.createAccount(tenantId, p, {
+      label: "first",
+      secret: "sk-order-1",
+      credentialKind: "api_key",
+    });
+    const second = await store.createAccount(tenantId, p, {
+      label: "second",
+      secret: "sk-order-2",
+      credentialKind: "api_key",
+    });
+    const third = await store.createAccount(tenantId, p, {
+      label: "third",
+      secret: "sk-order-3",
+      credentialKind: "api_key",
+    });
+    const before = await store.listAccounts(tenantId, p);
+    expect(before.map((a) => a.id)).toEqual([first.id, second.id, third.id]);
+    expect(before.map((a) => a.sortIndex)).toEqual([0, 1, 2]);
+
+    await store.reorderAccounts(tenantId, p, [third.id, first.id, second.id]);
+    const after = await store.listAccounts(tenantId, p);
+    expect(after.map((a) => a.id)).toEqual([third.id, first.id, second.id]);
+    expect(after.map((a) => a.sortIndex)).toEqual([0, 1, 2]);
+  });
+
+  test("sort_index is scoped per provider, not per tenant", async () => {
+    const a = `catalog-scope-a-${randomUUID().slice(0, 8)}`;
+    const b = `catalog-scope-b-${randomUUID().slice(0, 8)}`;
+    for (const id of [a, b]) {
+      await store.create({
+        providerId: id,
+        tenantId,
+        enabled: true,
+        isBuiltIn: false,
+        requiresAccount: true,
+        supportsModelDiscovery: false,
+      });
+    }
+    await store.createAccount(tenantId, a, { label: "a1", secret: "sk-a1", credentialKind: "api_key" });
+    await store.createAccount(tenantId, a, { label: "a2", secret: "sk-a2", credentialKind: "api_key" });
+    const b1 = await store.createAccount(tenantId, b, { label: "b1", secret: "sk-b1", credentialKind: "api_key" });
+    // The second provider's first account starts at 0, not at a's next index.
+    expect(b1.sortIndex).toBe(0);
+  });
 });
 
 dbDescribe("DrizzleProviderCatalogStore account mutations", () => {

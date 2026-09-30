@@ -25,6 +25,7 @@ describe("AccountStatusBadge", () => {
     usageToday: { requests: 0, errors: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0 },
     usageAllTime: { requests: 0, errors: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0 },
     createdAt: new Date().toISOString(),
+    sortIndex: 0,
     ...overrides,
   });
 

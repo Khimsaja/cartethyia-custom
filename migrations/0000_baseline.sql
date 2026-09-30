@@ -58,6 +58,7 @@ CREATE TABLE "provider_accounts" (
   "last_recovered_at" timestamptz,
   "model_cooldowns" jsonb DEFAULT '{}'::jsonb NOT NULL,
   "max_inflight" integer,
+  "sort_index" integer DEFAULT 0 NOT NULL,
   "created_at" timestamptz DEFAULT now() NOT NULL,
   CONSTRAINT "provider_accounts_provider_id_providers_id_fk" FOREIGN KEY ("provider_id") REFERENCES "providers"("id") ON DELETE cascade,
   CONSTRAINT "provider_accounts_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE cascade
