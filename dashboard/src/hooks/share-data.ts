@@ -65,6 +65,7 @@ export interface ShareFamilyStatsData {
     readonly requests: number;
     readonly tokens: number;
     readonly lastSeenAt: string | null;
+    readonly clientType: string | null;
   }[];
 }
 

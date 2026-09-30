@@ -222,12 +222,16 @@ describe("share management dialog", () => {
     expect(markup).toContain("width:42%");
   });
 
-  test("no bar when no lifetime budget is set", () => {
+  test("an unlimited lifetime budget renders a full bar, not an empty one", () => {
     const markup = renderNode(
       createElement(ShareManagementContent, { parent: key({ lifetimeTokenBudget: undefined }) }),
     );
-    expect(markup).not.toContain('role="progressbar"');
+    // Nothing is consumed against a limit, so the bar reads as headroom: full
+    // width, and never the exhausted tone.
+    expect(markup).toContain('role="progressbar"');
+    expect(markup).toContain('aria-valuenow="100"');
     expect(markup).toContain("Unlimited");
+    expect(markup).not.toContain("share-bar-fill--exhausted");
   });
 
   test("an exhausted budget caps the bar at 100 and marks it exhausted", () => {

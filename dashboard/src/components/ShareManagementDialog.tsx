@@ -78,26 +78,31 @@ export function regenerateWarning(isPersonal: boolean): {
  * never persisted and never sent to the console, so the only counter the response
  * carries is `tokensConsumed` (lifetime). Drawing a daily or monthly bar would
  * mean rendering a zero the operator had no way to distinguish from a real zero.
- * The bar is therefore absent when no lifetime budget is set, rather than shown
- * empty.
+ *
+ * With no budget set the bar is drawn full and green: nothing is being consumed
+ * against a limit, so the honest reading is headroom, not an empty bar that
+ * would imply an exhausted budget.
  */
 function BudgetBar({
   consumed,
   budget,
 }: {
   readonly consumed: number;
-  readonly budget: number;
+  readonly budget: number | null | undefined;
 }): ReactNode {
-  const pct = budget > 0 ? Math.min(100, (consumed / budget) * 100) : 0;
+  const unlimited = budget == null || budget <= 0;
+  const pct = unlimited ? 100 : Math.min(100, (consumed / budget) * 100);
   // Over-budget reads as full rather than clipping: the number is what tells the
   // operator they are past it, and a bar that shrinks back would imply headroom.
-  const exhausted = consumed >= budget;
+  const exhausted = !unlimited && consumed >= budget;
   return (
     <div className="share-budget">
       <div className="share-budget-head">
         <span>Lifetime budget</span>
         <span className="share-budget-figures">
-          {compactTokens(consumed)} / {compactTokens(budget)}
+          {unlimited
+            ? `${compactTokens(consumed)} · Unlimited`
+            : `${compactTokens(consumed)} / ${compactTokens(budget)}`}
         </span>
       </div>
       <div
@@ -107,7 +112,11 @@ function BudgetBar({
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={Math.round(pct)}
-        aria-valuetext={`${compactTokens(consumed)} of ${compactTokens(budget)} tokens consumed`}
+        aria-valuetext={
+          unlimited
+            ? `${compactTokens(consumed)} tokens consumed, no lifetime budget set`
+            : `${compactTokens(consumed)} of ${compactTokens(budget)} tokens consumed`
+        }
       >
         <div
           className={`share-bar-fill${exhausted ? " share-bar-fill--exhausted" : ""}`}
@@ -213,26 +222,28 @@ export function ChildDetail({ parentId, childId }: { parentId: string; childId: 
       <section>
         <h4 className="share-detail-heading">Top models</h4>
         {activity.models.length ? (
-          <table className="data-table share-table">
-            <thead>
-              <tr>
-                <th scope="col">Model</th>
-                <th scope="col">Today</th>
-                <th scope="col">Errors</th>
-                <th scope="col">Tokens</th>
-              </tr>
-            </thead>
-            <tbody>
-              {activity.models.map((model, i) => (
-                <tr key={`${model.providerId ?? ""}-${model.modelId}-${i}`}>
-                  <td>{model.modelId}</td>
-                  <td>{count(model.todayRequests)}</td>
-                  <td>{count(model.todayErrors)}</td>
-                  <td>{compactTokens(model.todayTokens)}</td>
+          <div className="data-table-container">
+            <table className="data-table share-table">
+              <thead>
+                <tr>
+                  <th scope="col">Model</th>
+                  <th scope="col">Today</th>
+                  <th scope="col">Errors</th>
+                  <th scope="col">Tokens</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {activity.models.map((model, i) => (
+                  <tr key={`${model.providerId ?? ""}-${model.modelId}-${i}`}>
+                    <td>{model.modelId}</td>
+                    <td>{count(model.todayRequests)}</td>
+                    <td>{count(model.todayErrors)}</td>
+                    <td>{compactTokens(model.todayTokens)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         ) : (
           <p className="share-detail-empty">No model activity yet.</p>
         )}
@@ -240,31 +251,33 @@ export function ChildDetail({ parentId, childId }: { parentId: string; childId: 
       <section>
         <h4 className="share-detail-heading">Recent requests</h4>
         {activity.requests.length ? (
-          <table className="data-table share-table">
-            <thead>
-              <tr>
-                <th scope="col">Model</th>
-                <th scope="col">Status</th>
-                <th scope="col">Tokens</th>
-                <th scope="col">Time</th>
-              </tr>
-            </thead>
-            <tbody>
-              {activity.requests.map((event) => (
-                <tr key={event.requestId}>
-                  <td>
-                    {event.providerId ?? "Provider"}/{event.modelId ?? "Model"}
-                  </td>
-                  <td>
-                    {event.status}
-                    {event.httpStatus ? ` · ${event.httpStatus}` : ""}
-                  </td>
-                  <td>{compactTokens(event.totalTokens)}</td>
-                  <td>{stamp(event.startedAt)}</td>
+          <div className="data-table-container">
+            <table className="data-table share-table">
+              <thead>
+                <tr>
+                  <th scope="col">Model</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Tokens</th>
+                  <th scope="col">Time</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {activity.requests.map((event) => (
+                  <tr key={event.requestId}>
+                    <td>
+                      {event.providerId ?? "Provider"}/{event.modelId ?? "Model"}
+                    </td>
+                    <td>
+                      {event.status}
+                      {event.httpStatus ? ` · ${event.httpStatus}` : ""}
+                    </td>
+                    <td>{compactTokens(event.totalTokens)}</td>
+                    <td>{stamp(event.startedAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         ) : (
           <p className="share-detail-empty">No recent requests.</p>
         )}
@@ -383,11 +396,7 @@ export function ShareManagementContent({ parent }: { parent: ApiKeyResponse }): 
             <Limit label="Requests / min" value={parent.requestsPerMinute} />
             <Limit label="Daily tokens" value={parent.dailyTokenLimit} />
             <Limit label="Monthly tokens" value={parent.monthlyTokenLimit} />
-            {parent.lifetimeTokenBudget != null ? (
-              <BudgetBar consumed={parent.tokensConsumed} budget={parent.lifetimeTokenBudget} />
-            ) : (
-              <Limit label="Lifetime budget" value={null} />
-            )}
+            <BudgetBar consumed={parent.tokensConsumed} budget={parent.lifetimeTokenBudget} />
           </dl>
         </section>
       ) : (

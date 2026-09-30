@@ -338,6 +338,7 @@ export function ShareStatsSection({
                       <thead>
                         <tr>
                           <th scope="col">Address</th>
+                          <th scope="col">Client</th>
                           <th scope="col" className="is-numeric">
                             Req
                           </th>
@@ -350,6 +351,13 @@ export function ShareStatsSection({
                           <tr key={ip.ip}>
                             <td>
                               <code>{ip.ip}</code>
+                            </td>
+                            <td>
+                              {ip.clientType ? (
+                                <span className="share-stats-client">{ip.clientType}</span>
+                              ) : (
+                                <span className="share-stats-client is-unknown">unknown</span>
+                              )}
                             </td>
                             <td className="is-numeric">{ip.requests.toLocaleString()}</td>
                             <td>

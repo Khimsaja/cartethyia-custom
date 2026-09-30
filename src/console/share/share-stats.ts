@@ -50,6 +50,13 @@ export interface ShareTopClientIp {
   readonly requests: number;
   readonly tokens: number;
   readonly lastSeenAt: string | null;
+  /**
+   * Client identity as the User-Agent named it (`claude-cli`, `node`, ...),
+   * or null when no request from this address carried one. Shown instead of the
+   * raw header: the full string is long, varies per patch release, and names
+   * the tool rather than the machine.
+   */
+  readonly clientType: string | null;
 }
 
 export interface ShareFamilyStats {
@@ -71,6 +78,27 @@ export interface ShareStatsPort {
 }
 
 const HOUR_MS = 3_600_000;
+
+/**
+ * Names the client behind a request from its User-Agent.
+ *
+ * The share page shows one label per client address, and the raw header is the
+ * wrong thing to show: it runs to hundreds of characters, embeds a version that
+ * changes every release, and identifies the tool rather than anything the
+ * recipient can act on. The first token of the header is what clients actually
+ * use as their name (`claude-cli/2.1.280`, `node`, `curl/8.7.1`), so take that,
+ * drop the version, and normalise to lower case so one client's releases do not
+ * read as separate clients.
+ *
+ * Returns null when there is nothing to name, so callers render a blank rather
+ * than an empty chip.
+ */
+export function clientTypeFromUserAgent(userAgent: string | null | undefined): string | null {
+  if (typeof userAgent !== "string") return null;
+  const token = userAgent.trim().split(/[\s/]+/)[0]?.trim();
+  if (!token) return null;
+  return token.toLowerCase().slice(0, 32);
+}
 
 /** Start of the current UTC day. */
 function utcDayStart(now: Date): Date {
@@ -177,6 +205,13 @@ export function createShareStatsPort(db: CartethyiaDatabase): ShareStatsPort {
             requests: sql<number>`count(*)`,
             tokens: tokenSum,
             lastSeenAt: sql<string | null>`max(${telemetryEvents.createdAt})`,
+            // The header from the most recent request from this address: the
+            // client's current identity, not whichever one it happened to send
+            // first. `array_agg` skips nulls, so an address that never sent one
+            // still yields a row.
+            userAgent: sql<
+              string | null
+            >`(array_agg(${telemetryEvents.userAgent} order by ${telemetryEvents.createdAt} desc))[1]`,
           })
           .from(telemetryEvents)
           .where(and(familyScope, sql`${telemetryEvents.clientIp} is not null`))
@@ -231,6 +266,7 @@ export function createShareStatsPort(db: CartethyiaDatabase): ShareStatsPort {
                   requests: Number(row.requests ?? 0),
                   tokens: Number(row.tokens ?? 0),
                   lastSeenAt: row.lastSeenAt === null ? null : new Date(row.lastSeenAt).toISOString(),
+                  clientType: clientTypeFromUserAgent(row.userAgent),
                 },
               ],
         ),

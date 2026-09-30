@@ -815,7 +815,17 @@ html[data-app="share"] .share-hud-card {
     border-radius: 20px;
   }
 
-  .share-support-image,
+  /* The uploaded art is owner-made: `cover` inside a short fixed box cropped
+     most of it away on a phone. Let the real image keep its own aspect ratio
+     and letterbox instead, so the whole picture is visible. The decorative
+     placeholder has nothing to crop, so it keeps the fixed band. */
+  .share-support-image {
+    height: auto;
+    min-height: 0;
+    max-height: min(52dvh, 420px);
+    object-fit: contain;
+  }
+
   .share-support-image-placeholder {
     height: clamp(170px, 34dvh, 260px);
     min-height: 170px;
@@ -1078,6 +1088,28 @@ html[data-app="share"] .share-hud-card {
   color: var(--text-tertiary);
   font-family: var(--font-mono);
   font-size: 10px;
+}
+
+/* Client identity chip. Lower-cased by the gateway; the chip is what keeps a
+   bare `node` or `curl` from reading as a column of loose words. */
+.share-stats-client {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 1px 7px;
+  border: 1px solid var(--inner-border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.share-stats-client.is-unknown {
+  color: var(--text-tertiary);
+  font-style: italic;
 }
 
 .share-stats-bar {
