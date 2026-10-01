@@ -10,7 +10,7 @@
 // Everything here is read-only and payload-free: token counts, model slugs,
 // masked addresses. No request or response bodies cross this boundary.
 
-import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, or, sql } from "drizzle-orm";
 import type { CartethyiaDatabase } from "../../persistence/postgres";
 import { maskClientIp } from "../../observability/redaction";
 import { gatewayErrorSql } from "../../observability/telemetry-status";
@@ -113,6 +113,11 @@ export function clientTypeFromUserAgent(userAgent: string | null | undefined): s
   return token.toLowerCase().slice(0, 32);
 }
 
+/** Escape LIKE metacharacters so a model id matches literally. */
+function escapeLike(value: string): string {
+  return value.replace(/[%_\\]/g, (char) => `\\${char}`);
+}
+
 /** Start of the current UTC day. */
 function utcDayStart(now: Date): Date {
   const start = new Date(now);
@@ -188,19 +193,25 @@ export function createShareStatsPort(db: CartethyiaDatabase): ShareStatsPort {
         eq(telemetryEvents.tenantId, tenantId),
         inArray(telemetryEvents.apiKeyId, [...keyIds]),
       );
-      // Telemetry stores the name the client sent; the allowlist may spell the
-      // same model bare or provider-qualified. Filter on both forms of every
-      // allowed entry so a request that used the other spelling still ranks,
-      // while a name outside the grant never does. Pushed into SQL (not applied
-      // after the query) so refused names cannot fill the top-50 window and
-      // hide a model the recipient is actually allowed to use.
-      const allowedNames =
+      // Rank only names the grant actually authorizes, mirroring
+      // `modelRejectionReason`: a bare entry (`deepseek-v4.1-flash`) covers
+      // itself and any provider-qualified spelling of it, while a qualified
+      // entry (`opencode-go/deepseek-v4.1-flash`) covers only itself — the bare
+      // name it ends with is a *different*, refused request. So a refused probe
+      // never ranks. Pushed into SQL (not applied after the query) so refused
+      // names cannot fill the top-50 window and hide a model the recipient may
+      // use.
+      const modelMatch =
         allowedSet === null
           ? null
-          : [...new Set([...allowedSet].flatMap((name) => {
-              const slash = name.lastIndexOf("/");
-              return slash < 0 ? [name] : [name, name.slice(slash + 1)];
-            }))];
+          : [...allowedSet].flatMap((name) =>
+              name.lastIndexOf("/") < 0
+                ? [
+                    sql`${telemetryEvents.requestedModel} = ${name}`,
+                    sql`${telemetryEvents.requestedModel} like ${`%/${escapeLike(name)}`} escape '\\'`,
+                  ]
+                : [sql`${telemetryEvents.requestedModel} = ${name}`],
+            );
       const tokenSum = sql<number>`coalesce(sum(coalesce(${telemetryEvents.inputTokens}, 0) + coalesce(${telemetryEvents.outputTokens}, 0)), 0)`;
       const tokenSumFiltered = (condition: ReturnType<typeof sql> | boolean) =>
         sql<number>`coalesce(sum(coalesce(${telemetryEvents.inputTokens}, 0) + coalesce(${telemetryEvents.outputTokens}, 0)) filter (where ${condition}), 0)`;
@@ -243,11 +254,9 @@ export function createShareStatsPort(db: CartethyiaDatabase): ShareStatsPort {
             and(
               familyScope,
               sql`${telemetryEvents.requestedModel} is not null`,
-              ...(allowedNames === null
+              ...(modelMatch === null
                 ? []
-                : [allowedNames.length === 0
-                    ? sql`false`
-                    : inArray(telemetryEvents.requestedModel, allowedNames)]),
+                : [modelMatch.length === 0 ? sql`false` : or(...modelMatch)]),
             ),
           )
           .groupBy(telemetryEvents.requestedModel)

@@ -260,10 +260,12 @@ tokens/sec and average time-to-first-byte, taken over the rows that actually rep
 non-streaming request has no rate and a request that produced no first byte has no TTFT), and top
 client IPs. It aggregates the template *plus every key it issued*, because the quota is shared — a
 per-recipient figure would understate the link's spend. When the link grants a fixed allowlist, the
-top-models table is restricted to those models (both the bare and provider-qualified spelling of each
-entry match): a request refused for naming a model the key may not use still writes a telemetry row
-under the requested name, so an unfiltered table would rank exactly the names the grant excludes. An
-unrestricted link (no allowlist) ranks every model. Client IPs are always masked in this payload
+top-models table is restricted to the names that grant actually authorizes, mirroring
+`modelRejectionReason`: a bare entry covers itself and any provider-qualified spelling of it, while a
+provider-qualified entry covers only itself — a request refused for naming a model the key may not
+use still writes a telemetry row under the requested name, so an unfiltered table would rank exactly
+the names the grant excludes. An unrestricted link (no allowlist) ranks every model. Client IPs are
+always masked in this payload
 (`maskClientIp`); the recipient is outside the tenant, so the console's IP-privacy preference does not
 apply. The two ranked tables are capped at 50 rows each as a payload bound; the page shows a fixed
 window of about eight and scrolls the rest.
@@ -273,6 +275,11 @@ direction toggle) in a right-aligned cluster behind a divider. The search is alw
 default is **Added**, backed by `provider_accounts.sort_index` — a stable per-`(tenant, provider)` position
 that a new account appends to, so the list no longer reorders itself when two rows share a `created_at`
 (or one is updated). `DrizzleProviderCatalogStore.reorderAccounts` rewrites the order atomically.
+
+Each account row's action toolbar carries a static-token toggle. Turning it **on** stops the account
+refreshing and cannot be undone by the gateway once the token expires, so the button opens a
+confirmation explaining that consequence before applying it; turning it **off** re-enables refresh and
+applies immediately. The mode itself is described under the OAuth refresh contract in `PROVIDERS.md`.
 
 On the provider detail page, the Accounts card leads with a **credit pool** line for providers whose
 accounts report a credit balance: every account's windows summed into one `used / limit` bar with a

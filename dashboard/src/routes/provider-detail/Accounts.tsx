@@ -189,6 +189,7 @@ function AccountRow({
   const [, setTick] = useState(0);
   const [renaming, setRenaming] = useState(false);
   const [draftLabel, setDraftLabel] = useState("");
+  const [staticConfirmOpen, setStaticConfirmOpen] = useState(false);
   const label = account.label || account.id.slice(0, 8);
   // The countdown re-renders on a timer. It must be armed by the per-model
   // backoffs too, not only by `cooldownUntil`: a model-scoped 429 writes
@@ -246,26 +247,30 @@ function AccountRow({
   // refreshed) or returns it to normal OAuth refresh handling. This is the
   // operator's escape hatch for a pasted JWT/access token whose refresh grant
   // is absent or dead while the token itself is still valid.
+  //
+  // Turning it *on* is the consequential direction — the account stops
+  // refreshing and will simply stop working at token expiry — so the button
+  // opens a confirmation that explains that, rather than flipping the mode on a
+  // single click. Turning it back off is the safe direction and applies at once.
   const staticToken = account.staticToken === true;
+  const applyStaticToken = (): Promise<unknown> =>
+    update.mutateAsync({
+      providerId,
+      accountId: account.id,
+      request: { staticToken: !staticToken },
+    });
   const toggleStaticToken = () => {
-    update.mutate(
-      {
-        providerId,
-        accountId: account.id,
-        request: { staticToken: !staticToken },
-      },
-      {
-        onSuccess: () =>
-          toast.success(
-            staticToken ? "Refresh re-enabled" : "Marked as static token (no refresh)",
-            label,
-          ),
-        onError: (err) =>
-          toast.error(
-            "Update failed",
-            (err as { message?: string }).message ?? "Unable to update account",
-          ),
-      },
+    if (!staticToken) {
+      setStaticConfirmOpen(true);
+      return;
+    }
+    void applyStaticToken().then(
+      () => toast.success("Refresh re-enabled", label),
+      (err) =>
+        toast.error(
+          "Update failed",
+          (err as { message?: string }).message ?? "Unable to update account",
+        ),
     );
   };
 
@@ -450,6 +455,17 @@ function AccountRow({
           onClose={() => setShowHistory(false)}
         />
       )}
+      <ConfirmDialog
+        open={staticConfirmOpen}
+        onClose={() => setStaticConfirmOpen(false)}
+        onConfirm={() =>
+          applyStaticToken().then(() => toast.success("Marked as static token (no refresh)", label))
+        }
+        title="Mark as static token (no refresh)?"
+        message={`${label} will be used exactly as issued and the gateway will stop refreshing it. That is correct for a pasted JWT or access token with no working refresh grant — but the account will simply stop working once the token expires, and it will not recover on its own. You can re-enable refresh later.`}
+        confirmLabel="Continue"
+        cancelLabel="Cancel"
+      />
     </>
   );
 }

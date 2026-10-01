@@ -61,6 +61,10 @@ dbDescribe("share family stats — real DB", () => {
       event({ tenantId, apiKeyId: keyId, model: "claude-sonnet", tokensPerSec: null, ttfbMs: null }),
       // A different model, and a different tenant whose rows must not leak in.
       event({ tenantId, apiKeyId: keyId, model: "gpt-5", tokensPerSec: 10, ttfbMs: 300 }),
+      // The same route logged under its provider-qualified spelling, plus the
+      // bare name of a *qualified* grant — a refused probe that must not rank.
+      event({ tenantId, apiKeyId: keyId, model: "openai/gpt-5", tokensPerSec: 20, ttfbMs: 400 }),
+      event({ tenantId, apiKeyId: keyId, model: "deepseek-v4.1-flash", tokensPerSec: null, ttfbMs: null }),
       event({ tenantId: otherTenantId, apiKeyId: randomUUID(), model: "claude-sonnet", tokensPerSec: 999, ttfbMs: 1 }),
     ]);
   });
@@ -94,28 +98,45 @@ dbDescribe("share family stats — real DB", () => {
     expect(stats.models).toEqual([]);
   });
 
-  test("ranks only the models the link allows, matching bare and qualified forms", async () => {
+  test("a bare grant ranks itself and any provider-qualified spelling of it", async () => {
     const port = createShareStatsPort(db);
     // The link grants `gpt-5` (bare). A refused request still wrote a row under
     // its requested name (`claude-sonnet`), which must not rank — otherwise the
-    // top-models table advertises models the recipient can never use.
+    // top-models table advertises models the recipient can never use. A bare
+    // grant also covers the qualified spelling of the same model.
     const stats = await port.getFamilyStats(tenantId, [keyId], { total: 1, active: 1 }, ["gpt-5"]);
-    expect(stats.models.map((m) => m.modelId)).toEqual(["gpt-5"]);
+    expect(stats.models.map((m) => m.modelId).sort()).toEqual(["gpt-5", "openai/gpt-5"]);
     expect(stats.models.find((m) => m.modelId === "claude-sonnet")).toBeUndefined();
   });
 
-  test("a qualified allowlist entry ranks traffic logged under the bare name", async () => {
+  test("a qualified grant ranks only itself, not the bare name it ends with", async () => {
     const port = createShareStatsPort(db);
-    // Telemetry keeps the name the client sent (`gpt-5`); the grant is spelled
-    // `openai/gpt-5`. Both forms of an allowed entry must match.
+    // The grant is `openai/gpt-5`. The bare `gpt-5` row is a *different*,
+    // refused request (a qualified entry does not authorize the bare name), so
+    // it must not rank — only the exact qualified spelling does.
     const stats = await port.getFamilyStats(tenantId, [keyId], { total: 1, active: 1 }, ["openai/gpt-5"]);
-    expect(stats.models.map((m) => m.modelId)).toEqual(["gpt-5"]);
+    expect(stats.models.map((m) => m.modelId)).toEqual(["openai/gpt-5"]);
+    expect(stats.models.find((m) => m.modelId === "gpt-5")).toBeUndefined();
+  });
+
+  test("a bare grant ending a qualified grant's bare name still excludes refused probes", async () => {
+    const port = createShareStatsPort(db);
+    // Grants `deepseek-v4.1-flash` qualified. The bare row is a refused probe.
+    const stats = await port.getFamilyStats(tenantId, [keyId], { total: 1, active: 1 }, [
+      "opencode-go/deepseek-v4.1-flash",
+    ]);
+    expect(stats.models).toEqual([]);
   });
 
   test("an unrestricted link (no allowed list) ranks every model", async () => {
     const port = createShareStatsPort(db);
     const stats = await port.getFamilyStats(tenantId, [keyId], { total: 1, active: 1 });
-    expect(stats.models.map((m) => m.modelId).sort()).toEqual(["claude-sonnet", "gpt-5"]);
+    expect(stats.models.map((m) => m.modelId).sort()).toEqual([
+      "claude-sonnet",
+      "deepseek-v4.1-flash",
+      "gpt-5",
+      "openai/gpt-5",
+    ]);
   });
 
   test("an empty allowed list ranks nothing", async () => {
