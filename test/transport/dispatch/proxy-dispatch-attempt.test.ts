@@ -13,7 +13,6 @@ import { isOAuthCredentialInvalidated, shouldCooldownPool } from "../../../src/t
 import { ProxyRequestPreparer, type PreparedProxyRequest } from "../../../src/transport/request/preparer";
 import type { RouteCandidate } from "../../../src/transport/routing/route-model";
 import { ProxyRequestStateStore } from "../../../src/transport/request/state";
-import { getInFlightCount, resetInFlightForTests } from "../../../src/transport/request/inflight";
 import { GatewayError } from "../../../src/transport/gateway-error";
 import { type CanonicalEvent, type CanonicalRequest, type UsageRecord } from "../../../src/transport/canonical-model";
 import { candidateSupportsRequest, type RequiredCapability } from "../../../src/transport/translation/capabilities";
@@ -214,15 +213,21 @@ describe("completeAttempt telemetry parity (D3)", () => {
     };
   }
 
-  async function waitForInFlightCount(expected: number): Promise<void> {
+  async function waitForInFlightCount(
+    store: ProxyRequestStateStore,
+    expected: number,
+  ): Promise<void> {
     for (let attempt = 0; attempt < 20; attempt += 1) {
-      if (getInFlightCount() === expected) return;
+      if (store.inFlightCount() === expected) return;
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
-    expect(getInFlightCount()).toBe(expected);
+    expect(store.inFlightCount()).toBe(expected);
   }
 
-  async function dispatchFixture(stream: boolean, rows: unknown[]): Promise<Response> {
+  async function dispatchFixture(
+    stream: boolean,
+    rows: unknown[],
+  ): Promise<{ readonly response: Response; readonly store: ProxyRequestStateStore }> {
     const candidate = telemetryRouteCandidate();
     const canonicalRequest: CanonicalRequest = {
       model: "telemetry-model",
@@ -285,22 +290,21 @@ describe("completeAttempt telemetry parity (D3)", () => {
     // The standalone handler fixture does not mount the root afterResponse
     // lifecycle; mirror its non-stream request-state cleanup here.
     if (!stream) state.cleanup();
-    return response;
+    return { response, store: stateStore };
   }
 
   test("streaming and non-streaming report identical telemetry rows for the same fixture", async () => {
-    resetInFlightForTests();
     const rows: unknown[] = [];
     const buffered = await dispatchFixture(false, rows);
-    expect(buffered.status).toBe(200);
-    expect(getInFlightCount()).toBe(0);
-    await buffered.text();
+    expect(buffered.response.status).toBe(200);
+    expect(buffered.store.inFlightCount()).toBe(0);
+    await buffered.response.text();
     const streamed = await dispatchFixture(true, rows);
-    expect(streamed.status).toBe(200);
-    expect(streamed.headers.get("content-type")).toBe("text/event-stream");
-    expect(getInFlightCount()).toBe(1);
-    await streamed.text();
-    await waitForInFlightCount(0);
+    expect(streamed.response.status).toBe(200);
+    expect(streamed.response.headers.get("content-type")).toBe("text/event-stream");
+    expect(streamed.store.inFlightCount()).toBe(1);
+    await streamed.response.text();
+    await waitForInFlightCount(streamed.store, 0);
     expect(rows).toHaveLength(2);
     const [nonStreamRow, streamRow] = rows as Array<Record<string, unknown>>;
     // Volatile per-request fields are normalized; the `stream` flag itself
@@ -329,8 +333,6 @@ describe("completeAttempt telemetry parity (D3)", () => {
 });
 
 describe("runAttemptLoop — failover accounting", () => {
-  beforeAll(() => resetInFlightForTests());
-
   function terminalEvent(usage: UsageRecord): CanonicalEvent {
     return { type: "terminal", sequence_number: 0, state: "complete", usage } as CanonicalEvent;
   }
@@ -419,7 +421,7 @@ describe("runAttemptLoop — failover accounting", () => {
     const anthropicAdapter: ProviderAdapter = {
       provider_id: "anthropic",
       dispatch: async function* () {
-        expect(getInFlightCount()).toBe(1);
+        expect(stateStore.inFlightCount()).toBe(1);
         throw new Error("upstream 503");
         // eslint-disable-next-line no-unreachable
         yield terminalEvent(SUCCESS_USAGE);
@@ -428,7 +430,7 @@ describe("runAttemptLoop — failover accounting", () => {
     const openaiAdapter: ProviderAdapter = {
       provider_id: "openai",
       dispatch: async function* () {
-        expect(getInFlightCount()).toBe(1);
+        expect(stateStore.inFlightCount()).toBe(1);
         yield terminalEvent(SUCCESS_USAGE);
       },
     };
@@ -478,9 +480,9 @@ describe("runAttemptLoop — failover accounting", () => {
     const response = await handleProviderProxyRequest(request, deps);
 
     expect(response.status).toBe(200);
-    expect(getInFlightCount()).toBe(1);
+    expect(stateStore.inFlightCount()).toBe(1);
     state.cleanup();
-    expect(getInFlightCount()).toBe(0);
+    expect(stateStore.inFlightCount()).toBe(0);
     // The terminal attempt — not the first, failed one — owns the outcome.
     expect(state.outcome).toMatchObject({ status: "completed", providerId: "openai" });
     expect(state.outcome?.usage).toEqual(SUCCESS_USAGE);

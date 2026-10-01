@@ -69,6 +69,7 @@ write a second lifecycle.
 | `runtime-metrics` | 10 s | `RuntimeMetricsSampler.sample()` records memory + collection-size gauges | always |
 | `oauth-refresh-sweep` | 60 s | `oauthRefreshSweep` proactively refreshes due OAuth accounts | always |
 | `quota-refresh-sweep` | 60 s | `quotaRefreshSweep` refills stale provider-quota cache entries | Redis configured |
+| `inflight-backstop` | 30 s | `ProxyRequestStateStore.sweepOverdueInFlight` aborts and force-releases in-flight flights past their deadline plus a grace window, so a missed stream release cannot leave the gauge permanently wrong (registered from `app.ts`, not the dependency builder) | always |
 
 ## Daily check-in ride-along (`daily-checkin.ts`)
 

@@ -227,13 +227,16 @@ reductions and a text-only fallback always exists.
 
 **State** (`state.ts`, `ProxyRequestStateStore`). `initialize()` creates the state (uuid, timestamps, deadline, abort
 bridging, unref'd timer), registers it in a `WeakMap<Request, …>` plus a strong `liveControllers` map for `abortAll()` during
-shutdown drain, and feeds the optional `RequestTracker`. After attempt leases are acquired, `startProviderFlight()` increments
-the process-local in-flight gauge once per logical request; it stays active through retries and streaming. `extendDeadline()`
-re-arms the timer for streaming; `cleanup()` is the single idempotent teardown — untrack, release the timer, run registered
-cleanups LIFO (including the flight decrement), abort, and evict the WeakMap entry. `completed` (set by dispatch's `completeAttempt`) marks terminal bookkeeping done so telemetry
+shutdown drain, and feeds the optional `RequestTracker`. After attempt leases are acquired, `startProviderFlight()` registers
+the process-local in-flight flight once per logical request; it stays active through retries and streaming. `extendDeadline()`
+re-arms the timer for streaming and moves the flight's deadline with it; `cleanup()` is the single idempotent teardown —
+untrack, release the timer, run registered
+cleanups LIFO (including the flight release), abort, and evict the WeakMap entry. `completed` (set by dispatch's `completeAttempt`) marks terminal bookkeeping done so telemetry
 finalizes exactly once. `ProxyRequestOutcome` keeps the internal terminal status plus its wire projection (`httpStatus`),
-provider/account/pool ids, usage, and TTFT/TTFB timing; `inflight.ts` is a process-local gauge with pub/sub that floors at
-zero and is reset only by the test-only `resetInFlightForTests()` — production never resets it.
+provider/account/pool ids, usage, and TTFT/TTFB timing. The gauge itself lives in `inflight.ts` as a registry **owned by the
+store** (not a free-standing module): the store is the one place that evicts a request, so a flight can never outlive its
+state. `subscribeInFlight()`/`inFlightSnapshot()` expose it to the console SSE; `sweepOverdueInFlight()` is the backstop
+sweep (see below).
 
 **Invariants.** Abort checks bracket every async boundary in `prepare()` — a cancelled client never reserves capacity.
 `plan()` guarantees non-empty candidates; `eligible[0]` is always the primary `candidate`. Only `/v1/*` requests get state;
@@ -477,10 +480,14 @@ calls `retainLeases()` and hands ownership to the stream: `releaseStreamResource
 (chat/completion data frames, responses `response.error`, messages `error`).
 
 **Client-disconnect release.** `pull()` runs only when the consumer asks for more, so a client that drops the connection while
-the stream is paused never reaches `pull()`'s release branch. A `state.abortController` abort listener bridges that case: an
-`AbortError` (the inbound signal bridge's client-disconnect reason) runs the same release as `cancel()`, keeping the routing
-reservation, pool slot, and in-flight count symmetric. Deadline and stall aborts are deliberately excluded — those fire from
-inside `pull()`'s watchdog, which already records the terminal outcome and releases.
+the stream is paused never reaches `pull()`'s release branch. A `state.abortController` abort listener bridges that case. It
+releases on **every** abort that has no pending pull — a client disconnect always, and a deadline/stall abort when no `pull()`
+is in flight to catch it (a client that half-closes, keeping the socket but never reading again, leaves no pending pull; the
+upstream iterator may ignore the abort entirely, so the watchdog never fires its own release). A *pending* `pull()` owns the
+abort it triggered and emits the terminal frame (drain) or records the outcome (deadline/stall), so the listener defers to it
+then. Skipping the release on the assumption that a pull is watching is exactly what left the gauge climbing forever. A
+periodic backstop (`sweepOverdueInFlight`, registered as the `inflight-backstop` task) force-releases any flight past its
+deadline plus a grace window, so even an unmodelled disconnect cannot leave a permanently wrong number.
 
 **Drain vs. disconnect.** A graceful shutdown aborts the same controller, but with a typed shutdown `GatewayError`
 (`shutting_down` / `restart_for_update`, from `shutdown-notice.ts` `shutdownError`), never a bare `AbortError` — that is what

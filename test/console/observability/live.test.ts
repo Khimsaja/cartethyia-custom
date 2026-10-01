@@ -1,6 +1,6 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { createLiveRoutes } from "../../../src/console/observability/live";
-import { resetInFlightForTests, trackInFlight } from "../../../src/transport/request/inflight";
+import { ProxyRequestStateStore } from "../../../src/transport/request/state";
 import { NetworkPoolSelector } from "../../../src/network/pool/selector";
 import {
   recordPoolBytes,
@@ -15,17 +15,34 @@ const readerAccess: AccessDecision = {
   admissionIdentity: "test-session",
 };
 
-function appWith(access: AccessDecision | undefined, selector?: NetworkPoolSelector) {
-  return createLiveRoutes({ accessResolver: () => access, ...(selector ? { poolSelector: selector } : {}) });
+function appWith(
+  access: AccessDecision | undefined,
+  selector?: NetworkPoolSelector,
+  stateStore?: ProxyRequestStateStore,
+) {
+  return createLiveRoutes({
+    accessResolver: () => access,
+    ...(selector ? { poolSelector: selector } : {}),
+    ...(stateStore ? { stateStore } : {}),
+  });
+}
+
+/** Starts a tracked flight on a fresh store, returning the store. */
+function storeWithFlights(...ips: readonly string[]): ProxyRequestStateStore {
+  const store = new ProxyRequestStateStore();
+  for (const [index, ip] of ips.entries()) {
+    const request = new Request(`http://localhost/v1/chat/completions?r=${index}`, { method: "POST" });
+    const state = store.initialize(request, Date.now(), 60_000);
+    state.clientIdentity = { address: ip, source: "tcp-peer" };
+    state.startProviderFlight();
+  }
+  return store;
 }
 
 describe("live in-flight routes", () => {
-  beforeEach(() => resetInFlightForTests());
-
   test("snapshot returns the current count and unique IPs", async () => {
-    trackInFlight("r1", "1.1.1.1");
-    trackInFlight("r2", "1.1.1.1");
-    const response = await appWith(readerAccess).handle(
+    const store = storeWithFlights("1.1.1.1", "1.1.1.1");
+    const response = await appWith(readerAccess, undefined, store).handle(
       new Request("http://localhost/live/in-flight"),
     );
     expect(response.status).toBe(200);
@@ -40,8 +57,8 @@ describe("live in-flight routes", () => {
   });
 
   test("stream emits a count snapshot frame first", async () => {
-    trackInFlight("r1", "9.9.9.9");
-    const response = await appWith(readerAccess).handle(
+    const store = storeWithFlights("9.9.9.9");
+    const response = await appWith(readerAccess, undefined, store).handle(
       new Request("http://localhost/live/in-flight/stream"),
     );
     expect(response.status).toBe(200);
@@ -53,14 +70,18 @@ describe("live in-flight routes", () => {
   });
 
   test("stream subscribes before its snapshot so count changes are not lost", async () => {
-    const response = await appWith(readerAccess).handle(
+    const store = new ProxyRequestStateStore();
+    const response = await appWith(readerAccess, undefined, store).handle(
       new Request("http://localhost/live/in-flight/stream"),
     );
     expect(response.status).toBe(200);
     const reader = response.body!.getReader();
     const decoder = new TextDecoder();
     const snapshot = await reader.read();
-    trackInFlight("r1", "7.7.7.7");
+    const request = new Request("http://localhost/v1/chat/completions", { method: "POST" });
+    const state = store.initialize(request, Date.now(), 60_000);
+    state.clientIdentity = { address: "7.7.7.7", source: "tcp-peer" };
+    state.startProviderFlight();
     const update = await reader.read();
     await reader.cancel();
     expect(decoder.decode(snapshot.value)).toContain(`event: count\ndata: {"inFlight":0,"uniqueIps":0}`);

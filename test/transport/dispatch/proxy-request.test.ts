@@ -6,10 +6,6 @@ import {
 } from "../../../src/transport/dispatch/proxy-request";
 import { type PreparedProxyRequest } from "../../../src/transport/request/preparer";
 import { ProxyRequestStateStore } from "../../../src/transport/request/state";
-import {
-  getInFlightCount,
-  resetInFlightForTests,
-} from "../../../src/transport/request/inflight";
 import { GatewayError } from "../../../src/transport/gateway-error";
 import { type CanonicalEvent, type CanonicalRequest } from "../../../src/transport/canonical-model";
 import type { ResolvedApiKey } from "../../../src/security/api-key-auth";
@@ -1224,12 +1220,12 @@ describe("handleProviderProxyRequest — lifecycle hardening", () => {
    * settles, and fail loudly rather than returning a value that would make the
    * assertion pass for the wrong reason.
    */
-  async function settledInFlightCount(): Promise<number> {
+  async function settledInFlightCount(store: ProxyRequestStateStore): Promise<number> {
     for (let i = 0; i < 50; i += 1) {
-      if (getInFlightCount() === 0) return 0;
+      if (store.inFlightCount() === 0) return 0;
       await new Promise((resolve) => setTimeout(resolve, 1));
     }
-    return getInFlightCount();
+    return store.inFlightCount();
   }
 
   function setup(options: {
@@ -1455,7 +1451,6 @@ describe("handleProviderProxyRequest — lifecycle hardening", () => {
     // unwound past the release — and the root `afterResponse` hooks cannot
     // rescue a request whose `state.streaming` is set. Measured: the gauge
     // stayed at 1 for the life of the process.
-    resetInFlightForTests();
     const { request, deps } = setup({
       providerId: "openai",
       accountId: "a1",
@@ -1467,13 +1462,12 @@ describe("handleProviderProxyRequest — lifecycle hardening", () => {
     // Drain the error frame the client is owed, which is what drives the
     // stream's error path to completion.
     await response.text();
-    expect(await settledInFlightCount()).toBe(0);
+    expect(await settledInFlightCount(deps.stateStore)).toBe(0);
   });
 
   test("releases the flight when usage reconciliation rejects on a clean completion", async () => {
     // The completion path already had a `finally`; this pins that a rejecting
     // bookkeeping call cannot take it away.
-    resetInFlightForTests();
     const { request, deps } = setup({
       providerId: "openai",
       accountId: "a1",
@@ -1482,7 +1476,7 @@ describe("handleProviderProxyRequest — lifecycle hardening", () => {
     });
     const response = await handleProviderProxyRequest(request, deps);
     await response.text();
-    expect(await settledInFlightCount()).toBe(0);
+    expect(await settledInFlightCount(deps.stateStore)).toBe(0);
   });
 
   test("emits a shutdown terminal frame when a drain aborts a live stream", async () => {
@@ -1491,7 +1485,6 @@ describe("handleProviderProxyRequest — lifecycle hardening", () => {
     // disconnect and closed silently — the client saw an EOF with no terminal
     // event, i.e. "connection lost mid-response". A drain must instead emit a
     // typed terminal frame naming the shutdown so the client can retry.
-    resetInFlightForTests();
     let releaseUpstream = () => {};
     const upstreamPause = new Promise<void>((resolve) => {
       releaseUpstream = resolve;
@@ -1533,7 +1526,7 @@ describe("handleProviderProxyRequest — lifecycle hardening", () => {
     }
     expect(body).toContain("shutting_down");
     expect(body).not.toContain("[DONE]");
-    expect(await settledInFlightCount()).toBe(0);
+    expect(await settledInFlightCount(deps.stateStore)).toBe(0);
   });
 
   test("releases the flight when the client disconnects without another pull", async () => {
@@ -1542,7 +1535,6 @@ describe("handleProviderProxyRequest — lifecycle hardening", () => {
     // triggers another `pull()`, so the routing reservation, pool slot, and
     // in-flight count leaked for the life of the process. The abort listener
     // makes the disconnect path symmetric.
-    resetInFlightForTests();
     let releaseUpstream = () => {};
     const upstreamPause = new Promise<void>((resolve) => {
       releaseUpstream = resolve;
@@ -1572,7 +1564,49 @@ describe("handleProviderProxyRequest — lifecycle hardening", () => {
     const state = deps.stateStore.get(request);
     state?.abortController.abort(new DOMException("client disconnect", "AbortError"));
     releaseUpstream();
-    expect(await settledInFlightCount()).toBe(0);
+    expect(await settledInFlightCount(deps.stateStore)).toBe(0);
+  });
+
+  test("releases the flight when a deadline abort lands on a paused stream", async () => {
+    // Regression: the abort listener deliberately skipped release for a
+    // deadline/stall abort, assuming `pull()`'s watchdog would handle it. But
+    // `pull()` runs only when the consumer asks for more data, so a client that
+    // half-closes (stops reading, keeps the socket) leaves no pending pull and
+    // the deadline abort had nothing to release it — the gauge stayed up for
+    // the life of the process. The release must not be skipped on the
+    // assumption that a pull is watching.
+    let releaseUpstream = () => {};
+    const upstreamPause = new Promise<void>((resolve) => {
+      releaseUpstream = resolve;
+    });
+    const adapter: ProviderAdapter = {
+      provider_id: parseProviderId("openai"),
+      dispatch: async function* () {
+        yield { type: "response_start", sequence_number: 1, model: "model-1" } satisfies CanonicalEvent;
+        await upstreamPause;
+        yield terminalUsage(2);
+      },
+    };
+    const { request, deps } = setup({
+      providerId: "openai",
+      accountId: "a1",
+      stream: true,
+      deps: { providerAdapters: new Map([["openai", adapter]]) },
+    });
+    const response = await handleProviderProxyRequest(request, deps);
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader();
+    // Do not read: the primed prelude fills the queue, so the stream never
+    // calls `pull()` and there is no pending reader to observe the abort — the
+    // exact shape the old guard leaked on. The upstream generator ignores the
+    // abort signal here, so only the abort listener can release the flight.
+    const state = deps.stateStore.get(request);
+    state?.abortController.abort(
+      new GatewayError("deadline_exceeded", 504, "request deadline exceeded"),
+    );
+    releaseUpstream();
+    expect(await settledInFlightCount(deps.stateStore)).toBe(0);
+    await reader.cancel();
   });
 
   test("rejects before streaming when the candidate fails on its first event", async () => {

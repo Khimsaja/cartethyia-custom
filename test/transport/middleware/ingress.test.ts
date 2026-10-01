@@ -1,4 +1,4 @@
-import { describe, test, expect, afterEach, beforeEach } from "bun:test";
+import { describe, test, expect, afterEach } from "bun:test";
 import { eq } from "drizzle-orm";
 import { Elysia } from "elysia";
 import { getDb } from "../../../src/persistence/postgres";
@@ -8,7 +8,7 @@ import { hashSecret } from "../../../src/security/crypto";
 import { ProxyRequestStateStore } from "../../../src/transport/request/state";
 import { createTransportPipeline } from "../../../src/transport/middleware/pipeline";
 import { GatewayError } from "../../../src/transport/gateway-error";
-import { getInFlightCount, resetInFlightForTests } from "../../../src/transport/request/inflight";
+
 import { getConsoleLogSnapshot, resetConsoleLogsForTests } from "../../../src/observability/log-ring";
 import {
   readIngressBody,
@@ -101,7 +101,6 @@ describe("context.test.ts", () => {
 });
 
 describe("createRequestContextMiddleware — /v1 scoping", () => {
-  beforeEach(() => resetInFlightForTests());
 
   function buildContextApp(stateStore: ProxyRequestStateStore): Elysia {
     return new Elysia()
@@ -116,7 +115,7 @@ describe("createRequestContextMiddleware — /v1 scoping", () => {
     const response = await app.handle(req);
     expect(response.status).toBe(200);
     expect(stateStore.get(req)).toBeDefined();
-    expect(getInFlightCount()).toBe(0);
+    expect(stateStore.inFlightCount()).toBe(0);
   });
 
   test("skips proxy state for health, console, and static paths", async () => {
@@ -135,7 +134,7 @@ describe("createRequestContextMiddleware — /v1 scoping", () => {
       expect(response.status).toBe(200);
       expect(stateStore.get(req)).toBeUndefined();
     }
-    expect(getInFlightCount()).toBe(0);
+    expect(stateStore.inFlightCount()).toBe(0);
   });
 
   /**
@@ -150,7 +149,6 @@ describe("createRequestContextMiddleware — /v1 scoping", () => {
    * was precisely which app the lifecycle was registered on.
    */
   describe("in-flight accounting is symmetric for every /v1 path", () => {
-    beforeEach(() => resetInFlightForTests());
 
     function buildPipelineApp(stateStore: ProxyRequestStateStore): Elysia {
       const pipeline = createTransportPipeline({
@@ -189,7 +187,7 @@ describe("createRequestContextMiddleware — /v1 scoping", () => {
       for (const path of ["/v1/not-a-real-route", "/v1", "/v1/another-junk"]) {
         const response = await app.handle(new Request(`http://localhost${path}`, { method: "POST" }));
         expect(response.status).toBe(404);
-        expect(getInFlightCount()).toBe(0);
+        expect(stateStore.inFlightCount()).toBe(0);
         expect(stateStore.activeCount()).toBe(0);
       }
     });
@@ -201,7 +199,7 @@ describe("createRequestContextMiddleware — /v1 scoping", () => {
         await app.handle(new Request(`http://localhost/v1/probe-${i}`, { method: "POST" }));
       }
       // The whole point: the gauge returns to zero instead of climbing.
-      expect(getInFlightCount()).toBe(0);
+      expect(stateStore.inFlightCount()).toBe(0);
       expect(stateStore.activeCount()).toBe(0);
     });
 
@@ -215,7 +213,7 @@ describe("createRequestContextMiddleware — /v1 scoping", () => {
         new Request("http://localhost/v1/chat/completions", { method: "POST" }),
       );
       expect(response.status).toBeGreaterThanOrEqual(400);
-      expect(getInFlightCount()).toBe(0);
+      expect(stateStore.inFlightCount()).toBe(0);
       expect(stateStore.activeCount()).toBe(0);
     });
   });
@@ -633,7 +631,6 @@ describe("console mutation limiter middleware", () => {
 });
 
 describe("registerTelemetryLifecycle — in-flight release", () => {
-  beforeEach(() => resetInFlightForTests());
 
   function captureHook(deps: {
     readonly stateStore: ProxyRequestStateStore;
@@ -682,10 +679,10 @@ describe("registerTelemetryLifecycle — in-flight release", () => {
     // completeAttempt, exactly like production dispatch.
     state.outcome = { status: "completed" };
     state.completed = true;
-    expect(getInFlightCount()).toBe(0);
+    expect(stateStore.inFlightCount()).toBe(0);
     await hook({ request: req });
     // The flight is gone (no leak) and no duplicate telemetry row was queued.
-    expect(getInFlightCount()).toBe(0);
+    expect(stateStore.inFlightCount()).toBe(0);
     expect(enqueued.count).toBe(0);
     expect(stateStore.get(req)).toBeUndefined();
   });
@@ -699,7 +696,7 @@ describe("registerTelemetryLifecycle — in-flight release", () => {
     authorizedState(stateStore, req);
     await hook({ request: req });
     expect(enqueued.count).toBe(1);
-    expect(getInFlightCount()).toBe(0);
+    expect(stateStore.inFlightCount()).toBe(0);
   });
 
   test("a live stream stays uncounted until a provider dispatch is acquired", async () => {
@@ -713,7 +710,7 @@ describe("registerTelemetryLifecycle — in-flight release", () => {
     await hook({ request: req });
     // The response lifecycle preserves active streams, but this test never
     // reaches provider dispatch, so no dispatch flight has started.
-    expect(getInFlightCount()).toBe(0);
+    expect(stateStore.inFlightCount()).toBe(0);
     expect(enqueued.count).toBe(0);
     state.cleanup();
   });
@@ -731,7 +728,7 @@ describe("registerTelemetryLifecycle — in-flight release", () => {
     // no phantom failed row and no request lifecycle event.
     expect(enqueued.count).toBe(0);
     expect(getConsoleLogSnapshot().filter((line) => line.event !== undefined)).toHaveLength(0);
-    expect(getInFlightCount()).toBe(0);
+    expect(stateStore.inFlightCount()).toBe(0);
   });
 
   test("an early rejection records the client's real HTTP status, not a generic 500", async () => {

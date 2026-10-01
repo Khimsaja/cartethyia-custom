@@ -1,6 +1,7 @@
 import { Elysia } from "elysia";
 import { resolveDashboardDist, resolveElysiaPrecompile } from "./config";
 import { createConsoleRouter, type ConsoleApiCompositionDeps } from "./console/console-router";
+import type { ScheduledTaskRegistry } from "./workers/tasks";
 import { createStaticHandler } from "./console/dashboard-assets";
 import { createShareRouter } from "./console/share/share-router";
 import { createShareStatsPort } from "./console/share/share-stats";
@@ -118,6 +119,13 @@ export interface ProductionAppDeps {
    * mount `/console/api/*`, which is exactly what that mode documents.
    */
   readonly consoleApi?: ConsoleApiCompositionDeps;
+  /**
+   * The shared maintenance scheduler. The in-flight backstop sweep registers
+   * here rather than owning a private timer, so every periodic task in the
+   * process is visible in one place. Absent in reduced compositions, where the
+   * backstop is not mounted.
+   */
+  readonly scheduledTasks?: ScheduledTaskRegistry;
   readonly shutdownCoordinator: ShutdownCoordinatorLike;
   readonly dashboardDist?: string;
   readonly resolvePeerAddress?: (request: Request) => string | null;
@@ -222,6 +230,25 @@ export function createGatewayApp(deps: GatewayAppDeps) {
   deps.shutdownCoordinator?.setAbortInflight?.(() =>
     requestStateStore.abortAll(shutdownError(deps.shutdownCoordinator?.shutdownReason?.())),
   );
+  // Backstop: the gauge must settle even if an abort path never fires (a
+  // half-closed socket that neither pulls, cancels, nor aborts). This sweep
+  // force-releases any flight past its deadline plus a grace window, so a
+  // missed release cannot leave a permanently wrong number. The grace is a
+  // safety margin over the request deadline, not a deployment knob.
+  const INFLIGHT_BACKSTOP_INTERVAL_MS = 30_000;
+  const INFLIGHT_BACKSTOP_GRACE_MS = 30_000;
+  const INFLIGHT_BACKSTOP_HARD_GRACE_MS = 120_000;
+  if (deps.mode === "production") deps.scheduledTasks?.register({
+    name: "inflight-backstop",
+    intervalMs: INFLIGHT_BACKSTOP_INTERVAL_MS,
+    run: () => {
+      requestStateStore.sweepOverdueInFlight(
+        Date.now(),
+        INFLIGHT_BACKSTOP_GRACE_MS,
+        INFLIGHT_BACKSTOP_HARD_GRACE_MS,
+      );
+    },
+  });
   const app = new Elysia({ precompile: resolveElysiaPrecompile() })
     .beforeHandle(
       ({
@@ -490,6 +517,7 @@ export function createGatewayApp(deps: GatewayAppDeps) {
       app.use(
         createConsoleRouter({
           ...deps.consoleApi,
+          stateStore: requestStateStore,
           resolvePeerAddress: (request) => peerAddresses.get(request) ?? null,
           trustedProxyBoundary: deps.trustedProxyBoundary,
         }),

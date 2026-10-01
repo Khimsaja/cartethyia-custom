@@ -91,22 +91,32 @@ To probe every model a provider exposes and keep only the ones that actually ans
 Symptom: dashboard Usage "in flight" gauge (or `proxy_in_flight`) climbs and never returns to 0, while pools look correct. Persistent across requests.
 
 Model of the counter:
-- `incrementInFlight()` runs once per `/v1/*` request in `ProxyRequestStateStore.initialize` (`src/transport/request/state.ts`).
-- `decrementInFlight()` runs ONLY inside `state.cleanup()` (idempotent via a `cleaned` flag).
-- Non-streaming requests clean up via the root `afterResponse` hook (`registerTelemetryLifecycle` / `registerRequestCleanup` in `src/transport/middleware/ingress.ts`).
-- Streaming requests skip that hook (`state.streaming = true`) and clean up only from `releaseStreamResources()` in `src/transport/dispatch/proxy-request.ts` — called from `pull()` (normal completion, mid-stream error, deadline/stall), `cancel()`, `finalizeStream()`, `emitStreamErrorAndClose()`.
+- `startProviderFlight()` registers a flight once per logical `/v1/*` request, after attempt leases are acquired (`src/transport/request/state.ts`).
+- The flight is released ONLY inside `state.cleanup()` (idempotent via a `cleaned` flag), which is the single teardown point.
+- The registry is owned by `ProxyRequestStateStore` (`inflight.ts`), so the gauge cannot count a request the store has already evicted.
+- Non-streaming requests clean up via the root `afterResponse` hook (`registerTelemetryLifecycle` / `registerRequestCleanup` in `src/transport/middleware/error-lifecycle.ts`, mounted from `pipeline.ts`).
+- Streaming requests skip that hook (`state.streaming = true`) and clean up only from `releaseStreamResources()` in `src/transport/dispatch/proxy-request.ts` — called from `pull()` (normal completion, mid-stream error, deadline/stall), `cancel()`, `finalizeStream()`, `emitStreamErrorAndClose()`, and the abort listener.
 
-The leak: `pull()` runs only when the consumer asks for more data. A client that drops the connection while the stream is paused never reaches any release branch, and `cancel()` is not reliably invoked for an abrupt socket drop. Result: reservation + pool slot + in-flight count leak for the process lifetime.
+The leak: `pull()` runs only when the consumer asks for more data. A client that half-closes (stops reading, keeps the socket) reaches no release branch, and `cancel()` is not reliably invoked for an abrupt socket drop. If the abort listener also skips release for a deadline/stall abort (assuming a pull is watching), the reservation + pool slot + in-flight count leak for the process lifetime.
 
-Diagnosis: confirm the gauge never returns to 0 (`GET /console/api/live/in-flight` or `proxy_in_flight`); reproduce in a unit test against `handleProviderProxyRequest` (`test/transport/dispatch/proxy-request.test.ts`) with a streaming adapter that yields a prelude then awaits a paused promise — read the prelude, then abort WITHOUT `reader.cancel()` (call `state.abortController.abort(new DOMException("client disconnect", "AbortError"))` directly) and assert the count settles to 0. Prove the test catches the bug by temporarily commenting out the abort listener registration (must fail `Expected: 0, Received: 1`).
+Diagnosis: confirm the gauge never returns to 0 (`GET /console/api/live/in-flight` or `proxy_in_flight`); reproduce in a unit test against `handleProviderProxyRequest` (`test/transport/dispatch/proxy-request.test.ts`) with a streaming adapter that yields a prelude then awaits a paused promise — never read from the body (so no `pull()` runs), then abort WITHOUT `reader.cancel()` (call `state.abortController.abort(new GatewayError("deadline_exceeded", 504, …))` directly) and assert the count settles to 0. Prove the test catches the bug by restoring the old `if (drain === undefined && !clientDisconnect) return;` guard (must fail `Expected: 0, Received: 1`).
 
-Fix: add an abort listener on `state.abortController` (registered before `releaseStreamResources` is used), guarded to client-disconnect only:
+Fix: the abort listener on `state.abortController` (registered before `releaseStreamResources` is used) must release on every
+abort with no pending pull — not only an `AbortError`. A deadline/stall abort lands with no pending `pull()` whenever the client
+half-closed (kept the socket, stopped reading), and the upstream iterator may ignore the abort, so nothing else releases it:
 
 ```ts
+let pullActive = false; // set true at the top of pull(), false in its finally
+
 function onStreamAbort(): void {
   const reason = state.abortController.signal.reason;
-  if (!(reason instanceof DOMException && reason.name === "AbortError")) return;
-  if (!state.outcome) state.outcome = { status: "cancelled", httpStatus: 499 };
+  const drain = drainAbortReason(reason);
+  const clientDisconnect =
+    drain === undefined && reason instanceof DOMException && reason.name === "AbortError";
+  // A pending pull owns the abort it triggered (drain → terminal frame;
+  // deadline/stall → records the outcome). Only a pending one.
+  if (pullActive && !clientDisconnect) return;
+  if (clientDisconnect && !state.outcome) state.outcome = { status: "cancelled", httpStatus: 499 };
   void (async () => {
     try { await iterator.return?.(); } catch {}
     await releaseStreamResources();
@@ -116,7 +126,12 @@ state.abortController.signal.addEventListener("abort", onStreamAbort, { once: tr
 if (state.abortController.signal.aborted) onStreamAbort();
 ```
 
-Remove the listener inside `releaseStreamResources()` to keep it idempotent. Do NOT release on `deadline_exceeded`/`GatewayError` aborts from this listener — `pull()`'s watchdog already records the terminal outcome and releases; double-handling corrupts telemetry.
+The gauge itself is now a registry **owned by `ProxyRequestStateStore`**, not a free-standing module — the store is the one
+place that evicts a request, so a flight cannot outlive its state. As a last resort a periodic backstop
+(`ProxyRequestStateStore.sweepOverdueInFlight`, the `inflight-backstop` scheduled task) force-releases any flight past its
+deadline plus a grace window, so the number settles even for a disconnect shape the abort listener did not model. Do NOT release
+from the abort listener when a pull is pending: it already emits the frame and records the outcome, and releasing early
+double-finalizes telemetry.
 
 ## Reasoning replay across wire surfaces
 
