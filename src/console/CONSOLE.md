@@ -276,10 +276,12 @@ default is **Added**, backed by `provider_accounts.sort_index` — a stable per-
 that a new account appends to, so the list no longer reorders itself when two rows share a `created_at`
 (or one is updated). `DrizzleProviderCatalogStore.reorderAccounts` rewrites the order atomically.
 
-Each account row's action toolbar carries a static-token toggle. Turning it **on** stops the account
-refreshing and cannot be undone by the gateway once the token expires, so the button opens a
-confirmation explaining that consequence before applying it; turning it **off** re-enables refresh and
-applies immediately. The mode itself is described under the OAuth refresh contract in `PROVIDERS.md`.
+Each account row's action toolbar carries a static-token toggle. Both directions are consequential —
+turning it **on** stops the account refreshing and cannot be undone by the gateway once the token
+expires; turning it **off** hands the credential back to the OAuth sweep, which fails for a pasted
+token with no working refresh grant and marks the account for re-auth — so the button opens a
+confirmation explaining the consequence in either direction before applying it. The mode itself is
+described under the OAuth refresh contract in `PROVIDERS.md`.
 
 On the provider detail page, the Accounts card leads with a **credit pool** line for providers whose
 accounts report a credit balance: every account's windows summed into one `used / limit` bar with a
