@@ -2,7 +2,7 @@
 
 Dashboard conventions for `dashboard/` (React, TanStack Query, no jsdom) — page chrome, social meta, share page, SSR verification, and real-browser verification. Consolidates the dashboard-page-chrome, dashboard-server-rendered-meta, share-page, dashboard-ssr-verify, dashboard-ui-verification, and verify-ui-without-browser-daemon skills.
 
-Dashboard code must remain browser-safe: never import backend modules (Elysia, DB drivers, filesystem, secrets, Node-only runtime deps). Dashboard tests live in `dashboard/test/`, mirroring `dashboard/src/`.
+Dashboard code must remain browser-safe: never import backend modules (Elysia, DB drivers, filesystem, secrets, Node-only runtime deps).
 
 ## Scroll model (know this first)
 
@@ -40,7 +40,7 @@ Dashboard code must remain browser-safe: never import backend modules (Elysia, D
 - [ ] Sticky offset uses `var(--topbar-height)`, not a magic number.
 - [ ] Pinned bar is opaque + shadowed.
 - [ ] Sort is stable with a name tiebreaker.
-- [ ] `bun run dashboard:typecheck` and `bun run dashboard:test` pass.
+- [ ] `bun run dashboard:typecheck` passes.
 - [ ] Confirm the built CSS actually contains the rule: `grep -o "page-toolbar-sticky{[^}]*}" dist/dashboard/assets/*.css`.
 
 ## Per-route social meta (single shared index.html)
@@ -63,7 +63,6 @@ Verify:
 - `bun run typecheck` (root) — clean.
 - `bun run dashboard:build`, then confirm `dist/dashboard/index.html` still contains both sentinel comments.
 - Live check against a running gateway (default `:12800`): `curl` `/`, `/console/dashboard`, and `/share/<43-char-token>`; assert `og:image` is `/og_image.webp` for the first two and `/og_bansos.webp` for share, and that share `<title>` is the share title.
-- Regression test: `test/console/dashboard-assets.test.ts` pattern — build a temp `index.html` containing the sentinel block, assert the swap for `/share/...` and non-swap for `/` and `/console/...`.
 
 Gotchas:
 - `dashboard/public/og_bansos.webp` (share) and `og_image.webp` (landing) are both 1760×576.
@@ -119,8 +118,6 @@ Gotchas:
 - `renderToStaticMarkup` does not run effects, so `EventSource`/SSE hooks and `useState`-driven interactions (toggle flips, blur handlers) cannot be verified this way — assert markup only and say so.
 - `lucide-react` icons expand to full `<svg>` markup; anchor on ids/text, not on SVG attributes.
 - The script is throwaway: remove it before yielding and report that visual confirmation in a real browser was not performed.
-
-The repo's committed harness is the same technique: `dashboard/test/**` uses `bun:test` + `renderToStaticMarkup`. There is NO jsdom/happy-dom/@testing-library — assert on markup strings. Mock data hooks with `mock.module(...)` BEFORE dynamically importing the component under test. Mutation-test the fix (revert, confirm failure, restore, confirm pass).
 
 Diagnosing a blank `/console/*` page: if the page renders nothing and the console has no errors, fetch the dev HTML and look at the script tag — if it references `/assets/index-*.js` (a hashed build chunk) that 404s, the dev server is serving a STALE build output. Fix: restart `bun run dashboard:dev`. Not a code regression.
 

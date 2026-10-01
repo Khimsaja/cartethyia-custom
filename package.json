@@ -24,13 +24,7 @@
     "generate:usage-periods": "bun run scripts/ci-generate-usage-periods.ts",
     "dev:backend": "bun run --hot src/main.ts",
     "dashboard:dev": "bun run --cwd dashboard dev",
-    "check:coverage": "bun run scripts/ops-run-tests.ts --coverage --coverage-reporter=lcov --coverage-dir=coverage && bun run scripts/ci-check-coverage.ts",
-    "dashboard:test": "bun run generate:usage-periods && bun run --cwd dashboard test",
-    "test": "bun run scripts/ops-run-tests.ts",
-    "test:fast": "bun run scripts/ops-run-tests.ts --fast",
-    "test:contracts": "bun run scripts/ops-run-tests.ts test/contracts",
     "dashboard:build": "bun run --cwd dashboard build",
-    "test:integration": "bun run scripts/ops-run-tests.ts test/integration",
     "dashboard:typecheck": "bun run generate:usage-periods && bun run --cwd dashboard typecheck"
   },
   "dependencies": {

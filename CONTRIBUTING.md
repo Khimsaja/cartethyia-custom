@@ -1,6 +1,6 @@
 # Contributing to Cartethyia
 
-Setup, workflow, and PR checks. Human-facing companion to `AGENTS.md` (agent rules) and `ARCHITECTURE.md` (code map) — authoritative for their topics, linked not duplicated.
+Setup, workflow, and PR checks.
 
 ## Prerequisites
 
@@ -36,65 +36,43 @@ Useful endpoints once running (`http://localhost:12800` by default):
 
 ## Running tests
 
-DB suites gate on `CARTETHYIA_TEST_DATABASE_URL` at an **isolated** Postgres DB (`test/helpers/db-gate.ts`): set → they run; unset → they skip with `[db-gate] skipped`. The same helper repoints the process at that database (`getDb()` resolves `DATABASE_URL`, the gate overwrites it before any pool opens) — a DB suite never touches your working database, no manual URL alignment needed. Skips are expected locally; report them separately from failures.
-
-```bash
-bun run test:fast            # backend without integration trees (local iteration)
-bun run test                 # full backend suite (DB suites skip without the URL)
-bun run test:contracts       # cross-cutting contract suites
-bun run test:integration     # integration suites
-bun run check:coverage       # coverage gate: 85% line coverage over src/
-
-bun run scripts/ops-run-tests.ts test/console                     # one subtree
-bun run scripts/ops-run-tests.ts test/providers/integrations/codex
-
-bun run dashboard:test        # generate usage-periods once, then dashboard suite
-```
+The repository does not currently carry a test suite. Verification is
+`bun run typecheck` for the backend and `bun run dashboard:typecheck` for the
+dashboard.
 
 ## Verification gate (before every PR)
 
-Backend change (from `AGENTS.md`):
+Backend change:
 
 ```bash
 bun run typecheck
-bun run test
-bun run check:coverage
 ```
 
-Dashboard or API-contract change, additionally:
+Dashboard change, additionally:
 
 ```bash
 bun run dashboard:typecheck
-bun run dashboard:test
-bun run test:contracts
 ```
 
-CI (`.github/workflows/ci.yml`) runs exactly these gates with Postgres +
-Redis services and the same `COVERAGE_MIN=85` floor. Typecheck and build never
-require Buf, vendor protobuf sources, or network access.
+CI (`.github/workflows/ci.yml`) runs exactly these gates. Typecheck and build
+never require Buf, vendor protobuf sources, or network access.
 
 ## Code conventions (short version)
 
-Full rules in `AGENTS.md`. What bites new contributors most:
+What bites new contributors most:
 
-- `src/` production only — no `*.test.ts`; tests in `test/` mirroring `src/`.
+- `src/` production only.
 - No `index.ts` barrels; concrete files. `import type` for types. Strict TS: no `any`, no suppressions, no needless assertions; `unknown` + narrowing at boundaries.
 - Entity dirs use role filenames: `contracts.ts` (types + validation + operations + routes), `routes.ts`, `store.ts`, `service.ts`, `errors.ts`.
 - `scripts/` flat, `ops-*` / `build-*` / `ci-*` prefixes.
 - Comments explain policy, security, non-obvious tradeoffs — not the next line.
-- Tests assert observable behavior, boundaries, errors, transitions, security invariants — never implementation details or source text (except layout/config contracts like `test/architecture/`).
-- Never delete a test for being old or moved; replace lost contract coverage when you remove one.
-
-- One layer doc per top-level `src/` folder beside it, named for the layer (`src/transport/TRANSPORT.md`) — subfolders carry none; `ARCHITECTURE.md` is only the map. A new layer, route group, provider capability, env var, or DB table updates the matching top-level doc (plus `.env.example` for env vars, `migrations/` + `schema.ts` for tables). Adding/renaming a top-level folder doc also updates the `ARCHITECTURE.md` table.
-- `README.md` + `.env.example` product/runtime; `AGENTS.md` agent rules; `CHANGELOG.md` entries under `Unreleased` stay historical once written. Keep all four in sync with the source you change.
-- Doc-drift rules (what changes together, what never goes in docs, code-vs-docs conflicts) live in `AGENTS.md` "Docs are part of the change" — read it before touching any doc. Update docs your change made wrong; don't rewrite a layer doc you weren't working in.
+- `README.md` + `.env.example` product/runtime; `CHANGELOG.md` entries under `Unreleased` stay historical once written.
 
 ## Pull requests
 
 - Branch from `main`, keep the change focused, remove callers in the same
-  change (no compat shims — see `AGENTS.md` "Clean cutover, no aliases").
-- Fill in `.github/pull_request_template.md`: what changed, gates run, DB-gated skips vs failures, docs updated.
+  change (no compat shims).
+- Fill in `.github/pull_request_template.md`: what changed, gates run, docs updated.
 - Every privileged console mutation ends with audit + route-snapshot
   invalidation; every security layer stays fail-closed; telemetry stays
-  metadata-only and best-effort. Layer docs (via the `ARCHITECTURE.md` map)
-  state each invariant where it applies.
+  metadata-only and best-effort.

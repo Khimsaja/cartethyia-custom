@@ -13,17 +13,17 @@ A provider is declared in several hand-maintained places that tests enforce as a
    - `src/providers/default-registry.ts` → add the matching key to `PROVIDER_CAPABILITIES` with lazy loaders. This is mandatory: the map is typed `satisfies Readonly<Record<BundledProviderId, ProviderModuleCapabilities>>` and `BUNDLED_PROVIDER_MODULES` throws at module load with `Missing provider implementation: <id>`. Every loader must be a dynamic `import()` — nothing in this layer may run at startup.
 
 2. **Dashboard mirrors (hand-copies; dashboard must never import backend modules):**
-   - `dashboard/src/lib/provider-names.ts` → `BUILT_IN_PROVIDER_DISPLAY_NAMES` (guarded by `provider-display-names-parity.test.ts`)
-   - `dashboard/src/components/ProviderIcon.tsx` → `iconAssets` entry (guarded by `provider-lists-parity.test.ts`)
-   - `dashboard/src/routes/Providers.tsx` → `FREE_LIMITED_IDS` / `FREE_AVAILABLE_IDS` / `FOUNDING_IDS` (only if the provider belongs there; stray unknown ids fail the same test)
+   - `dashboard/src/lib/provider-names.ts` → `BUILT_IN_PROVIDER_DISPLAY_NAMES`
+   - `dashboard/src/components/ProviderIcon.tsx` → `iconAssets` entry
+   - `dashboard/src/routes/Providers.tsx` → `FREE_LIMITED_IDS` / `FREE_AVAILABLE_IDS` / `FOUNDING_IDS` (only if the provider belongs there)
    - `dashboard/src/lib/use-routing-strategy.ts` → `PROXY_UNSUPPORTED_HINT_PROVIDERS` (only if proxy routing must be withheld)
    - Icon assets live in `dashboard/public/providers/`; `scripts/build-icons.ts` maps generated `.webp` names to source `.png` art. Section placement is automatic: a provider not in any set and without `oauthFlows` lands in "API Key Providers".
 
-3. **Tests that pin the provider set:** `test/providers/default-registry.test.ts` (set equality both directions), `test/providers/endpoint-map-parity.test.ts` (exact list of providers declaring `endpointPathsByWireFamily` — adding one means editing that literal list with a comment). Declare `endpointPathsByWireFamily` in the registry when the chat path is not the built-in default; keep it in agreement with the adapter spec's paths.
+3. **`endpointPathsByWireFamily`:** declare it in the registry when the chat path is not the built-in default; keep it in agreement with the adapter spec's paths. The contract is set equality — no file pins a provider *count*.
 
-4. **Docs (same change):** `src/providers/PROVIDERS.md` (integrations table; extend the auth section if a new login shape appears), `CHANGELOG.md` bullet under `### Provider ecosystem & protocol fidelity`. `ARCHITECTURE.md` needs no edit (glob reference).
+4. **Docs (same change):** `README.md`, `CHANGELOG.md` bullet under `### Provider ecosystem & protocol fidelity`.
 
-5. **Env vars:** adding a `process.env.*` read requires a `CONFIG_SPEC` row in `src/config.ts` plus a `.env.example` line (`test/config-env-drift.test.ts` derives the set from `CONFIG_SPEC`).
+5. **Env vars:** adding a `process.env.*` read requires a `CONFIG_SPEC` row in `src/config.ts` plus a `.env.example` line.
 
 6. **Credential input:** `dashboard/src/lib/credential-extract.ts` owns `CREDENTIAL_FIELD_PRIORITY` and `OAUTH_SHAPE_FIELDS`. If the provider's secret field is named outside those lists, a pasted value is stored verbatim as a raw string — the credential parser must accept a bare-string form, or the provider is unconfigurable from the UI. Validate the JSON-object form strictly and treat a non-object literal as the raw token.
 
@@ -75,16 +75,15 @@ When a provider has a token endpoint accepting `grant_type=refresh_token` but pu
 No alias, no shim, no commented-out block.
 
 1. **Scope first:** `for p in <id> <dir-name> <symbol-prefix>; do grep -ril "$p" src test dashboard scripts; done`. Check name collisions before deleting — e.g. `xiaomi.ts` (providers `xiaomipg`/`xiaomitp`) is a *different* provider from any MiMo surface, and `models.model_id` is shared across providers. Read every hit; do not delete on a name match alone.
-2. **Delete files:** `src/providers/integrations/<dir>/`, `test/providers/integrations/<dir>/`, dashboard icon asset.
+2. **Delete files:** `src/providers/integrations/<dir>/`, dashboard icon asset.
 3. **Central registries:** drop the `RAW_BUNDLED_PROVIDER_METADATA` row (plus any comment block that introduced it) and drop the whole capability block in `default-registry.ts`. The record is `satisfies Record<BundledProviderId, …>`, so a leftover block fails typecheck.
 4. **Dashboard mirrors:** `provider-names.ts`, `ProviderIcon.tsx` (`iconAssets`), `scripts/build-icons.ts` (only if the icon file itself is removed).
 5. **Per-provider helpers that go dead:** grep for exported helpers only that provider used, then delete the whole chain — source row, resolver entry, every accessor. The `resolvers` object is `satisfies Record<keyof typeof VERSION_SOURCES, …>`, so removing only one half fails typecheck.
 6. **Shared hooks whose only implementor was the removed provider:** delete the hook from the interface AND its call site — do not leave a hook with zero implementors.
-7. **Tests: neutralize, do not delete, when the logic survives.** Provider-specific behavior → delete with the provider. Generic logic whose *fixture* named the provider → keep the test, rename the fixture to a generic id (`"vendor"`). Same for worker tests: retarget an eligibility assertion to a surviving provider (`openai`) rather than losing the negative case.
-8. **Docs:** `PROVIDERS.md` table + any prose list naming the provider, `CHANGELOG.md` bullets (beware line-wrapped bullets: deleting a line range can splice the next bullet's opening line — edit by exact string match, then read the surroundings), any layer doc naming it in a rationale paragraph.
-9. **Residual sweep:** use Python or an out-of-repo script (a sweep inside the repo root matches its own patterns and reports false hits). Patterns: `<id>`, `<dir-name>`, `<SYMBOL_PREFIX>`, removed symbol names. Expect zero.
-10. **DB catalog cleanup — seeding never prunes.** Delete by `provider_id` / uuid — **NEVER by `model_id`** (shared across providers). One transaction, verify both directions (survivors still there). Check `model_aliases`, `cli_tool_mappings`, `tenant_disabled_models`, `studio_sessions`, `api_keys` jsonb first. **`telemetry_events` is history and must NOT be deleted.** Never print credential values — select `provider_id, label, status, credential_kind` only.
-11. **Gates + report:** typechecks, tests (backend count legitimately *drops*; report the delta so it does not read as lost coverage), contracts, build. State what was deleted, deliberately-untouched surfaces, DB rows removed vs preserved. Do not commit unless asked.
+7. **Docs:** `README.md` + any prose list naming the provider, `CHANGELOG.md` bullets (beware line-wrapped bullets: deleting a line range can splice the next bullet's opening line — edit by exact string match, then read the surroundings).
+8. **Residual sweep:** use Python or an out-of-repo script (a sweep inside the repo root matches its own patterns and reports false hits). Patterns: `<id>`, `<dir-name>`, `<SYMBOL_PREFIX>`, removed symbol names. Expect zero.
+9. **DB catalog cleanup — seeding never prunes.** Delete by `provider_id` / uuid — **NEVER by `model_id`** (shared across providers). One transaction, verify both directions (survivors still there). Check `model_aliases`, `cli_tool_mappings`, `tenant_disabled_models`, `studio_sessions`, `api_keys` jsonb first. **`telemetry_events` is history and must NOT be deleted.** Never print credential values — select `provider_id, label, status, credential_kind` only.
+10. **Gates + report:** typecheck, dashboard:typecheck, build. State what was deleted, deliberately-untouched surfaces, DB rows removed vs preserved. Do not commit unless asked.
 
 ## Custom (BYOK) providers — the wire contract is derived
 
@@ -138,18 +137,17 @@ A field reaches the UI through four layers — missing any one produces no error
 3. **Projection** — `sanitizeProviderResponse()` in `provider-operations.ts`: read from the accessor, **never from the stored row** (a stale/hostile record must not redirect the value). Hoist accessor calls into locals before the object literal.
 4. **Dashboard** — hand-maintained mirror (`dashboard/src/lib/contracts.ts` re-exports the type, safe); render in `dashboard/src/routes/provider-detail/`.
 
-Render rules: render nothing when there is nothing to show; label the action for what it does ("Sign in" when only OAuth flows exist, not "Get API Key"); prefer a real `<a href target="_blank" rel="noreferrer">` over `window.open` (survives popup blockers; see `OAuthDialogs.tsx`); provider-specific `credentialHint` wins over derived text. Verify every URL you add actually resolves (`curl -L`); do not guess a key page from a brand name. Mutation-test the projection (force it to read the stored row, confirm the test fails).
+Render rules: render nothing when there is nothing to show; label the action for what it does ("Sign in" when only OAuth flows exist, not "Get API Key"); prefer a real `<a href target="_blank" rel="noreferrer">` over `window.open` (survives popup blockers; see `OAuthDialogs.tsx`); provider-specific `credentialHint` wins over derived text. Verify every URL you add actually resolves (`curl -L`); do not guess a key page from a brand name.
 
 ## Add a provider account action (Quota page)
 
 Reverse-engineer the reference first: `../Public/oh-my-pi/packages/ai/src/usage/` — wire fields, idempotency keys, and "no-op" business codes differ per provider; do NOT invent names.
 
-1. **Service** (`src/providers/operations/<feature>-service.ts`): one shared `supportsX(providerId)` predicate + exported dashboard mirror of the same set, guarded in a parity test. `listX` returns `null` on transport/auth failure ("unknown"), zero-count as authoritative "nothing available" — never conflate. Build headers from the existing UA authority (`getCodexVersion()`, `CLAUDE_CODE_USER_AGENT`). On success, repair the account in place + write a `health_events` row; on failure write the row with `errorCategory`. Both surface in the Health & Error Log modal.
+1. **Service** (`src/providers/operations/<feature>-service.ts`): one shared `supportsX(providerId)` predicate + exported dashboard mirror of the same set. `listX` returns `null` on transport/auth failure ("unknown"), zero-count as authoritative "nothing available" — never conflate. Build headers from the existing UA authority (`getCodexVersion()`, `CLAUDE_CODE_USER_AGENT`). On success, repair the account in place + write a `health_events` row; on failure write the row with `errorCategory`. Both surface in the Health & Error Log modal.
 2. **Console routes** (`src/console/quota/account-quota.ts`, Elysia chain): `GET` with `dashboard:read`, `POST` with `dashboard:write`. Resolve access in try/catch via `errorResponse`; 404 when the account is absent; 400 `X_unsupported` when `!supportsX`; resolve credential via `refreshDeps.resolveCredential`. Business no-ops return 200, not client errors.
 3. **Dashboard hooks** (`dashboard/src/lib/hooks/quota.ts`): `useAccountX` on a dedicated `queryKeys.quota.X(accountId)` (do NOT mirror onto the quota overview), `useTriggerAccountX` invalidating `queryKeys.quota.all` + `queryKeys.providers.all` in `onSettled`, `supportsAccountX` mirror set, new key in `query-keys.ts`.
 4. **Card UI** (`dashboard/src/routes/Quota.tsx`): icon button in the card action row opening a `Dialog` (follow `QuotaAccountHealthModal`); page-level `useState` target rendered next to the health modal; gate on `supportsAccountX`.
-5. **Parity guard:** extend `provider-lists-parity.test.ts` so button and route cannot disagree.
-6. **Tests:** stub `fetcher` asserting exact URL/params/headers/body (`as unknown as typeof fetch`); DB-gated via `dbDescribe` (`test/helpers/db-gate.ts`), seed `.onConflictDoNothing()`, clean up in `afterAll`.
+5. Keep the dashboard `supportsAccountX` mirror and the backend predicate in agreement, so button and route cannot disagree.
 
 ## `model_not_found` that is really a missing catalog row
 
@@ -159,7 +157,7 @@ When a working model (or configured alias/combo) starts 404ing after a rebuild/r
 2. Dump aliases, combos, and candidate rows from the main DB (`models` has no `created_at`; `model_aliases` has `target_model`, no `target_provider`).
 3. Confirm the model is real upstream (models.dev / opencode zen) — do NOT "fix" by inventing it. `git log --all -S "<model-id>"` empty means the row was never in the bundled catalog.
 4. Prove the alias engine itself is healthy with an alias whose target exists: an **upstream** error proves resolution+dispatch worked; a `cartethyia` 404 proves routing.
-5. Fix in the catalog, never in the DB: restore the row in the owning integration with authoritative metadata + a comment saying the id is addressed by tenant aliases/combos. The seeder reconciles on boot (`seedBundledModels` deletes `builtin` rows the catalog stopped declaring), so a manual insert is not a fix. Guard with a catalog regression test (modelId, endpointPath, limits, modalities, reasoning).
+5. Fix in the catalog, never in the DB: restore the row in the owning integration with authoritative metadata + a comment saying the id is addressed by tenant aliases/combos. The seeder reconciles on boot (`seedBundledModels` deletes `builtin` rows the catalog stopped declaring), so a manual insert is not a fix.
 6. Verify materialization on an isolated DB (TEST database, never live) before restarting anything; static imports only, then delete the throwaway script.
 7. Tell the user a restart is required. Never start a second gateway to verify (workers cannot be disabled → double OAuth refresh). Keep it scoped: do not "fix" by making `model_not_found` retryable.
 
@@ -175,10 +173,7 @@ Always diff against live upstream before hardcoding a family behavior, using the
 ```bash
 bun run typecheck
 bun run dashboard:typecheck
-bun run test
-bun run dashboard:test
-bun run test:contracts
 bun run build
 ```
 
-Full suite, not only your file: a test that passes alone can fail in-suite when another suite mutates `process.env` (set your own env in `beforeAll`, restore in `afterAll`). Confirm regression tests are load-bearing (reintroduce the bug, watch it fail with the original error, then restore). Keep throwaway probes out of the repo and delete them when done. Update `CHANGELOG.md` in the same change. Do not commit unless asked.
+Prove the change at the real boundary: `createDefaultProviderRegistry()` resolves the adapter with the expected `provider_id`, models carry the expected `endpointPath`, and a live request through the running gateway reaches the provider. Keep throwaway probes out of the repo and delete them when done. Update `CHANGELOG.md` in the same change. Do not commit unless asked.

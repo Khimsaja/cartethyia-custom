@@ -17,9 +17,6 @@ export const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..
 /** Absolute path of the repository's `.env`. */
 export const ENV_PATH = resolve(PROJECT_ROOT, ".env");
 
-/** Absolute path of the lcov report `bun test --coverage-dir=coverage` writes. */
-export const COVERAGE_LCOV_PATH = resolve(PROJECT_ROOT, "coverage", "lcov.info");
-
 /**
  * Reads a dotenv-style file without overriding already-exported variables.
  */

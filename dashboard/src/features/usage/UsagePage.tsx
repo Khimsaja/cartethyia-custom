@@ -67,7 +67,7 @@ import {
 } from "../../shared/format";
 
 type Metric = "requests" | "tokens" | "cached";
-/** Mirrors the backend `USAGE_DIMENSIONS`; pinned by usage-dimensions-parity.test.ts. */
+/** Mirrors the backend `USAGE_DIMENSIONS`; keep in sync by hand. */
 type Dimension = UsageDimension;
 
 /** Breakdown rows visible before the list scrolls; the rest scrolls inside. */
@@ -84,7 +84,7 @@ const BREAKDOWN_ROW_HEIGHT = 49;
  * Provider internals stay redacted and bounded at the source
  * (`completeAttempt` capture), never raw secrets.
  */
-type PayloadKind = "request" | "response" | "clientResponse" | "providerRequest" | "providerResponse";
+type PayloadKind = "request" | "clientResponse" | "providerRequest" | "providerResponse";
 
 const PERIOD_LABELS: Record<Period, string> = {
   "1h": "Last 1 Hour",
@@ -792,7 +792,7 @@ function RequestDetailDrawer({
   // Serialize once per payload instead of every 5s poll render: the byte
   // count and the pretty-printed <pre> both re-encode multi-MB bodies today.
   const payloadViews = useMemo(
-    () => (["request", "response", "clientResponse", "providerRequest", "providerResponse"] as const).map((kind) => {
+    () => (["request", "clientResponse", "providerRequest", "providerResponse"] as const).map((kind) => {
         const payload = detail?.payloads?.[kind];
         if (payload === undefined) return { kind, text: null, bytes: null };
         let text: string | null = null;
@@ -893,7 +893,7 @@ function RequestDetailDrawer({
               <FlowNode
                 last
                 title="Response out"
-                meta={`${statusCode(detail.status, detail.httpStatus).code}${payloadView("response").bytes !== null ? ` · ${formatBytes(payloadView("response").bytes)}` : ""}${detail.estimatedCost ? ` · ${formatUsd(detail.estimatedCost)}` : ""}`}
+                meta={`${statusCode(detail.status, detail.httpStatus).code}${payloadView("clientResponse").bytes !== null ? ` · ${formatBytes(payloadView("clientResponse").bytes)}` : ""}${detail.estimatedCost ? ` · ${formatUsd(detail.estimatedCost)}` : ""}`}
                 tone={STATUS_TONE_COLOR[statusCode(detail.status, detail.httpStatus).tone]}
               />
             </div>
@@ -902,11 +902,10 @@ function RequestDetailDrawer({
 
           {(
             [
-              ["request", "Client Request", detail.payloads?.request, ArrowUpFromLine],
-              ["response", "Proxy → Server Response", detail.payloads?.response, ArrowDownToLine],
-              ["clientResponse", "Server → Client Response", detail.payloads?.clientResponse, ArrowDownToLine],
-              ["providerRequest", "Proxy → Provider Request", detail.payloads?.providerRequest, ArrowUp],
-              ["providerResponse", "Provider → Proxy Response", detail.payloads?.providerResponse, ArrowDown],
+              ["request", "1. Client Request (Input)", detail.payloads?.request, ArrowUpFromLine],
+              ["providerRequest", "2. Provider Request (Translated)", detail.payloads?.providerRequest, ArrowUp],
+              ["providerResponse", "3. Provider Response (Raw)", detail.payloads?.providerResponse, ArrowDown],
+              ["clientResponse", "4. Client Response (Final)", detail.payloads?.clientResponse, ArrowDownToLine],
             ] as const
           ).map(([kind, label, payload, Icon]) => (
             <details

@@ -2,13 +2,11 @@
  * Core runtime configuration read from `process.env`.
  *
  * HTTP listener, outbound network policy, and secret resolvers live here so
- * callers depend on one module and tests have one boundary to stub.
+ * callers depend on one module.
  *
  * `CONFIG_SPEC` is the canonical declaration of every variable this module
  * owns: name, kind, default, and bounds in one place. Resolvers below are thin
- * readers over it, and `test/config-env-drift.test.ts` derives the documented
- * variable set from the spec instead of grepping, so a new knob cannot be added
- * without declaring it here.
+ * readers over it, so a new knob cannot be added without declaring it here.
  *
  * Module-specific environment reads that only affect a single subsystem (e.g.
  * logger level, telemetry payload storage, Postgres pool tuning) still live

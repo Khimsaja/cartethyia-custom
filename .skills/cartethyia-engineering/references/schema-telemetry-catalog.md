@@ -7,20 +7,19 @@ Schema migrations, per-request telemetry columns, full-stack renames, model meta
 Migrations apply in filename order and are recorded by FILENAME in `cartethyia_schema_migrations`. Editing an already-shipped `NNNN_*.sql` is a silent no-op on any DB that recorded it.
 
 1. Edit `src/persistence/schema.ts` (Drizzle table) — source of truth for runtime types.
-2. Fold the full shape into `migrations/0000_baseline.sql` (fresh installs only), same position/order as `schema.ts`. The baseline is the whole schema for a database created today; `migration-integrity` asserts it carries the folded-in shape, and `isolated-db` compares a freshly migrated database against `schema.ts` column by column. Nullable pattern when null means inherit/unlimited: omit `.notNull()` and `.default()`.
+2. Fold the full shape into `migrations/0000_baseline.sql` (fresh installs only), same position/order as `schema.ts`. The baseline is the whole schema for a database created today. Nullable pattern when null means inherit/unlimited: omit `.notNull()` and `.default()`.
 3. Add a NEW file `migrations/<next>_<desc>.sql` with only the forward change, idempotent:
    ```sql
    ALTER TABLE "telemetry_events" ADD COLUMN IF NOT EXISTS "resolve_ms" integer;
    --> statement-breakpoint
    ```
    `--> statement-breakpoint` separates statements. Next number = one past the highest shipped file.
-4. Update `test/integration/isolated-db.test.ts` `expectedColumns` map (name, dataType, udtName, nullable).
-5. Run `bun run typecheck` and `bun test test/integration/isolated-db.test.ts test/contracts/migration-integrity.contract.test.ts`.
+4. Verify against an isolated database: boot the backend once and confirm the ledger holds the new file and the live schema matches `schema.ts` column by column.
 
 Gotchas:
 - Numeric Drizzle columns are string-typed: persist `String(value)`, not the raw number, or typecheck fails with "Type 'number' is not assignable to type 'string'".
 - Absolute epoch-ms timestamps need `bigint(..., { mode: "number" })`; int4 overflows at ~2.1e9. Small ms counts (resolve overhead) are fine as `integer`.
-- `migration-integrity` requires every post-baseline file to contain `IF NOT EXISTS` / `IF EXISTS` / `EXCEPTION`.
+- Every post-baseline file must contain `IF NOT EXISTS` / `IF EXISTS` / `EXCEPTION`.
 - `applySqlMigrations()` reads numbered `NNNN_*.sql` from the top level (non-recursive) at boot and applies each in order, recording it in the ledger — a deployment migrates itself with no hand-run step. Manual follow-ups in `drizzle/migrations/manual/` must be applied by hand to every database (the ledger skips recorded files), including Railway/prod — say so in the report.
 
 ## Add a per-request telemetry column (end-to-end chain)
@@ -28,25 +27,24 @@ Gotchas:
 A new usage field flows through this exact chain — touch every layer or the value silently never appears:
 
 1. **Canonical model** — `src/transport/canonical-model.ts`: add the optional field to `UsageRecord`; document whether absence is meaningful (e.g. `undefined` = upstream never reported it).
-2. **Normalizer** — `src/providers/usage.ts`: read the raw upstream field in `normalizeUsage` and spread it conditionally (`typeof input.<raw> === "number" && Number.isFinite(...) && >= 0`). Reject NaN/negative/out-of-range; never clamp silently. Test in `test/providers/usage.test.ts`.
+2. **Normalizer** — `src/providers/usage.ts`: read the raw upstream field in `normalizeUsage` and spread it conditionally (`typeof input.<raw> === "number" && Number.isFinite(...) && >= 0`). Reject NaN/negative/out-of-range; never clamp silently.
 3. **Database** — three files: `src/persistence/schema.ts`, `migrations/0000_baseline.sql`, `migrations/<next>_<desc>.sql` (§Schema change above).
 4. **Telemetry writer** — `src/observability/telemetry-buffer.ts`: map it in `telemetryEventRow` (numeric columns need `String(value)`, `null` when absent).
 5. **Console read path** — `src/console/observability/contracts.ts` (`UsageRequestItem`), `src/console/observability/store.ts` (`mapUsageRequestItem`, `Number(event.<col>)` guard), `dashboard/src/hooks/common.ts` (add the field name to the numeric validator in `assertUsageRequestItem`, or the dashboard rejects every response).
-6. **Dashboard** — `dashboard/src/features/usage/UsagePage.tsx`: exported formatter + row render; test formatter cases including the absent/NaN path.
+6. **Dashboard** — `dashboard/src/features/usage/UsagePage.tsx`: exported formatter + row render.
 
 Live-probe a provider field before wiring it: resolve a stored account credential (`resolveCredentialForAccount` + `readCredentialSecret`) and POST directly, never logging the secret. Note some providers need a specific shape (CodeBuddy needs `stream: true` AND a leading `system` message). Delete the throwaway probe afterwards.
 
-Verify: typechecks, dashboard tests, `bun test test/contracts/migration-integrity.contract.test.ts test/providers/usage.test.ts test/console/`. Mutation-check the normalizer (flip the guard, confirm fail, restore).
+Verify: `bun run typecheck`, `bun run dashboard:typecheck`, then a live request whose new field reads back correctly.
 
 ## Full-stack persisted-field rename / strategy removal
 
 1. TS source: enum in `src/transport/routing/route-model.ts` (or equivalent), router logic, console contracts, detail store, validation in detail routes, snapshot builder in `src/transport/routing/route-catalog.ts`.
-2. DB: update `src/persistence/schema.ts` AND `migrations/0000_baseline.sql` in the same commit; add `drizzle/migrations/manual/NNNN_*.sql` following the header style of `0005_*` (hand-run note, why baseline edit is not enough, isolated-db test note). Enum removal: drop DEFAULT first, rename old type, create new type, `ALTER COLUMN ... TYPE ... USING col::text::newtype`, restore DEFAULT, drop old type.
-3. Apply via `bun -e` with `bun:sql` to BOTH `cartethyia` and `cartethyia_test` (isolated-db asserts exact schema — run it with `CARTETHYIA_TEST_DATABASE_URL` set).
-4. Dashboard: contracts re-export backend types, so update `dashboard/src/lib/hooks/common.ts` assertion + test, the hook, and the card. No alias fields.
-5. Tests: convert or delete tests covering the removed value; add validation tests for the new field/bounds.
-6. Docs: `src/transport/TRANSPORT.md` + the routing triage section in `references/debugging.md`.
-7. Verify: typechecks, targeted tests, build. If surgical edits corrupt a file, rewrite it whole instead of more patches.
+2. DB: update `src/persistence/schema.ts` AND `migrations/0000_baseline.sql` in the same commit; add `drizzle/migrations/manual/NNNN_*.sql` following the header style of `0005_*` (hand-run note, why baseline edit is not enough). Enum removal: drop DEFAULT first, rename old type, create new type, `ALTER COLUMN ... TYPE ... USING col::text::newtype`, restore DEFAULT, drop old type.
+3. Apply via `bun -e` with `bun:sql` to BOTH `cartethyia` and `cartethyia_test`.
+4. Dashboard: contracts re-export backend types, so update `dashboard/src/hooks/common.ts` assertion, the hook, and the card. No alias fields.
+5. Docs: `README.md` + the routing triage section in `references/debugging.md`.
+6. Verify: typecheck + `dashboard:typecheck` + build. If surgical edits corrupt a file, rewrite it whole instead of more patches.
 
 ## Model metadata sources and `/v1/models`
 
@@ -99,7 +97,7 @@ Model of the counter:
 
 The leak: `pull()` runs only when the consumer asks for more data. A client that half-closes (stops reading, keeps the socket) reaches no release branch, and `cancel()` is not reliably invoked for an abrupt socket drop. If the abort listener also skips release for a deadline/stall abort (assuming a pull is watching), the reservation + pool slot + in-flight count leak for the process lifetime.
 
-Diagnosis: confirm the gauge never returns to 0 (`GET /console/api/live/in-flight` or `proxy_in_flight`); reproduce in a unit test against `handleProviderProxyRequest` (`test/transport/dispatch/proxy-request.test.ts`) with a streaming adapter that yields a prelude then awaits a paused promise — never read from the body (so no `pull()` runs), then abort WITHOUT `reader.cancel()` (call `state.abortController.abort(new GatewayError("deadline_exceeded", 504, …))` directly) and assert the count settles to 0. Prove the test catches the bug by restoring the old `if (drain === undefined && !clientDisconnect) return;` guard (must fail `Expected: 0, Received: 1`).
+Diagnosis: confirm the gauge never returns to 0 (`GET /console/api/live/in-flight` or `proxy_in_flight`). Reproduce with a `.tmp-<topic>.ts` against `handleProviderProxyRequest` and a streaming adapter that yields a prelude then awaits a paused promise — never read from the body (so no `pull()` runs), then abort WITHOUT `reader.cancel()` (call `state.abortController.abort(new GatewayError("deadline_exceeded", 504, …))` directly) and confirm the count settles to 0.
 
 Fix: the abort listener on `state.abortController` (registered before `releaseStreamResources` is used) must release on every
 abort with no pending pull — not only an `AbortError`. A deadline/stall abort lands with no pending `pull()` whenever the client
@@ -156,6 +154,4 @@ Non-negotiable rules:
 
 Where to look: `src/transport/surface/chat/parse.ts` (inbound → canonical), `src/transport/surface/chat/encode.ts` (`eventReasoningText`, `mergedReasoningText`), `src/transport/surface/responses/parse.ts` (`responseReasoningSummary` / `responseReasoningContent` / `reasoningItemText` + the fold merging a `reasoning` input item into its assistant turn), `src/transport/surface/responses/encode.ts` (`openReasoning`, `openReasoningSummaryPart`, `content.kind === "reasoning"` push), `src/protocol/response/responses.ts` (SSE decode cases, `parseResponsesResponseToEvents`), `src/providers/usage.ts` (`RESPONSES_REASONING_DELTA_TYPES` / `readResponsesReasoningDelta`), `src/providers/reasoning.ts` (`backfillDeepSeekReasoningContent`, `applyDeepSeekReasoning`), `src/protocol/request/chat.ts` (`canonicalToChatPayload` — tool-call and plain-assistant branches each attach `reasoning_content`).
 
-Procedure: read the failing request body from the payload capture (see `references/payload-and-tracing.md`) — never guess the shape. Write a `.tmp-diag.ts` running the REAL pipeline on that body and count the loss; list input items in order and note which `function_call` items have no adjacent `reasoning` item (providers emit the pair in both orders). Fix at the layer that lost it, and fix the sibling shape in the same change — the two Responses event names and the two item text fields always travel together.
-
-Tests: `test/protocol/response/responses.test.ts` (SSE decode of both delta names + `content`-block item), `test/transport/surface/chat.test.ts` (tool-call turns, omitted-display block, reasoning-only turn, empty-string preservation), `test/transport/surface/responses.test.ts` (encode side), `test/providers/reasoning.test.ts` (backfill only from a real trace), `test/providers/integrations/buddy/*.integration.test.ts` (coalescing + no-empty rule). Mutation-test every new assertion (flip the gate, confirm fail, restore).
+Procedure: read the failing request body from the payload capture (see `references/payload-and-tracing.md`) — never guess the shape. Write a `.tmp-diag.ts` running the REAL pipeline on that body and count the loss; list input items in order and note which `function_call` items have no adjacent `reasoning` item (providers emit the pair in both orders). Fix at the layer that lost it, and fix the sibling shape in the same change — the two Responses event names and the two item text fields always travel together. Prove the fix by re-running the same `.tmp-diag.ts` and confirming the loss is gone; delete it afterwards.

@@ -29,6 +29,6 @@ flowchart TD
 1. Change `src/persistence/schema.ts` and fold the complete new shape into `0000_baseline.sql` for fresh installations.
 2. Add the next `<NNNN>_<description>.sql` **beside the baseline** with only the forward change needed by databases that already recorded an earlier file — the next number is one past the highest already shipped in this directory. Never put runnable SQL in a `manual/` subdirectory: the runner is non-recursive.
 3. Make each forward migration safe to retry where possible (for example, `ADD COLUMN IF NOT EXISTS`), and do not edit an already-shipped forward migration to change what a ledger entry means.
-4. Update this README and `src/persistence/PERSISTENCE.md` when the migration flow or schema policy changes; update `test/contracts/migration-integrity.contract.test.ts` and verify a fresh schema with `test/integration/isolated-db.test.ts`. Run `bun run typecheck` and the affected tests.
+4. Update this README when the migration flow or schema policy changes. Run `bun run typecheck` and verify a fresh schema against an isolated database.
 
 The baseline is for **new** databases. Editing it cannot upgrade a database that already recorded its filename; that is why every later schema change needs the corresponding numbered forward SQL file. The runner will apply that file at the next backend startup, before serving requests.

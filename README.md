@@ -49,7 +49,7 @@ Built with Bun, TypeScript, Elysia, PostgreSQL, and optional Redis coordination.
 
 ## Supported client protocols
 
-Each surface below has a real handler, codec, and test suite behind it. The
+Each surface below has a real handler and codec behind it. The
 gateway accepts a client's own wire format and normalizes it — the protocol is a
 property of the connection, not of the route you configure.
 
@@ -154,18 +154,12 @@ CARTETHYIA_PUBLIC_ORIGIN
 REDIS_URL                    # unless REDIS_MODE=single_instance_local
 ```
 
-The environment drift test keeps literal `process.env.*` reads documented:
-
 Per-tenant runtime settings control payload capture: `telemetryPayloads`
 defaults to `metadata` (Proxy→Provider method + allowlisted headers only).
 `bounded` opts a tenant into redacted, size-limited body capture; `none` turns
 drawer capture off. Both capture modes use a 15-minute TTL. The active
 environment template also exposes the local `.jsonb` backing-store directory,
 file-size bound, and retention override.
-
-```bash
-bun test test/config-env-drift.test.ts
-```
 
 ## Development commands
 
@@ -204,25 +198,11 @@ directly; on Windows a catchable signal cannot be delivered to a console-less
 process, which is why the drain endpoint exists (`POST /admin/drain`, loopback +
 `x-drain-token`, registered only when the token is set).
 
-## Tests and coverage
+## Verification
 
-Tests live under the root `test/` tree. Backend tests mirror the production
-layout; cross-cutting suites are grouped under `test/contracts`,
-`test/integration`, `test/architecture`, and `test/frontend`.
-
-```bash
-bun run test
-bun run test:contracts
-bun run test:integration
-bun run check:coverage
-```
-
-The coverage gate requires at least 85% line coverage for handwritten backend
-`src/` code. DB-gated tests may be skipped when
-`CARTETHYIA_TEST_DATABASE_URL` is not configured; when it is, the gate repoints
-the test process's `DATABASE_URL` at that database before any pool is opened and
-applies the baseline migration and bundled provider catalog there, so fixtures
-never land in the database your `DATABASE_URL` names.
+The repository does not currently carry a test suite. Verification is
+`bun run typecheck` for the backend and `bun run dashboard:typecheck` for the
+dashboard.
 
 ## Docker
 
@@ -315,11 +295,10 @@ generation. Regenerating is a separate, deliberate step.
 
 ```text
 src/        production backend
- test/      backend and contract tests
  dashboard/ React/Vite dashboard (route and browser-boundary map in `dashboard/README.md`)
  scripts/   flat operational scripts
  migrations/ tracked SQL migrations, applied automatically at boot
 ```
 
 For repository-local coding conventions, cutover rules, and cleanup rules, see
-`AGENTS.md` (§5–§9).
+`CONTRIBUTING.md`.

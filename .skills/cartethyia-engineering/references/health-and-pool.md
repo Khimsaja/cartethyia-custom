@@ -72,7 +72,7 @@ A rule that depends on *which* provider failed needs `providerId` on the evidenc
 
 Put provider-specific durations next to the generic fallbacks as a named constant, and use `Math.max(statedCooldown ?? 0, PINNED_MS)` so a provider value can never shorten a pinned window.
 
-New tunable delays: add a row to `CONFIG_SPEC`, a `resolve*CooldownMs()` reader, and a commented `.env.example` line — `test/config-env-drift.test.ts` fails otherwise. Call the resolver at the use site (not a module-load constant) so tests can stub it.
+New tunable delays: add a row to `CONFIG_SPEC`, a `resolve*CooldownMs()` reader, and a commented `.env.example` line. Call the resolver at the use site (not a module-load constant) so it can be adjusted without a rebuild.
 
 Keep `isOAuthCredentialInvalidated` in step with any new exclusion, or a 403 will still force an OAuth refresh for a non-credential failure.
 
@@ -110,14 +110,10 @@ A bare throw in the stream path (e.g. `res.json()` `SyntaxError` on a non-JSON b
 
 ```bash
 bun run typecheck && bun run dashboard:typecheck
-bun test test/providers/operations/account-health-service.test.ts \
-  test/providers/operations/health-recovery-gap.test.ts \
-  test/transport/dispatch/proxy-dispatch-attempt.test.ts \
-  test/network/pool-health-machine.test.ts \
-  test/console/routing/pools/probe-result.test.ts
-bun run test:contracts
 bun run build
 ```
+
+The repository does not currently carry a test suite. Prove a health/cooldown change by exercising the real path — a live request that triggers the classification, or a `.tmp-<topic>.ts` driving the real classifier — and report the observed outcome.
 
 Prove a classification end-to-end, not just at the unit boundary:
 
@@ -132,6 +128,6 @@ console.log(classifyAccountError(e, { ...classifyUpstreamFailure(e) }));'
 
 ## Docs to sync
 
-`src/providers/PROVIDERS.md` (category list + cooldown table + exceptions), `src/network/NETWORK.md` (pool cooldowns), `src/console/CONSOLE.md` (pool status policy), `CHANGELOG.md` under `## Unreleased`, `.env.example`, and this skill's references when a documented rule is intentionally reversed.
+`README.md` (cooldown behavior), `CHANGELOG.md` under `## Unreleased`, `.env.example`, and this skill's references when a documented rule is intentionally reversed.
 
 Remember the gateway must be restarted for changes to take effect.

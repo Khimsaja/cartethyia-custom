@@ -1,7 +1,7 @@
 import { isBundledProviderId } from "../../providers/provider-registry";
 import type { ProviderDispatchContext, ProviderId, ProviderAdapter } from "../../providers/provider-registry";
 import { GatewayError, explainGatewayError, formatPublicErrorMessage, publicGatewayErrorDetails } from "../gateway-error";
-import { classifyTerminalCategory } from "../failure-policy";
+import { classifyTerminalOutcome } from "../failure-policy";
 import type { CanonicalEvent, CanonicalRequest, UsageRecord } from "../canonical-model";
 import { resolveCredentialForAccount } from "../../providers/operations/provider-credential-service";
 import type { OAuthTokenRefresher } from "../../providers/authentication/oauth-refresh-service";
@@ -832,14 +832,12 @@ export async function handleProviderProxyRequest(
           const streamError = watchdogFailure ?? drainFailure ?? err;
           // A drain is not a client cancel: the client is still reading and
           // gets the terminal frame below. The record must say `failed` with
-          // the shutdown code, not `cancelled`.
-          const cancelled =
-            drainFailure === undefined &&
-            watchdogFailure === undefined &&
-            (state.abortController.signal.aborted ||
-              (err instanceof GatewayError && err.code === "transport_closed"));
+          // the shutdown code, not `cancelled`. Status, category, and origin
+          // come from one classifier so they cannot disagree.
+          const terminal = classifyTerminalOutcome(streamError, state.abortController.signal);
+          const cancelled = terminal.status === "cancelled";
           await completeAttempt(state, {
-            status: cancelled ? "cancelled" : "failed",
+            status: terminal.status,
             ...completionContext({
               providerId: streamProviderId,
               modelId: streamRouteCandidate.model_id,
@@ -854,12 +852,12 @@ export async function handleProviderProxyRequest(
               ...(deps.snapshotService ? { snapshotService: deps.snapshotService } : {}),
             }),
             ...ttfbFields(firstByteAt, firstContentDeltaAtMs, state.upstreamDispatchStartedAtMs),
-            errorCategory: classifyTerminalCategory(streamError, state.abortController.signal),
+            errorCategory: terminal.errorCategory,
             // Every fallback category the classifier returns (client close,
             // deadline, genuine unknown) is a gateway-side lifecycle outcome,
             // never an upstream-reported error — the upstream path is already
             // covered by the `GatewayError` branch keeping its own origin.
-            errorOrigin: streamError instanceof GatewayError ? streamError.origin : "cartethyia",
+            errorOrigin: terminal.errorOrigin,
             ...(!cancelled ? { error: streamError } : {}),
             ...(!cancelled
               ? {

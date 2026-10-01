@@ -110,9 +110,9 @@ Walk one gateway request from its `request_id`:
    Only one source fits a given record; a stream whose state deadline fires at 120 s means the re-arm at Response commit never happened (first `iterator.next()` never resolved ⇒ pre-200 ⇒ check TTFB).
 
 4. **Watch for the known traps:**
-   - `requested_model` vs `provider_id` mismatch (e.g. `claude-opus-5` under `opencodeft`) is a model alias / CLI mapping working as configured — documented in `TRANSPORT.md` (planning) and `CONSOLE.md` (routing). Never a wrong catalog route.
+   - `requested_model` vs `provider_id` mismatch (e.g. `claude-opus-5` under `opencodeft`) is a model alias / CLI mapping working as configured. Never a wrong catalog route.
    - `ttfb_ms` counts the first client-visible canonical event; SSE keepalives (15 s) are excluded from TTFB and telemetry.
-   - Non-stream vs stream failure paths differ: `dispatch/attempt-loop.ts` vs `emitStreamErrorAndClose` in `proxy-request.ts`; both classify through `classifyTerminalCategory`.
+   - Non-stream vs stream failure paths differ: `dispatch/attempt-loop.ts` vs `emitStreamErrorAndClose` in `proxy-request.ts`; both classify through `classifyTerminalOutcome`.
    - "kadang hit kadang error" with TTFB but no content delta ⇒ upstream opened the stream then stalled; the client times out first and the gateway records a cancel. Confirm with payload forensics if frames still exist.
 
 ## Gotchas

@@ -4,8 +4,8 @@
  * backend value would bundle the backend module graph (Elysia + `node:crypto`)
  * into the browser build and break Vite dev with "Module node:crypto has been
  * externalized". Same precedent as the dashboard `isRecord` copy in `lib/api.ts`.
- * Keep in sync with `RAW_BUNDLED_PROVIDER_METADATA`; the parity test
- * `provider-display-names-parity.test.ts` fails when an ID is missing.
+ * Keep in sync with `RAW_BUNDLED_PROVIDER_METADATA` by hand; a missing ID has
+ * no display name.
  */
 const BUILT_IN_PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   openai: "OpenAI",

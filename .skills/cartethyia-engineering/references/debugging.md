@@ -24,7 +24,7 @@ Done when you named the failing stage, stated the expected mechanism, and picked
 4. **Run once, read.** Predicted failure confirms the model. Unpredicted failure is information — correct the model, then act. Re-running the same probe while nudging code is the loop that wastes hours.
 5. **Then jump to that stage's section.** Can't name the stage yet → §1 steps 1–2 names it from data, not inference.
 
-Anti-loop rules: never add the same log/assertion twice (a tap that didn't answer never will — change *what* you observe); confirm a restarted process picked up your change before re-running; test one model/case/provider before widening; write the test only after the cause is known, then mutation-test it.
+Anti-loop rules: never add the same log/assertion twice (a tap that didn't answer never will — change *what* you observe); confirm a restarted process picked up your change before re-running; test one model/case/provider before widening.
 
 ## 1 Dispatch debug
 
@@ -41,7 +41,7 @@ Done when: you can name the exact stage (surface parse, routing plan, lease, ada
 4. Tool-sequence 400: every assistant `toolCall` needs a surviving `toolResult`. Shared repair is `repairRequestToolCalls()` (`src/transport/translation/tool-repair.ts`); confirm it survived encode before blaming the provider. Buddy family (`cb`/`cbcn`/`workbuddy`) runs `dropIncompleteToolRounds()` **before** it — order is load-bearing, or the repair synthesizes a placeholder and a partial batch looks complete.
 5. Unservable requests are never rerouted to a different model. The planner degrades in place (controls dropped, media → placeholders) and re-plans; the rest fails `capability_unsupported`. Taxonomy in `src/transport/routing/route-model.ts`: `modelNotFoundError` (no match), `ambiguousModelError` (bare id, several providers), `accountsUnavailableError` (matches exist, all unhealthy — 503, retryable), `capabilityUnsupportedError` (planner tries the next degraded variant).
 6. CLI variant ids (`model[1m]`, effort suffixes): `[...]`-stripping + `claude-<slot>` fallback in `src/transport/routing/router.ts` (private `normalizeAliasKey` via `resolveAlias`); verbatim match wins. Effort clamps in `clampReasoningEffort` (`src/transport/translation/thinking.ts`).
-7. Unsupported feature on a new surface (e.g. prompt caching on `/zen`): parse the feature into the canonical model → declare support on the adapter spec (gated by the predicate in `src/transport/translation/capabilities.ts`) → gate the wire builder → drop only that semantic → adapter test → live-replay (§6).
+7. Unsupported feature on a new surface (e.g. prompt caching on `/zen`): parse the feature into the canonical model → declare support on the adapter spec (gated by the predicate in `src/transport/translation/capabilities.ts`) → gate the wire builder → drop only that semantic → live-replay (§6).
 8. CodeBuddy 403 `11140` is content policy, NOT auth. `account-health-service.ts` excludes it (plus `safety review` / `content did not pass` / `request illegal` / `content blocked`) from credential-invalidation: no OAuth refresh, no `disabled` flip. A fix that refreshes/disables on 11140 is wrong by construction. One deliberate exception: buddy family `11140` returns 24h `policy_blocked` **cooldown** (never `disabled`) since the block fails every subsequent call — needs `providerId` on the failure evidence via `classifyUpstreamFailure`.
 9. Egress DNS is advisory for pool/relay-bound dials; only direct dials require resolution. Aborted outbound DNS → `transport_closed` 499, never `invalid_request` 400 (`resolveAllAddresses`, `src/network/ssrf.ts`).
 10. Retry: `isRetryableFailure()` decides failover, `fallbackRetryDelayMs()` spaces it (both `src/transport/failure-policy.ts`). New retryable shape → extend the classifier, not the loop.
@@ -85,11 +85,7 @@ Done when: you can attribute it to capability degradation, a wrong persisted row
 2. The row only controls content modalities and `web_search`. `image`/`document`/`audio` come from the row's declared modalities (falling open for every codec-backed wire); `webSearch` follows `models.web_search`. Requirements derive in `deriveRequiredCapabilities()`; `projectForRoute()` throws `capability_unsupported` per unmet requirement. A `false` on a capable model is recorded metadata, not a routing denial.
 3. Wrong modality/`web_search` value → check `source` first. `manual` rows: re-add the model (upsert repairs schema-default rows). `discovered` rows: `false` is absent metadata the profile ignores. `builtin` rows: reconcile on restart via `seedBundledModels`. Only builtin reconciles on restart — manual/discovered need a console re-add. After a DB fix, restart or trigger a console mutation: `/v1/models` may list the model while routing still serves the stale in-process snapshot.
 4. Capabilities fine → check wire decoding. Responses wire: `decodeResponsesSseStream` (async generator) must handle argument deltas AND complete-item `response.output_item.done` / `response.function_call_arguments.done` (some backends emit only the complete item — guard with a delta-seen set so streamed calls aren't emitted twice); `mapResponsesStopReason()` must yield `tool_use` when a call was seen. Unterminated stream = truncated. Chat wire: `finish_reason: "tool_calls"` → `tool_use`; missing finish reason = truncated.
-5. Verify:
-   ```bash
-   bun run typecheck
-   bun run scripts/ops-run-tests.ts test/protocol/response/responses test/providers/model-definition
-   ```
+5. Verify: `bun run typecheck`, then drive the real pipeline with a throwaway `.tmp-<topic>.ts` and read the printed payload.
 
 **Watch out:** never "fix" by loosening the degradation guard or accepting unterminated streams (truncated args get executed) / discovery `toolCall` disagreements explain metadata, not dropped calls / a control model routing fine on the same provider clears the adapter — check the row.
 
@@ -106,8 +102,7 @@ Done when: the upstream wire (not the decoder) is proven as the source and the l
 
 1. Rule 0: one `tool_call_delta` per upstream tool item. A proxy decoder emits what the upstream sent — doubled actions mean the upstream likely sent two items. Verify on the native wire first (responses-family → `/v1/responses`) with generous `max_output_tokens`; read the output item ids. Known shape: one logical call as TWO items, identical suffix, `call_` vs `fc_` prefix, same name/args.
 2. Single authority: `src/transport/tool-identity.ts`. `toolIdentityKey()` normalizes the `call_`/`fc_` prefix — the ONLY place that prefix is interpreted. `createToolEmitLedger()` gates call-defining events. No per-path Sets, no pasted prefix patterns elsewhere. `isDuplicateDefinition()` applies name+arguments fallback only to unknown prefixes; `call_`/`fc_` return false so legitimate identical parallel calls survive.
-3. Regression tests must assert distinct calls both surface (the fallback skips known ids, so identical parallel calls are not suppressed).
-4. Budget twin: `finish_reason: length` with tokens burned on reasoning is a budget problem, not decoding — sweep `max_tokens` for the flip to `tool_calls`. `TOOL_CALL_MAX_TOKENS_FLOOR = 32_000` (`src/protocol/request/messages.ts`) is Anthropic/Messages-wire only; generalizing it is an operator cost decision.
+3. Budget twin: `finish_reason: length` with tokens burned on reasoning is a budget problem, not decoding — sweep `max_tokens` for the flip to `tool_calls`. `TOOL_CALL_MAX_TOKENS_FLOOR = 32_000` (`src/protocol/request/messages.ts`) is Anthropic/Messages-wire only; generalizing it is an operator cost decision.
 
 **Watch out:** read the upstream items before assuming a decoder bug / never re-add per-path dedupe Sets — they rot, the ledger is the one gate / name+args fallback on known prefixes suppresses legitimate parallel calls.
 
@@ -144,11 +139,10 @@ Done when: both databases are fresh, migrated, seeded, and integration-capable �
 1. Confirm local Postgres (names, sizes, connections, migration dir) and that the target is not production. No approval, no reset.
 2. Rename, never drop: `cartethyia` → `cartethyia_pre_reset_YYYYMMDD` (same for `_test`; terminate connections first, recreate fresh). Drops need a separate approval.
 3. Boot the backend once against the fresh main DB — migrations + production seeding run during init. Verify the ledger holds `0000_baseline.sql`, `/health/ready` 200, sane provider/model counts. Stop the smoke backend.
-4. Integration needs only `CARTETHYIA_TEST_DATABASE_URL` at the fresh test DB (`db-gate.ts` gates the suites *and* repoints `DATABASE_URL` there before any pool opens):
+4. Point the app at the fresh test DB when you need to exercise DB-backed paths (`db-gate.ts` repoints `DATABASE_URL` there before any pool opens):
    ```powershell
    $env:CARTETHYIA_TEST_DATABASE_URL = "postgres://postgres:<password>@localhost:5432/cartethyia_test"
    $env:REDIS_MODE = "single_instance_local"
-   bun run test:integration
    ```
 5. Report the backup names; they stay until the operator drops them.
 
@@ -156,4 +150,4 @@ Done when: both databases are fresh, migrated, seeded, and integration-capable �
 
 ## Verify
 
-Shared gate — `bun run typecheck`, `bun run test`. Scoped: `bun run scripts/ops-run-tests.ts <dir>` (e.g. `test/protocol/response/responses`). `test:contracts` / `test:integration` as needed (both DB vars on the same test DB for integration). Dashboard touched → add `dashboard:typecheck`, `dashboard:test`, `dashboard:build`. Zero failures; pre-existing failures must match the pre-change baseline. DB-gated skips (`test/helpers/db-gate.ts`) are reported separately, never folded into pass counts.
+Shared gate — `bun run typecheck`. Dashboard touched → add `dashboard:typecheck` and `dashboard:build`. The repository does not currently carry a test suite, so prove a behavior change by driving the real path (a live request, a `.tmp-<topic>.ts` against the real pipeline, or the browser) and reporting what you observed.
