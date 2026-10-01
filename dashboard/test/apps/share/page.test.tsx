@@ -28,7 +28,8 @@ const data: ShareEnrollmentData = {
   kind: "enroll",
   name: "Team Access", keyPrefix: "ctk", canIssue: true, alreadyIssued: false,
   dailyLimit: 50_000, monthlyLimit: null, oneTimeLimit: null, requestsPerMinute: 20, maxConcurrentRequests: 3,
-  modelAllowlist: ["gpt-5"], modelDenylist: null, modelPrefix: "gpt-", notes: { title: null, subtitle: "Shared access", body: "Use responsibly" },
+  modelAllowlist: ["gpt-5"], modelInfo: { "gpt-5": { contextLength: 400_000, maxOutputTokens: 128_000, capabilities: { input: ["text", "image"] }, reasoning: true, toolCall: true, webSearch: false } },
+  modelDenylist: null, modelPrefix: "gpt-", notes: { title: null, subtitle: "Shared access", body: "Use responsibly" },
   sharePopup: { enabled: false, hasImage: false, title: null, body: null },
   expiresAt: null,
 };
@@ -153,6 +154,18 @@ describe("public share enrollment page", () => {
     expect(markup).not.toContain("parentSecret");
     expect(markup).not.toContain("sk-parent-raw");
     expect(markup).not.toContain("telemetry");
+  });
+
+  test("shows each allowed model's context window and capabilities", () => {
+    shareState = { data, error: null, loading: false };
+    const markup = render();
+    // Specs come from the model catalog; the id is what the client sends, and
+    // the chips describe what the route supports.
+    expect(markup).toContain("400K ctx");
+    expect(markup).toContain("in: text, image");
+    expect(markup).toContain("reasoning");
+    expect(markup).toContain("tools");
+    expect(markup).toContain("share-model-spec");
   });
 
   test("defaults the model list to raw full ids and offers a grouped switch", () => {

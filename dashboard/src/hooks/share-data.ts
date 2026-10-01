@@ -1,6 +1,16 @@
 import { shareCodeMessage } from "../shared/helpers";
 import { useEffect, useState } from "react";
 
+/** Context and capabilities for one allowed model, from the model catalog. */
+export interface ShareModelInfoData {
+  readonly contextLength: number | null;
+  readonly maxOutputTokens: number | null;
+  readonly capabilities: { readonly input?: string[]; readonly output?: string[] } | null;
+  readonly reasoning: boolean;
+  readonly toolCall: boolean;
+  readonly webSearch: boolean;
+}
+
 /** Policy every share link carries, whichever kind it is. */
 export interface ShareLinkPolicyData {
   readonly name: string;
@@ -11,6 +21,12 @@ export interface ShareLinkPolicyData {
   readonly requestsPerMinute: number | null;
   readonly maxConcurrentRequests: number | null;
   readonly modelAllowlist: string[];
+  /**
+   * Context window and capabilities per allowed model, keyed by the name in
+   * `modelAllowlist`. A model with no catalog row is absent; the whole map is
+   * absent when the link grants no specific models.
+   */
+  readonly modelInfo?: Record<string, ShareModelInfoData>;
   readonly modelDenylist: string[] | null;
   readonly modelPrefix: string | null;
   readonly notes: { readonly title: string | null; readonly subtitle: string | null; readonly body: string | null };

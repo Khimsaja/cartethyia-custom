@@ -74,10 +74,19 @@ export interface ShareFamilyStats {
 
 /** Read-only family rollup for one share link. */
 export interface ShareStatsPort {
+  /**
+   * `allowedModels`, when supplied, restricts the top-models table to the names
+   * the link actually grants. A rejected request still writes a telemetry row
+   * (with the requested name), so without this the table would rank models the
+   * recipient can never use — every invalid name an abuser tries would show up
+   * as if it were traffic. `undefined` means "no restriction" (an unrestricted
+   * link); an empty array means "nothing allowed" and yields no rows.
+   */
   getFamilyStats(
     tenantId: string,
     keyIds: readonly string[],
     recipients: { readonly total: number; readonly active: number },
+    allowedModels?: readonly string[],
   ): Promise<ShareFamilyStats>;
 }
 
@@ -159,8 +168,14 @@ const HOURS_WINDOW = 24;
 
 export function createShareStatsPort(db: CartethyiaDatabase): ShareStatsPort {
   return {
-    async getFamilyStats(tenantId, keyIds, recipients) {
+    async getFamilyStats(tenantId, keyIds, recipients, allowedModels) {
       if (keyIds.length === 0) return emptyStats(recipients);
+      // A share that grants a fixed set ranks only that set. Telemetry keeps the
+      // requested name even when the request was refused for naming a model the
+      // key may not use, so an unfiltered table would list exactly the invalid
+      // names an abuser probed. `null` means the link is unrestricted.
+      const allowedSet =
+        allowedModels === undefined ? null : new Set(allowedModels);
 
       const now = new Date();
       const dayStart = utcDayStart(now);
@@ -173,6 +188,19 @@ export function createShareStatsPort(db: CartethyiaDatabase): ShareStatsPort {
         eq(telemetryEvents.tenantId, tenantId),
         inArray(telemetryEvents.apiKeyId, [...keyIds]),
       );
+      // Telemetry stores the name the client sent; the allowlist may spell the
+      // same model bare or provider-qualified. Filter on both forms of every
+      // allowed entry so a request that used the other spelling still ranks,
+      // while a name outside the grant never does. Pushed into SQL (not applied
+      // after the query) so refused names cannot fill the top-50 window and
+      // hide a model the recipient is actually allowed to use.
+      const allowedNames =
+        allowedSet === null
+          ? null
+          : [...new Set([...allowedSet].flatMap((name) => {
+              const slash = name.lastIndexOf("/");
+              return slash < 0 ? [name] : [name, name.slice(slash + 1)];
+            }))];
       const tokenSum = sql<number>`coalesce(sum(coalesce(${telemetryEvents.inputTokens}, 0) + coalesce(${telemetryEvents.outputTokens}, 0)), 0)`;
       const tokenSumFiltered = (condition: ReturnType<typeof sql> | boolean) =>
         sql<number>`coalesce(sum(coalesce(${telemetryEvents.inputTokens}, 0) + coalesce(${telemetryEvents.outputTokens}, 0)) filter (where ${condition}), 0)`;
@@ -211,7 +239,17 @@ export function createShareStatsPort(db: CartethyiaDatabase): ShareStatsPort {
             avgTtfbMs: sql<number | null>`avg(${telemetryEvents.ttfbMs})`,
           })
           .from(telemetryEvents)
-          .where(and(familyScope, sql`${telemetryEvents.requestedModel} is not null`))
+          .where(
+            and(
+              familyScope,
+              sql`${telemetryEvents.requestedModel} is not null`,
+              ...(allowedNames === null
+                ? []
+                : [allowedNames.length === 0
+                    ? sql`false`
+                    : inArray(telemetryEvents.requestedModel, allowedNames)]),
+            ),
+          )
           .groupBy(telemetryEvents.requestedModel)
           .orderBy(desc(sql`count(*)`))
           .limit(TOP_MODELS_LIMIT),

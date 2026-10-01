@@ -543,6 +543,32 @@ html[data-app="share"] .share-hud-card {
   white-space: nowrap;
 }
 
+/* Id and its catalog specs stack, so a wrapped raw id keeps its chips beneath. */
+.share-model-id {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.share-model-specs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.share-model-spec {
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
 .share-model-list button {
   flex: 0 0 auto;
 }

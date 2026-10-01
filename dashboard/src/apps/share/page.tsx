@@ -7,7 +7,7 @@ import { EmptyState, ErrorState, LoadingState } from "../../components/ui/state"
 import { ClipboardButton } from "../../components/patterns/clipboard-button";
 import { GithubBadge } from "../../components/patterns/github-badge";
 import { readConsoleTheme, applyConsoleTheme, isDarkEffective, writeConsoleTheme, type ConsoleThemeChoice } from "../../shared/theme";
-import { useShareData, type ShareLinkData } from "../../hooks/share-data";
+import { useShareData, type ShareLinkData, type ShareModelInfoData } from "../../hooks/share-data";
 import {
   LiveShareQuotaPanel,
   LiveShareStatsSection,
@@ -35,6 +35,41 @@ export function tokenFromPathname(pathname: string): string {
 
 /** Hint the recipient types: capped at 20 chars, only ~7 survive the label. */
 const NAME_HINT_MAX_LENGTH = 20;
+
+/** Compact context window: 200K / 1.0M. */
+function formatContext(tokens: number): string {
+  if (tokens >= 1_000_000) return `${Number((tokens / 1_000_000).toFixed(1))}M ctx`;
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K ctx`;
+  return `${tokens} ctx`;
+}
+
+/**
+ * The context window and capabilities of one allowed model, from the catalog.
+ *
+ * Rendered beside the model id so a recipient can see what the route supports
+ * without opening a second source. Nothing is shown when the catalog has no row
+ * for the id — an invented limit would mislead.
+ */
+function ModelSpecs({ info }: { readonly info: ShareModelInfoData | undefined }): ReactElement | null {
+  if (!info) return null;
+  const chips: string[] = [];
+  if (info.contextLength !== null) chips.push(formatContext(info.contextLength));
+  const input = info.capabilities?.input ?? [];
+  if (input.length > 0) chips.push(`in: ${input.join(", ")}`);
+  if (info.reasoning) chips.push("reasoning");
+  if (info.toolCall) chips.push("tools");
+  if (info.webSearch) chips.push("web");
+  if (chips.length === 0) return null;
+  return (
+    <span className="share-model-specs">
+      {chips.map((chip) => (
+        <span className="share-model-spec" key={chip}>
+          {chip}
+        </span>
+      ))}
+    </span>
+  );
+}
 
 export function SharePage(): ReactElement {
   const path = typeof window === "undefined" ? "/share" : window.location.pathname.replace(/\/$/, "");
@@ -469,7 +504,10 @@ export function SharePage(): ReactElement {
                   <ul className="share-model-list share-model-list-raw">
                     {data.modelAllowlist.map((model) => (
                       <li key={model}>
-                        <code title={model}>{model}</code>
+                        <span className="share-model-id">
+                          <code title={model}>{model}</code>
+                          <ModelSpecs info={data.modelInfo?.[model]} />
+                        </span>
                         <ClipboardButton
                           value={model}
                           size="sm"
@@ -492,7 +530,10 @@ export function SharePage(): ReactElement {
                         <ul className="share-model-list">
                           {models.map((model) => (
                             <li key={model}>
-                              <code title={model}>{provider === "Other" ? model : model.slice(provider.length + 1)}</code>
+                              <span className="share-model-id">
+                                <code title={model}>{provider === "Other" ? model : model.slice(provider.length + 1)}</code>
+                                <ModelSpecs info={data.modelInfo?.[model]} />
+                              </span>
                               <ClipboardButton
                                 value={model}
                                 size="sm"

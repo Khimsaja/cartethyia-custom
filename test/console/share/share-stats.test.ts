@@ -93,4 +93,34 @@ dbDescribe("share family stats — real DB", () => {
     // No keys in scope: no traffic at all.
     expect(stats.models).toEqual([]);
   });
+
+  test("ranks only the models the link allows, matching bare and qualified forms", async () => {
+    const port = createShareStatsPort(db);
+    // The link grants `gpt-5` (bare). A refused request still wrote a row under
+    // its requested name (`claude-sonnet`), which must not rank — otherwise the
+    // top-models table advertises models the recipient can never use.
+    const stats = await port.getFamilyStats(tenantId, [keyId], { total: 1, active: 1 }, ["gpt-5"]);
+    expect(stats.models.map((m) => m.modelId)).toEqual(["gpt-5"]);
+    expect(stats.models.find((m) => m.modelId === "claude-sonnet")).toBeUndefined();
+  });
+
+  test("a qualified allowlist entry ranks traffic logged under the bare name", async () => {
+    const port = createShareStatsPort(db);
+    // Telemetry keeps the name the client sent (`gpt-5`); the grant is spelled
+    // `openai/gpt-5`. Both forms of an allowed entry must match.
+    const stats = await port.getFamilyStats(tenantId, [keyId], { total: 1, active: 1 }, ["openai/gpt-5"]);
+    expect(stats.models.map((m) => m.modelId)).toEqual(["gpt-5"]);
+  });
+
+  test("an unrestricted link (no allowed list) ranks every model", async () => {
+    const port = createShareStatsPort(db);
+    const stats = await port.getFamilyStats(tenantId, [keyId], { total: 1, active: 1 });
+    expect(stats.models.map((m) => m.modelId).sort()).toEqual(["claude-sonnet", "gpt-5"]);
+  });
+
+  test("an empty allowed list ranks nothing", async () => {
+    const port = createShareStatsPort(db);
+    const stats = await port.getFamilyStats(tenantId, [keyId], { total: 1, active: 1 }, []);
+    expect(stats.models).toEqual([]);
+  });
 });

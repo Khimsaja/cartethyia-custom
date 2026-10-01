@@ -127,14 +127,28 @@ function handoffRow(overrides: Partial<ShareHandoffRow> = {}): ShareHandoffRow {
   };
 }
 
-const noopDb = {} as unknown as CartethyiaDatabase;
+/**
+ * Stub db whose catalog read (the `/data` model-info lookup) answers no rows,
+ * so a page renders ids without specs. `select().from().innerJoin().where()`
+ * is the shape `modelInfoForShare` awaits.
+ */
+const noopDb = {
+  select: () => ({ from: () => ({ innerJoin: () => ({ where: async () => [] }) }) }),
+} as unknown as CartethyiaDatabase;
 
-/** Stub db that answers the one `select().from(apiKeys)` the stats route makes. */
+/**
+ * Stub db for the stats route. It answers the two reads that route makes: the
+ * `select().from(apiKeys).where()` that lists the template's children, and the
+ * catalog `select().from(models).innerJoin(providers).where()` the allowlist
+ * filter runs. The latter returns no rows, so a link with no allowlist has
+ * nothing to restrict on.
+ */
 function childrenDb(children: readonly { id: string; revokedAt: Date | null }[]): CartethyiaDatabase {
   return {
     select: () => ({
       from: () => ({
         where: async () => children,
+        innerJoin: () => ({ where: async () => [] }),
       }),
     }),
   } as unknown as CartethyiaDatabase;

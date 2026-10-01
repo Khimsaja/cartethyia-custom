@@ -250,13 +250,20 @@ byte. Totals are **in-memory and reset when the process restarts**, so the bar i
 since-startup figure, not a billing-period one; the tooltip says so rather than implying a
 monthly allowance.
 
-The public share page (`GET /share/:token/data`) carries the template's policy, and a companion
+The public share page (`GET /share/:token/data`) carries the template's policy — including, beside
+each allowed model, its context window and capabilities read from the same `models` catalog
+`/v1/models` answers from (a model the catalog does not describe renders its id with no spec rather
+than an invented one) — and a companion
 `GET /share/:token/stats` (`share-stats.ts`) rolls up family activity for the stats section:
 request/token totals, a 24-hour bucket series, top models (with each model's average throughput in
 tokens/sec and average time-to-first-byte, taken over the rows that actually reported each — a
 non-streaming request has no rate and a request that produced no first byte has no TTFT), and top
 client IPs. It aggregates the template *plus every key it issued*, because the quota is shared — a
-per-recipient figure would understate the link's spend. Client IPs are always masked in this payload
+per-recipient figure would understate the link's spend. When the link grants a fixed allowlist, the
+top-models table is restricted to those models (both the bare and provider-qualified spelling of each
+entry match): a request refused for naming a model the key may not use still writes a telemetry row
+under the requested name, so an unfiltered table would rank exactly the names the grant excludes. An
+unrestricted link (no allowlist) ranks every model. Client IPs are always masked in this payload
 (`maskClientIp`); the recipient is outside the tenant, so the console's IP-privacy preference does not
 apply. The two ranked tables are capped at 50 rows each as a payload bound; the page shows a fixed
 window of about eight and scrolls the rest.
