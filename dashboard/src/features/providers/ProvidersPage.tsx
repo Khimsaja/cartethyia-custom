@@ -407,11 +407,11 @@ function CustomProviderCard({ customProvider }: { customProvider: ProviderRespon
                 />
               ) : counts?.active > 0 ? (
                 <Badge tone="ok" dot>
-                  {counts.active} Connected
+                  {counts.active} Healthy
                 </Badge>
-              ) : counts !== undefined && counts.unhealthy + counts.cooling > 0 ? (
+              ) : counts?.disabled > 0 ? (
                 <Badge tone="warn" dot>
-                  {counts.unhealthy + counts.cooling} Unhealthy
+                  {counts.disabled} Unhealthy
                 </Badge>
               ) : (
                 <Badge>No connections</Badge>
@@ -711,8 +711,9 @@ const FREE_AVAILABLE_IDS = new Set([
  * `active` and `cooling` are therefore separate counts over the same account,
  * and both are meant to show at once: a cooling account IS connected and
  * routable for its other models, it is just not being routed to for the models
- * named in `modelCooldowns`. `unhealthy` excludes `cooling` for the same
- * reason — that badge is the fallback for when nothing is connected at all.
+ * named in `modelCooldowns`. The card keeps every status in its own badge so
+ * one account is not counted as unhealthy merely because it is cooling or in
+ * cooldown.
  */
 function summarizeAccounts(accounts: readonly ProviderAccountResponse[]): {
   active: number;
@@ -720,14 +721,13 @@ function summarizeAccounts(accounts: readonly ProviderAccountResponse[]): {
   disabled: number;
   exhausted: number;
   cooling: number;
-  unhealthy: number;
 } {
   const active = accounts.filter((a) => a.status === "active").length;
   const cooldown = accounts.filter((a) => a.status === "cooldown").length;
   const disabled = accounts.filter((a) => a.status === "disabled").length;
   const exhausted = accounts.filter((a) => a.lastErrorCategory === "quota_exhausted").length;
   const cooling = modelCoolingCount(accounts);
-  return { active, cooldown, disabled, exhausted, cooling, unhealthy: cooldown + disabled + exhausted };
+  return { active, cooldown, disabled, exhausted, cooling };
 }
 
 function SecondaryQueryBadge({
@@ -834,11 +834,11 @@ const ProviderCard = memo(function ProviderCard({
                 />
               ) : counts?.active > 0 ? (
                 <Badge tone="ok" dot>
-                  {counts.active} Connected
+                  {counts.active} Healthy
                 </Badge>
-              ) : counts !== undefined && counts.unhealthy + counts.cooling > 0 ? (
+              ) : counts?.disabled > 0 ? (
                 <Badge tone="warn" dot>
-                  {counts.unhealthy + counts.cooling} Unhealthy
+                  {counts.disabled} Unhealthy
                 </Badge>
               ) : (
                 <Badge>No connections</Badge>
