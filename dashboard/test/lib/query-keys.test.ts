@@ -19,6 +19,7 @@ describe("dashboard query keys", () => {
     expect(queryKeys.modelRouting.aliases).toEqual(["console", "model-routing", "aliases"]);
     expect(queryKeys.modelRouting.combos).toEqual(["console", "model-routing", "combos"]);
     expect(queryKeys.apiKeys.all).toEqual(["console", "api-keys"]);
+    expect(queryKeys.modelBans.all).toEqual(["console", "model-bans"]);
     expect(queryKeys.providers.models("other")).not.toEqual(queryKeys.providers.models("anthropic"));
   });
 });

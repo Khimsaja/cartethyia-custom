@@ -7,6 +7,7 @@ import type {
   AuditListPage,
 
   ModelAliasRow,
+  ModelAbuseBan,
   ModelCatalogEntry,
   ModelComboRow,
   NetworkPoolResponse,
@@ -299,6 +300,18 @@ export function assertPoolStrategy(value: unknown): PoolStrategySetting {
     throw invalidResponse("Invalid pool strategy response");
   }
   return value as unknown as PoolStrategySetting;
+}
+
+export function assertModelBans(value: unknown): ModelAbuseBan[] {
+  if (!isRecord(value) || !Array.isArray(value.bans)) {
+    throw invalidResponse("Invalid model ban response");
+  }
+  return value.bans.map((ban) => {
+    if (!isRecord(ban) || typeof ban.ip !== "string" || !isFiniteNumber(ban.expiresAt)) {
+      throw invalidResponse("Invalid model ban response");
+    }
+    return ban as unknown as ModelAbuseBan;
+  });
 }
 
 export function assertApiKeys(value: unknown): ApiKeyResponse[] {

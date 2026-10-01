@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import { ApiKeysPanel } from "../../src/components/ApiKeysPanel";
 import { queryKeys } from "../../src/data/query-keys";
-import type { ApiKeyResponse } from "../../src/data/contracts";
+import type { ApiKeyResponse, SessionUser } from "../../src/data/contracts";
 
 const ACTIVE_KEY: ApiKeyResponse = {
   id: "key-active-0001",
@@ -42,11 +42,27 @@ const SHARE_TEMPLATE: ApiKeyResponse = {
   tokensConsumed: 0,
 };
 
-function render(keys: readonly ApiKeyResponse[] | undefined): string {
+function session(isPlatformAdmin: boolean): SessionUser {
+  return {
+    id: "user-1",
+    username: "operator",
+    email: "operator@example.test",
+    displayName: null,
+    isFirstBoot: false,
+    sessionExpiresAt: "2026-12-31T00:00:00.000Z",
+    isPlatformAdmin,
+  };
+}
+
+function render(
+  keys: readonly ApiKeyResponse[] | undefined,
+  isPlatformAdmin = false,
+): string {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Infinity } },
   });
   if (keys) queryClient.setQueryData(queryKeys.apiKeys.all, keys);
+  queryClient.setQueryData(queryKeys.session.current, session(isPlatformAdmin));
   return renderToStaticMarkup(
     createElement(QueryClientProvider, { client: queryClient }, createElement(ApiKeysPanel)),
   );
@@ -112,5 +128,16 @@ describe("API keys panel", () => {
   test("renders a loading state before the key list resolves", () => {
     const markup = render(undefined);
     expect(markup).toContain("Loading API keys");
+  });
+
+  test("offers the cross-tenant ban list only to a platform admin", () => {
+    // Bans are keyed on the client address, so they span every tenant; the
+    // entry point is hidden for a tenant-scoped viewer.
+    const admin = render([ACTIVE_KEY], true);
+    expect(admin).toContain("Banned Users");
+    // It sits beside Create Key, not in place of it.
+    expect(admin).toContain("Create Key");
+    expect(admin.indexOf("Banned Users")).toBeLessThan(admin.indexOf("Create Key"));
+    expect(render([ACTIVE_KEY], false)).not.toContain("Banned Users");
   });
 });

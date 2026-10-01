@@ -108,6 +108,11 @@ export type {
   UpdateApiKeyResponse,
   ShareKeyResponse,
 } from "../../../src/console/domains/api-keys/contracts";
+
+// Model-abuse bans are a platform-admin, cross-tenant list (`GET`/`DELETE
+// /model-bans`). The row shape is the backend's own, so the dashboard never
+// keeps a second copy of the fields the unban call is keyed on.
+export type { ModelAbuseBan } from "../../../src/security/model-abuse";
 export type {
   SharedKeySummary,
   SharedKeyActivityDetail,

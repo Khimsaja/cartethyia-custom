@@ -358,7 +358,10 @@ prefix-length hints leave the store.
   the escape hatch for lifting one early — a shared NAT or a client that
   genuinely mistyped — so it must exist and must be reachable without SQL.
   `platform:admin` only: a ban is a security decision and the identity values are
-  cross-tenant.
+  cross-tenant. The dashboard reaches it from the **Banned Users** button beside
+  **Create Key** in the API Credentials panel (`ApiKeysPanel`), shown only to a
+  platform admin; the button opens its own dialog (`ModelBansDialog`) listing
+  each active ban with a per-address **Unban**.
 - **Studio** (`studio/`): CRUD over per-tenant saved sessions (capped, messages and media
   normalized and bounded on write and read), a tenant-scoped `web-fetch` tool over
   the validated outbound network binding, plus a key endpoint that decrypts the tenant's default

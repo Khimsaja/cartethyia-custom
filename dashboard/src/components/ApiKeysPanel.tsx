@@ -1,10 +1,10 @@
 import {
-  Download,
   KeyRound,
   Pencil,
   Plus,
   RotateCw,
   Share2,
+  ShieldOff,
   Trash2,
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
@@ -14,13 +14,14 @@ import { Card, CardBody, CardHeader } from "./ui/card";
 import { Dialog } from "./ui/dialog";
 import { EmptyState, ErrorState, LoadingState } from "./ui/state";
 import { ApiKeyForm, oneTimeSecretForMode, type KeyFormInput } from "./ApiKeyForm";
+import { ApiKeySecretDialog } from "./ApiKeySecretDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { ClipboardButton } from "./patterns/clipboard-button";
+import { ModelBansDialog } from "./ModelBansDialog";
 import { regenerateWarning, ShareManagementDialog } from "./ShareManagementDialog";
 import { SortableList } from "./SortableList";
-import { downloadTextFile } from "../shared/download";
 import { toast } from "../shared/toast";
 import { getErrorMessage } from "../shared/helpers";
+import { useSessionUser } from "../hooks/system";
 import type { ApiKeyResponse } from "../data/contracts";
 import {
   useApiKeys,
@@ -56,6 +57,7 @@ function limitLabel(value: number | null | undefined): string {
  */
 export function ApiKeysPanel(): ReactNode {
   const keysQuery = useApiKeys();
+  const sessionQuery = useSessionUser();
   const createKey = useCreateApiKey();
   const updateKey = useUpdateApiKey();
   const revokeKey = useRevokeApiKey();
@@ -67,8 +69,13 @@ export function ApiKeysPanel(): ReactNode {
   const [rotateTarget, setRotateTarget] = useState<ApiKeyResponse | null>(null);
   const [revealedSecret, setRevealedSecret] = useState<string | null>(null);
   const [shareTarget, setShareTarget] = useState<ApiKeyResponse | null>(null);
+  const [bansOpen, setBansOpen] = useState(false);
 
   const keys = keysQuery.data ?? [];
+  // Bans are keyed on the client address, so they are cross-tenant: only a
+  // platform admin may see or lift one, and the entry point is hidden for
+  // everyone else. The endpoint enforces this too — the gate here is UX.
+  const isPlatformAdmin = sessionQuery.data?.isPlatformAdmin ?? false;
 
   const openShare = (key: ApiKeyResponse) => {
     setRevealedSecret(null);
@@ -87,78 +94,29 @@ export function ApiKeysPanel(): ReactNode {
         subtitle="Manage tenant API keys, model access, budgets, and sharing."
         icon={<KeyRound size={16} />}
         action={
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={() => { setRevealedSecret(null); setCreateOpen(true); }}
-            icon={<Plus size={13} />}
-          >
-            Create Key
-          </Button>
-        }
-      />
-      <CardBody>
-        {revealedSecret ? (
-          <div
-            style={{
-              padding: "14px",
-              borderRadius: "12px",
-              border: "1px solid var(--accent-soft)",
-              background: "var(--accent-soft)",
-              marginBottom: "16px",
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: "10px",
-                marginBottom: "6px",
-              }}
-            >
-              <strong style={{ fontSize: "12.5px", color: "var(--accent)" }}>
-                New Secret Key Generated
-              </strong>
-              <span style={{ fontSize: "11px", color: "var(--text-secondary)" }}>
-                Copy now — only shown once!
-              </span>
-            </div>
-            <code
-              style={{
-                display: "block",
-                padding: "8px 12px",
-                borderRadius: "8px",
-                background: "var(--surface-1)",
-                border: "1px solid var(--inner-border)",
-                fontSize: "12px",
-                wordBreak: "break-all",
-                color: "var(--text-primary)",
-              }}
-            >
-              {revealedSecret}
-            </code>
-            <div style={{ marginTop: "8px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
-              <ClipboardButton value={revealedSecret} size="sm" variant="secondary" />
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            {isPlatformAdmin ? (
               <Button
                 variant="secondary"
                 size="sm"
-                icon={<Download size={13} />}
-                onClick={() => {
-                  downloadTextFile(
-                    "cartethyia-api-key.txt",
-                    `Cartethyia API key\n\n${revealedSecret}\n\nKeep this secret. It is shown only once.\n`,
-                    "text/plain;charset=utf-8",
-                  );
-                  toast.success("Key saved to your downloads.");
-                }}
+                onClick={() => setBansOpen(true)}
+                icon={<ShieldOff size={13} />}
               >
-                Save this key
+                Banned Users
               </Button>
-            </div>
+            ) : null}
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => { setRevealedSecret(null); setCreateOpen(true); }}
+              icon={<Plus size={13} />}
+            >
+              Create Key
+            </Button>
           </div>
-        ) : null}
-
+        }
+      />
+      <CardBody>
         {keysQuery.isPending && !keysQuery.data ? (
           <LoadingState label="Loading API keys…" />
         ) : keysQuery.isError && !keysQuery.data ? (
@@ -350,7 +308,16 @@ export function ApiKeysPanel(): ReactNode {
       </Dialog>
 
       {shareTarget ? (
-        <ShareManagementDialog parent={shareTarget} onClose={() => setShareTarget(null)} />
+        <ShareManagementDialog
+          parent={shareTarget}
+          onClose={() => setShareTarget(null)}
+          onSecretRevealed={(secret) => {
+            // Close the share dialog first: the reveal is its own modal, and a
+            // modal must never open on top of another.
+            setShareTarget(null);
+            setRevealedSecret(secret);
+          }}
+        />
       ) : null}
 
       <ConfirmDialog
@@ -360,7 +327,7 @@ export function ApiKeysPanel(): ReactNode {
           if (!rotateTarget) return;
           const result = await regenerateKey.mutateAsync({ keyId: rotateTarget.id });
           setRevealedSecret(result.secret);
-          toast.success(`Rotated ${rotateTarget.label || rotateTarget.id}. Copy the new secret now.`);
+          toast.success(`Rotated ${rotateTarget.label || rotateTarget.id}.`);
           setRotateTarget(null);
         }}
         title={rotateWarning.title}
@@ -387,6 +354,10 @@ export function ApiKeysPanel(): ReactNode {
         confirmLabel="Revoke"
         danger
       />
+
+      {bansOpen ? <ModelBansDialog onClose={() => setBansOpen(false)} /> : null}
+
+      <ApiKeySecretDialog secret={revealedSecret} onClose={() => setRevealedSecret(null)} />
 
     </Card>
   );
