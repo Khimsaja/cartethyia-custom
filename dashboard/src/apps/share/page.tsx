@@ -5,6 +5,7 @@ import { Button } from "../../components/ui/button";
 import { Card, CardBody } from "../../components/ui/card";
 import { EmptyState, ErrorState, LoadingState } from "../../components/ui/state";
 import { ClipboardButton } from "../../components/patterns/clipboard-button";
+import { downloadTextFile } from "../../shared/download";
 import { GithubBadge } from "../../components/patterns/github-badge";
 import { formatModelTokens, UNKNOWN_LIMITS_TOOLTIP } from "../../shared/model-limits";
 import { readConsoleTheme, applyConsoleTheme, isDarkEffective, writeConsoleTheme, type ConsoleThemeChoice } from "../../shared/theme";
@@ -376,6 +377,19 @@ export function SharePage(): ReactElement {
                           label="Copy key"
                           copiedLabel="Copied"
                         />
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() =>
+                            downloadTextFile(
+                              "cartethyia-api-key.txt",
+                              `Cartethyia API key\n\n${handoffKey}\n\nKeep this secret.\n`,
+                              "text/plain;charset=utf-8",
+                            )
+                          }
+                        >
+                          Save this key
+                        </Button>
                         <span>Prefix {data.keyPrefix ?? "—"}</span>
                       </div>
                       <p>
@@ -400,6 +414,19 @@ export function SharePage(): ReactElement {
                         label="Copy key"
                         copiedLabel="Copied"
                       />
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() =>
+                          downloadTextFile(
+                            "cartethyia-api-key.txt",
+                            `Cartethyia API key\n\n${visibleSecret.key}\n\nKeep this secret.\n`,
+                            "text/plain;charset=utf-8",
+                          )
+                        }
+                      >
+                        Save this key
+                      </Button>
                       <span>Key ID {visibleSecret.keyId.slice(0, 12)}…</span>
                     </div>
                     <p>

@@ -1,7 +1,9 @@
 import {
+  Download,
   KeyRound,
   Pencil,
   Plus,
+  RotateCw,
   Share2,
   Trash2,
 } from "lucide-react";
@@ -14,14 +16,16 @@ import { EmptyState, ErrorState, LoadingState } from "./ui/state";
 import { ApiKeyForm, oneTimeSecretForMode, type KeyFormInput } from "./ApiKeyForm";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ClipboardButton } from "./patterns/clipboard-button";
-import { ShareManagementDialog } from "./ShareManagementDialog";
+import { regenerateWarning, ShareManagementDialog } from "./ShareManagementDialog";
 import { SortableList } from "./SortableList";
+import { downloadTextFile } from "../shared/download";
 import { toast } from "../shared/toast";
 import { getErrorMessage } from "../shared/helpers";
 import type { ApiKeyResponse } from "../data/contracts";
 import {
   useApiKeys,
   useCreateApiKey,
+  useRegenerateApiKey,
   useReorderApiKeys,
   useRevokeApiKey,
   useUpdateApiKey,
@@ -55,10 +59,12 @@ export function ApiKeysPanel(): ReactNode {
   const createKey = useCreateApiKey();
   const updateKey = useUpdateApiKey();
   const revokeKey = useRevokeApiKey();
+  const regenerateKey = useRegenerateApiKey();
   const reorderKeys = useReorderApiKeys();
   const [createOpen, setCreateOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<ApiKeyResponse | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<ApiKeyResponse | null>(null);
+  const [rotateTarget, setRotateTarget] = useState<ApiKeyResponse | null>(null);
   const [revealedSecret, setRevealedSecret] = useState<string | null>(null);
   const [shareTarget, setShareTarget] = useState<ApiKeyResponse | null>(null);
 
@@ -68,6 +74,11 @@ export function ApiKeysPanel(): ReactNode {
     setRevealedSecret(null);
     setShareTarget(key);
   };
+
+  // A personal key rotates its own credential; a share template has none, so its
+  // "rotate" lives in the share dialog (regenerating the link). Only the
+  // personal path is offered from the row.
+  const rotateWarning = regenerateWarning(true);
 
   return (
     <Card>
@@ -127,8 +138,23 @@ export function ApiKeysPanel(): ReactNode {
             >
               {revealedSecret}
             </code>
-            <div style={{ marginTop: "8px" }}>
+            <div style={{ marginTop: "8px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
               <ClipboardButton value={revealedSecret} size="sm" variant="secondary" />
+              <Button
+                variant="secondary"
+                size="sm"
+                icon={<Download size={13} />}
+                onClick={() => {
+                  downloadTextFile(
+                    "cartethyia-api-key.txt",
+                    `Cartethyia API key\n\n${revealedSecret}\n\nKeep this secret. It is shown only once.\n`,
+                    "text/plain;charset=utf-8",
+                  );
+                  toast.success("Key saved to your downloads.");
+                }}
+              >
+                Save this key
+              </Button>
             </div>
           </div>
         ) : null}
@@ -243,6 +269,17 @@ export function ApiKeysPanel(): ReactNode {
                   >
                     {key.keyMode === "share" ? "Recipients" : "Share"}
                   </Button>}
+                  {!key.revokedAt && key.keyMode !== "share" && (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      icon={<RotateCw size={13} />}
+                      onClick={() => { setRevealedSecret(null); setRotateTarget(key); }}
+                      disabled={regenerateKey.isPending}
+                    >
+                      Rotate
+                    </Button>
+                  )}
                   <Button
                     variant="danger"
                     size="sm"
@@ -315,6 +352,22 @@ export function ApiKeysPanel(): ReactNode {
       {shareTarget ? (
         <ShareManagementDialog parent={shareTarget} onClose={() => setShareTarget(null)} />
       ) : null}
+
+      <ConfirmDialog
+        open={rotateTarget !== null}
+        onClose={() => setRotateTarget(null)}
+        onConfirm={async () => {
+          if (!rotateTarget) return;
+          const result = await regenerateKey.mutateAsync({ keyId: rotateTarget.id });
+          setRevealedSecret(result.secret);
+          toast.success(`Rotated ${rotateTarget.label || rotateTarget.id}. Copy the new secret now.`);
+          setRotateTarget(null);
+        }}
+        title={rotateWarning.title}
+        message={rotateWarning.message}
+        confirmLabel={rotateWarning.confirmLabel}
+        danger
+      />
 
       <ConfirmDialog
         open={revokeTarget !== null}

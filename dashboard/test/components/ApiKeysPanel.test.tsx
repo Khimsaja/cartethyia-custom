@@ -75,6 +75,19 @@ describe("API keys panel", () => {
     expect(render([REVOKED_KEY])).not.toContain("Share</button>");
   });
 
+  test("offers Rotate on a live personal key, before Revoke", () => {
+    const markup = render([ACTIVE_KEY]);
+    expect(markup).toContain("Rotate");
+    // Rotating a credential is a distinct action from revoking it: the button
+    // must sit before Revoke so the destructive control stays last.
+    expect(markup.indexOf("Rotate")).toBeLessThan(markup.indexOf("Revoke"));
+    // A revoked key has no live credential left to rotate.
+    expect(render([REVOKED_KEY])).not.toContain("Rotate");
+    // A share template has no credential of its own — its rotation is the link,
+    // reached through the share dialog, so the row must not offer Rotate.
+    expect(render([SHARE_TEMPLATE])).not.toContain("Rotate");
+  });
+
   test("never renders a secret or key hash", () => {
     const markup = render([ACTIVE_KEY]);
     expect(markup).not.toContain("keyHash");

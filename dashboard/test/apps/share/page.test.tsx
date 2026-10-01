@@ -215,6 +215,9 @@ describe("public share enrollment page", () => {
     // rather than offering to mint one.
     expect(markup).toContain("rk_handed_over_secret");
     expect(markup).toContain("SHARED ACCESS / KEY");
+    // The revealed key is the recipient's only copy, so the page offers to save
+    // it to a file rather than relying on a clipboard that may be cleared.
+    expect(markup).toContain("Save this key");
     expect(markup).not.toContain("Generate API Key");
     expect(markup).not.toContain("An active key has already been issued from this IP.");
     expect(markup).toContain("https://gateway.example/v1");
