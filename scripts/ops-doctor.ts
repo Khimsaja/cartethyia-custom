@@ -81,77 +81,6 @@ async function resetLockout(args: readonly string[]): Promise<void> {
 }
 
 
-/**
- * Operator escape hatch: lifts every model-abuse ban.
- *
- * A ban is keyed on the client address and lapses on its own after its TTL, so
- * this is only needed to unblock an address *now* rather than wait it out. It
- * also retires the bans written before that TTL existed: those live in a
- * permanent set under the previous key name, which this build no longer reads
- * and no console route can therefore list or lift. Clearing both the legacy set
- * and the current sorted set is the one-time migration off that key.
- *
- * Usage:
- *   bun run doctor --reset-model-bans
- */
-async function resetModelBans(): Promise<void> {
-  const env = await readEnvFile(ENV_PATH);
-  const redisUrl = env.REDIS_URL ?? process.env.REDIS_URL;
-  if (!redisUrl) {
-    console.error("✗ REDIS_URL is not set; model-abuse bans live in Redis.");
-    process.exit(1);
-  }
-  process.env.REDIS_URL = redisUrl;
-
-  const { getRedis, closeRedis } = await import("../src/persistence/redis");
-  const redis = getRedis();
-  // The retired permanent set, then the current sorted set.
-  const banKeys = ["cartethyia:model-abuse:bans", "cartethyia:model-abuse:bans:ip"];
-  try {
-    let lifted = 0;
-    for (const key of banKeys) {
-      const type = await redis.type(key);
-      if (type === "none") continue;
-      const members =
-        type === "set"
-          ? ((await redis.smembers(key)) as string[])
-          : type === "zset"
-            ? ((await redis.zrange(key, "0", "-1")) as string[])
-            : [];
-      if (members.length === 0) continue;
-      // Delete the whole key rather than its members one by one: the retired
-      // set is what is being removed, and a member-wise pass could leave one
-      // behind that this command has no way to see again.
-      await redis.del(key);
-      lifted += members.length;
-      console.log(`  ✓ Lifted ${members.length} ban(s) from ${key}`);
-    }
-    // Counters are swept with `SCAN`, not `KEYS`: this runs against a live
-    // database, and `KEYS` blocks the server for every other client.
-    const strikes: string[] = [];
-    let cursor = "0";
-    do {
-      const [next, batch] = await redis.scan(
-        cursor,
-        "MATCH",
-        "cartethyia:model-abuse:strike:*",
-        "COUNT",
-        200,
-      );
-      cursor = next;
-      strikes.push(...batch);
-    } while (cursor !== "0");
-    if (strikes.length > 0) await redis.del(...strikes);
-    console.log(
-      lifted === 0
-        ? "• No model-abuse bans were recorded (already clear)."
-        : `✓ Lifted ${lifted} model-abuse ban(s); ${strikes.length} strike counter(s) cleared.`,
-    );
-  } finally {
-    await closeRedis();
-  }
-}
-
 async function probeReadiness(port: number, timeoutMs: number): Promise<ProbeResult> {
   const controller = new AbortController();
   const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
@@ -179,11 +108,6 @@ async function doctor(): Promise<void> {
   const resetIndex = process.argv.indexOf("--reset-lockout");
   if (resetIndex !== -1) {
     await resetLockout(process.argv.slice(resetIndex + 1));
-    return;
-  }
-
-  if (process.argv.includes("--reset-model-bans")) {
-    await resetModelBans();
     return;
   }
 
