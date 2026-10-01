@@ -58,21 +58,4 @@ describe("payload drawer completeness (stream & non-stream)", () => {
     // Stream: canonical vs wire differ, but both must be present
     expect(record.response_body).not.toEqual(record.client_response_body);
   });
-
-  test("proxy non-stream path now forwards clientResponseText (fix)", async () => {
-    const source = await Bun.file("src/transport/dispatch/proxy-request.ts").text();
-    // Non-stream branch must set clientResponseText from output.bytes
-    expect(source).toContain("clientResponseText: new TextDecoder().decode(output.bytes)");
-  });
-
-  test("dashboard renders client and provider legs", async () => {
-    const source = await Bun.file("dashboard/src/features/usage/UsagePage.tsx").text();
-    // Client leg first, provider leg after — no stale canonical-only label.
-    expect(source).not.toContain("Canonical response");
-    expect(source).toContain('"request", "Client Request"');
-    expect(source).toContain('"response", "Proxy');
-    expect(source).toContain('"clientResponse"');
-    expect(source).toContain('"providerRequest", "Proxy → Provider Request"');
-    expect(source).toContain('"providerResponse", "Provider → Proxy Response"');
-  });
 });

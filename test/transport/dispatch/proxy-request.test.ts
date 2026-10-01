@@ -1485,6 +1485,57 @@ describe("handleProviderProxyRequest — lifecycle hardening", () => {
     expect(await settledInFlightCount()).toBe(0);
   });
 
+  test("emits a shutdown terminal frame when a drain aborts a live stream", async () => {
+    // Regression: a graceful shutdown aborted the request controller with a
+    // bare `AbortError`, which the stream path classified as a client
+    // disconnect and closed silently — the client saw an EOF with no terminal
+    // event, i.e. "connection lost mid-response". A drain must instead emit a
+    // typed terminal frame naming the shutdown so the client can retry.
+    resetInFlightForTests();
+    let releaseUpstream = () => {};
+    const upstreamPause = new Promise<void>((resolve) => {
+      releaseUpstream = resolve;
+    });
+    const adapter: ProviderAdapter = {
+      provider_id: parseProviderId("openai"),
+      dispatch: async function* () {
+        yield {
+          type: "content_delta",
+          sequence_number: 1,
+          content: { kind: "text", text: "partial" },
+        } satisfies CanonicalEvent;
+        await upstreamPause;
+        yield terminalUsage(2);
+      },
+    };
+    const { request, deps } = setup({
+      providerId: "openai",
+      accountId: "a1",
+      stream: true,
+      deps: { providerAdapters: new Map([["openai", adapter]]) },
+    });
+    const response = await handleProviderProxyRequest(request, deps);
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader();
+    // Drain the primed content delta, then simulate the shutdown coordinator's
+    // abort: `abortAll` aborts with a shutdown `GatewayError`, never an
+    // `AbortError`. The pending `next()` unblocks and the stream must surface a
+    // terminal frame rather than closing silently.
+    await reader.read();
+    const state = deps.stateStore.get(request);
+    state?.abortController.abort(new GatewayError("shutting_down", 503, "Service is shutting down"));
+    releaseUpstream();
+    let body = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      body += new TextDecoder().decode(value);
+    }
+    expect(body).toContain("shutting_down");
+    expect(body).not.toContain("[DONE]");
+    expect(await settledInFlightCount()).toBe(0);
+  });
+
   test("releases the flight when the client disconnects without another pull", async () => {
     // Regression: the release used to hang only off `pull()`/`cancel()`.
     // A client that drops the connection while the stream is paused never

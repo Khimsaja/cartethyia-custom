@@ -80,6 +80,7 @@ void _wireFamilyCoverage;
 const VALID_SERVICE_KINDS: Record<ServiceKind, true> = {
   llm: true,
   systemone: true,
+  websearch: true,
 };
 
 export function isServiceKind(value: unknown): value is ServiceKind {
@@ -371,6 +372,13 @@ export interface UpdateProviderAccountRequest {
   label?: string;
   secret?: string;
   status?: AccountStatus;
+  /**
+   * Marks the credential as a static bearer token that must never be sent to a
+   * refresh endpoint (a pasted JWT/access token, or an account whose refresh
+   * grant is gone but whose token still works). `true` skips the account in the
+   * refresh sweep; `false` returns it to normal OAuth refresh handling.
+   */
+  staticToken?: boolean;
 }
 export interface ProviderAccountTokenUsage {
   readonly requests: number;
@@ -410,6 +418,12 @@ export interface ProviderAccountResponse {
   modelCooldowns?: Readonly<Record<string, string>>;
   lastRecoveredAt?: string;
   createdAt: string;
+  /**
+   * The credential is a static bearer token used as issued and never refreshed.
+   * Surfaced so the console shows an informational "static token" pill instead
+   * of treating the account as broken; the account stays dispatchable.
+   */
+  staticToken?: boolean;
   /** Stable list position within this provider; the console's "Added" order. */
   sortIndex: number;
 }
@@ -630,6 +644,12 @@ export interface ProviderRoutingResponse {
   readonly rotateCount: number;
   /** Per-account inflight ceiling; `null` = unlimited concurrency. */
   readonly maxInflight: number | null;
+  /**
+   * Credit reserve for every account of this provider; `null` = no reserve.
+   * When an account's remaining credit reaches this floor the quota sweep parks
+   * it in a 24h cooldown so routing fails over instead of draining it.
+   */
+  readonly creditFloor: number | null;
   readonly enabled: boolean;
   /** When true, this provider's requests always dial direct. When false,
    * dispatch automatically picks the least-loaded, non-cooldown pool among

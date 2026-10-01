@@ -14,6 +14,44 @@ import { pushStructuredConsoleLog } from "../../observability/log-ring";
 import { log } from "../../observability/logger";
 import { isJsonProxyRoutePath, isProxyDispatchRoute } from "./body-policy";
 import { isNativeServicePath } from "../dispatch/native-services";
+import {
+  modelAbuseBannedError,
+  modelWarningMessage,
+  type ModelAbuseOutcome,
+  type ModelStrikeService,
+} from "../../security/model-abuse";
+
+/**
+ * Whether a thrown error is a *model* rejection the strike layer counts: the
+ * key may not use the named model (`isModelAllowed` → 404), or the name
+ * resolves to nothing (`modelNotFoundError` → 404). Both surface as
+ * `model_not_found`; every other failure — an aborted request, a store outage,
+ * a capability mismatch — is not the caller probing for models and is not
+ * counted.
+ */
+function isModelRejection(error: unknown): boolean {
+  return error instanceof GatewayError && error.code === "model_not_found";
+}
+
+/**
+ * Re-throws a model rejection carrying the escalating strike warning, so an
+ * honest client that mistyped sees "Warning 1 of 3" instead of the same generic
+ * 404 three times and then a ban. The code/status are unchanged — only the
+ * message gains the warning, and the count rides in `details` for the console.
+ */
+function withModelWarning(
+  error: unknown,
+  outcome: ModelAbuseOutcome,
+  limit: number,
+): GatewayError {
+  if (!(error instanceof GatewayError)) return error as GatewayError;
+  const strikes = Math.max(outcome.ipStrikes, outcome.keyStrikes);
+  return new GatewayError(error.code, error.status, modelWarningMessage(String(error.details.model ?? ""), outcome, limit), {
+    ...error.details,
+    strikes,
+    strike_limit: limit,
+  }, error.origin);
+}
 
 interface RequestApp {
   request(
@@ -192,6 +230,14 @@ export function createCanonicalRequestMiddleware(deps: {
 export function createProxyRoutePreparationMiddleware(deps: {
   readonly stateStore: ProxyRequestStateStore;
   readonly preparer: ProxyRequestPreparer;
+  /**
+   * Graduated strikes for repeated invalid-model requests. The preparation step
+   * is the single choke point where a request is rejected for naming a model the
+   * key may not use (`isModelAllowed`) or a model that resolves to nothing
+   * (`modelNotFoundError`), so it is where a strike is recorded and where a
+   * valid model clears one.
+   */
+  readonly modelStrikes?: ModelStrikeService;
 }): Elysia {
   return new Elysia()
     .beforeHandle(async ({ request }) => {
@@ -203,15 +249,40 @@ export function createProxyRoutePreparationMiddleware(deps: {
       const state = deps.stateStore.require(request);
       if (!state.authorization || !state.canonicalRequest)
         throw new GatewayError("admission_unavailable", 503, "proxy request context unavailable");
-      state.preparedRequest = await deps.preparer.prepare({
-        canonicalRequest: state.canonicalRequest,
-        authorization: state.authorization,
-        deadlineMs: state.deadlineMs,
-        signal: state.abortController.signal,
-        ...(state.clientUserAgent === undefined
-          ? {}
-          : { clientUserAgent: state.clientUserAgent }),
-      });
+      const strikes = deps.modelStrikes;
+      const ip = state.clientIdentity?.address;
+      const apiKeyId = state.authorization.id;
+      const strikeIdentity =
+        strikes && ip !== undefined ? { strikes, ip, apiKeyId } : undefined;
+      try {
+        state.preparedRequest = await deps.preparer.prepare({
+          canonicalRequest: state.canonicalRequest,
+          authorization: state.authorization,
+          deadlineMs: state.deadlineMs,
+          signal: state.abortController.signal,
+          ...(state.clientUserAgent === undefined
+            ? {}
+            : { clientUserAgent: state.clientUserAgent }),
+        });
+      } catch (error) {
+        // Only a *model* rejection is a strike: an invalid model the key may not
+        // use, or a name that resolves to nothing. A store outage, an aborted
+        // request, or any other failure is not the caller probing for models.
+        if (strikeIdentity && isModelRejection(error)) {
+          const outcome = await strikeIdentity.strikes
+            .noteInvalid({ ip: strikeIdentity.ip, apiKeyId: strikeIdentity.apiKeyId })
+            .catch(() => null);
+          if (outcome?.banned === true) throw modelAbuseBannedError(outcome.scope);
+          if (outcome) throw withModelWarning(error, outcome, strikeIdentity.strikes.limit);
+        }
+        throw error;
+      }
+      // A valid model clears the caller's consecutive strike, so one typo
+      // followed by a working request never accumulates toward a ban.
+      if (strikeIdentity)
+        void strikeIdentity.strikes
+          .noteValid({ ip: strikeIdentity.ip, apiKeyId: strikeIdentity.apiKeyId })
+          .catch(() => undefined);
     })
     .as("plugin");
 }

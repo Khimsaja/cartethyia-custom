@@ -26,6 +26,7 @@ export interface NativeServiceRoute {
 
 export const NATIVE_SERVICES: readonly NativeServiceRoute[] = [
   { serviceKind: "systemone", path: "/v1/systemone" },
+  { serviceKind: "websearch", path: "/v1/search" },
 ] as const;
 
 /** Paths served by a native service route, for the ingress body/canonical skip. */

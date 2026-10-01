@@ -18,6 +18,7 @@ const BUILT_IN_PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   devin: "Devin",
   antigravity: "Antigravity",
   muse: "Muse Code",
+  meta: "Meta Model API",
   kiro: "Kiro",
   kimi: "Kimi Code",
   opencodeft: "OpenCode Free",
@@ -54,6 +55,9 @@ const BUILT_IN_PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   mimostudio: "MiMo Studio",
   perplexity: "Perplexity",
   "github": "GitHub Copilot",
+  exa: "Exa",
+  tavily: "Tavily",
+  brave: "Brave Search",
 };
 
 /** Resolves the label shown for a provider: explicit label (custom providers) wins, then the built-in display name, then the raw ID. */

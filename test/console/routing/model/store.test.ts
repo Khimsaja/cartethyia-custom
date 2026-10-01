@@ -118,6 +118,29 @@ dbDescribe("DrizzleModelRoutingStore — real DB", () => {
     expect(await store.deleteCombo(tenantA, row!.id)).toBe(true);
   });
 
+  test("renameCombo rewrites alias targets and nested combo members", async () => {
+    const target = await store.createCombo(tenantA, { name: "base", members: ["known-model"] });
+    await store.createAlias(tenantA, { alias: "via-alias", targetModel: "base" });
+    await store.createCombo(tenantA, { name: "wrapper", members: ["base"] });
+
+    const renamed = await store.renameCombo(tenantA, target.id, "base-2");
+    expect(renamed?.name).toBe("base-2");
+
+    const aliases = await store.listAliases(tenantA);
+    expect(aliases.find((a) => a.alias === "via-alias")?.targetModel).toBe("base-2");
+    const combos = await store.listCombos(tenantA);
+    expect(combos.find((c) => c.name === "wrapper")?.members).toEqual(["base-2"]);
+  });
+
+  test("renameCombo returns undefined for a missing id and leaves references alone", async () => {
+    const target = await store.createCombo(tenantA, { name: "keep", members: ["known-model"] });
+    await store.createAlias(tenantA, { alias: "keep-alias", targetModel: "keep" });
+    expect(await store.renameCombo(tenantA, randomUUID(), "nope")).toBeUndefined();
+    const aliases = await store.listAliases(tenantA);
+    expect(aliases.find((a) => a.alias === "keep-alias")?.targetModel).toBe("keep");
+    expect((await store.listCombos(tenantA)).find((c) => c.id === target.id)?.name).toBe("keep");
+  });
+
   test("cascade delete of tenant cascades model_aliases and model_combos rows", async () => {
     const tenantX = randomUUID();
     await db

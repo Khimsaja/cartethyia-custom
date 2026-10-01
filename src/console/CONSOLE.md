@@ -177,8 +177,23 @@ matching the engine's `resolveAlias` bound), and targets that resolve to nothing
 (`targetResolves` walks alias chains, then combos, then `isKnownModel`). Combo members must each
 resolve to a known alias, combo, or model, and nesting is limited to one level
 (`combo_nesting_too_deep`) because `RoutingEngine.plan` expands only one level at dispatch;
-strategies are `fallback`/`round_robin` only — a rule the `ComboSchemaParity` compile-time check
-enforces.
+strategies are `fallback`/`round_robin`/`fusion` — a rule the `ComboSchemaParity` compile-time check
+enforces. A `fusion` combo is a panel + judge: `TRANSPORT.md` covers its dispatch.
+A combo can be renamed: `updateCombo` validates the new name for uniqueness, then `renameCombo`
+rewrites every reference in one transaction — an alias whose `targetModel` named the old name and any
+other combo listing it as a member — so a rename never leaves a dangling reference. A stored member
+that has since gone dangling (its model was renamed or removed) is grandfathered: `updateCombo`
+validates only members newly introduced to the list, so an unrelated rename or strategy switch is
+never blocked by a stale entry the operator cannot see; a newly-added member that does not resolve
+still fails `unresolved_member`.
+
+The dashboard's combo row also offers a clone (`POST /routing/combos/:id/clone`) that copies the
+members and strategy under `${name}-clone` (suffixed `-2`, `-3`, … when taken). The server resolves
+the name so two concurrent clones cannot collide, and drops members that no longer resolve to an
+alias, combo, or model — the clone still lands and reports them in `skippedMembers` (the toast names
+what was left out), because the operator asked to copy a combo, not to be blocked by a stale entry.
+A clone whose every member is dangling is refused: an empty combo serves nothing. The dashboard caps
+the member chips at four with a "+N more models" note.
 
 An alias deliberately separates the name a client sends from the model that serves it, and
 telemetry keeps both: Request Detail shows `requested_model` as the client-facing name while the
@@ -237,10 +252,14 @@ monthly allowance.
 
 The public share page (`GET /share/:token/data`) carries the template's policy, and a companion
 `GET /share/:token/stats` (`share-stats.ts`) rolls up family activity for the stats section:
-request/token totals, a 24-hour bucket series, top models, and top client IPs. It aggregates the
-template *plus every key it issued*, because the quota is shared — a per-recipient figure would
-understate the link's spend. Client IPs are always masked in this payload (`maskClientIp`); the
-recipient is outside the tenant, so the console's IP-privacy preference does not apply.
+request/token totals, a 24-hour bucket series, top models (with each model's average throughput in
+tokens/sec and average time-to-first-byte, taken over the rows that actually reported each — a
+non-streaming request has no rate and a request that produced no first byte has no TTFT), and top
+client IPs. It aggregates the template *plus every key it issued*, because the quota is shared — a
+per-recipient figure would understate the link's spend. Client IPs are always masked in this payload
+(`maskClientIp`); the recipient is outside the tenant, so the console's IP-privacy preference does not
+apply. The two ranked tables are capped at 50 rows each as a payload bound; the page shows a fixed
+window of about eight and scrolls the rest.
 
 The provider detail Accounts toolbar keeps a search box on the left and the sort control (label + select +
 direction toggle) in a right-aligned cluster behind a divider. The search is always rendered. The sort's
@@ -254,6 +273,18 @@ accounts report a credit balance: every account's windows summed into one `used 
 endpoint is added; windows without a positive `limit` are skipped (a rate limit is not a credit) and
 a single account's over-reported `used` is clamped to its own limit. Providers reporting no credit
 window render no card.
+
+The provider's Routing Strategy card also carries a **credit floor** (`creditFloor`, nullable). It is
+the reserve the operator wants kept unused on every account of that provider: when the quota sweep
+sees an account's **total** remaining credit (`totalRemainingCredit`, the same figure the Credit Pool
+card shows — a provider's credit windows are one spendable pool, so a spent bonus pack is not the
+account running out) reach the floor it parks the account in a 24h `quota_exhausted`
+cooldown so routing fails over instead of draining it to empty. The field is per-`(tenant, provider)`
+in `provider_routing_settings` (same tenant-wins-over-global precedence as the rest of the row) and
+validated as a non-negative integer or `null` (`invalid_credit_floor`). Enforcement lives in the quota
+sweep, not the request path — that is the only place live credit is fetched (`quota/refresh.ts`
+`resolveCreditFloor` → `enforceCreditFloor`). It is a no-op for a provider that reports no credit
+window, so a rate-limit-only provider is unaffected.
 
 Pool selection strategy is per-tenant (`GET`/`PATCH /strategy`): `least_loaded` (default, absent
 row reads as default) or `round_robin`, striding the per-tenant pool cursor by `rotateCount`
@@ -269,6 +300,14 @@ request, dialing each through the real dispatch agent with at most
 order, and a target that throws fails only itself — the batch still reports the rest. Nothing
 is persisted: it is a reachability preview for the operator, not a pool creation. A larger
 batch is rejected (`invalid_pool`).
+
+`POST /relay/deploy` deploys a relay worker to Cloudflare Workers, Vercel, or Deno Deploy and
+registers its public URL as an active HTTP pool (`routing/pools/relay-deploy.ts`). The provider
+API token is used for the deploy and never persisted; the deploy call goes through the
+SSRF-validated fetch (`relayFetch`), and the resulting relay URL is a public host that the pool
+dispatcher already classifies as a relay (`NETWORK.md`). The worker source is one template —
+read `x-relay-target`/`x-relay-path`, forward, return the upstream response — shared across the
+three targets, so adding a host is one `RelayTarget` plus a deploy function.
 
 **Invariants.** Tenant scoping is enforced at the operations layer (`requireTenantScope`) and
 again in store queries (`globalOrOwnedBy` / `ownedByOnly`), and pool endpoints can never point
@@ -296,6 +335,13 @@ prefix-length hints leave the store.
   routers it refuses (see `security/SECURITY.md`); the write path rejects an id the gateway
   cannot fingerprint, so a stored rule is always one that can match.
 - Each key can optionally configure a single share-page popup behind a boolean `share_popup_enabled` toggle (**Enable popup**); the editor stays collapsed until it is on and is laid out image-left, fields-right. It carries an uploaded image, title, and message. The art is uploaded as a data URL and stored on the key row as bytes plus a mime; it is served by `GET /api-keys/:keyId/share-popup-image` for the owner and `GET /share/:token/popup-image` for a link, never hotlinked from a third-party host. It travels with both enrollment and handoff public policy and is opened only by a visitor clicking the button below Base URL; it is never auto-opened.
+- **Model bans** (`domains/model-abuse/`): the platform-admin surface over the
+  model-abuse strike layer (`security/SECURITY.md`). `GET /model-bans` lists every
+  active ban (IP or API key), `DELETE /model-bans` lifts one by `{scope, identity}`.
+  This is the only escape hatch for a permanent ban — a shared NAT or a client
+  that genuinely mistyped three times — so it must exist and must be reachable
+  without SQL. `platform:admin` only: a ban is a security decision and the
+  identity values are cross-tenant.
 - **Studio** (`studio/`): CRUD over per-tenant saved sessions (capped, messages and media
   normalized and bounded on write and read), a tenant-scoped `web-fetch` tool over
   the validated outbound network binding, plus a key endpoint that decrypts the tenant's default
@@ -553,6 +599,10 @@ IPs unless `privacyMode` is `full` (fail-closed: any read error masks).
   off; request-event metadata is always stored, body capture stays opt-in and TTL'd.
 - `privacyMode` (`masked` | `full`, default `masked`) makes full client-IP display an explicit
   opt-in, and every reader fails closed to masked.
+- `rtkPruneEnabled` (default `false`) turns on RTK tool-result pruning on the request path;
+  `ponyTailLevel` (`lite` | `full` | `ultra` | `null`, default `null`) selects the PonyTail
+  system-prompt directive level. Both feed `compressRequest` in the transport's tenant-preference
+  step — see `TRANSPORT.md`.
 
 Writes merge so concurrent PATCHes to different keys do not clobber each other, then
 `bumpSettingsRevision()` notifies in-process consumers; the merge only touches whitelisted keys,

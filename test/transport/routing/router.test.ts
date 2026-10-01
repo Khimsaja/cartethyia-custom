@@ -175,8 +175,40 @@ describe("engine.test.ts", () => {
       expect(plan.candidates.map((c) => c.model_id)).toEqual(["model-a", "model-b"]);
     });
 
-    test("round_robin strategy alternates the starting member across sequential calls", async () => {
+    test("a fusion combo exposes a panel and a judge on the plan", async () => {
       const snap = await buildSnapshot(async () => ({
+        candidates: [cand("judge-model", "openai"), cand("p1", "anthropic"), cand("p2", "openai")],
+        aliases: {},
+        combos: {
+          "tenant-a": {
+            panel: { members: ["judge-model", "p1", "p2"], strategy: "fusion" },
+          },
+        },
+      }));
+      const engine = new RoutingEngine();
+      const plan = await engine.plan("panel", snap, "tenant-a");
+      // Every member's candidates are still present (admission/leases work).
+      expect(new Set(plan.candidates.map((c) => c.model_id))).toEqual(
+        new Set(["judge-model", "p1", "p2"]),
+      );
+      // The panel is every member in declared order; the judge is the first.
+      expect(plan.fusion).toEqual({ panel: ["judge-model", "p1", "p2"], judge: "judge-model" });
+    });
+
+    test("a single-member fusion combo is left as a plain plan (nothing to fuse)", async () => {
+      const snap = await buildSnapshot(async () => ({
+        candidates: [cand("solo", "openai")],
+        aliases: {},
+        combos: {
+          "tenant-a": { panel: { members: ["solo"], strategy: "fusion" } },
+        },
+      }));
+      const engine = new RoutingEngine();
+      const plan = await engine.plan("panel", snap, "tenant-a");
+      expect(plan.fusion).toBeUndefined();
+    });
+
+    test("round_robin strategy alternates the starting member across sequential calls", async () => {      const snap = await buildSnapshot(async () => ({
         candidates: [cand("model-a", "openai"), cand("model-b", "anthropic")],
         aliases: {},
         combos: {

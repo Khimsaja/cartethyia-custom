@@ -234,6 +234,42 @@ export interface ProviderAdapter {
     candidate: ProviderDispatchTarget,
     context: ProviderDispatchContext,
   ): Promise<Response>;
+  /**
+   * Optional native web-search capability, the analogue of {@link systemone}
+   * for the `/v1/search` route. The caller's body is opaque (`{query,
+   * max_results, …}`); the adapter maps it onto the provider's own search API
+   * and returns the raw upstream `Response`, which the route normalizes into
+   * the unified search envelope. The route performs the SSRF/credential work,
+   * so an adapter without this method is simply not eligible.
+   */
+  websearch?(
+    body: Record<string, unknown>,
+    candidate: ProviderDispatchTarget,
+    context: ProviderDispatchContext,
+  ): Promise<WebSearchOutcome>;
+}
+
+/** One provider-independent web-search hit, normalized from a provider's own response shape. */
+export interface WebSearchResult {
+  readonly title: string;
+  readonly url: string;
+  readonly snippet: string;
+  readonly published_at?: string | null;
+  /** Provider relevance score, clamped to `[0, 1]`; absent when the provider reports none. */
+  readonly score?: number | null;
+}
+
+/**
+ * The normalized result of one web-search dispatch. The adapter owns both the
+ * request mapping onto its provider's search API and the normalization of that
+ * provider's response shape into this vocabulary, so the `/v1/search` route
+ * never learns any provider's wire. A failed upstream throws a `GatewayError`
+ * carrying the upstream status — the same contract as `systemone` — so the
+ * attempt loop's retry classifier sees it; a success returns this.
+ */
+export interface WebSearchOutcome {
+  readonly results: readonly WebSearchResult[];
+  readonly total_results?: number | null;
 }
 
 /**

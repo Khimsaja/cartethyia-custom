@@ -9,6 +9,7 @@ import {
   RotateCcw,
   Search,
   Trash2,
+  TriangleAlert,
 } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -116,15 +117,21 @@ export function AccountStatusBadge({
     // skips those (account, model) pairs while the account stays usable for
     // every other model. Showing a bare "Active" hid that entirely.
     //
-    // An OAuth account with no refresh token is also `active` but cannot be
-    // re-minted: it will stop working at first expiry. Surface that now, so the
-    // operator re-logs-in before it fails rather than after.
-    const needsReauth = account.lastErrorCategory === "oauth_reauth_required";
+    // A static-token account is `active` and usable exactly as issued: it is
+    // never refreshed, so it carries an informational pill rather than the
+    // "Active" one — the operator needs to know it will stop at token expiry
+    // and that no refresh is being attempted.
+    const staticToken = account.staticToken === true;
     return (
       <Inline gap="4px">
-        <Badge tone={needsReauth ? "warn" : "ok"} dot>
-          {needsReauth ? "Re-login required" : "Active"}
+        <Badge tone={staticToken ? "info" : "ok"} dot>
+          {staticToken ? "Static token" : "Active"}
         </Badge>
+        {staticToken ? (
+          <Badge tone="info" title="Used as issued and never refreshed; re-login before it expires.">
+            no refresh
+          </Badge>
+        ) : null}
         <ModelCooldownChip cooldowns={modelCooldowns} />
       </Inline>
     );
@@ -235,6 +242,33 @@ function AccountRow({
     );
   };
 
+  // Marks the credential as a static bearer token (used as issued, never
+  // refreshed) or returns it to normal OAuth refresh handling. This is the
+  // operator's escape hatch for a pasted JWT/access token whose refresh grant
+  // is absent or dead while the token itself is still valid.
+  const staticToken = account.staticToken === true;
+  const toggleStaticToken = () => {
+    update.mutate(
+      {
+        providerId,
+        accountId: account.id,
+        request: { staticToken: !staticToken },
+      },
+      {
+        onSuccess: () =>
+          toast.success(
+            staticToken ? "Refresh re-enabled" : "Marked as static token (no refresh)",
+            label,
+          ),
+        onError: (err) =>
+          toast.error(
+            "Update failed",
+            (err as { message?: string }).message ?? "Unable to update account",
+          ),
+      },
+    );
+  };
+
   const handleTest = () => {
     testQuota.mutate(undefined, {
       onSuccess: (result) => {
@@ -326,6 +360,24 @@ function AccountRow({
         </div>
 
         <div className="account-row-actions">
+          <Button
+            size="icon"
+            variant={staticToken ? "primary" : "secondary"}
+            icon={<TriangleAlert size={12} />}
+            label={staticToken ? "Static token" : "No refresh"}
+            aria-label={
+              staticToken
+                ? `Static token mode on for ${label}; click to re-enable refresh`
+                : `Mark ${label} as a static token (no refresh)`
+            }
+            disabled={update.isPending}
+            onClick={toggleStaticToken}
+            title={
+              staticToken
+                ? "Static token: used as issued, never refreshed. Click to re-enable refresh."
+                : "Mark as static token: use this credential as issued and never refresh it (for a pasted JWT/access token)."
+            }
+          />
           <Button
             size="icon"
             variant="secondary"

@@ -80,6 +80,16 @@ The registry updates custom providers without a backend restart. Their upstream 
 at registration and on each network-bound dispatch. This existing BYOK path is separate from a
 client's own editor BYOK setup documented in `README.md` and the CLI Tools guide.
 
+**Search providers.** `exa`, `tavily`, and `brave` are bundled providers that serve no chat wire: each
+declares one `serviceKind: "websearch"` catalog row (`search/search-catalog.ts`) and an adapter built by
+`createSearchAdapter` from a `SearchProviderSpec` (`search/search-providers.ts`), whose `buildRequest` maps
+the caller's `{query, max_results, …}` onto the provider's search API and whose `normalize` maps that
+provider's response JSON into the shared `WebSearchResult` vocabulary. The `/v1/search` native route
+(`transport/dispatch/websearch.ts`) drives them through the shared attempt loop, so a search provider's
+model resolves through ordinary routing and failover to a sibling search backend is the same policy as any
+other route. Because they are chat-less, their adapters fail closed with `capability_unsupported` on a chat
+dispatch, and the canonical preparer points a chat caller that names a search model at `POST /v1/search`.
+
 The per-(tenant, provider) `provider_routing_settings.user_agent` value defaults to
 `codex_cli_rs/0.156.1` and is offered only for built-in API-key providers whose adapter does not
 build its own User-Agent. `BUNDLED_PROVIDER_METADATA.hasAdapterUserAgent` is the source of truth:
@@ -283,8 +293,13 @@ stay in `integrations/<name>/*-oauth.ts`.
   issuer advertises no lifetime either, the stored `expires_at` is a far-future fallback — a nearer value
   would mark a working token as due for a refresh that cannot happen.
   `provider_oauth_states.refresh_ciphertext` is nullable, so an account whose credential carries no refresh
-  token (a bare access token, or a JSON export without one) still gets a state row and is flagged
-  `oauth_reauth_required` rather than being invisible to the sweep.
+  token (a bare access token, or a JSON export without one) still gets a state row and is marked
+  `provider_accounts.static_token` rather than being invisible to the sweep. A static token is a normal,
+  usable credential — used exactly as issued and never refreshed — so the sweep skips it and an auth
+  rejection against it cools the account down instead of disabling it (there is no refresh to run, and the
+  token may still be valid). This is distinct from a *refreshable* account whose refresh grant died: that
+  one is disabled by a definitive refresh failure, while its access token, if still valid, is surfaced as
+  a static token the operator can pin instead.
 - **Typed refresh failures.** `DEFINITIVE_PATTERN`
   (`invalid_grant|invalid_token|unauthorized_client|revoked|refresh_token.*expired`) marks permanently dead
   credentials; a bare 401 with no body match is still definitive, while timeouts, 5xx, 429, and
@@ -562,8 +577,9 @@ deadlines. Routing, console, and discovery consume providers through these servi
   rotation until an operator restored it by hand. `disabled` is deliberately permanent — a rejected credential
   with no OAuth-refresh recovery path is not swept, so it carries a null deadline. A cooling account is
   deprioritized rather than excluded: `EligibilityEvaluator` keeps it eligible and `plan()` orders it after
-  every healthy sibling, so a single-account deployment still routes through its own cooling account instead of
-  answering `accounts_unavailable`. A bare upstream 402 is a quota cooldown, but a price refusal
+  every healthy sibling, so a healthy account is always tried first. When *no* healthy sibling is left —
+  every eligible candidate is cooling — `plan()` throws `accountsRateLimitedError` (429) instead of dialing a
+  cooling account, which could only reproduce the refusal that cooled it. A bare upstream 402 is a quota cooldown, but a price refusal
   (`no provider's ask matches your max-per-mtok bid`) is a verdict on the request, not the account: it is
   recorded with `mutatesAccount: false` so only that request fails. Only real credential evidence disables: deterministic
   content-policy rejections (`11140` and its safety-review phrasing) and hosted-tool failures

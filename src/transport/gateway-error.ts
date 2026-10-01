@@ -11,6 +11,7 @@ export type GatewayErrorCode =
   | "context_length_exceeded"
   | "request_too_large"
   | "accounts_unavailable"
+  | "accounts_rate_limited"
   | "capacity_exhausted"
   | "proxy_pool_capacity_exceeded"
   | "proxy_pool_cooldown"
@@ -40,6 +41,7 @@ export type GatewayErrorCode =
   | "proxy_unreachable"
   | "tool_call_loop_detected"
   | "client_router_denied"
+  | "model_abuse_banned"
   | "shutting_down"
   | "restart_for_update";
 

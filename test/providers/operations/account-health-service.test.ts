@@ -6,6 +6,7 @@ import { dbDescribe } from "../../helpers/db-gate";
 import { tenants, providerAccounts } from "../../../src/persistence/schema";
 import {
   classifyAccountError,
+  enforceCreditFloor,
   listAccountHealthEvents,
   recordAccountFailure,
   recordAccountSuccess,
@@ -13,6 +14,7 @@ import {
   reportAttemptOutcome,
   sweepExpiredCooldowns,
 } from "../../../src/providers/operations/account-health-service";
+import { totalRemainingCredit } from "../../../src/providers/quota/quota-contracts";
 import { parseRetryAfter } from "../../../src/transport/failure-policy";
 import { encryptCredential } from "../../../src/security/crypto";
 describe("account-recorder.test.ts", () => {
@@ -281,6 +283,52 @@ dbDescribe("Account Health Recorder & Auto-Recovery", () => {
     expect(await cooldownsOf()).not.toHaveProperty("local-model");
 
   });
+
+  test("credit floor parks an account when remaining credit is at or below the floor", async () => {
+    const { accountId } = await createTestAccount("active");
+    const parked = await enforceCreditFloor(getDb(), accountId, 30, 30);
+    expect(parked).toBe(true);
+    const rows = await getDb().select().from(providerAccounts).where(eq(providerAccounts.id, accountId));
+    expect(rows[0]?.status).toBe("cooldown");
+    expect(rows[0]?.lastErrorCategory).toBe("quota_exhausted");
+    // 24h park: the deadline must be well past the default 15m rate-limit window.
+    expect((rows[0]?.cooldownUntil?.getTime() ?? 0) - Date.now()).toBeGreaterThan(20 * 3_600_000);
+    const events = await listAccountHealthEvents(getDb(), accountId);
+    expect(events[0]?.toStatus).toBe("cooldown");
+    expect(events[0]?.errorCategory).toBe("quota_exhausted");
+  });
+
+  test("credit floor leaves a funded account and a credit-less read untouched", async () => {
+    const funded = await createTestAccount("active");
+    // remaining above the floor → no park.
+    expect(await enforceCreditFloor(getDb(), funded.accountId, 500, 30)).toBe(false);
+    // no credit reported (null remaining) → the floor cannot fire.
+    expect(await enforceCreditFloor(getDb(), funded.accountId, null, 30)).toBe(false);
+    // no floor configured → nothing to enforce.
+    expect(await enforceCreditFloor(getDb(), funded.accountId, 1, null)).toBe(false);
+    const rows = await getDb().select().from(providerAccounts).where(eq(providerAccounts.id, funded.accountId));
+    expect(rows[0]?.status).toBe("active");
+  });
+
+  test("a spent bonus pack does not park an account whose total credit is above the floor", async () => {
+    // The regression this guards: the buddy family reports a recurring
+    // allowance plus several bonus packs, and the floor used to compare the
+    // *scarcest single window* — so a spent bonus pack read as "0 remaining"
+    // and parked an account still holding hundreds of credits. The floor must
+    // compare the account's total, the same figure the Credit Pool card shows.
+    const { accountId } = await createTestAccount("active");
+    const remaining = totalRemainingCredit([
+      { kind: "quota:monthly", label: "Monthly", usedPercent: 0, remainingPercent: 100, resetsAt: null, used: 0, limit: 100 },
+      { kind: "bonus:1", label: "Bonus Pack 1", usedPercent: 100, remainingPercent: 0, resetsAt: null, used: 250, limit: 250 },
+      { kind: "bonus:2", label: "Bonus Pack 2", usedPercent: 70, remainingPercent: 30, resetsAt: null, used: 20.86, limit: 30 },
+      { kind: "bonus:3", label: "Bonus Pack 3", usedPercent: 0, remainingPercent: 100, resetsAt: null, used: 0, limit: 30 },
+    ]);
+    // 100 + 0 + 9.14 + 30 = 139.14, well above a floor of 50.
+    expect(remaining).toBeCloseTo(139.14, 2);
+    expect(await enforceCreditFloor(getDb(), accountId, remaining, 50)).toBe(false);
+    const rows = await getDb().select().from(providerAccounts).where(eq(providerAccounts.id, accountId));
+    expect(rows[0]?.status).toBe("active");
+  });
 });
 
 describe("Account Error Classifier", () => {
@@ -294,6 +342,24 @@ describe("Account Error Classifier", () => {
     expect(res.status).toBe("disabled");
     expect(res.cooldownMs).toBe(0);
     expect(res.retryAt).toBeNull();
+  });
+
+  test("an auth rejection against a static token cools down instead of disabling", () => {
+    // A static bearer token (a pasted JWT/access token) has no refresh to run,
+    // so a rejection must not park the account: the token may still be valid
+    // (a single upstream 401 can be transient), and disabling throws it away.
+    const res = classifyAccountError(new Error("Invalid token"), {
+      origin: "upstream",
+      scope: "account",
+      credentialEvidence: true,
+      credentialKind: "oauth",
+      staticToken: true,
+      statusCode: 401,
+    });
+    expect(res.category).toBe("auth_invalidated");
+    expect(res.status).toBe("cooldown");
+    expect(res.cooldownMs).toBe(5 * 60 * 1000);
+    expect(res.retryAt).not.toBeNull();
   });
 
   test("classifies 24h quota exhaustion with exact extracted cooldown", () => {

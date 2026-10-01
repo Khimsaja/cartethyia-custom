@@ -195,7 +195,34 @@ requires the inherited `routing:cli_mapping` scope and matching CLI User-Agent.
   consumed by `filterProviderCustomHeaders` in protocol primitives),
   `HEADER_TOKEN`/`HEADER_CONTROL`, `isProtectedHeader`.
 
-## Defaults and Redis keys
+## Model-abuse strikes (`model-abuse.ts`)
+
+A client that repeatedly requests a model outside its access — one absent from
+its allowlist, denylisted, or resolving to nothing — is answered with a warning
+that counts up, then banned. Each such *consecutive* rejection records a strike
+against both the caller's client IP and its API key; the third (configurable via
+`CARTETHYIA_MODEL_STRIKE_THRESHOLD`) bans both. Recording against two identities
+is deliberate: an IP alone is evaded by rotating keys, a key alone by enrolling a
+new one from the same host, so a ban on either closes both doors. A *valid*-model
+request clears the counters, and a strike counter expires after a quiet window
+(`CARTETHYIA_MODEL_STRIKE_WINDOW_MS`, default 5 min), so one typo — or a client
+that corrected itself — never accumulates toward a ban. A ban has **no TTL**: it
+is permanent until an operator lifts it from the console
+(`GET`/`DELETE /console/api/model-bans`), the only escape hatch, because a false
+positive (a shared NAT) must be fixable.
+
+Placement is load-bearing. The ban gate runs in
+`createApiKeyAuthenticationMiddleware`, *before* canonical parse and route
+preparation and before `state.authorization` is assigned, so a banned caller's
+attempts produce no telemetry row and no console error — the noise this layer
+exists to stop. The strike is recorded in `createProxyRoutePreparationMiddleware`,
+the single choke point where the preparer rejects a model, so both rejection
+kinds (`isModelAllowed` → 404, `modelNotFoundError` → 404) count and nothing
+else does. Unlike admission, this layer is **fail-open** on store outage: a
+strike counter that cannot be read must not refuse a legitimate request, so a
+store error is swallowed and the request proceeds — the worst case is a missed
+strike, never a blocked client.
+
 
 - 240 RPM/IP per 60 s window, ban at 480 for 1 h (`IP_RATE_MAX_PER_WINDOW`).
   The in-memory store's key ceiling (10 000) and per-key preallocation (64) are
@@ -214,6 +241,14 @@ requires the inherited `routing:cli_mapping` scope and matching CLI User-Agent.
   route for fairness, escalation per identity so rotating the path cannot dodge
   the ban). All scripted calls are static Lua (no dynamic eval) with
   finite-number result guards (`redisEvalNumber` / `redisEvalTuple`).
+- Model-abuse strikes: 3 consecutive invalid-model requests ban the IP and key
+  (`CARTETHYIA_MODEL_STRIKE_THRESHOLD`); a strike expires after 5 min of quiet
+  (`CARTETHYIA_MODEL_STRIKE_WINDOW_MS`). Redis keys
+  `cartethyia:model-abuse:strike:ip:<ip>` and
+  `cartethyia:model-abuse:strike:key:<keyId>` (window TTL), plus the permanent
+  `cartethyia:model-abuse:bans` set (`<scope>|<identity>` members) — the one key
+  with no TTL, because a ban is lifted only by an operator. The record step is a
+  single static Lua script over its three keys.
 
 ## How to extend
 

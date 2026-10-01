@@ -42,6 +42,10 @@ export interface ShareTopModel {
   readonly modelId: string;
   readonly requests: number;
   readonly tokens: number;
+  /** Mean tokens/sec across requests that reported a rate; null when none did. */
+  readonly avgTokensPerSec: number | null;
+  /** Mean time-to-first-byte in ms across requests that reported it; null when none did. */
+  readonly avgTtfbMs: number | null;
 }
 
 export interface ShareTopClientIp {
@@ -143,8 +147,14 @@ function emptyStats(
   };
 }
 
-const TOP_MODELS_LIMIT = 8;
-const TOP_IPS_LIMIT = 8;
+/**
+ * Row ceilings for the two ranked tables. The share page shows a fixed window
+ * of rows and scrolls the rest, so the cap is a payload bound, not a display
+ * one: high enough that an ordinary link shows everything, low enough that a
+ * link with thousands of client addresses cannot return an unbounded payload.
+ */
+const TOP_MODELS_LIMIT = 50;
+const TOP_IPS_LIMIT = 50;
 const HOURS_WINDOW = 24;
 
 export function createShareStatsPort(db: CartethyiaDatabase): ShareStatsPort {
@@ -193,6 +203,12 @@ export function createShareStatsPort(db: CartethyiaDatabase): ShareStatsPort {
             modelId: telemetryEvents.requestedModel,
             requests: sql<number>`count(*)`,
             tokens: tokenSum,
+            // Averages over the rows that actually reported each metric, not
+            // over every request: a non-streaming request has no rate, and a
+            // failed one no first byte, so dividing by `count(*)` would drag a
+            // healthy model's averages down with unrelated rows.
+            avgTokensPerSec: sql<number | null>`avg(${telemetryEvents.tokensPerSec})`,
+            avgTtfbMs: sql<number | null>`avg(${telemetryEvents.ttfbMs})`,
           })
           .from(telemetryEvents)
           .where(and(familyScope, sql`${telemetryEvents.requestedModel} is not null`))
@@ -220,8 +236,7 @@ export function createShareStatsPort(db: CartethyiaDatabase): ShareStatsPort {
           .limit(TOP_IPS_LIMIT),
       ]);
 
-      const totals = totalsRows[0];
-      // Fill the 24 buckets in JS: SQL only returns hours that saw traffic, and
+      const totals = totalsRows[0];      // Fill the 24 buckets in JS: SQL only returns hours that saw traffic, and
       // a chart drawn from sparse rows would silently compress the axis.
       const byHour = new Map<string, number>();
       for (const row of hourlyRows) {
@@ -254,6 +269,8 @@ export function createShareStatsPort(db: CartethyiaDatabase): ShareStatsPort {
                   modelId: row.modelId,
                   requests: Number(row.requests ?? 0),
                   tokens: Number(row.tokens ?? 0),
+                  avgTokensPerSec: row.avgTokensPerSec === null ? null : Number(row.avgTokensPerSec),
+                  avgTtfbMs: row.avgTtfbMs === null ? null : Math.round(Number(row.avgTtfbMs)),
                 },
               ],
         ),

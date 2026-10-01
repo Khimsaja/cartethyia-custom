@@ -61,6 +61,8 @@ property of the connection, not of the route you configure.
 | Messages | `/v1/messages` | Anthropic-native; what Claude Code speaks |
 | Completions | `/v1/completions` | Legacy text completion |
 | Models | `/v1/models` | Read-only catalog listing (`/v1/models/info` for detail) |
+| Web Search | `/v1/search` | Native search route; bundled Exa/Tavily/Brave providers |
+| System One | `/v1/systemone` | Native decision route (`{state, questions}` → `{answers}`) |
 
 
 ## Request lifecycle
@@ -179,6 +181,8 @@ bun run dashboard:build
 bun run build:aot
 bun run build:binary
 bun run build
+bun run start
+bun run restart
 ```
 
 `bun run build` produces the standalone binary in three steps: build the
@@ -189,6 +193,16 @@ imports, and bundling the raw source instead leaves an unresolvable
 `require("typebox/type")` in the executable. It also bakes `NODE_ENV=production`
 into the artifact, which the binary needs in order to avoid the development-only
 pretty-print log transport.
+
+`bun run restart` rebuilds and restarts the running instance gracefully: it stops
+the old process through the drain endpoint (below) when `CARTETHYIA_DRAIN_TOKEN`
+is set, and only force-kills when no token is configured. A graceful stop lets
+in-flight requests finish (a drain window, default 20s) and tells any aborted
+stream the process is going away via a terminal frame, instead of truncating the
+response mid-flight. On Linux the process also handles `SIGTERM`/`SIGINT`
+directly; on Windows a catchable signal cannot be delivered to a console-less
+process, which is why the drain endpoint exists (`POST /admin/drain`, loopback +
+`x-drain-token`, registered only when the token is set).
 
 ## Tests and coverage
 

@@ -28,6 +28,7 @@ import { flagPoolCooldown } from "../../network/pool-health";
 import { completeAttempt, estimatedUsage, type ProviderExchangeCapture } from "./attempt-finalize";
 import { repriceUsage } from "../../providers/usage";
 import { shouldCooldownPool, isOAuthCredentialInvalidated } from "./retry-policy";
+import { drainAbortReason } from "../shutdown-notice";
 
 /** Route-specific preconditions resolved for one candidate before its leases are taken. */
 interface PreparedAttempt<TAdapter> {
@@ -143,10 +144,19 @@ export async function runAttemptLoop<TResult, TAdapter>(
         },
       });
     } catch (error) {
+      // A drain aborts the controller, so a mid-flight attempt unwinds here as
+      // an abort. Surface the typed shutdown error (503 shutting_down /
+      // restart_for_update) instead of an opaque `transport_closed`, so the
+      // client's JSON error — not just the SSE path — names the real cause.
+      const drain = drainAbortReason(state.abortController.signal.reason);
+      if (drain !== undefined) error = drain;
       lastError = error;
+      // A drain is a *server* close, not a client cancel: it must be recorded
+      // as a failure with the shutdown code, and it is never retryable.
       const cancelled =
-        state.abortController.signal.aborted ||
-        (error instanceof GatewayError && error.code === "transport_closed");
+        drain === undefined &&
+        (state.abortController.signal.aborted ||
+          (error instanceof GatewayError && error.code === "transport_closed"));
       const terminalAttempt =
         cancelled || !isRetryableFailure(error) || index === candidates.length - 1;
       await completeAttempt(state, {

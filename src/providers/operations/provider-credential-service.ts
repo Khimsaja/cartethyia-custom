@@ -62,6 +62,8 @@ export interface AccountWithFreshnessRow {
   readonly authState: unknown;
   readonly clientSecretCiphertext: Buffer | null;
   readonly expiresAt: Date | null;
+  /** The credential is a static bearer token that must never be refreshed. */
+  readonly staticToken: boolean;
 }
 
 /** One account row together with its skew-adjusted OAuth due time. */
@@ -93,6 +95,7 @@ export async function loadAccountWithFreshness(
       authState: providerAccounts.authState,
       clientSecretCiphertext: providerOauthStates.clientSecretCiphertext,
       expiresAt: providerOauthStates.expiresAt,
+      staticToken: providerAccounts.staticToken,
     })
     .from(providerAccounts);
   const query = "leftJoin" in selectBuilder
@@ -107,7 +110,12 @@ export async function loadAccountWithFreshness(
   const lead = skewMs ?? refreshLeadMs(row.providerId);
   return {
     row,
-    dueAt: row.expiresAt == null ? undefined : row.expiresAt.getTime() - lead,
+    // A static token is never "due": it is used as issued and there is no
+    // refresh to run, so the dispatch path must not treat it as stale.
+    dueAt:
+      row.staticToken || row.expiresAt == null
+        ? undefined
+        : row.expiresAt.getTime() - lead,
   };
 }
 

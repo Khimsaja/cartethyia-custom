@@ -157,9 +157,8 @@ becomes its own target list.
    and ends the pass with no tick. An account is due when its expiry is inside
    its **provider's** refresh lead (`REFRESH_LEAD_MS`, e.g. Claude ~4h, Codex
    ~5 days, Antigravity ~5 min; default 5 min) or when it has no recorded
-   expiry. Accounts already flagged `oauth_reauth_required` are excluded — a
-   refresh cannot help until the operator re-logs in, and retrying only floods
-   the log.
+   expiry. Accounts marked `static_token` are excluded — their credential is
+   used exactly as issued and never refreshed, so retrying only floods the log.
 2. The pass runs **sequentially** with `OAUTH_REFRESH_INTER_ITEM_DELAY_MS`
    (1.5s) between accounts, not in waves: the OAuth token endpoints rate-limit
    a burst of refreshes. `runSweep`'s `pace` option is what enables this.
@@ -197,6 +196,16 @@ upstream fan-out. One bounded pass per tick:
 Per-account failures are counted and logged, never rethrown: the registry's
 error path is a backstop, not a channel. `onTick` reports
 `{ targets, attempted, skipped, failed, checkins }`.
+
+**Credit-floor enforcement rides this sweep.** The sweep is the only path that
+fetches live credit, so the operator's per-provider reserve is enforced here:
+each successful refresh resolves the provider's `creditFloor`
+(`resolveCreditFloor`, tenant-over-global) and, when the account's lowest
+remaining credit across its windows has reached it, `enforceCreditFloor` parks
+the account in a 24h `quota_exhausted` cooldown and the route snapshot is
+invalidated so the next plan fails over. A failed or credit-less read never
+parks an account. See `CONSOLE.md` (`routing/`) for the setting and
+`PROVIDERS.md` (quota) for the credit shape.
 
 ## Rules / invariants
 

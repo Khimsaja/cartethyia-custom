@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { formatBytes, formatDuration, formatNumber, formatUptime } from "../../src/shared/format";
+import {
+  formatBytes,
+  formatCredits,
+  formatDuration,
+  formatNumber,
+  formatUptime,
+} from "../../src/shared/format";
 
 /**
  * The single formatting policy: an absent or non-finite value renders as `—`,
@@ -54,5 +60,27 @@ describe("formatNumber", () => {
     expect(formatNumber(1234.6)).toBe("1,235");
     expect(formatNumber(0)).toBe("0");
     expect(formatNumber(undefined)).toBe("—");
+  });
+});
+
+describe("formatCredits", () => {
+  test("groups the raw amount instead of abbreviating it", () => {
+    // The whole point of this formatter: a 9393-credit balance must read
+    // `9,393`, never the compact `9.4K` that suits a chart axis.
+    expect(formatCredits(9393)).toBe("9,393");
+    expect(formatCredits(1_234_567)).toBe("1,234,567");
+  });
+
+  test("keeps up to two fraction digits, dropping a trailing .00", () => {
+    expect(formatCredits(1234.56)).toBe("1,234.56");
+    expect(formatCredits(1.01)).toBe("1.01");
+    expect(formatCredits(500)).toBe("500");
+  });
+
+  test("renders the placeholder for absent values and keeps zero real", () => {
+    expect(formatCredits(undefined)).toBe("—");
+    expect(formatCredits(null)).toBe("—");
+    expect(formatCredits(Number.NaN)).toBe("—");
+    expect(formatCredits(0)).toBe("0");
   });
 });

@@ -343,6 +343,7 @@ describe("DrizzleProviderDetailStore call-shape", () => {
       strategy: "fallback",
       rotateCount: 1,
       maxInflight: null,
+      creditFloor: null,
       enabled: false,
       bypassProxy: false,
       userAgent: "codex_cli_rs/0.156.1",

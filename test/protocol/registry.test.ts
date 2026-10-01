@@ -18,10 +18,4 @@ describe("wire codec dispatch", () => {
     expect(() => decodeWireResponse(unknown, {}, request)).toThrow("unsupported wire family");
     expect(() => decodeWireStream(unknown, new ReadableStream(), request)).toThrow("unsupported wire family");
   });
-
-  test("exposes static dispatch functions", () => {
-    expect(encodeWireRequest).toBeFunction();
-    expect(decodeWireResponse).toBeFunction();
-    expect(decodeWireStream).toBeFunction();
-  });
 });

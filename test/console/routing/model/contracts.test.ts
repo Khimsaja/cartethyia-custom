@@ -96,12 +96,33 @@ function makeStore(knownModels: readonly string[] = ["claude-sonnet-4-5", "gpt-4
       if (idx === -1) return undefined;
       const merged: ModelComboRow = {
         ...comboRows[idx]!,
+        ...(patch.name === undefined ? {} : { name: patch.name }),
         ...(patch.members === undefined ? {} : { members: [...patch.members] }),
         ...(patch.strategy === undefined ? {} : { strategy: patch.strategy }),
         updatedAt: new Date().toISOString(),
       };
       comboRows[idx] = merged;
       return merged;
+    },
+    async renameCombo(tenantId, id, nextName) {
+      const idx = comboRows.findIndex((r) => r.tenantId === tenantId && r.id === id);
+      if (idx === -1) return undefined;
+      const oldName = comboRows[idx]!.name;
+      comboRows[idx] = { ...comboRows[idx]!, name: nextName, updatedAt: new Date().toISOString() };
+      // Mirror the real store's cascade: aliases targeting the old name and
+      // other combos listing it as a member follow the rename.
+      for (const [aliasIdx, alias] of aliasRows.entries()) {
+        if (alias.tenantId === tenantId && alias.targetModel === oldName)
+          aliasRows[aliasIdx] = { ...alias, targetModel: nextName };
+      }
+      for (const [comboIdx, combo] of comboRows.entries()) {
+        if (combo.tenantId === tenantId && combo.id !== id && combo.members.includes(oldName))
+          comboRows[comboIdx] = {
+            ...combo,
+            members: combo.members.map((m) => (m === oldName ? nextName : m)),
+          };
+      }
+      return comboRows[idx];
     },
     async deleteCombo(tenantId, id) {
       const idx = comboRows.findIndex((r) => r.tenantId === tenantId && r.id === id);
@@ -315,6 +336,152 @@ describe("model routing domain factory — combos", () => {
     });
     const row = await factory.createCombo(access, { name: "pool", members: ["gpt-4"] });
     await expect(factory.deleteCombo(access, row.id)).resolves.toEqual({ success: true });
+  });
+
+  test("renaming a combo rewrites references from aliases and nested combos", async () => {
+    const { store, aliasRows, comboRows } = makeStore();
+    const factory = createModelRoutingOperations({ store, accessResolver: () => access });
+    const target = await factory.createCombo(access, { name: "pool", members: ["gpt-4"] });
+    // An alias and another combo both reference the combo by its old name.
+    await factory.createAlias(access, { alias: "fast", targetModel: "pool" });
+    await factory.createCombo(access, { name: "outer", members: ["pool"] });
+
+    const renamed = await factory.updateCombo(access, target.id, { name: "pool-2" });
+    expect(renamed.name).toBe("pool-2");
+    // The alias now targets the new name, and the nested combo lists it too —
+    // a rename that skipped this would leave both pointing at a dead name.
+    expect(aliasRows.find((a) => a.alias === "fast")?.targetModel).toBe("pool-2");
+    expect(comboRows.find((c) => c.name === "outer")?.members).toEqual(["pool-2"]);
+  });
+
+  test("renaming rejects a name already taken by another combo", async () => {
+    const { store } = makeStore();
+    const factory = createModelRoutingOperations({ store, accessResolver: () => access });
+    await factory.createCombo(access, { name: "taken", members: ["gpt-4"] });
+    const row = await factory.createCombo(access, { name: "pool", members: ["gpt-4"] });
+    await expect(
+      factory.updateCombo(access, row.id, { name: "taken" }),
+    ).rejects.toMatchObject({ code: "combo_conflict", status: 409 });
+  });
+
+  test("updateCombo grandfathers a stored member that no longer resolves", async () => {
+    const { store, comboRows } = makeStore(["gpt-4"]);
+    const factory = createModelRoutingOperations({ store, accessResolver: () => access });
+    const row = await factory.createCombo(access, { name: "pool", members: ["gpt-4"] });
+    // The stored combo now carries a member whose model was removed after it was
+    // written. A rename/strategy change that leaves that member untouched must
+    // not be blocked by an entry the operator never edited.
+    comboRows[0] = { ...comboRows[0]!, members: ["gpt-4", "gone/model"] };
+    const updated = await factory.updateCombo(access, row.id, {
+      name: "pool-2",
+      members: ["gpt-4", "gone/model"],
+      strategy: "round_robin",
+    });
+    expect(updated.name).toBe("pool-2");
+    expect(updated.members).toEqual(["gpt-4", "gone/model"]);
+    expect(updated.strategy).toBe("round_robin");
+  });
+
+  test("updateCombo still rejects a newly-added member that does not resolve", async () => {
+    const { store, comboRows } = makeStore(["gpt-4"]);
+    const factory = createModelRoutingOperations({ store, accessResolver: () => access });
+    const row = await factory.createCombo(access, { name: "pool", members: ["gpt-4"] });
+    comboRows[0] = { ...comboRows[0]!, members: ["gpt-4", "gone/model"] };
+    await expect(
+      factory.updateCombo(access, row.id, { members: ["gpt-4", "gone/model", "also-gone"] }),
+    ).rejects.toMatchObject({ code: "unresolved_member", status: 422 });
+  });
+});
+
+describe("model routing domain factory — combo clone", () => {
+  test("clone copies resolvable members and strategy under a -clone name", async () => {
+    const { store } = makeStore();
+    const factory = createModelRoutingOperations({ store, accessResolver: () => access });
+    const source = await factory.createCombo(access, {
+      name: "pool",
+      members: ["gpt-4", "claude-sonnet-4-5"],
+      strategy: "round_robin",
+    });
+    const result = await factory.cloneCombo(access, source.id);
+    expect(result.combo.name).toBe("pool-clone");
+    expect(result.combo.members).toEqual(["gpt-4", "claude-sonnet-4-5"]);
+    expect(result.combo.strategy).toBe("round_robin");
+    expect(result.skippedMembers).toEqual([]);
+  });
+
+  test("clone suffixes the name when the -clone name is taken", async () => {
+    const { store } = makeStore();
+    const factory = createModelRoutingOperations({ store, accessResolver: () => access });
+    const source = await factory.createCombo(access, { name: "pool", members: ["gpt-4"] });
+    await factory.createCombo(access, { name: "pool-clone", members: ["gpt-4"] });
+    const result = await factory.cloneCombo(access, source.id);
+    expect(result.combo.name).toBe("pool-clone-2");
+  });
+
+  test("clone skips members that no longer resolve and still lands", async () => {
+    const { store, comboRows } = makeStore(["gpt-4"]);
+    const factory = createModelRoutingOperations({ store, accessResolver: () => access });
+    const source = await factory.createCombo(access, { name: "pool", members: ["gpt-4"] });
+    // A member that resolved when the combo was written has since gone dangling.
+    comboRows[0] = { ...comboRows[0]!, members: ["gpt-4", "gone/model"] };
+    const result = await factory.cloneCombo(access, source.id);
+    expect(result.combo.members).toEqual(["gpt-4"]);
+    expect(result.skippedMembers).toEqual(["gone/model"]);
+  });
+
+  test("clone refuses when every member is unresolvable", async () => {
+    const { store, comboRows } = makeStore(["gpt-4"]);
+    const factory = createModelRoutingOperations({ store, accessResolver: () => access });
+    const source = await factory.createCombo(access, { name: "pool", members: ["gpt-4"] });
+    comboRows[0] = { ...comboRows[0]!, members: ["gone/model"] };
+    await expect(factory.cloneCombo(access, source.id)).rejects.toMatchObject({
+      code: "unresolved_member",
+      status: 422,
+    });
+  });
+
+  test("clone 404s for a missing combo", async () => {
+    const { store } = makeStore();
+    const factory = createModelRoutingOperations({ store, accessResolver: () => access });
+    await expect(factory.cloneCombo(access, crypto.randomUUID())).rejects.toMatchObject({
+      code: "combo_not_found",
+      status: 404,
+    });
+  });
+
+  test("clone audits model_combo.cloned and invalidates the snapshot", async () => {
+    const { store } = makeStore();
+    const events: string[] = [];
+    let invalidateCount = 0;
+    const factory = createModelRoutingOperations({
+      store,
+      accessResolver: () => access,
+      auditSink: {
+        async record(e) {
+          events.push(e.action);
+        },
+      },
+      snapshotInvalidator: {
+        async invalidate() {
+          invalidateCount += 1;
+          return invalidateCount;
+        },
+      },
+    });
+    const source = await factory.createCombo(access, { name: "pool", members: ["gpt-4"] });
+    await factory.cloneCombo(access, source.id);
+    expect(events).toEqual(["model_combo.created", "model_combo.cloned"]);
+    expect(invalidateCount).toBe(2);
+  });
+
+  test("clone requires dashboard:write", async () => {
+    const { store } = makeStore();
+    const factory = createModelRoutingOperations({ store, accessResolver: () => access });
+    const source = await factory.createCombo(access, { name: "pool", members: ["gpt-4"] });
+    await expect(factory.cloneCombo(readOnly, source.id)).rejects.toMatchObject({
+      code: "insufficient_scope",
+      status: 403,
+    });
   });
 });
 

@@ -52,6 +52,7 @@ async function insertAccount(opts: {
   cooldownUntil?: Date;
   authState?: Record<string, unknown>;
   clientSecret?: string;
+  staticToken?: boolean;
 }): Promise<string> {
   await requireDb()
     .insert(providers)
@@ -64,6 +65,7 @@ async function insertAccount(opts: {
       label: "test-account",
       credentialKind: "oauth",
       credentialCiphertext: encryptCredential("initial-access-token"),
+      ...(opts.staticToken ? { staticToken: true } : {}),
       ...(opts.status ? { status: opts.status } : {}),
       ...(opts.cooldownUntil ? { cooldownUntil: opts.cooldownUntil } : {}),
       ...(opts.authState ? { authState: opts.authState } : {}),
@@ -478,5 +480,34 @@ dbDescribe("OAuthRefreshService", () => {
     expect(
       rows.map((r) => r.id).filter((id) => createdAccountIds.includes(id)).sort(),
     ).toEqual([due, noExpiry].sort());
+  });
+
+  test("a static-token account is never refreshed and is skipped by the sweep", async () => {
+    // The regression this guards: a pasted JWT/access token with no refresh
+    // token used to be stamped `oauth_reauth_required` and read as broken. It
+    // is a normal, usable credential used exactly as issued — the sweep must
+    // skip it and a refresh attempt must not reach the refresher at all.
+    const accountId = await insertAccount({
+      providerId: "claude",
+      refreshToken: undefined,
+      expiresAt: undefined,
+      staticToken: true,
+    });
+
+    const due = await loadDueOAuthAccounts(requireDb());
+    expect(due.some((r) => r.id === accountId)).toBe(false);
+
+    const service = new OAuthRefreshService(requireDb());
+    let called = false;
+    const refresher = fakeRefresher(async () => {
+      called = true;
+      throw new Error("static token must never be refreshed");
+    });
+    // Even a forced refresh (the 401 retry path) never runs a grant: there is
+    // nothing to re-mint, so it returns null — the same "cannot refresh" signal
+    // a missing refresh token gives — and the caller keeps the stored token.
+    const token = await service.ensureFreshAccessToken(accountId, refresher, { force: true });
+    expect(called).toBe(false);
+    expect(token).toBeNull();
   });
 });

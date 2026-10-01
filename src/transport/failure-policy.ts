@@ -279,6 +279,7 @@ export function classifyUpstreamFailure(error: unknown): UpstreamFailurePolicy {
     error.code === "admission_unavailable" ||
     error.code === "capacity_exhausted" ||
     error.code === "accounts_unavailable" ||
+    error.code === "accounts_rate_limited" ||
     error.code === "quota_exceeded" ||
     error.code === "authentication_failed" ||
     error.code === "proxy_auth_required" ||

@@ -46,6 +46,19 @@ describe("default provider composition", () => {
     expect(registry.modelDiscoveryRequiresCredential("openai")).toBe(true);
   });
 
+  test("meta (Meta Model API) is an API-key provider sharing the muse-spark catalog", async () => {
+    const registry = createDefaultProviderRegistry();
+    // No OAuth login: the Model API is a pasted key, not a device login — that
+    // is what separates it from `muse` (Muse Code) on the same upstream host.
+    expect(await registry.resolveAuthentication("meta")).toBeUndefined();
+    expect(await registry.resolve("meta")).toBeDefined();
+    // Same upstream roster as Muse Code, declared once and reused.
+    const { META_MODELS } = await import("../../src/providers/integrations/meta/meta");
+    const { MUSE_CODE_MODELS } = await import("../../src/providers/integrations/muse/muse");
+    expect(META_MODELS).toBe(MUSE_CODE_MODELS);
+    expect(META_MODELS.length).toBeGreaterThan(0);
+  });
+
   /**
    * A Claude sync must publish real limits, not `null`.
    *

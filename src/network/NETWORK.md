@@ -82,8 +82,15 @@ recovers the application-level distinction from the endpoint scheme.
 `splitEndpointConfig` separates the reserved `endpoint`/`label` keys
 (`RESERVED_ENDPOINT_CONFIG_KEYS`) from the opaque transport config.
 `createSsrfLookup` revalidates proxy DNS on every connect, and
-relay-classified endpoints (`*.vercel.app`, `*.workers.dev`, `*.netlify.app`)
-go to `relayEndpoint` — never CONNECT-tunneled.
+relay-classified endpoints (`*.vercel.app`, `*.workers.dev`, `*.netlify.app`,
+`*.deno.dev`) go to `relayEndpoint` — never CONNECT-tunneled. A relay pool is
+normally provisioned by deploying a relay worker to one of those hosts
+(`console/routing/pools/relay-deploy.ts`, exposed as `POST
+/console/api/network/pools/relay/deploy`): the worker forwards the request to
+`x-relay-target` and the resulting public URL is registered as an HTTP pool.
+The console surfaces this from the Proxy Pool header ("Deploy relay"), which
+opens a modal rather than an always-on card, so it lives with the pools it
+creates.
 
 **Dispatch-time loading.** `DrizzleNetworkPoolLoader.load(poolId)` (implements
 `NetworkPoolLoader`) reads one `network_pools` row, rejects missing, disabled,

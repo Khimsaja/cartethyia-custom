@@ -18,7 +18,6 @@ import { resolveManualModelMetadata } from "../../../providers/model-definition"
 import { isUniqueViolation } from "../../../persistence/postgres";
 import { DEFAULT_ENDPOINT_BY_WIRE_FAMILY, endpointPathForProviderModel, mapProviderRow } from "./catalog-projections";
 import { pushStructuredConsoleLog } from "../../../observability/log-ring";
-import { OAUTH_REAUTH_REQUIRED_CATEGORY } from "../../../providers/authentication/oauth-refresh-service";
 
 /** Real Drizzle-backed provider and model catalog repository. */
 
@@ -902,16 +901,15 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
             maxInflight: null,
             status: "active",
             ...(request.authState === undefined ? {} : { authState: request.authState }),
-            // An OAuth account pasted without a refresh token cannot be
-            // re-minted, so it is stamped for re-auth up front: the console
-            // shows it as needing a sign-in rather than presenting an account
-            // that works until it silently stops.
+            // An OAuth account pasted without a refresh token is a *static*
+            // token: the pasted value is a bearer token used exactly as issued
+            // and there is no refresh grant to run. Flag it as static so the
+            // console reads it as an informational "static token" rather than
+            // "re-login required" — the token is still valid and dispatchable —
+            // and so the refresh sweep skips it instead of retrying a refresh
+            // that can never succeed.
             ...(request.credentialKind === "oauth" && !oauthHasRefreshToken
-              ? {
-                  lastErrorCategory: OAUTH_REAUTH_REQUIRED_CATEGORY,
-                  lastError: "OAuth account has no refresh token; sign in again to restore it",
-                  lastErrorAt: new Date(),
-                }
+              ? { staticToken: true }
               : {}),
           })
           .returning();
@@ -921,9 +919,9 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
         // An OAuth account always gets a state row — even with no refresh token
         // — so the proactive refresh sweep can see it. Without the row the
         // account is invisible to `loadDueOAuthAccounts` (an inner join) and its
-        // token dies with no operator signal. A row with a null expiry reads as
-        // "always due", which is what makes an unrefreshable account surface as
-        // `oauth_reauth_required` instead of silently working until it stops.
+        // token dies with no operator signal. A null refresh token marks a
+        // static account the sweep skips (see `loadDueOAuthAccounts`); the row
+        // still carries any expiry so a future re-login can reuse it.
         if (request.credentialKind === "oauth") {
           await tx.insert(providerOauthStates).values({
             providerAccountId: row.id,
@@ -932,13 +930,13 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
           });
           if (!oauthHasRefreshToken) {
             pushStructuredConsoleLog(
-              "warn",
-              "OAuth account created without a refresh token; re-authentication required",
+              "info",
+              "OAuth account created as a static token; it will not be refreshed",
               {
                 event: "token_refresh",
                 providerId,
                 accountId: row.id,
-                errorCode: "oauth_reauth_required",
+                errorCode: "static_token",
               },
             );
           }
@@ -974,6 +972,19 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
         patch.secret.length === 0 ? null : hashSecret(patch.secret);
     }
     if (patch.status !== undefined) set.status = patch.status;
+    // Toggling the static-token flag: turning it on declares the credential is
+    // used as issued and never refreshed, so any stale re-auth flag is cleared —
+    // the operator has said the account is fine, and the pill must stop reading
+    // "Re-login required". Turning it off returns the account to normal OAuth
+    // refresh handling; the sweep picks it up again on its next pass.
+    if (patch.staticToken !== undefined) {
+      set.staticToken = patch.staticToken;
+      if (patch.staticToken) {
+        set.lastError = null;
+        set.lastErrorCategory = null;
+        set.lastErrorAt = null;
+      }
+    }
     // Status toggles are not recovery: preserve the health machine's evidence
     // until the operator uses Recover or replaces the rejected credential.
     const clearsFailureState = patch.secret !== undefined && patch.secret.length > 0;
@@ -1044,6 +1055,7 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
       ...(row.lastRecoveredAt ? { lastRecoveredAt: row.lastRecoveredAt.toISOString() } : {}),
       createdAt: row.createdAt.toISOString(),
       sortIndex: row.sortIndex,
+      ...(row.staticToken ? { staticToken: true } : {}),
     };
   }
 

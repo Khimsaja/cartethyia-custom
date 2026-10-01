@@ -5,6 +5,253 @@
 > All changes below are pre-release. Cartethyia has not been tagged or
 > released; this document reflects the current production codebase architecture and capabilities.
 
+### Graduated model-abuse strikes: warn, then ban
+
+A client that repeatedly requests a model outside its access — not in its
+allowlist, denylisted, or resolving to nothing — used to get the same 404 every
+time, which is exactly what a prober wants: a cheap way to fill the console and
+the share page with failed rows. The rejection now escalates. Each *consecutive*
+invalid-model request records a strike against the caller's client IP and its API
+key; the third (configurable) bans both, and the 404 carries an escalating
+warning ("Warning 2 of 3 — repeatedly requesting models outside your access will
+ban this client") so an honest client that mistyped is told what it is doing
+before it hits a wall. A valid-model request clears the count and a strike
+expires after a quiet window, so one typo — or a client that corrected itself —
+never accumulates toward a ban.
+
+The ban gate runs before the request is parsed, so a banned caller produces no
+telemetry row and no console error. A ban is permanent until an operator lifts it
+from the console (`GET`/`DELETE /console/api/model-bans`, platform-admin only) —
+a false positive on a shared address must be fixable. Recording against both the
+IP and the key is deliberate: rotating either identity alone would otherwise
+evade a single-identity ban. Knobs:
+`CARTETHYIA_MODEL_STRIKE_THRESHOLD` (default 3) and
+`CARTETHYIA_MODEL_STRIKE_WINDOW_MS` (default 300000).
+
+### Fix: a graceful restart no longer truncates in-flight responses
+
+A shutdown used to abort every in-flight request the instant it began draining,
+so a restart mid-generation closed the SSE socket with no terminal event — the
+client reported "connection lost mid-response". A drain now runs in two phases:
+in-flight requests get a grace window to finish naturally
+(`CARTETHYIA_SHUTDOWN_DRAIN_WINDOW_MS`, default 20s), and only the stragglers are
+aborted after it. A stream that is aborted still receives a typed terminal frame
+naming the shutdown (`shutting_down`, or `restart_for_update` for an in-place
+image swap) instead of a silent close, and the non-streaming path returns the
+same typed error. The process force-exit backstop is derived from the drain
+budget rather than a fixed literal, so it can never hard-kill a drain that was
+about to finish.
+
+On Windows a catchable signal cannot be delivered to a console-less process
+(`process.kill(pid, "SIGTERM")` runs no JS handler — measured), so the only stop
+was a hard kill. `POST /admin/drain` now offers a signal-free graceful stop:
+registered only when `CARTETHYIA_DRAIN_TOKEN` is set, gated to a loopback peer and
+a constant-time `x-drain-token` match, acknowledging with 202 before the drain
+begins. `bun run restart` uses it to rebuild and restart without truncating
+in-flight work, falling back to a force-kill only when no token is configured.
+
+### Fix: credit floor compared one bucket, not the account's total
+
+The credit floor (Routing Strategy) compared the *scarcest single credit window*
+against the reserve, so a provider that reports several windows — the buddy
+family's recurring allowance plus bonus packs — tripped the floor the moment any
+one pack was spent. An account still holding hundreds of credits was parked in a
+24h `quota_exhausted` cooldown and read as unusable.
+
+The floor now compares `totalRemainingCredit`: the sum across the account's
+credit windows, the same figure the Credit Pool card shows. A spent sub-bucket
+no longer parks a funded account, and the reserve an operator sets cannot
+disagree with the number the card displays.
+
+### Compression controls: strength levels, per-transform toggles, and a quality notice
+
+The Overview Compression card now gives each transform its own enable toggle and
+a strength dropdown on the right, with a fitting icon per row (scissors for RTK,
+a sparkle for the PonyTail system directive). RTK prune gains a strength
+(`lite`/`full`/`ultra`): `lite` raises the size gate and withholds the generic
+fallbacks so only structurally-recognized blobs are touched, `full` is the prior
+behavior, and `ultra` lowers the gate and runs a second generic pass. PonyTail
+gains an explicit enable flag beside its level (a legacy bag that stored only a
+level keeps it on). A quality notice appears while either transform is active:
+compression trades fewer tokens for a chance of degraded output.
+
+### Combos: rename, clone, and a member-chip cap
+
+A combo's name is now editable (it was fixed at creation). Renaming validates
+uniqueness and rewrites every reference in one transaction — aliases whose target
+named the old name, and other combos listing it as a member — so nothing is left
+pointing at a dead name. Each combo row gains a clone button that copies its
+members and strategy under `${name}-clone` (suffixed when taken), and the member
+chips are capped at four with a "+N more models" note.
+
+A stored combo member whose model was later renamed or removed no longer blocks
+unrelated edits or cloning. A clone (`POST /routing/combos/:id/clone`) is named
+server-side so concurrent clones cannot collide, and drops any member that no
+longer resolves — the clone still lands, reporting what was skipped; a clone
+whose every member is dangling is refused, since an empty combo serves nothing.
+An edit likewise validates only the members it newly introduces, so a rename or
+strategy change on a combo carrying a stale entry succeeds.
+
+### Share page: exact request counts, model throughput, and an allowance bar
+
+The public share page's STATS & ACTIVITY section now reads request counts in
+full with thousands separators instead of a compact `1.2K` — the exact figure a
+reader checks against a limit. The TOP MODELS table gains each model's average
+throughput (tokens/sec) and average time-to-first-byte, averaged over the rows
+that actually reported each metric so a non-streaming or failed request does not
+drag a healthy model's numbers down. Both ranked tables (top models, client IPs)
+show a fixed window of about eight rows and scroll the rest, with the header
+sticky.
+
+The hero quota rows now draw the allowance directly: a row with no limit is a
+full green bar (nothing to fill toward), and a limited row lays a red "used" fill
+over that green, growing left to right with the used fraction — so the red
+advances across the green as usage climbs and covers it once the limit is spent.
+
+### Static-token accounts: a valid JWT with no refresh is no longer "broken"
+
+An account whose credential is a bare bearer token (a pasted JWT/access token,
+or a JSON export with no refresh token) was stamped `oauth_reauth_required` and
+shown as "Re-login required" — which reads as a dead account even though the
+token is still valid and dispatchable. The refresh sweep also retried a refresh
+that can never succeed, and a refreshable account whose grant had died was
+disabled outright although its access token still worked.
+
+`provider_accounts` gains a `static_token` flag, orthogonal to `credential_kind`
+(an `oauth` account can carry a static token). A static account is used exactly
+as issued: the sweep skips it, a forced refresh returns the stored token rather
+than running a grant, and an auth rejection cools the account down instead of
+disabling it. Pasting a bare token sets the flag automatically; a re-login clears
+it. The console shows an informational "Static token · no refresh" pill, and the
+per-account action row gains a `!!` toggle to mark or unmark an account as a
+static token — the escape hatch for a JWT whose refresh grant is gone but whose
+token still works. The retired `oauth_reauth_required` category is cleared.
+
+### Hosted relay deploy: Cloudflare Workers, Vercel, and Deno Deploy
+
+The dashboard Proxy page can now deploy a relay worker to a hosted front door
+and register it as an outbound network pool, without hand-writing or deploying
+the worker. `POST /console/api/network/pools/relay/deploy` takes a target
+(`cloudflare` | `vercel` | `deno`), a deploy token, and an optional project name;
+it uploads one shared worker template and registers the resulting public URL
+(`*.workers.dev` / `*.vercel.app` / `*.deno.dev`) as an active HTTP pool.
+
+The console launches this from the **Proxy Pool** header ("Deploy relay") as a
+modal, not an always-on card, so it sits with the pools it creates.
+
+The worker forwards each request to the origin named by `x-relay-target` at the
+path in `x-relay-path` — the exact contract the pool dispatcher already speaks
+for relay-classified hosts — so a deployed relay needs no extra wiring. The
+provider API token is used for the deploy and never stored; the deploy call runs
+through the SSRF-validated fetch. `*.deno.dev` joins the relay-host set
+alongside `*.vercel.app` / `*.workers.dev` / `*.netlify.app`.
+
+### Model fusion: a `fusion` combo strategy (panel + judge)
+
+A combo can now be a **fusion**: every member answers the prompt in parallel as a
+panel, then one judge model synthesizes a single final answer from the panel
+responses. The judge is the combo's first member. The judge directive is
+analysis-first (consensus / contradictions / partial coverage / unique insight /
+blind spots) and source-anonymized, so the judge weighs substance rather than a
+model brand.
+
+Fusion degrades the way the panel does: if every panel model fails the request
+answers 503, and if exactly one survives its answer is returned directly with no
+synthesis. Collection uses a quorum grace window — once enough panel models
+answer, stragglers get a short grace period before the judge proceeds — bounded
+by a hard timeout so one hung model cannot stall the request.
+
+Panel models run non-streaming with tools stripped (the judge needs complete
+prose); the judge keeps the client's stream flag and tools, so streaming and
+downstream tool use still work. Each panel model is a real upstream call that
+commits its own usage and health, and the judge is the request's terminal attempt
+— so the accounting matches ordinary failover. The dashboard combo editor gained
+the **Fusion (panel + judge)** strategy option. New enum value
+`model_combo_strategy = 'fusion'` (migration `0027_model_combo_fusion.sql`).
+
+### Web search: a `POST /v1/search` native route with bundled search providers
+
+The gateway can now answer a web-search request directly. `POST /v1/search` takes
+`{model, query, max_results, search_type, …}`, resolves `model` through the
+ordinary routing engine (so a search provider's model — or an alias or combo of
+one — works), and returns a normalized `{provider, model, query, results,
+total_results, usage}` envelope. It runs through the same attempt loop as every
+other route, so retry, admission, accounting, and telemetry are shared, and
+failover across search backends is the same policy.
+
+Three bundled search providers ship: **Exa**, **Tavily**, and **Brave Search**.
+Each declares one `serviceKind: "websearch"` catalog row and a search spec whose
+`buildRequest`/`normalize` pair owns that provider's wire, so the route never
+learns a provider's request or response shape. A new service kind `websearch`
+joins `llm` and `systemone`; the dashboard Combo & alias page gained a **Web
+Search** section (bottom) that lists the search providers, connects their keys,
+and shows the model id to call.
+
+### Request compression: RTK tool-result pruning and PonyTail directives
+
+Two opt-in tenant preferences now cut input tokens on the request path, applied as
+the last step of `applyTenantPreferences` so shaping is settled first.
+
+- **RTK prune** (`rtkPruneEnabled`) rewrites the text of oversized `toolResult`
+  parts through an auto-detected filter (git diff/log/status, grep, find, ls,
+  tree, dedup-log, smart-truncate). Filtering is fail-open — a filter that throws,
+  returns empty, or does not shrink the text leaves the original in place — and an
+  error tool result (`is_error`) is never pruned.
+- **PonyTail** (`ponyTailLevel`: `lite` | `full` | `ultra`) appends a directive to
+  the `system` content, idempotently.
+
+The transform is canonical-request-level, so one implementation covers every wire
+family. Both preferences are editable in the dashboard Overview (before API keys).
+A settings-read outage skips compression rather than failing the request.
+
+### New provider: Meta Model API (`meta`)
+
+Meta's first-party Model API is now a bundled provider, reachable with a direct
+API key from the Meta developer dashboard. It is deliberately separate from the
+existing `muse` (Muse Code) provider: both land on the same `api.meta.ai/v1`
+OpenAI-Responses-compatible surface and serve the same `muse-spark-*` roster,
+but `muse` mints its key from a subscription OAuth device login while `meta`
+authenticates with an operator-supplied key. The adapter is the shared
+API-key spec and the catalog is the one `MUSE_CODE_MODELS` list, so the
+`muse-spark` roster has a single declaration.
+
+### Per-account credit reserve (Routing Strategy "credit floor")
+
+A credit-metered provider can now keep a floor of unused credits on every
+account. The provider's Routing Strategy card gained a **Credit floor / account**
+field (`creditFloor`, nullable, per `(tenant, provider)`): with a floor of `30`
+on an account holding `500` credits, the account is spent only down to `30`
+remaining, then parked in a 24h `quota_exhausted` cooldown so routing fails over
+to a sibling instead of draining it to empty.
+
+Enforcement lives in the quota sweep (`quota/refresh.ts`), the only path that
+fetches live credit: a successful fetch computes the lowest remaining credit
+across the account's credit windows (`lowestRemainingCredit`) and, when it has
+reached the floor, calls `enforceCreditFloor` (which parks the account and
+invalidates the route snapshot). The check is a no-op for a provider that reports
+no credit window, so rate-limit-only providers are unaffected. New column
+`provider_routing_settings.credit_floor` (migration `0026_provider_credit_floor.sql`).
+
+### All-cooling routes now answer 429 instead of dialing a cooled-down account
+
+A cooling account is deprioritized, not excluded, so a healthy sibling is
+always tried first. But when **every** eligible account for a model was cooling,
+`plan()` still returned a cooling account as the only candidate — the attempt
+loop dialed it, reproduced the same upstream refusal, and logged another
+`active → cooldown` row. The operator read this as "it still hits a cooled-down
+account and never fails over", which was accurate: with nothing healthy left
+there was nothing to fail over to.
+
+`plan()` now detects that end state (every eligible candidate is account-wide
+cooling) and throws a new typed `accounts_rate_limited` error — HTTP **429**,
+retryable — instead of planning a cooling account. This is distinct from the
+existing `accounts_unavailable` (503), which means *no usable account exists*
+(all disabled or model-cooling) and is not fixed by waiting. 404 would blame the
+request; 503 would read as missing capacity when the capacity is merely resting.
+The `EligibilityEvaluator` is unchanged (a cooling candidate stays eligible so
+the plan can order it behind healthy siblings); only the all-cooling end state
+is now refused.
+
 ### OAuth accounts pasted into the console are now tracked and refreshed
 
 An OAuth account pasted through the console (rather than created by the OAuth

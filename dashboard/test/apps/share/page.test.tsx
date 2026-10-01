@@ -49,8 +49,8 @@ const statsFixture = {
     hour: new Date(Date.UTC(2026, 0, 1, index)).toISOString(),
     requests: index,
   })),
-  models: [{ modelId: "claude-sonnet", requests: 90, tokens: 70_000 }],
-  clientIps: [{ ip: "203.0.113.xxx", requests: 90, tokens: 70_000, lastSeenAt: null }],
+  models: [{ modelId: "claude-sonnet", requests: 90, tokens: 70_000, avgTokensPerSec: 42.5, avgTtfbMs: 820 }],
+  clientIps: [{ ip: "203.0.113.xxx", requests: 90, tokens: 70_000, lastSeenAt: null, clientType: "claude-cli" }],
 };
 
 const handoff: ShareHandoffData = {
@@ -92,8 +92,7 @@ describe("public share enrollment page", () => {
     expect(markup).toContain('aria-expanded="false"');
     expect(markup).not.toContain("TOP MODELS");
     expect(markup).not.toContain("203.0.113.xxx");
-  });
-  test("requires a display name before enabling shared key issuance", () => {
+  });  test("requires a display name before enabling shared key issuance", () => {
     shareState = { data, error: null, loading: false };
     const markup = render();
     expect(markup).toContain("required");

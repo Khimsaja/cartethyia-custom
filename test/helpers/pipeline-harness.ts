@@ -13,6 +13,8 @@ import type { RouteCandidate, Reservation, RoutePlan } from "../../src/transport
 import type { RoutingEngine } from "../../src/transport/routing/router";
 import type { AdmissionLease, ApiKeyAdmissionService } from "../../src/security/admission";
 import type { IpAbuseProtectionService } from "../../src/security/abuse";
+import type { ModelStrikeService } from "../../src/security/model-abuse";
+import { GatewayError } from "../../src/transport/gateway-error";
 import type { ResolvedApiKey } from "../../src/security/api-key-auth";
 import type { ByokUpstreamHost } from "../../src/providers/operations/provider-catalog-service";
 import type { ValidatedNetworkBindingFactory } from "../../src/network/pool/resolver";
@@ -160,6 +162,14 @@ export interface PipelineHarnessOptions {
    * per-IP counter can be observed through the production middleware order.
    */
   readonly ipAbuseProtection?: Pick<IpAbuseProtectionService, "checkBeforeAccess">;
+  /**
+   * Makes the preparer stub reject a model the way the real preparer does —
+   * a 404 `model_not_found` — so the model-abuse strike layer can be exercised
+   * through the real middleware order.
+   */
+  readonly rejectModel?: (model: string) => boolean;
+  /** Graduated model-abuse strikes, wired into the real middleware order. */
+  readonly modelStrikes?: ModelStrikeService;
 }
 
 export interface PipelineHarness {
@@ -252,6 +262,13 @@ export function buildPipelineHarness(options: PipelineHarnessOptions = {}): Pipe
           image: false,
         });
       }
+      // Mirror the real preparer's model rejection so the strike layer sees the
+      // same 404 it would in production.
+      if (options.rejectModel?.(input.canonicalRequest.model)) {
+        throw new GatewayError("model_not_found", 404, "model is not allowed for this API key", {
+          model: input.canonicalRequest.model,
+        });
+      }
       const candidate: RouteCandidate = {
         provider_id: providerId,
         model_id: input.canonicalRequest.model,
@@ -322,6 +339,7 @@ export function buildPipelineHarness(options: PipelineHarnessOptions = {}): Pipe
     snapshotService: {} as never,
     resolveOAuthRefresher: async () => undefined,
     oauthRefreshService: {} as never,
+    ...(options.modelStrikes === undefined ? {} : { modelStrikes: options.modelStrikes }),
     consoleApi: options.consoleApi ?? createConsoleApiStub(db),
     ...(options.shutdownCoordinator === undefined
       ? {}

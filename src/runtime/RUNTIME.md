@@ -63,23 +63,32 @@ over the registry, so heavy provider modules stay off the boot path.
 `ShutdownCoordinator` moves through `idle` → `stop_admitting` →
 `bounded_drain_wait` → `flush_telemetry` → `close_pools` → `done`. It exposes
 `track`/`untrack`/`isDraining`/`stopAdmitting`/`setAbortInflight`, and an
-idempotent `begin(reason)` that stops admitting, aborts in-flight work, waits
-for the drain (10ms spin, 8s budget), flushes telemetry (1s budget — a
-deadline overrun still proceeds), then closes pools. `shutdownReason()` returns
-the reason of the most recent `begin` (default `SIGTERM`) so the public
-termination notice can distinguish a stop from an in-place update.
+idempotent `begin(reason)` that stops admitting, gives in-flight work a grace
+window to finish *naturally* (`CARTETHYIA_SHUTDOWN_DRAIN_WINDOW_MS`, default
+20s), then aborts whatever remains, waits for the post-abort drain (10ms spin,
+8s budget), flushes telemetry (1s budget — a deadline overrun still proceeds),
+then closes pools. The grace window exists because most requests complete well
+under it: aborting immediately truncated every in-flight response, including
+long streams that would otherwise have finished. `shutdownReason()` returns the
+reason of the most recent `begin` (default `SIGTERM`) so the public termination
+notice can distinguish a stop from an in-place update, and
+`totalShutdownBudgetMs()` derives the process force-exit backstop from the same
+drain numbers, so a hard kill can never cut a drain that was about to finish.
 
 `bootstrap()` supplies the hooks: `flushTelemetry` is
 `deps.telemetryBuffer.flush`, and `closePools` stops the server, stops
 scheduled tasks, stops the telemetry buffer with a final flush, then settles
 `closeDb()`, `closeRedis()`, and `poolAgentResolver.closeAll()`. `app.ts` wires
-`setAbortInflight(() => requestStateStore.abortAll())` so the bounded drain
-observes cancellation and finalizers run before the flush. `main.ts` adds
-SIGINT/SIGTERM handlers with a 10s forced-exit backstop, plus a SIGUSR2 handler
-that drains with the `update` reason so an in-place image swap can tell callers
-the replacement is seconds away. The reason reaches the wire through
-`transport/shutdown-notice.ts`: `update` renders `restart_for_update` ("system
-will be back in a minute"), anything else renders the generic `shutting_down`.
+`setAbortInflight(() => requestStateStore.abortAll(shutdownError(reason)))` so
+the straggler abort carries the typed shutdown reason (not a bare `AbortError`)
+and the streaming path can emit a terminal frame for it. `main.ts` adds
+SIGINT/SIGTERM handlers with a forced-exit backstop sized by
+`totalShutdownBudgetMs()`, plus a SIGUSR2 handler that drains with the `update`
+reason so an in-place image swap can tell callers the replacement is seconds
+away. The reason reaches the wire through `transport/shutdown-notice.ts`:
+`update` renders `restart_for_update` ("system will be back in a minute"),
+anything else renders the generic `shutting_down`; `drainAbortReason()` is the
+shared classifier the dispatch paths read off an aborted controller.
 
 ## Primitives
 

@@ -119,6 +119,7 @@ const expectedColumns: Record<string, readonly ExpectedColumn[]> = {
     column("model_cooldowns", "jsonb", "jsonb", "NO"),
     column("max_inflight", "integer", "int4", "YES"),
     column("sort_index", "integer", "int4", "NO"),
+    column("static_token", "boolean", "bool", "NO"),
     column("created_at", "timestamp with time zone", "timestamptz", "NO"),
   ],
   provider_oauth_states: [
@@ -210,6 +211,7 @@ const expectedColumns: Record<string, readonly ExpectedColumn[]> = {
     column("strategy", "USER-DEFINED", "provider_routing_strategy", "NO"),
     column("rotate_count", "integer", "int4", "NO"),
     column("max_inflight", "integer", "int4", "YES"),
+    column("credit_floor", "integer", "int4", "YES"),
     column("enabled", "boolean", "bool", "NO"),
     column("user_agent", "text", "text", "NO"),
     column("bypass_proxy", "boolean", "bool", "NO"),

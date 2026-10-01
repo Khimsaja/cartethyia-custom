@@ -24,6 +24,11 @@ import { RedisAdmissionController, RoutingEngine } from "../transport/routing/ro
 import { ApiKeyAdmissionService, InMemoryAdmissionCounterStore, RedisAdmissionCounterStore, sweepLeases } from "../security/admission";
 import { DrizzleApiKeyStore } from "../persistence/api-key-store";
 import { InMemoryIpAbuseStore, IpAbuseProtectionService, RedisIpAbuseStore } from "../security/abuse";
+import {
+  InMemoryModelAbuseStore,
+  ModelStrikeService,
+  RedisModelAbuseStore,
+} from "../security/model-abuse";
 import { checkReadiness, resolveRedisMode } from "../persistence/readiness";
 import { ProxyRequestPreparer } from "../transport/request/preparer";
 import { DrizzleNetworkPoolLoader } from "../network/pool/loader";
@@ -37,6 +42,7 @@ import { quotaRefreshSweep } from "../workers/quota-refresh-worker";
 import { checkinEgressForPass } from "../workers/checkin-egress";
 import { createAccountSecretResolver } from "../providers/operations/provider-credential-service";
 import { quotaCacheSize } from "../console/quota/cache";
+import { createCreditFloorResolver } from "../console/quota/refresh";
 import { preferencesReaderFor } from "../transport/dispatch/attempt-finalize";
 import { sweepExpiredCooldowns } from "../providers/operations/account-health-service";
 import { DrizzleTelemetryStore } from "../persistence/telemetry-store";
@@ -46,6 +52,8 @@ import { TelemetryBatchBuffer } from "../observability/telemetry-buffer";
 import { RuntimeMetricsSampler } from "../observability/runtime-metrics";
 import {
   resolveIpRateLimit,
+  resolveModelStrikeThreshold,
+  resolveModelStrikeWindowMs,
   resolveSsrfPolicy,
   resolveTelemetryRetentionDays,
   resolveTrustedProxyBoundary,
@@ -87,6 +95,8 @@ export interface ProductionDeps {
   resolveOAuthRefresher: (providerId: string) => Promise<OAuthTokenRefresher | undefined>;
   oauthRefreshService: OAuthRefreshService;
   admissionService: ApiKeyAdmissionService;
+  /** Graduated strikes for repeated invalid-model requests. */
+  modelStrikes: ModelStrikeService;
 }
 
 /**
@@ -191,6 +201,15 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
     : new InMemoryIpAbuseStore();
   const ipAbuseProtection = new IpAbuseProtectionService(ipStore, undefined, {
     maxRequestsPerWindow: resolveIpRateLimit(),
+  });
+  // Graduated model-abuse strikes: a client that keeps requesting models
+  // outside its access is warned, then banned. Redis-backed when available so
+  // the ban survives a restart and is shared across instances; in-memory
+  // otherwise (single_instance_local), where a restart clears it.
+  const modelAbuseStore = redis ? new RedisModelAbuseStore(redis) : new InMemoryModelAbuseStore();
+  const modelStrikes = new ModelStrikeService(modelAbuseStore, {
+    threshold: resolveModelStrikeThreshold(),
+    windowMs: resolveModelStrikeWindowMs(),
   });
   const readiness = () => checkReadiness(db, redis, redisMode);
   const scheduledTasks = new ScheduledTaskRegistry();
@@ -310,6 +329,13 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
           redis,
           providerRegistry: registry,
           resolveCredential: quotaResolveCredential,
+          // The credit reserve (Routing Strategy "credit floor") is enforced on
+          // this sweep: it is the path that fetches live credit, so a funded
+          // account is parked in a 24h cooldown the moment its remaining credit
+          // reaches the operator's floor, and the route snapshot is invalidated
+          // so the next plan fails over instead of draining it.
+          resolveCreditFloor: createCreditFloorResolver(db),
+          snapshotInvalidator: snapshotService,
           // The check-in ride-along rotates egress per account: each account
           // gets the next active pool in its tenant's rotation so check-ins
           // spread across IPs instead of sharing one direct egress. No pool
@@ -347,6 +373,7 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
     }),
     networkBindingFactory,
     ipAbuseProtection,
+    modelStrikes,
     readiness,
     scheduledTasks,
     poolAgentResolver,

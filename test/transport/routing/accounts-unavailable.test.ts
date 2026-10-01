@@ -29,21 +29,37 @@ const snap = (cs: RouteCandidate[]): RouteSnapshot =>
   ({ revision: 1, candidates: cs, combos: {}, aliases: {} }) as never as RouteSnapshot;
 
 describe("exhausted models report unavailable, not missing", () => {
-  test("all accounts cooling still plan, and the cooling account is chosen", async () => {
-    // Cooling is a deprioritization, not an exclusion: the account recently
-    // failed, but it can still serve the request. Excluding it made a
-    // single-account deployment answer 503 while a usable credential sat idle —
-    // reported as "cooldown blocks the account completely". A plan that refuses
-    // to route through its own only account is worse than one that retries it.
+  test("all accounts cooling throws 429 accounts_rate_limited, not a route to a cooling account", async () => {
+    // When nothing but cooling accounts remain there is no healthy sibling to
+    // fail over to, so dialing one can only reproduce the refusal that cooled
+    // it — the operator reported the gateway "still hit a cooled-down account"
+    // and never failed over. Answer 429 (rate limited) so the client retries
+    // after the reset, rather than a 503 that reads as missing capacity.
     const engine = new RoutingEngine();
-    const plan = await engine.plan(
-      "cb/deepseek-v4.1-flash",
-      snap([acct("A", "cooldown"), acct("B", "cooldown")]),
-      null,
-      [],
-    );
-    expect(plan.candidates).toHaveLength(2);
-    expect(plan.candidates[0]?.provider_account_id).toBe("A");
+    const err = await engine
+      .plan("cb/deepseek-v4.1-flash", snap([acct("A", "cooldown"), acct("B", "cooldown")]), null, [])
+      .then(
+        () => null,
+        (error: unknown) => error as { code?: string; status?: number },
+      );
+    expect(err?.code).toBe("accounts_rate_limited");
+    expect(err?.status).toBe(429);
+  });
+
+  test("a single cooling account also answers 429, never dials the cooling account", async () => {
+    // The one-account deployment is the sharpest case: the account is the only
+    // route, but a cooldown means the upstream just refused it. Answering 429
+    // is honest; silently re-dialing it made every request inside the window
+    // fail upstream and log another `active → cooldown` row.
+    const engine = new RoutingEngine();
+    const err = await engine
+      .plan("cb/deepseek-v4.1-flash", snap([acct("A", "cooldown")]), null, [])
+      .then(
+        () => null,
+        (error: unknown) => error as { code?: string; status?: number },
+      );
+    expect(err?.code).toBe("accounts_rate_limited");
+    expect(err?.status).toBe(429);
   });
 
   test("a healthy account is preferred over a cooling one", async () => {

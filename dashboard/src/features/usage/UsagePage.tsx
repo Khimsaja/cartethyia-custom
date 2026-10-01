@@ -58,6 +58,7 @@ import {
   TOKEN_SCALE_AUTO,
   TOKEN_SCALES,
   formatBytes,
+  formatCredits,
   formatDuration,
   formatNumber,
   formatTokens,
@@ -134,12 +135,15 @@ function formatUsd(value: number | null | undefined): string {
   return `$${value.toFixed(2)}`;
 }
 /**
- * Provider-billed credits (Tencent buddy-meter `credit`): two decimals like
- * the live probe reported (`1.01`), `—` when the upstream sent no credit.
+ * Provider-billed credits (Tencent buddy-meter `credit`) with the unit label:
+ * two decimals like the live probe reported (`1.01`), `—` when the upstream
+ * sent no credit. The numeric formatting delegates to the shared
+ * `formatCredits`, so this page and the provider-detail credit pool round the
+ * same way; only the ` CR` suffix is local here.
  */
 export function formatCredit(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return "—";
-  return `${Number(value.toFixed(2)).toLocaleString("en-US")} CR`;
+  return `${formatCredits(value)} CR`;
 }
 function formatSpeed(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value) || value <= 0) return "—";
@@ -365,6 +369,7 @@ function errorMessageFor(errorKind: string | undefined): string {
     // Codes that previously had no entry and fell through to a mechanical
     // underscore-to-space rendering of the raw code.
     accounts_unavailable: "no account for this route was available",
+    accounts_rate_limited: "every account for this route is rate limited or cooling down",
     ambiguous_model: "the model id matched more than one route",
     invalid_pool_limits: "the network pool limits were rejected",
     max_connections_exceeded: "the connection ceiling was reached",

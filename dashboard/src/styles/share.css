@@ -868,11 +868,24 @@ html[data-app="share"] .share-hud-card {
   text-transform: uppercase;
 }
 
+/* The bar is the allowance: green when there is room, overlaid by a red "used"
+   fill that grows left-to-right. With no limit the whole track is green (an
+   unlimited allowance is a bar with nothing to fill toward, not an empty one);
+   with a limit the red advances across the green as usage climbs and covers it
+   entirely once the limit is reached. */
 .share-quota-track {
+  position: relative;
   height: 8px;
   border-radius: 4px;
-  background: var(--surface-3);
+  background: var(--teal);
   overflow: hidden;
+}
+
+.share-quota-used {
+  height: 100%;
+  border-radius: 4px;
+  background: var(--red);
+  transition: width 240ms ease;
 }
 
 .share-quota-fill {
@@ -880,14 +893,6 @@ html[data-app="share"] .share-hud-card {
   border-radius: 4px;
   background: var(--teal);
   transition: width 240ms ease;
-}
-
-.share-quota-fill.is-warn {
-  background: var(--orange);
-}
-
-.share-quota-fill.is-over {
-  background: var(--red);
 }
 
 .share-quota-value {
@@ -1027,6 +1032,22 @@ html[data-app="share"] .share-hud-card {
   min-width: 0;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
+}
+
+/* A ranked table shows a fixed window of rows and scrolls the rest: roughly
+   eight rows stay in view, so a link with many models or client addresses
+   keeps the section a predictable height instead of running down the page. */
+.share-stats-scroll.is-windowed {
+  max-height: 336px;
+  overflow-y: auto;
+}
+
+/* The header stays put while the rows scroll under it. */
+.share-stats-scroll.is-windowed .share-stats-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface-2);
 }
 
 .share-stats-table {

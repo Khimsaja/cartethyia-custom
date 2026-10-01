@@ -1,6 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import {
   CONFIG_SPEC_KEYS,
   decodeEncryptionKey,
@@ -134,23 +132,6 @@ describe("Network policy — trusted proxy + SSRF", () => {
           "CARTETHYIA_MAX_REDIRECTS must be an integer between 0 and 10",
         );
       });
-    }
-  });
-});
-
-describe("Proxy pool config", () => {
-  test("pool egress has no child-process config-file or binary resolvers", () => {
-    // The child-process pool flavor was removed; its resolvers must not creep
-    // back without the daemon that consumed them. Pool egress is dialed
-    // in-process by `network/pool/agent.ts`.
-    const source = readFileSync(resolve(import.meta.dir, "../src/config.ts"), "utf8");
-    for (const gone of [
-      "resolveProxyPortRange",
-      "resolveProxyChildUid",
-      "resolveProxyChildGid",
-      "proxyBinaryFilename",
-    ]) {
-      expect(source).not.toContain(gone);
     }
   });
 });

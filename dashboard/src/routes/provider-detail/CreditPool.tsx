@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { useQuotaOverview, type QuotaEntry } from "../../hooks/quota";
-import { formatTokens } from "../../shared/format";
+import { formatCredits } from "../../shared/format";
 import { quotaBarTone } from "../../shared/quota-formatters";
 
 export interface CreditPoolTotals {
@@ -109,7 +109,7 @@ export function CreditPoolCard({ providerId }: { readonly providerId: string }):
             color: tone.text,
           }}
         >
-          {formatTokens(pool.used)} / {formatTokens(pool.limit)}
+          {formatCredits(pool.used)} / {formatCredits(pool.limit)}
         </span>
       </div>
       <div

@@ -11,7 +11,7 @@ import { messagesAdapter } from "./transport/surface/messages/adapter";
 import { completionAdapter } from "./transport/surface/completion";
 import { SurfaceAdapterRegistry } from "./transport/surface/adapters";
 import { GatewayError } from "./transport/gateway-error";
-import { shutdownNotice } from "./transport/shutdown-notice";
+import { shutdownError, shutdownNotice } from "./transport/shutdown-notice";
 import type { CanonicalAdapter } from "./transport/middleware/request-context";
 import type { ApiKeyAuthorizationSnapshot } from "./security/api-key-auth";
 import { getPool } from "./persistence/postgres";
@@ -31,8 +31,10 @@ import {
 } from "./transport/dispatch/proxy-request";
 import { createResponsesCompactHandler } from "./transport/dispatch/responses-compact";
 import { createSystemoneHandler } from "./transport/dispatch/systemone";
+import { createWebsearchHandler } from "./transport/dispatch/websearch";
 
 import { createTransportPipeline } from "./transport/middleware/pipeline";
+import { createDrainHandler } from "./transport/drain-endpoint";
 import { PublicModelCatalogStore, type AllowedModelEntry } from "./console/providers/catalog/public-model-store";
 import type { IpAbuseProtectionService } from "./security/abuse";
 import type { ReadinessCheckResult } from "./persistence/readiness";
@@ -42,6 +44,7 @@ import { resolveClientIdentity } from "./security/ip-boundary";
 import type { ValidatedNetworkBindingFactory } from "./network/pool/resolver";
 import { metrics } from "./observability/metrics";
 import { API_CONTENT_SECURITY_POLICY, X_FRAME_OPTIONS } from "./security/outbound-headers";
+import type { ModelStrikeService } from "./security/model-abuse";
 
 
 import type { TelemetryBatchBuffer } from "./observability/telemetry-buffer";
@@ -104,6 +107,8 @@ export interface ProductionAppDeps {
   readonly telemetryBuffer: TelemetryBatchBuffer;
   readonly resolveOAuthRefresher: (providerId: string) => Promise<OAuthTokenRefresher | undefined>;
   readonly oauthRefreshService: OAuthRefreshService;
+  /** Graduated strikes for repeated invalid-model requests. */
+  readonly modelStrikes?: ModelStrikeService;
   /**
    * The console control plane. Optional because the console needs Redis
    * (OAuth-flow state and the quota cache are Redis-backed; sessions live in
@@ -119,6 +124,13 @@ export interface ProductionAppDeps {
   readonly maxBodyBytes?: number;
   readonly requestDeadlineMs?: number;
   readonly verifiedHttps?: boolean;
+  /**
+   * Secret for the operator drain endpoint. When set (with `triggerDrain`),
+   * `POST /admin/drain` from loopback with a matching `x-drain-token` drains
+   * gracefully — the signal-free stop Windows needs.
+   */
+  readonly drainToken?: string;
+  readonly triggerDrain?: () => void;
 }
 
 /** Either app mode. The discriminant decides which builder path runs. */
@@ -204,8 +216,12 @@ export function createGatewayApp(deps: GatewayAppDeps) {
   const requestStateStore = new ProxyRequestStateStore(deps.shutdownCoordinator);
   // Shutdown ordering: abort in-flight proxy controllers first so the
   // bounded drain observes cancellation and finalizers run before
-  // telemetry flush and pool close.
-  deps.shutdownCoordinator?.setAbortInflight?.(() => requestStateStore.abortAll());
+  // telemetry flush and pool close. The reason is threaded through so the
+  // streaming path emits a drain-aware terminal frame (`restart_for_update`
+  // vs `shutting_down`) instead of a bare abort that reads as a client drop.
+  deps.shutdownCoordinator?.setAbortInflight?.(() =>
+    requestStateStore.abortAll(shutdownError(deps.shutdownCoordinator?.shutdownReason?.())),
+  );
   const app = new Elysia({ precompile: resolveElysiaPrecompile() })
     .beforeHandle(
       ({
@@ -306,6 +322,7 @@ export function createGatewayApp(deps: GatewayAppDeps) {
       ...(deps.verifiedHttps ? { verifiedHttps: true } : {}),
       shutdownCoordinator: deps.shutdownCoordinator,
       telemetry: deps.telemetryBuffer,
+      ...(deps.modelStrikes ? { modelStrikes: deps.modelStrikes } : {}),
     });
     transportPipeline.mountRoot(app);
     const proxyDeps: ProviderProxyHandlerDeps = {
@@ -313,6 +330,7 @@ export function createGatewayApp(deps: GatewayAppDeps) {
       providerAdapters: deps.providerAdapters ?? new Map(),
       resolveProviderAdapter: deps.resolveProviderAdapter,
       stateStore: requestStateStore,
+      proxyPreparer: deps.proxyPreparer,
       snapshotService: deps.snapshotService,
       networkBindingFactory: deps.networkBindingFactory,
       byokUpstreamHosts: deps.byokUpstreamHosts,
@@ -417,6 +435,20 @@ export function createGatewayApp(deps: GatewayAppDeps) {
       telemetryBuffer: deps.telemetryBuffer,
     });
 
+    const handleWebsearch = createWebsearchHandler({
+      db: deps.db,
+      providerAdapters: deps.providerAdapters ?? new Map(),
+      resolveProviderAdapter: deps.resolveProviderAdapter,
+      proxyPreparer: deps.proxyPreparer,
+      stateStore: requestStateStore,
+      poolSelector: deps.poolSelector,
+      networkBindingFactory: deps.networkBindingFactory,
+      snapshotService: deps.snapshotService,
+      resolveOAuthRefresher: deps.resolveOAuthRefresher,
+      oauthRefreshService: deps.oauthRefreshService,
+      telemetryBuffer: deps.telemetryBuffer,
+    });
+
     // Gateway mounting: the pipeline owner composes stages, telemetry, and
     // cleanup; app only registers the public route table.
     app.use(
@@ -427,6 +459,7 @@ export function createGatewayApp(deps: GatewayAppDeps) {
         routes.post("/messages", proxyHandler);
         routes.post("/completions", proxyHandler);
         routes.post("/systemone", handleSystemone);
+        routes.post("/search", handleWebsearch);
         routes.get("/models", handleModelsList);
         routes.get("/models/info", handleModelsDetail);
         routes.get("/models/*", handleModelsDetail);
@@ -435,6 +468,19 @@ export function createGatewayApp(deps: GatewayAppDeps) {
   }
 
   if (deps.mode === "production") {
+    // Operator drain endpoint. Registered before the SPA catch-all and only
+    // when a token is configured, so an unconfigured gateway has no such route
+    // at all. It is a graceful stop for platforms where a catchable signal
+    // cannot be delivered (Windows), and a second signal-free path elsewhere.
+    if (deps.drainToken && deps.triggerDrain) {
+      const drainHandler = createDrainHandler({
+        token: deps.drainToken,
+        triggerDrain: deps.triggerDrain,
+        resolvePeerAddress: (request) => peerAddresses.get(request) ?? null,
+      });
+      app.post("/admin/drain", drainHandler);
+    }
+
     // `peerAddresses` is populated by the root `beforeHandle` above from
     // `server.requestIP`. The console login route needs it to key its lockout
     // bucket, and the trusted-proxy boundary decides whether an

@@ -60,6 +60,30 @@ function compact(value: number): string {
   return amount.toLocaleString();
 }
 
+/**
+ * A whole-number count with thousands separators — requests, errors, and other
+ * tallies. Deliberately not compacted: "1.2K requests" hides the exact figure
+ * an operator checks against a limit, and a request count is small enough to
+ * read in full. Tokens keep `compact` because their magnitudes are large.
+ */
+export function formatCount(value: number): string {
+  if (!Number.isFinite(value)) return "—";
+  return Math.max(0, Math.round(value)).toLocaleString();
+}
+
+/** Mean tokens/sec with one decimal, or an em dash when nothing reported a rate. */
+export function formatRate(value: number | null): string {
+  if (value === null || !Number.isFinite(value) || value <= 0) return "—";
+  return `${Number(value.toFixed(1))} t/s`;
+}
+
+/** Mean time-to-first-token: sub-second in ms, longer as seconds, else an em dash. */
+export function formatTtft(value: number | null): string {
+  if (value === null || !Number.isFinite(value) || value <= 0) return "—";
+  if (value >= 1000) return `${Number((value / 1000).toFixed(1))}s`;
+  return `${Math.round(value)}ms`;
+}
+
 /** "2 min ago" / "3 h ago" / a date once it is older than a day. */
 function relativeTime(iso: string | null): string {
   if (!iso) return "—";
@@ -103,25 +127,36 @@ export function ShareQuotaPanel({
   return (
     <div className="share-quota">
       {rows.map((row) => {
-        const ratio = row.limit && row.limit > 0 ? Math.min(1, row.used / row.limit) : 0;
-        const over = row.limit !== null && row.limit > 0 && row.used > row.limit;
-        const tone = over ? "is-over" : ratio >= 0.8 ? "is-warn" : "";
+        const limited = row.limit !== null && row.limit > 0;
+        const ratio = limited ? Math.min(1, row.used / (row.limit as number)) : 1;
+        // A row with no limit is a full green bar: there is no ceiling, so the
+        // whole track reads as "unlimited". A limited row keeps the same green
+        // track as the allowance and lays a red "used" fill over it, growing
+        // left to right with the used fraction — so the red advances across the
+        // green as usage climbs and, at (or past) the limit, the green is gone
+        // and the bar is wholly red. Plenty of green means headroom; a bar that
+        // is mostly red means the allowance is nearly spent.
         return (
           <div className="share-quota-row" key={row.label}>
             <span className="share-quota-label">{row.label}</span>
             <div
-              className="share-quota-track"
+              className={`share-quota-track${limited ? " is-limited" : " is-unlimited"}`}
               title={
-                row.limit
-                  ? `${compact(row.used)} of ${compact(row.limit)} used`
+                limited
+                  ? `${compact(row.used)} of ${compact(row.limit as number)} used`
                   : `${compact(row.used)} used (no limit set)`
               }
             >
-              <div className={`share-quota-fill ${tone}`} style={{ width: `${Math.round(ratio * 100)}%` }} />
+              {limited ? (
+                <div
+                  className="share-quota-used"
+                  style={{ width: `${Math.round(ratio * 100)}%` }}
+                />
+              ) : null}
             </div>
             <span className="share-quota-value">
               <strong>{compact(row.used)}</strong>
-              {row.limit ? ` / ${compact(row.limit)}` : " used"}
+              {limited ? ` / ${compact(row.limit as number)}` : " used"}
             </span>
           </div>
         );
@@ -243,7 +278,7 @@ export function ShareStatsSection({
           <span>·</span>
           <span>{models.length} models</span>
           <span>·</span>
-          <span>{compact(totals?.requests ?? 0)} req</span>
+          <span>{formatCount(totals?.requests ?? 0)} req</span>
         </span>
       </button>
 
@@ -258,9 +293,9 @@ export function ShareStatsSection({
               <div className="share-stats-kpis">
                 <div className="share-stat-tile">
                   <span className="share-stat-tile-label">Requests</span>
-                  <span className="share-stat-tile-value">{compact(totals?.requests ?? 0)}</span>
+                  <span className="share-stat-tile-value">{formatCount(totals?.requests ?? 0)}</span>
                   <span className="share-stat-tile-detail">
-                    {compact(totals?.errors ?? 0)} errors
+                    {formatCount(totals?.errors ?? 0)} errors
                   </span>
                 </div>
                 <div className="share-stat-tile">
@@ -270,7 +305,7 @@ export function ShareStatsSection({
                 </div>
                 <div className="share-stat-tile">
                   <span className="share-stat-tile-label">Last hour</span>
-                  <span className="share-stat-tile-value">{compact(totals?.lastHourRequests ?? 0)}</span>
+                  <span className="share-stat-tile-value">{formatCount(totals?.lastHourRequests ?? 0)}</span>
                   <span className="share-stat-tile-detail">requests in 60 min</span>
                 </div>
                 <div className="share-stat-tile">
@@ -289,7 +324,7 @@ export function ShareStatsSection({
                 {models.length === 0 ? (
                   <p className="share-stats-empty">No model traffic yet.</p>
                 ) : (
-                  <div className="share-stats-scroll">
+                  <div className="share-stats-scroll is-windowed">
                     <table className="share-stats-table">
                       <thead>
                         <tr>
@@ -297,6 +332,12 @@ export function ShareStatsSection({
                           <th scope="col">Model</th>
                           <th scope="col" className="is-numeric">
                             Req
+                          </th>
+                          <th scope="col" className="is-numeric" title="Average output tokens per second">
+                            Avg t/s
+                          </th>
+                          <th scope="col" className="is-numeric" title="Average time to first token">
+                            TTFT
                           </th>
                           <th scope="col">Tokens</th>
                         </tr>
@@ -310,7 +351,9 @@ export function ShareStatsSection({
                                 <code title={model.modelId}>{model.modelId}</code>
                               </span>
                             </td>
-                            <td className="is-numeric">{model.requests.toLocaleString()}</td>
+                            <td className="is-numeric">{formatCount(model.requests)}</td>
+                            <td className="is-numeric share-stats-metric">{formatRate(model.avgTokensPerSec)}</td>
+                            <td className="is-numeric share-stats-metric">{formatTtft(model.avgTtfbMs)}</td>
                             <td>
                               <BarCell
                                 value={model.tokens}
@@ -333,7 +376,7 @@ export function ShareStatsSection({
                 {ips.length === 0 ? (
                   <p className="share-stats-empty">No client addresses recorded yet.</p>
                 ) : (
-                  <div className="share-stats-scroll">
+                  <div className="share-stats-scroll is-windowed">
                     <table className="share-stats-table">
                       <thead>
                         <tr>
@@ -359,7 +402,7 @@ export function ShareStatsSection({
                                 <span className="share-stats-client is-unknown">unknown</span>
                               )}
                             </td>
-                            <td className="is-numeric">{ip.requests.toLocaleString()}</td>
+                            <td className="is-numeric">{formatCount(ip.requests)}</td>
                             <td>
                               <BarCell value={ip.requests} max={maxIpRequests} label={compact(ip.tokens)} />
                             </td>

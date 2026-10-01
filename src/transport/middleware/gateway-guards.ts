@@ -15,6 +15,7 @@ import {
 import { createAccessDecision } from "../../security/access-control";
 import { parseCookieValue, SESSION_COOKIE_NAME, isCsrfValid } from "../../security/csrf";
 import type { IpAbuseProtectionService } from "../../security/abuse";
+import { modelAbuseBannedError, type ModelStrikeService } from "../../security/model-abuse";
 import type { ReadinessCheckResult } from "../../persistence/readiness";
 import { shutdownNotice } from "../shutdown-notice";
 
@@ -27,6 +28,13 @@ import { shutdownNotice } from "../shutdown-notice";
 export function createApiKeyAuthenticationMiddleware(deps: {
   readonly db: CartethyiaDatabase;
   readonly stateStore: ProxyRequestStateStore;
+  /**
+   * Model-abuse ban gate. A banned IP or key is refused here, before the
+   * canonical parse and route preparation, and before `state.authorization` is
+   * assigned — so a banned caller's attempts produce no telemetry row and no
+   * console error, which is exactly the noise this layer exists to stop.
+   */
+  readonly modelStrikes?: Pick<ModelStrikeService, "check">;
 }): Elysia {
   // Single policy for every `/v1/*` gateway route: authenticated, scoped to
   // `routing:invoke`, and tenant-bound (the snapshot's tenant is the only
@@ -64,6 +72,18 @@ export function createApiKeyAuthenticationMiddleware(deps: {
           "No API invocation access for this client.",
           { reason: "client_router_denied", clientRouter: denied },
         );
+      // Abuse ban: refuse before parse/prepare and before authorization is
+      // recorded, so a banned caller cannot keep producing failed rows.
+      if (deps.modelStrikes) {
+        const state = deps.stateStore.get(request);
+        const ip = state?.clientIdentity?.address;
+        if (ip !== undefined) {
+          const scope = await deps.modelStrikes
+            .check({ ip, apiKeyId: authorization.id })
+            .catch(() => null);
+          if (scope !== null) throw modelAbuseBannedError(scope);
+        }
+      }
       deps.stateStore.require(request).authorization = authorization;
     })
     .as("plugin");

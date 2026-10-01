@@ -49,6 +49,16 @@ describe("AccountStatusBadge", () => {
     expect(html).toContain("1 model cooling");
   });
 
+  test("a static-token account reads as informational, not broken", () => {
+    // The regression this guards: a pasted JWT/access token used to render as
+    // "Re-login required" even though it is a valid, dispatchable credential.
+    // It is a normal active account that simply is never refreshed.
+    const html = text({ staticToken: true, lastErrorCategory: "oauth_reauth_required" });
+    expect(html).toContain("Static token");
+    expect(html).toContain("no refresh");
+    expect(html).not.toContain("Re-login required");
+  });
+
   test("a cooling account keeps its per-model backoffs beside the account-wide one", () => {
     const html = text({
       status: "cooldown",

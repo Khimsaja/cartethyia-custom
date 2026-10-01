@@ -177,6 +177,13 @@ export const PROVIDER_CAPABILITIES = {
     loadAuthentication: oauthCapability(() => import("./integrations/muse/muse-oauth"), "museCodeOAuthClient", { withRefresher: true }),
     loadQuotaCollector: quotaCapability(() => import("./integrations/muse/muse-quota"), "fetchMuseQuota"),
   },
+  meta: {
+    loadAdapter: async () => (await import("./integrations/meta/meta")).metaAdapter,
+    loadModels: async () => (await import("./integrations/meta/meta")).META_MODELS,
+    // No `loadAuthentication`: the Model API is a plain API key pasted from the
+    // Meta developer dashboard, so the default key-only credential path applies
+    // and `probeApiKeyConnectivity` is the account test.
+  },
   kiro: {
     loadAdapter: async () => (await import("./integrations/kiro/kiro")).kiroAdapter,
     loadModels: async () => (await import("./integrations/kiro/kiro-catalog")).KIRO_MODELS,
@@ -418,6 +425,29 @@ export const PROVIDER_CAPABILITIES = {
   perplexity: {
     loadAdapter: async () => (await import("./integrations/perplexity")).createPerplexityAdapter(),
     loadModels: async () => (await import("./integrations/perplexity")).PERPLEXITY_MODELS,
+  },
+  // Web-search providers: a `createSearchAdapter` over their spec, and a single
+  // `serviceKind: "websearch"` catalog row served by the `/v1/search` route.
+  exa: {
+    loadAdapter: async () =>
+      (await import("./search/search-provider")).createSearchAdapter(
+        (await import("./search/search-providers")).SEARCH_PROVIDER_SPECS.exa,
+      ),
+    loadModels: async () => (await import("./search/search-catalog")).EXA_SEARCH_MODELS,
+  },
+  tavily: {
+    loadAdapter: async () =>
+      (await import("./search/search-provider")).createSearchAdapter(
+        (await import("./search/search-providers")).SEARCH_PROVIDER_SPECS.tavily,
+      ),
+    loadModels: async () => (await import("./search/search-catalog")).TAVILY_SEARCH_MODELS,
+  },
+  brave: {
+    loadAdapter: async () =>
+      (await import("./search/search-provider")).createSearchAdapter(
+        (await import("./search/search-providers")).SEARCH_PROVIDER_SPECS.brave,
+      ),
+    loadModels: async () => (await import("./search/search-catalog")).BRAVE_SEARCH_MODELS,
   },
   "github": {
     // Chat only. Copilot also serves some SKUs on `/responses`, but those arrive

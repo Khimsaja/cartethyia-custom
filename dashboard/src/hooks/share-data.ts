@@ -59,6 +59,10 @@ export interface ShareFamilyStatsData {
     readonly modelId: string;
     readonly requests: number;
     readonly tokens: number;
+    /** Mean tokens/sec across requests that reported a rate; null when none did. */
+    readonly avgTokensPerSec: number | null;
+    /** Mean time-to-first-byte in ms across requests that reported it; null when none did. */
+    readonly avgTtfbMs: number | null;
   }[];
   readonly clientIps: readonly {
     readonly ip: string;

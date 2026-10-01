@@ -22,6 +22,7 @@ import type { NetworkPoolSelector } from "../network/pool/selector";
 import type { TelemetryBatchBuffer } from "../observability/telemetry-buffer";
 import type { OAuthRefreshService } from "../providers/authentication/oauth-refresh-service";
 import type { ApiKeyAdmissionService } from "../security/admission";
+import type { ModelStrikeService } from "../security/model-abuse";
 import type { RedisClient } from "../persistence/redis";
 import { CliToolMappingStore } from "./cli-tools/store";
 import { CliToolService } from "./cli-tools/service";
@@ -43,6 +44,12 @@ export interface ConsoleApiCompositionDeps {
   readonly redis: RedisClient;
   readonly oauthRefreshService: OAuthRefreshService;
   readonly admissionService: Pick<ApiKeyAdmissionService, "purgeKey">;
+  /**
+   * Graduated model-abuse strikes: list and lift bans from the console.
+   * Optional so reduced compositions (route-only shell, console stubs) stay
+   * valid; absent means the `/model-bans` routes are not mounted.
+   */
+  readonly modelStrikes?: Pick<ModelStrikeService, "listBans" | "unban">;
   readonly readRoutingAccountInflight?:
     | ((
         providerId: string,
@@ -152,6 +159,7 @@ export function createConsoleRouter(deps: ConsoleApiCompositionDeps): Elysia {
     bundledModelCatalog: deps.bundledModelCatalog,
     networkBindingFactory: deps.networkBindingFactory,
     admissionService: deps.admissionService,
+    ...(deps.modelStrikes ? { modelStrikes: deps.modelStrikes } : {}),
     readRoutingAccountInflight: deps.readRoutingAccountInflight,
     credentialService,
     // The backup surface re-authenticates the operator, so it needs the current

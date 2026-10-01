@@ -64,4 +64,52 @@ describe("DrizzleRuntimeSettingsStore", () => {
       expect(key in result).toBe(false);
     }
   });
+
+  /** A `select` that returns one stored preferences row, to read the mapper. */
+  function dbWithPreferences(preferences: Record<string, unknown>) {
+    function chain(result: unknown[]) {
+      const builder = {
+        from() { return builder; },
+        where() { return builder; },
+        limit() { return builder; },
+        values(written?: Record<string, unknown>) { return chain(written ? [written] : result); },
+        onConflictDoUpdate() { return builder; },
+        returning() { return Promise.resolve(result); },
+        async then(resolve: (value: unknown[]) => void) { resolve(result); },
+      };
+      return builder;
+    }
+    const row = { tenantId: "tenant-1", preferences, updatedAt: new Date(0) };
+    return { select() { return chain([row]); }, insert() { return chain([row]); } };
+  }
+
+  test("reads RTK and PonyTail defaults when the bag is empty", async () => {
+    const store = new DrizzleRuntimeSettingsStore(dbWithPreferences({}) as never);
+    const result = await store.get("tenant-1");
+    expect(result.rtkPruneEnabled).toBe(false);
+    expect(result.rtkPruneLevel).toBe("full");
+    expect(result.ponyTailEnabled).toBe(false);
+    expect(result.ponyTailLevel).toBe("full");
+  });
+
+  test("a legacy bag with a stored ponyTailLevel but no enable flag reads as enabled", async () => {
+    // Before the enable toggle, `ponyTailLevel` was the switch: a non-null
+    // level meant on. Such a bag must keep PonyTail on rather than silently
+    // turning it off on upgrade.
+    const store = new DrizzleRuntimeSettingsStore(
+      dbWithPreferences({ ponyTailLevel: "ultra" }) as never,
+    );
+    const result = await store.get("tenant-1");
+    expect(result.ponyTailEnabled).toBe(true);
+    expect(result.ponyTailLevel).toBe("ultra");
+  });
+
+  test("an explicit ponyTailEnabled=false overrides a stored legacy level", async () => {
+    const store = new DrizzleRuntimeSettingsStore(
+      dbWithPreferences({ ponyTailLevel: "ultra", ponyTailEnabled: false }) as never,
+    );
+    const result = await store.get("tenant-1");
+    expect(result.ponyTailEnabled).toBe(false);
+    expect(result.ponyTailLevel).toBe("ultra");
+  });
 });

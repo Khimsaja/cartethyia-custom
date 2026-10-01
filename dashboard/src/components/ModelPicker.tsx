@@ -63,6 +63,9 @@ function NATIVE_SERVICE_TOOLTIP(serviceKind: string): string {
   if (serviceKind === "systemone") {
     return "System One decision model — not a chat model. Call it at POST /v1/systemone with {state, questions}; it answers {answers}. It cannot run in a chat playground.";
   }
+  if (serviceKind === "websearch") {
+    return "Web-search model — not a chat model. Call it at POST /v1/search with {query, max_results}; it answers a normalized list of hits. It cannot run in a chat playground.";
+  }
   return `This model is served by a native '${serviceKind}' route, not the chat wire.`;
 }
 

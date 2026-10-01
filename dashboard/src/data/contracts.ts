@@ -98,6 +98,7 @@ export type {
   ModelComboRow,
   ModelComboCreateInput,
   ModelComboPatchInput,
+  ModelComboCloneResult,
 } from "../../../src/console/routing/model/contracts";
 
 export type {
@@ -176,6 +177,12 @@ export type {
   PoolStrategySetting,
   PoolBatchProbeResult,
 } from "../../../src/console/routing/pools/contracts";
+export type {
+  RelayDeployRequest,
+  RelayDeployResult,
+  RelayTarget,
+} from "../../../src/console/routing/pools/relay-deploy";
+export { RELAY_TARGETS } from "../../../src/console/routing/pools/relay-deploy";
 export type { PoolHealthEvent } from "../../../src/network/pool-health-machine";
 
 

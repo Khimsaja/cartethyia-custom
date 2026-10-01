@@ -1,7 +1,7 @@
 import { createGatewayApp, createGatewayShell } from "./app";
 import { bootstrap } from "./runtime/lifecycle";
 import type { CartethyiaBoot } from "./runtime/lifecycle";
-import { resolveIdleTimeout, resolveMaxBodyBytes, resolvePort } from "./config";
+import { resolveDrainToken, resolveIdleTimeout, resolveMaxBodyBytes, resolvePort } from "./config";
 import { Manifest } from "elysia";
 import { log } from "./observability/logger";
 
@@ -34,8 +34,14 @@ const app = boot
       telemetryBuffer: boot.deps.telemetryBuffer,
       resolveOAuthRefresher: boot.deps.resolveOAuthRefresher,
       oauthRefreshService: boot.deps.oauthRefreshService,
+      modelStrikes: boot.deps.modelStrikes,
       maxBodyBytes: resolveMaxBodyBytes(),
       shutdownCoordinator: boot.shutdownCoordinator,
+      // Signal-free graceful stop for platforms where a catchable signal cannot
+      // be delivered (Windows). Off unless `CARTETHYIA_DRAIN_TOKEN` is set.
+      ...(resolveDrainToken() !== undefined
+        ? { drainToken: resolveDrainToken() as string, triggerDrain: () => shutdown("SIGTERM") }
+        : {}),
       // The console is Redis-backed, so `REDIS_MODE=single_instance_local`
       // (no Redis client) boots the data plane without it rather than
       // refusing to start.
@@ -53,6 +59,7 @@ const app = boot
               redis: boot.deps.redis,
               oauthRefreshService: boot.deps.oauthRefreshService,
               admissionService: boot.deps.admissionService,
+              modelStrikes: boot.deps.modelStrikes,
               readRoutingAccountInflight: boot.deps.readRoutingAccountInflight,
             },
           }
@@ -64,10 +71,14 @@ export { app };
 function shutdown(signal: "SIGINT" | "SIGTERM", reason: "SIGINT" | "SIGTERM" | "update" = signal): void {
   if (!boot) return;
   log.info(`[shutdown] ${signal} received, draining...`);
+  // Derived from the coordinator's own budget, not a hand-kept literal: a
+  // force-exit shorter than the drain would hard-kill a process that was about
+  // to finish gracefully, truncating the in-flight responses the drain exists
+  // to protect.
   const forceExit = setTimeout(() => {
-    log.error("[shutdown] forced exit after 10s");
+    log.error("[shutdown] forced exit after drain budget elapsed");
     process.exit(1);
-  }, 10_000);
+  }, boot.shutdownCoordinator.totalShutdownBudgetMs());
   forceExit.unref();
   boot.shutdownCoordinator
     .begin(reason)

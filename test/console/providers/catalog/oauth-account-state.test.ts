@@ -99,7 +99,7 @@ dbDescribe("OAuth account creation always seeds a refreshable state row", () => 
     expect(decryptCredentialToString(state!.refreshCiphertext!)).toBe("ref-json");
   });
 
-  test("a bare access token still gets a state row, flagged for re-auth", async () => {
+  test("a bare access token still gets a state row, flagged as a static token", async () => {
     const account = await store.createAccount(tenantId, providerId, {
       credentialKind: "oauth",
       secret: "bare-access-only",
@@ -113,11 +113,19 @@ dbDescribe("OAuth account creation always seeds a refreshable state row", () => 
     expect(state!.refreshCiphertext).toBeNull();
 
     const [row] = await db
-      .select({ category: providerAccounts.lastErrorCategory })
+      .select({
+        staticToken: providerAccounts.staticToken,
+        category: providerAccounts.lastErrorCategory,
+        status: providerAccounts.status,
+      })
       .from(providerAccounts)
       .where(eq(providerAccounts.id, account.id));
-    // Flagged up front so the console shows "re-auth required" rather than an
-    // account that works until it silently stops.
-    expect(row?.category).toBe("oauth_reauth_required");
+    // Flagged as a static token — the credential is used exactly as issued and
+    // never refreshed — NOT as an error state. The account stays active and
+    // dispatchable; the console shows an informational pill, not "re-login
+    // required".
+    expect(row?.staticToken).toBe(true);
+    expect(row?.category).toBeNull();
+    expect(row?.status).toBe("active");
   });
 });

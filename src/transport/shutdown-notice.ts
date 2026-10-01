@@ -13,7 +13,7 @@
  * text, and both the readiness probe (`app.ts`) and the request gate
  * (`gateway-guards.ts`) render the same notice from it.
  */
-import type { GatewayErrorCode } from "./gateway-error";
+import { GatewayError, type GatewayErrorCode } from "./gateway-error";
 
 export interface ShutdownNotice {
   readonly code: Extract<GatewayErrorCode, "shutting_down" | "restart_for_update">;
@@ -33,4 +33,36 @@ export function shutdownNotice(reason: string | undefined): ShutdownNotice {
     return { code: "restart_for_update", message: "system will be back in a minute" };
   }
   return { code: "shutting_down", message: "Service is shutting down" };
+}
+
+/**
+ * The typed abort reason a draining process hands to in-flight request
+ * controllers. It is a `GatewayError` rather than a bare `AbortError` so every
+ * consumer can tell a drain apart from a client disconnect: the streaming path
+ * uses the code to decide whether to emit a terminal frame (a drain owes the
+ * client one; a gone client does not), and the attempt loop surfaces it as a
+ * 503 instead of an opaque abort. Both codes are non-retryable in practice —
+ * the request is already aborted — and carry 503 so a client that retries
+ * lands on the replacement.
+ */
+export function shutdownError(reason: string | undefined): GatewayError {
+  const notice = shutdownNotice(reason);
+  return new GatewayError(notice.code, 503, notice.message);
+}
+
+/**
+ * The shutdown `GatewayError` carried by an aborted controller, or `undefined`
+ * when the abort is something else (client disconnect, deadline, stall).
+ *
+ * A drain abort is a `GatewayError` with a shutdown code — never a bare
+ * `AbortError` (see `state.ts` `abortAll`) — so a consumer can tell "the client
+ * is gone" (release silently, a frame would go nowhere) from "we are
+ * restarting" (the client is still reading and is owed a terminal frame). Both
+ * the streaming dispatch path and the non-streaming attempt loop read this.
+ */
+export function drainAbortReason(reason: unknown): GatewayError | undefined {
+  if (!(reason instanceof GatewayError)) return undefined;
+  return reason.code === "shutting_down" || reason.code === "restart_for_update"
+    ? reason
+    : undefined;
 }

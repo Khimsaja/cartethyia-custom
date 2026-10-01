@@ -48,16 +48,6 @@ import { pushStructuredConsoleLog } from "../../observability/log-ring";
 const DEFINITIVE_PATTERN =
   /invalid_grant|invalid_token|unauthorized_client|revoked|refresh_token.*expired/i;
 
-/**
- * `last_error_category` stamped on an OAuth account whose refresh cannot run
- * because no refresh token is on record. Distinct from `oauth_revoked` (a
- * refresh that was attempted and refused): this account was never able to
- * refresh, so the operator's remedy is to sign in again, not to replace a
- * revoked credential. Kept as a shared constant so the console and the
- * refresh path name it identically.
- */
-export const OAUTH_REAUTH_REQUIRED_CATEGORY = "oauth_reauth_required";
-
 interface OAuthRefreshFailure {
   readonly status?: number | undefined;
   readonly message: string;
@@ -280,19 +270,17 @@ async function disableAccount(
 }
 
 /**
- * Stamps an OAuth account that has no refresh token on record, so the console
- * can show "re-auth required" instead of an account that silently stops
- * working. Not lease-fenced: this is a non-destructive annotation that any
- * process may write, and the account's credential is not touched.
+ * Marks an account as carrying a static bearer token: used exactly as issued,
+ * never refreshed. Called when the refresh path finds no refresh token on
+ * record, so the account converges to the same state the console's explicit
+ * "static token" toggle sets — the sweep skips it and its status stops reading
+ * as a broken/re-auth account. Not lease-fenced: a non-destructive annotation
+ * that any process may write, and the credential is not touched.
  */
-async function markReauthRequired(db: CartethyiaDatabase, accountId: string): Promise<void> {
+async function markStaticToken(db: CartethyiaDatabase, accountId: string): Promise<void> {
   await db
     .update(providerAccounts)
-    .set({
-      lastError: "OAuth account has no refresh token; sign in again to restore it",
-      lastErrorCategory: OAUTH_REAUTH_REQUIRED_CATEGORY,
-      lastErrorAt: new Date(),
-    })
+    .set({ staticToken: true })
     .where(eq(providerAccounts.id, accountId));
 }
 
@@ -340,7 +328,7 @@ export async function loadDueOAuthAccounts(
       id: providerAccounts.id,
       providerId: providerAccounts.providerId,
       expiresAt: providerOauthStates.expiresAt,
-      lastErrorCategory: providerAccounts.lastErrorCategory,
+      staticToken: providerAccounts.staticToken,
     })
     .from(providerAccounts)
     .innerJoin(providerOauthStates, eq(providerOauthStates.providerAccountId, providerAccounts.id))
@@ -353,10 +341,11 @@ export async function loadDueOAuthAccounts(
   const now = Date.now();
   return rows
     .filter((row) => {
-      // Already flagged as needing a re-login: refreshing cannot help until the
-      // operator signs in again, and retrying every pass only floods the log.
-      // A successful re-auth clears the category and returns it to the sweep.
-      if (row.lastErrorCategory === OAUTH_REAUTH_REQUIRED_CATEGORY) return false;
+      // A static token is used exactly as issued: there is no refresh grant to
+      // run, so the sweep must not touch it. Refreshing it every pass only
+      // floods the log with a guaranteed no-op. The operator clears the flag
+      // when the account has a real refresh token again.
+      if (row.staticToken) return false;
       if (row.expiresAt == null) return true;
       const lead = skewMs ?? refreshLeadMs(row.providerId);
       return row.expiresAt.getTime() - lead <= now;
@@ -422,6 +411,14 @@ export class OAuthRefreshService {
     const account = await loadAccountWithFreshness(this.#db, accountId, skewMs);
     if (!account || account.row.credentialKind !== "oauth") return null;
     const { row, dueAt } = account;
+    // A static token is used exactly as issued and never refreshed. There is
+    // nothing to re-mint, so return null — the same "cannot refresh" signal a
+    // missing refresh token gives — rather than re-issuing the identical
+    // credential to a forced (401) retry, which would only repeat the same
+    // request against the same upstream. Dispatch still uses the stored token
+    // directly (`dueAt` is undefined for a static token, so the caller's
+    // refresh branch is skipped and the decrypted credential is used as-is).
+    if (row.staticToken) return null;
     if (!force && dueAt !== undefined && dueAt > Date.now()) {
       return row.credentialCiphertext
         ? decryptCredentialToString(row.credentialCiphertext)
@@ -452,16 +449,17 @@ export class OAuthRefreshService {
     }
     if (!row.refreshCiphertext) {
       await releaseLease(this.#db, row.id, owner);
-      // No refresh token on record: the access token cannot be re-minted, so
-      // the account is dead the moment it expires and every future attempt is
-      // a guaranteed no-op. Stamp the account so the operator sees "re-auth
-      // required" instead of an account that silently stops working.
-      await markReauthRequired(this.#db, row.id);
-      pushStructuredConsoleLog("warn", "OAuth token refresh skipped: re-authentication required", {
+      // No refresh token on record: the access token is used exactly as issued
+      // and cannot be re-minted, so every future refresh attempt is a
+      // guaranteed no-op. Mark the account static — the same state the
+      // console's toggle sets — so the sweep stops retrying it and the status
+      // reads as an informational static token rather than a broken account.
+      await markStaticToken(this.#db, row.id);
+      pushStructuredConsoleLog("info", "OAuth token refresh skipped: static token", {
         event: "token_refresh",
         accountId: row.id,
         providerId: row.providerId,
-        errorCode: "oauth_reauth_required",
+        errorCode: "static_token",
       });
       return null;
     }

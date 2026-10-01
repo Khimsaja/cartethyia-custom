@@ -38,6 +38,10 @@ function makeStore(): RuntimeSettingsStore {
         responsesReasoningSummary: "detailed",
         telemetryPayloads: "bounded",
         privacyMode: "masked",
+        rtkPruneEnabled: false,
+        rtkPruneLevel: "full",
+        ponyTailEnabled: false,
+        ponyTailLevel: "full",
         updatedAt: new Date(0).toISOString(),
       };
     },

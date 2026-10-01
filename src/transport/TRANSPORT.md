@@ -28,6 +28,9 @@ src/transport/
                         SSE decode, retry classification, tool identity. `decodeSseEvents` is the
                         single decoder for every wire family: 4 MiB per-event cap, malformed line
                         → 502, `:`/`id:`/`retry:` lines ignored, abort cancels the reader
+  shutdown-notice.ts, drain-endpoint.ts
+                        termination notice + `drainAbortReason()` (drain vs. client disconnect);
+                        the opt-in loopback `POST /admin/drain` graceful-stop route
   middleware/           ordered Elysia ingress pipeline (`pipeline.ts`) composed from
                           `body-policy.ts`, `request-context.ts`, `gateway-guards.ts`, and
                           `error-lifecycle.ts` by responsibility
@@ -199,6 +202,22 @@ CLI-scope alias target → key-prefix check → key model allowlist
   max_completion_tokens → 1024` chain feed admission leases. `prepareNativeCompact()` is the codex-only path: no parsing,
   projection, or mutation; fixed conservative token budget.
 
+**Request compression** (`rtk/`). `compressRequest()` reshapes a canonical request to cut input tokens, gated by two
+tenant preferences: RTK pruning (with a strength level) and PonyTail (an enable flag plus a level). It runs as the
+last step of `applyTenantPreferences`, after
+thinking/summary shaping, so the injected directive is not itself reshaped. **RTK prune** rewrites the text of
+`toolResult` parts whose size crosses the level's gate through `autoDetectFilter` (git diff/log/status, grep,
+find, ls, tree, dedup-log, smart-truncate) — `safeApplyFilter` is fail-open: a filter that throws, returns empty, or
+does not shrink the text leaves the original in place. Strength is one of `RTK_PROFILES` (`lite`/`full`/`ultra`):
+`lite` raises the size gate and withholds the content-agnostic fallbacks (dedup-log, smart-truncate), so only
+structurally-recognized blobs are touched; `ultra` lowers the gate and runs a second generic pass over an
+already-filtered blob. Error tool results (`is_error`) are never pruned. **PonyTail**
+appends a `ponyTailPrompt(level)` directive to `system` content, idempotently (an identical part already present is
+not added twice); the level is applied only while the enable flag is set. The transform is canonical-request-level,
+so one implementation covers every wire family; the
+`stats` it returns feed no persistence. A settings-read outage skips compression entirely rather than failing the
+request.
+
 **Degrade order** (`degradeRequestForCapability`), blast radius ascending: generation controls and extensions → prompt caching
 → structured-output format → encrypted reasoning → reasoning → parallel-tool-calls → tools (calls become `[tool:name]` text) →
 image/document/audio (replaced with `[image]`/`[document]`/`[audio]` placeholders). Hosted `web_search` is not degradable: a
@@ -355,10 +374,17 @@ capability filter → provider routing reorder. Returns a `RoutePlan` with order
   legitimately pair e.g. `claude-opus-5` with `opencodeft` — an alias or CLI mapping resolved as configured, never a
   wrong catalog route.
 -  Combos — members resolve through aliases; nested combos flatten one level; `round_robin` combos rotate group heads via
-  `RoundRobinState`. `candidateMatches()` — bare `model` matches any provider; `provider/model` pins one; multi-provider bare
+  `RoundRobinState`. A `fusion` combo sets `RoutePlan.fusion` (`{panel, judge}` — every member, with the first as judge)
+  instead of ordering a failover chain: the proxy handler branches on it and runs the panel/judge fan-out
+  (`dispatch/fusion-dispatch.ts` over the pure orchestration in `routing/fusion.ts`) rather than the attempt loop. Each
+  panel model is a real upstream call — non-streaming, tools stripped — that commits its own usage and health with
+  `terminal: false`; the judge is the terminal attempt, so it claims the outcome and emits the one telemetry row. A
+  single-member fusion carries no `fusion` and degrades to a normal dispatch. `candidateMatches()` — bare `model` matches any provider; `provider/model` pins one; multi-provider bare
   matches throw `ambiguousModelError` unless a combo disambiguates.
 -  `EligibilityEvaluator` — single shared predicate (live routing, console, probes): `locked` / `disabled` filtered out; a
-  `cooldown` candidate stays eligible and `plan()` orders it behind every healthy sibling. Zero eligible throws `accountsUnavailableError` (503, retryable), never 404. Capability filter —
+  `cooldown` candidate stays eligible and `plan()` orders it behind every healthy sibling. When *only* cooling candidates
+  remain (no healthy one), `plan()` throws `accountsRateLimitedError` (429, retryable) rather than dialing a cooling account
+  that can only reproduce the refusal — the operator's "still hit a cooled-down account" report. Zero eligible throws `accountsUnavailableError` (503, retryable), never 404. Capability filter —
   `candidateSupportsRequest()` per variant; an empty result throws `capabilityUnsupportedError` for the planner's degrade
   loop. There is no model substitution: a request the chosen model cannot serve is degraded in place or rejected, never
   silently rerouted to a different model.
@@ -393,7 +419,7 @@ Walks the preparer's ordered candidates in `runAttemptLoop` and settles each att
 native Responses-compact route (`createResponsesCompactHandler`) and the native System One route
 (`createSystemoneHandler`) drive the same loop. Per request,
 `handleProviderProxyRequest` applies tenant preferences (`applyTenantPreferences` — thinking normalization, Responses
-reasoning-summary override; non-fatal), allowlists inbound headers once (`forwardedRequestHeaders`, the
+reasoning-summary override, request compression; non-fatal), allowlists inbound headers once (`forwardedRequestHeaders`, the
 `FORWARDED_REQUEST_HEADERS` set in `upstream.ts`: `user-agent`, `anthropic-beta`,
 `x-claude-code-session-id`, `x-conversation-id`, `x-session-id`, `x-session-affinity`,
 `x-opencode-session`, `prompt-cache-key`, `prompt_cache_key`, `session-id` — a new header is one set entry),
@@ -455,6 +481,14 @@ the stream is paused never reaches `pull()`'s release branch. A `state.abortCont
 `AbortError` (the inbound signal bridge's client-disconnect reason) runs the same release as `cancel()`, keeping the routing
 reservation, pool slot, and in-flight count symmetric. Deadline and stall aborts are deliberately excluded — those fire from
 inside `pull()`'s watchdog, which already records the terminal outcome and releases.
+
+**Drain vs. disconnect.** A graceful shutdown aborts the same controller, but with a typed shutdown `GatewayError`
+(`shutting_down` / `restart_for_update`, from `shutdown-notice.ts` `shutdownError`), never a bare `AbortError` — that is what
+`drainAbortReason()` reads to tell the two apart. A disconnect is gone, so the frame would go nowhere and the abort releases
+silently; a drain is still being read, so `pull()` emits a terminal error frame naming the shutdown (`emitStreamErrorAndClose`
+with the drain error, recorded `failed` with the shutdown code, not `cancelled`) and then closes. A drain that lands mid-read
+is routed the same way from `pull()`'s catch, so the client sees "we are restarting" instead of an EOF that reads as a
+truncated response. The non-streaming attempt loop surfaces the same typed error so its JSON body names the cause too.
 
 **Error frames inside a 200 OK.** An explicit error envelope must surface as a typed failure, not a silent `failed`
 terminal. Chat, Responses, and Codex frames use `gatewayErrorFromStreamError`; Claude, Gemini, Command Code, Devin,
@@ -524,10 +558,12 @@ pgEnum, so the set can grow (embeddings, tts) without an enum migration; validat
 -  **Routing** — the snapshot builder carries `service_kind` onto `RouteCandidate`. `prepareNativeService` keeps only the
   candidates whose row classifies as the requested kind, so a chat model named on a native route (or vice versa) finds no
   candidate and fails closed with `capability_unsupported` rather than dispatching a mismatched body.
--  **Adapter** — `ProviderAdapter.systemone?` is the optional native capability. A provider without it is simply not
-  eligible. `OpenAICompatibleAdapter.systemone` posts the caller's body untouched to the candidate's own `endpoint_path`
-  with the provider's normal auth/identity headers (it passes a minimal stand-in request to the header hooks, which read
-  only `stream`).
+-  **Adapter** — `ProviderAdapter.systemone?` and `ProviderAdapter.websearch?` are the optional native capabilities. A
+  provider without the one a route needs is simply not eligible. `OpenAICompatibleAdapter.systemone` posts the caller's body
+  untouched to the candidate's own `endpoint_path` with the provider's normal auth/identity headers (it passes a minimal
+  stand-in request to the header hooks, which read only `stream`); `websearch` is implemented by `createSearchAdapter`
+  (`providers/search/search-provider.ts`), whose spec owns the per-provider request mapping and response normalization so the
+  route never learns a provider's wire.
 -  **Ingress** — `body-policy.ts` includes `NATIVE_SERVICE_PATHS` in the JSON-route table so a native body is read through
   the same policy, and `request-context.ts` skips the canonical parse/prepare stages for those paths (as it already does for
   `/v1/responses/compact`).
@@ -535,7 +571,11 @@ pgEnum, so the set can grow (embeddings, tts) without an enum migration; validat
   method with a decision body and asserts `answers`, instead of running the canonical pipeline.
 
 System One (`POST /v1/systemone`) is the first entry: `{model, state, questions}` → `{answers}`. A chat body sent to the
-System One endpoint (or a decision body to a chat endpoint) is meaningless — the split is what keeps them apart. Adding the
+System One endpoint (or a decision body to a chat endpoint) is meaningless — the split is what keeps them apart. Web search
+(`POST /v1/search`, `dispatch/websearch.ts`) is the second: the caller names a search provider's model as `model` and sends
+`{query, max_results, search_type, …}`; routing resolves it (so aliases and combos of search providers work) and the handler
+returns a normalized `{provider, model, query, results, total_results, usage}` envelope. The bundled search providers are
+`exa`, `tavily`, and `brave`, each a single `serviceKind: "websearch"` catalog row plus a `SearchProviderSpec`. Adding the
 next native protocol is one `NATIVE_SERVICES` row, one `ServiceKind` member, and one adapter method.
 
 ## Error taxonomy
@@ -591,6 +631,7 @@ Structured provider types may normalize the public code/status; the original HTT
 | `proxy_pool_unhealthy` | 503 | network | yes | the selected pool could not establish a tunnel |
 | `admission_unavailable` | 503 | cartethyia | yes | the admission store is unreachable |
 | `accounts_unavailable` | 503 | cartethyia | yes | no account is available for this route |
+| `accounts_rate_limited` | 429 | cartethyia | yes | every account for this route is rate limited or cooling down |
 | `shutting_down` | 503 | cartethyia | yes | the process is draining (stop/reload) |
 | `restart_for_update` | 503 | cartethyia | yes | draining for an in-place update; back in ~a minute |
 | `platform_unavailable` | 5xx fallback | cartethyia/upstream | yes | the provider or gateway failed; the network pool is not blamed |
@@ -681,3 +722,15 @@ A timeout increase or schema relaxation without a reproduction removes evidence 
 
 External protocol/API evidence and editor-BYOK setup caveats are linked in `src/protocol/PROTOCOL.md`,
 `src/providers/PROVIDERS.md`, and the root `README.md`.
+
+## Graceful stop (`drain-endpoint.ts`)
+
+`POST /admin/drain` asks a running gateway to drain gracefully. It exists because Windows has no
+deliverable catchable signal: `process.kill(pid, "SIGTERM")` — and MSYS `kill` — terminate a Bun
+process without running its JS handler (measured), so a Windows-hosted gateway could only be stopped
+by a hard kill that truncated every in-flight response. The route is registered only when
+`CARTETHYIA_DRAIN_TOKEN` is set, and is gated twice: the peer must be loopback (accepting Bun's
+`::ffff:127.0.0.1` spelling) and the `x-drain-token` header must match in constant time. The peer
+check is independent of the secret, so a leaked token cannot stop a remote gateway. It acknowledges
+with 202 before triggering the drain, so the caller sees an ack rather than a dropped connection, and
+it calls the same `shutdown()` path as `SIGTERM` (`scripts/ops-restart.ts` is the scripted caller).

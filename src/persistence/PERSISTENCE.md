@@ -38,7 +38,9 @@ src/persistence/
   directly on `models.enabled` instead).
 - **Credentials / health:** `provider_accounts` (ciphertext + `auth_state` +
   health machine: `status`, `consecutive_failures`, last
-  success/error/cooldown/recovered, `model_cooldowns`, `max_inflight`);
+  success/error/cooldown/recovered, `model_cooldowns`, `max_inflight`,
+  `static_token` — the credential is a bearer token used as issued and never
+  refreshed, orthogonal to `credential_kind`);
   `provider_oauth_states` 1:0/1 split (`refresh_ciphertext`,
   `client_secret_ciphertext`, `expires_at`, `lease_owner`/`lease_expires_at`
   fenced CAS). `auth_state` holds only non-secret per-account upstream auth
@@ -55,7 +57,7 @@ src/persistence/
 - **Routing:** `model_aliases(tenant, alias, target_model)`;
   `model_combos(tenant, name, members[], strategy)`;
   `provider_routing_settings(provider_id, tenant_id NULL=global, strategy,
-  rotate_count, max_inflight, enabled, bypass_proxy, user_agent)` with dual
+  rotate_count, max_inflight, credit_floor, enabled, bypass_proxy, user_agent)` with dual
   unique indexes (tenant-scoped + partial global). The route User-Agent defaults to Codex but is
   attached only to built-in API-key routes whose adapter metadata does not declare a native
   User-Agent builder; an existing provider or account header remains authoritative. OAuth and

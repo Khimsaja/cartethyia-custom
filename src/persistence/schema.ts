@@ -188,6 +188,17 @@ export const providerAccounts = pgTable("provider_accounts", {
    * is explicit and can be rewritten when the operator reorders or appends.
    */
   sortIndex: integer("sort_index").notNull().default(0),
+  /**
+   * The credential is a static bearer token (a JWT/access token pasted on its
+   * own, or an account an operator has pinned): it is used exactly as issued and
+   * must never be sent to a refresh endpoint. Distinct from `credentialKind`,
+   * which says what family the credential belongs to, not whether it can be
+   * re-minted — an `oauth` account can carry a static token when its refresh
+   * grant is absent or dead while the token itself is still valid. A static
+   * account is skipped by the refresh sweep and is never disabled by a refresh
+   * failure, because there is no refresh to run.
+   */
+  staticToken: boolean("static_token").notNull().default(false),
 
   },
   (table) => [
@@ -378,8 +389,12 @@ export const healthEvents = pgTable(
 // Model aliasing & combos: replaces the dormant, disconnected
 // `routing_policies` scaffolding. Aliases resolve a client-facing name to a
 // real model; combos back a client-facing name with >=1 real models,
-// auto-selected via `fallback` or `round_robin`.
-export const modelComboStrategy = pgEnum("model_combo_strategy", ["fallback", "round_robin"]);
+// auto-selected via `fallback`, `round_robin`, or `fusion`.
+export const modelComboStrategy = pgEnum("model_combo_strategy", [
+  "fallback",
+  "round_robin",
+  "fusion",
+]);
 
 /** Canonical `ComboStrategy` union, derived from the enum above. Console
  * domain and routing layers import this instead of hand-typing their own mirror.
@@ -437,6 +452,16 @@ export const providerRoutingSettings = pgTable(
      * (the field sits next to the failover/round-robin strategy in the UI).
      * `null` = UNLIMITED concurrency per account. */
     maxInflight: integer("max_inflight"),
+    /**
+     * Credit reserve: the minimum credits that must stay unused on every
+     * account of this provider. `null` = no reserve (an account may be spent
+     * down to zero). When an account's remaining credit drops to or below this
+     * floor, the quota sweep parks it in a 24h cooldown so routing fails over to
+     * a sibling instead of draining the account to empty. Only meaningful for
+     * credit-metered providers; ignored for providers that report no credit
+     * window.
+     */
+    creditFloor: integer("credit_floor"),
     enabled: boolean("enabled").notNull().default(false),
     // Route-selected User-Agent for built-in API-key providers; OAuth and BYOK identities stay native.
     userAgent: text("user_agent").notNull().default("codex_cli_rs/0.156.1"),
@@ -722,6 +747,20 @@ export interface ConsoleSettingsPreferences {
   /** Normalizes provider-native thinking config for non-user final turns. */
   thinkingNormalizationEnabled?: boolean;
   responsesReasoningSummary?: "auto" | "concise" | "detailed";
+  /**
+   * Request compression: compact bulky tool-result text in the message history
+   * before dispatch (RTK prune). Default off.
+   */
+  rtkPruneEnabled?: boolean;
+  /** RTK prune strength when enabled (`lite`/`full`/`ultra`); `full` when unset. */
+  rtkPruneLevel?: "lite" | "full" | "ultra";
+  /**
+   * Request compression: append a minimal-code directive to the system content.
+   * Default off; `ponyTailLevel` selects the intensity when on.
+   */
+  ponyTailEnabled?: boolean;
+  /** PonyTail directive intensity; `full` when unset. Only applied when enabled. */
+  ponyTailLevel?: "lite" | "full" | "ultra" | null;
   /**
    * Payload capture mode (default `metadata` when unset):
    * - `metadata` — Proxy→Provider method + allowlisted headers only

@@ -100,6 +100,24 @@ export const CONFIG_SPEC = {
   },
   CARTETHYIA_SERVER_IDLE_TIMEOUT: { kind: "int", default: 60, min: 0, max: 86_400 },
 
+  // Graceful-shutdown drain: how long in-flight requests may finish naturally
+  // before the drain aborts the stragglers. Sized above the common case (a
+  // typical response) but below the stream stall bound so a wedged stream is
+  // still cut within the process budget.
+  CARTETHYIA_SHUTDOWN_DRAIN_WINDOW_MS: {
+    kind: "int",
+    default: 20_000,
+    min: 0,
+    max: 600_000,
+  },
+  // Optional secret for the operator drain endpoint (`POST /admin/drain`). When
+  // set, a process can be stopped gracefully on platforms where a catchable
+  // signal cannot be delivered to it (notably Windows, where `process.kill` of
+  // a console-less process runs no JS handler). The endpoint additionally
+  // requires a loopback peer and a timing-safe token match; unset = the route
+  // does not exist.
+  CARTETHYIA_DRAIN_TOKEN: { kind: "optional-text" },
+
   // Network policy (trusted proxy + SSRF)
   TRUSTED_PROXY_CIDRS: { kind: "list" },
   CARTETHYIA_ALLOW_PRIVATE_UPSTREAMS: { kind: "flag" },
@@ -149,6 +167,11 @@ export const CONFIG_SPEC = {
 
   // Security (encryption key, public origin, abuse ceiling)
   IP_RATE_MAX_PER_WINDOW: { kind: "int", default: 240, min: 1, max: Number.MAX_SAFE_INTEGER },
+  // Graduated model-abuse strikes: consecutive invalid-model requests that ban
+  // the caller, and the quiet window after which a strike expires. A valid-model
+  // request clears the counter regardless of the window.
+  CARTETHYIA_MODEL_STRIKE_THRESHOLD: { kind: "int", default: 3, min: 1, max: 100 },
+  CARTETHYIA_MODEL_STRIKE_WINDOW_MS: { kind: "int", default: 300_000, min: 1_000, max: 86_400_000 },
   CARTETHYIA_ENCRYPTION_KEY: {
     kind: "required",
     error:
@@ -269,6 +292,20 @@ export function resolveMaxBodyBytes(): number {
 /** Resolves the listener idle-socket timeout (seconds). */
 export function resolveIdleTimeout(): number {
   return readInt("CARTETHYIA_SERVER_IDLE_TIMEOUT", CONFIG_SPEC.CARTETHYIA_SERVER_IDLE_TIMEOUT);
+}
+
+/** Resolves the graceful-shutdown drain window: time for in-flight requests to finish before abort. */
+export function resolveShutdownDrainWindowMs(): number {
+  return readInt(
+    "CARTETHYIA_SHUTDOWN_DRAIN_WINDOW_MS",
+    CONFIG_SPEC.CARTETHYIA_SHUTDOWN_DRAIN_WINDOW_MS,
+  );
+}
+
+/** Resolves the operator drain token, or `undefined` when the drain route is disabled. */
+export function resolveDrainToken(): string | undefined {
+  const raw = process.env.CARTETHYIA_DRAIN_TOKEN?.trim();
+  return raw !== undefined && raw.length > 0 ? raw : undefined;
 }
 
 /**
@@ -514,6 +551,22 @@ export function resolveProxyMaxFreeSockets(): number {
  */
 export function resolveIpRateLimit(): number {
   return readInt("IP_RATE_MAX_PER_WINDOW", CONFIG_SPEC.IP_RATE_MAX_PER_WINDOW);
+}
+
+/** Consecutive invalid-model requests that ban a caller. */
+export function resolveModelStrikeThreshold(): number {
+  return readInt(
+    "CARTETHYIA_MODEL_STRIKE_THRESHOLD",
+    CONFIG_SPEC.CARTETHYIA_MODEL_STRIKE_THRESHOLD,
+  );
+}
+
+/** Quiet window (ms) after which a model-abuse strike expires. */
+export function resolveModelStrikeWindowMs(): number {
+  return readInt(
+    "CARTETHYIA_MODEL_STRIKE_WINDOW_MS",
+    CONFIG_SPEC.CARTETHYIA_MODEL_STRIKE_WINDOW_MS,
+  );
 }
 
 /** Reads the application encryption key without caching it. */

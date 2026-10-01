@@ -121,10 +121,16 @@ export class ProxyRequestStateStore {
   abortAll(reason?: unknown): void {
     const controllers = [...this.liveControllers.values()];
     if (controllers.length === 0) return;
+    // A shutdown abort is deliberately *not* a bare `AbortError`. The streaming
+    // dispatch path classifies an `AbortError` as a client disconnect and
+    // releases the stream silently; a drain must instead emit a terminal frame
+    // so the client sees an explicit "shutting down / restarting" close rather
+    // than an EOF that reads as a truncated response. A caller that passes an
+    // explicit reason (tests, or a future targeted abort) keeps it.
     const abortReason =
       reason instanceof Error || reason instanceof DOMException
         ? reason
-        : new DOMException("server shutting down", "AbortError");
+        : new GatewayError("shutting_down", 503, "Service is shutting down");
     for (const controller of controllers) {
       try {
         if (!controller.signal.aborted) controller.abort(abortReason);

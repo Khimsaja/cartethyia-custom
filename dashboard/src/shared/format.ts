@@ -47,6 +47,21 @@ export function formatNumber(value: number | null | undefined): string {
 }
 
 /**
+ * A credit/currency amount: the exact value with thousands separators, never
+ * abbreviated.
+ *
+ * Credits are money, not a token count, so the compact `1.2K` scale that suits
+ * a chart axis reads as a rounded-off balance an operator cannot reconcile
+ * against the provider's own billing page. Two fraction digits are kept because
+ * providers bill fractional credits (e.g. `1234.56`); whole amounts render
+ * without a trailing `.00`.
+ */
+export function formatCredits(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+  return value.toLocaleString("en-US", { maximumFractionDigits: 2 });
+}
+
+/**
  * Token counts are the dashboard's one abbreviated number: a raw `1_234_567`
  * is unreadable in a chart axis or a breakdown row. `TOKEN_SCALES` is ordered
  * coarsest-first, and the last index (`RAW_TOKEN_SCALE`) is the exact count.

@@ -86,6 +86,14 @@ describe("classifyUpstreamFailure retryability", () => {
     expect(classifyUpstreamFailure(error).retryable).toBe(true);
   });
 
+  test("accounts_rate_limited (all accounts cooling) is retryable", () => {
+    // The all-cooling end state is transient: the account recovers at the
+    // cooldown deadline, so failover must keep trying siblings and the client
+    // is told to retry — never treated as terminal.
+    const error = new GatewayError("accounts_rate_limited", 429, "every account is cooling");
+    expect(classifyUpstreamFailure(error).retryable).toBe(true);
+  });
+
   test("stream deadline is retryable before a stream is committed", () => {
     const error = new GatewayError("deadline_exceeded", 504, "upstream stream stalled");
     expect(classifyUpstreamFailure(error).retryable).toBe(true);
