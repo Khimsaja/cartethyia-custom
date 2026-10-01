@@ -11,22 +11,25 @@ A client that repeatedly requests a model outside its access — not in its
 allowlist, denylisted, or resolving to nothing — used to get the same 404 every
 time, which is exactly what a prober wants: a cheap way to fill the console and
 the share page with failed rows. The rejection now escalates. Each *consecutive*
-invalid-model request records a strike against the caller's client IP and its API
-key; the third (configurable) bans both, and the 404 carries an escalating
-warning ("Warning 2 of 3 — repeatedly requesting models outside your access will
+invalid-model request records a strike against the caller's client IP; the tenth
+(configurable) bans that address, and the 404 carries an escalating
+warning ("Warning 2 of 10 — repeatedly requesting models outside your access will
 ban this client") so an honest client that mistyped is told what it is doing
 before it hits a wall. A valid-model request clears the count and a strike
 expires after a quiet window, so one typo — or a client that corrected itself —
 never accumulates toward a ban.
 
+Only the address is banned, never the API key: one key can be shared by every
+recipient of a share link, so refusing the key would punish callers that did
+nothing while the address that probed mints a fresh one.
+
 The ban gate runs before the request is parsed, so a banned caller produces no
-telemetry row and no console error. A ban is permanent until an operator lifts it
-from the console (`GET`/`DELETE /console/api/model-bans`, platform-admin only) —
-a false positive on a shared address must be fixable. Recording against both the
-IP and the key is deliberate: rotating either identity alone would otherwise
-evade a single-identity ban. Knobs:
-`CARTETHYIA_MODEL_STRIKE_THRESHOLD` (default 3) and
-`CARTETHYIA_MODEL_STRIKE_WINDOW_MS` (default 300000).
+telemetry row and no console error. A ban lapses on its own after an hour, so a
+false positive on a shared address heals without an operator; the console
+(`GET`/`DELETE /console/api/model-bans`, platform-admin only) lifts one early.
+Knobs: `CARTETHYIA_MODEL_STRIKE_THRESHOLD` (default 10),
+`CARTETHYIA_MODEL_STRIKE_WINDOW_MS` (default 300000), and
+`CARTETHYIA_MODEL_BAN_TTL_MS` (default 3600000).
 
 ### Fix: a graceful restart no longer truncates in-flight responses
 
@@ -107,6 +110,18 @@ The hero quota rows now draw the allowance directly: a row with no limit is a
 full green bar (nothing to fill toward), and a limited row lays a red "used" fill
 over that green, growing left to right with the used fraction — so the red
 advances across the green as usage climbs and covers it once the limit is spent.
+
+Token figures open on the exact count, like the request counts above, and one
+switch beside the quota rows moves every token number on the page — the quota
+rows, the Tokens KPI, and both ranked tables — through the usage page's units
+(raw, auto, T, B, M, K). One reading for the whole page, so the hero and a table
+can never disagree about the same number, and the choice is remembered.
+
+The ALLOWED MODELS list now draws each model as the provider catalog's model
+card does — an icon tile, the id, and a quiet line of capability icons with its
+context window and output cap — instead of a bare id with spec chips. The only
+control on a card is Copy: a share recipient cannot probe, disable, or delete a
+model, so those buttons do not exist here.
 
 ### Static-token accounts: a valid JWT with no refresh is no longer "broken"
 

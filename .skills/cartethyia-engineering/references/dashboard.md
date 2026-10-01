@@ -75,7 +75,8 @@ Gotchas:
 
 - Backdrop: `when_yah/cartesa.webp` as a fixed `body` background with a veil layer. `--share-backdrop-veil` is 0.8 in light, 0.6 in dark (dark shows more art). Cards use `var(--glass-bg)` + `backdrop-filter` so they read as frosted glass, not opaque slabs.
 - Theme: dark is the default for `/share` (bootstrap in `index.html` defaults an unset `console-theme` to `dark` only when `isShare`); toggle sits beside Home and writes the shared `console-theme` key. `readConsoleTheme(fallback)` accepts a fallback so share can pass `"dark"`.
-- Model list has a Raw/Grouped switch beside "Copy all". Raw is the DEFAULT: a flat list of full ids in an auto-fit grid (`.share-model-list.share-model-list-raw`, `repeat(auto-fill, minmax(min(100%,240px),1fr))`). Grouped buckets by provider. Raw grid rules must out-specify `.share-model-list` (use the doubled class).
+- Model list has a Raw/Grouped switch beside "Copy all". Raw is the DEFAULT: an auto-fit grid of cards (`.share-model-grid`, `repeat(auto-fill, minmax(240px,1fr))`) showing full ids. Grouped buckets by provider, each bucket scrolling a single-column grid. A card (`ModelCard`) mirrors the provider catalog's model card — icon tile, mono name, icon-only Copy, then a capability/limits line — but offers Copy alone: no probe, enable/disable, or delete, which a share recipient must not be able to click.
+- Token figures (quota rows, the Tokens KPI, both table bars) all read one unit from `ShareStatsProvider` in `dashboard/src/apps/share/stats.tsx`, so the hero and the tables can never disagree about the same number. The default is the exact count, matching the usage page; `TokenUnitSwitch` cycles raw → auto → T → B → M → K, and the choice is remembered under `cartethyia:share-token-unit`.
 
 Tests render to static markup (`renderToStaticMarkup`) with `useShareData` mocked via `mock.module`, so markup-only changes are safe; stateful toggles must be asserted by their initial (default) rendering.
 

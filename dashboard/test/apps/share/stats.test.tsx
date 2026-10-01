@@ -13,8 +13,9 @@ import type { ShareLinkPolicyData } from "../../../src/hooks/share-data";
  * The share page's stats formatters and quota bar.
  *
  * Requests are read in full (a comma-grouped integer), never compacted: "1.2K"
- * hides the exact figure against a limit. Tokens stay compact because their
- * magnitudes are large.
+ * hides the exact figure against a limit. Tokens open on the exact count too —
+ * a recipient checking a quota against a limit wants the number — and the unit
+ * switch beside the rows is how a viewer opts into the compact reading.
  */
 describe("share stats formatters", () => {
   test("counts render in full with thousands separators, never compacted", () => {
@@ -104,6 +105,22 @@ describe("share quota bar", () => {
     hourly: [],
     models: [],
     clientIps: [],
+  });
+
+  test("token figures open on the exact count, with the unit switch beside them", () => {
+    const html = renderToStaticMarkup(
+      createElement(ShareQuotaPanel, {
+        policy: policy({ dailyLimit: 100_000 }),
+        stats: stats({ totalTokens: 84_200, todayTokens: 12_000 }),
+      }),
+    );
+    // The exact count, not a rounded "84K": the number is what reconciles
+    // against a limit. The switch is the one click into the compact units.
+    expect(html).toContain("84,200");
+    expect(html).toContain("12,000");
+    expect(html).not.toContain("84.2K");
+    expect(html).toContain("share-unit-switch");
+    expect(html).toContain("Token unit: currently raw");
   });
 
   test("a row with no limit renders an unlimited (green) bar with no red fill", () => {

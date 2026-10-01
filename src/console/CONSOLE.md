@@ -351,11 +351,12 @@ prefix-length hints leave the store.
 - Each key can optionally configure a single share-page popup behind a boolean `share_popup_enabled` toggle (**Enable popup**); the editor stays collapsed until it is on and is laid out image-left, fields-right. It carries an uploaded image, title, and message. The art is uploaded as a data URL and stored on the key row as bytes plus a mime; it is served by `GET /api-keys/:keyId/share-popup-image` for the owner and `GET /share/:token/popup-image` for a link, never hotlinked from a third-party host. It travels with both enrollment and handoff public policy and is opened only by a visitor clicking the button below Base URL; it is never auto-opened.
 - **Model bans** (`domains/model-abuse/`): the platform-admin surface over the
   model-abuse strike layer (`security/SECURITY.md`). `GET /model-bans` lists every
-  active ban (IP or API key), `DELETE /model-bans` lifts one by `{scope, identity}`.
-  This is the only escape hatch for a permanent ban — a shared NAT or a client
-  that genuinely mistyped three times — so it must exist and must be reachable
-  without SQL. `platform:admin` only: a ban is a security decision and the
-  identity values are cross-tenant.
+  active ban (client address and the instant it lapses), `DELETE /model-bans`
+  lifts one by `{identity}`. A ban lapses on its own after its TTL, and this is
+  the escape hatch for lifting one early — a shared NAT or a client that
+  genuinely mistyped — so it must exist and must be reachable without SQL.
+  `platform:admin` only: a ban is a security decision and the identity values are
+  cross-tenant.
 - **Studio** (`studio/`): CRUD over per-tenant saved sessions (capped, messages and media
   normalized and bounded on write and read), a tenant-scoped `web-fetch` tool over
   the validated outbound network binding, plus a key endpoint that decrypts the tenant's default

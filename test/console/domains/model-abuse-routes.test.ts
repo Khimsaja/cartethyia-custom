@@ -25,29 +25,28 @@ function makeRoutes() {
 describe("model-bans console routes", () => {
   test("lists active bans", async () => {
     const { app, service } = makeRoutes();
-    await service.noteInvalid({ ip: "1.2.3.4", apiKeyId: "k1" });
+    await service.noteInvalid({ ip: "1.2.3.4" });
     const response = await app.handle(new Request("http://console.test/model-bans"));
     expect(response.status).toBe(200);
-    const body = (await response.json()) as { bans: readonly unknown[] };
-    expect(body.bans).toContainEqual({ scope: "ip", identity: "1.2.3.4" });
-    expect(body.bans).toContainEqual({ scope: "api_key", identity: "k1" });
+    const body = (await response.json()) as { bans: readonly { ip: string }[] };
+    expect(body.bans.map((ban) => ban.ip)).toEqual(["1.2.3.4"]);
   });
 
   test("lifts a ban and 404s on an unknown one", async () => {
     const { app, service } = makeRoutes();
-    await service.noteInvalid({ ip: "1.2.3.4", apiKeyId: "k1" });
-    const remove = (scope: string, identity: string) =>
+    await service.noteInvalid({ ip: "1.2.3.4" });
+    const remove = (identity: string) =>
       app.handle(
         new Request("http://console.test/model-bans", {
           method: "DELETE",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ scope, identity }),
+          body: JSON.stringify({ identity }),
         }),
       );
-    const removed = await remove("ip", "1.2.3.4");
+    const removed = await remove("1.2.3.4");
     expect(removed.status).toBe(200);
-    expect(await service.check({ ip: "1.2.3.4", apiKeyId: "k1" })).toBe("api_key");
-    const again = await remove("ip", "1.2.3.4");
+    expect(await service.check({ ip: "1.2.3.4" })).toBe(false);
+    const again = await remove("1.2.3.4");
     expect(again.status).toBe(404);
   });
 

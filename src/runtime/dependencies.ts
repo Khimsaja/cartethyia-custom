@@ -52,6 +52,7 @@ import { TelemetryBatchBuffer } from "../observability/telemetry-buffer";
 import { RuntimeMetricsSampler } from "../observability/runtime-metrics";
 import {
   resolveIpRateLimit,
+  resolveModelBanTtlMs,
   resolveModelStrikeThreshold,
   resolveModelStrikeWindowMs,
   resolveSsrfPolicy,
@@ -210,6 +211,7 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
   const modelStrikes = new ModelStrikeService(modelAbuseStore, {
     threshold: resolveModelStrikeThreshold(),
     windowMs: resolveModelStrikeWindowMs(),
+    banTtlMs: resolveModelBanTtlMs(),
   });
   const readiness = () => checkReadiness(db, redis, redisMode);
   const scheduledTasks = new ScheduledTaskRegistry();

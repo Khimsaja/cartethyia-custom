@@ -45,10 +45,9 @@ function withModelWarning(
   limit: number,
 ): GatewayError {
   if (!(error instanceof GatewayError)) return error as GatewayError;
-  const strikes = Math.max(outcome.ipStrikes, outcome.keyStrikes);
   return new GatewayError(error.code, error.status, modelWarningMessage(String(error.details.model ?? ""), outcome, limit), {
     ...error.details,
-    strikes,
+    strikes: outcome.strikes,
     strike_limit: limit,
   }, error.origin);
 }
@@ -251,9 +250,7 @@ export function createProxyRoutePreparationMiddleware(deps: {
         throw new GatewayError("admission_unavailable", 503, "proxy request context unavailable");
       const strikes = deps.modelStrikes;
       const ip = state.clientIdentity?.address;
-      const apiKeyId = state.authorization.id;
-      const strikeIdentity =
-        strikes && ip !== undefined ? { strikes, ip, apiKeyId } : undefined;
+      const strikeIdentity = strikes && ip !== undefined ? { strikes, ip } : undefined;
       try {
         state.preparedRequest = await deps.preparer.prepare({
           canonicalRequest: state.canonicalRequest,
@@ -270,9 +267,9 @@ export function createProxyRoutePreparationMiddleware(deps: {
         // request, or any other failure is not the caller probing for models.
         if (strikeIdentity && isModelRejection(error)) {
           const outcome = await strikeIdentity.strikes
-            .noteInvalid({ ip: strikeIdentity.ip, apiKeyId: strikeIdentity.apiKeyId })
+            .noteInvalid({ ip: strikeIdentity.ip })
             .catch(() => null);
-          if (outcome?.banned === true) throw modelAbuseBannedError(outcome.scope);
+          if (outcome?.banned === true) throw modelAbuseBannedError();
           if (outcome) throw withModelWarning(error, outcome, strikeIdentity.strikes.limit);
         }
         throw error;
@@ -281,7 +278,7 @@ export function createProxyRoutePreparationMiddleware(deps: {
       // followed by a working request never accumulates toward a ban.
       if (strikeIdentity)
         void strikeIdentity.strikes
-          .noteValid({ ip: strikeIdentity.ip, apiKeyId: strikeIdentity.apiKeyId })
+          .noteValid({ ip: strikeIdentity.ip })
           .catch(() => undefined);
     })
     .as("plugin");

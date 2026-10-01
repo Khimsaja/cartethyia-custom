@@ -84,10 +84,13 @@ describe("public share enrollment page", () => {
     shareState = { data, error: null, loading: false };
     statsState = { data: statsFixture, error: null, loading: false };
     const markup = render();
-    // Quota rows live in the hero, using the family total against the policy limit.
+    // Quota rows live in the hero, using the family total against the policy
+    // limit. Token figures open on the exact count, not a rounded unit.
     expect(markup).toContain("share-quota");
     expect(markup).toContain("Daily");
-    expect(markup).toContain("84.2K");
+    expect(markup).toContain("84,200");
+    expect(markup).toContain("12,000");
+    expect(markup).toContain("share-unit-switch");
     // Stats are present but collapsed: the toggle exists, its body does not.
     expect(markup).toContain("STATS &amp; ACTIVITY");
     expect(markup).toContain('aria-expanded="false"');
@@ -159,13 +162,24 @@ describe("public share enrollment page", () => {
   test("shows each allowed model's context window and capabilities", () => {
     shareState = { data, error: null, loading: false };
     const markup = render();
-    // Specs come from the model catalog; the id is what the client sends, and
-    // the chips describe what the route supports.
-    expect(markup).toContain("400K ctx");
-    expect(markup).toContain("in: text, image");
-    expect(markup).toContain("reasoning");
-    expect(markup).toContain("tools");
-    expect(markup).toContain("share-model-spec");
+    // The card mirrors the provider catalog's model card: the id a client
+    // sends, then the limits and capability icons the catalog row supplies.
+    // Limits are formatted by the same shared helper, so a model reads
+    // identically here and in provider detail.
+    expect(markup).toContain("share-model-card");
+    expect(markup).toContain("400k ctx");
+    expect(markup).toContain("128k out");
+    expect(markup).toContain("Reasoning");
+    expect(markup).toContain("Vision");
+    expect(markup).toContain("Tool calling");
+    // The catalog row reports no web search for this model, so no icon claims it.
+    expect(markup).not.toContain("Web search");
+    // A recipient may copy the id and nothing else: the provider card's probe,
+    // enable/disable, and delete controls must not appear on a share link.
+    expect(markup).toContain('aria-label="Copy gpt-5"');
+    expect(markup).not.toContain("Probe");
+    expect(markup).not.toContain("Disable");
+    expect(markup).not.toContain("Delete");
   });
 
   test("defaults the model list to raw full ids and offers a grouped switch", () => {
@@ -179,7 +193,7 @@ describe("public share enrollment page", () => {
     // the provider-bucketed headings are not.
     expect(markup).toContain("codex/gpt-5.5");
     expect(markup).toContain("claude/claude-sonnet-5");
-    expect(markup).toContain("share-model-list-raw");
+    expect(markup).toContain("share-model-grid");
     expect(markup).not.toContain("share-model-groups");
     // Both readings are reachable from the switch beside Copy all.
     expect(markup).toContain("share-view-switch");

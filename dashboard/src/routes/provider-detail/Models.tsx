@@ -28,17 +28,10 @@ import {
   useRegisterProviderModels,
   useSetModelEnabled,
 } from "../../hooks/providers";
-import { UNKNOWN_LIMITS_TOOLTIP } from "../../shared/model-limits";
+import { formatModelTokens, UNKNOWN_LIMITS_TOOLTIP } from "../../shared/model-limits";
 import { toast } from "../../shared/toast";
 import { useTrackedTimeout } from "../../hooks/use-timeout";
 import { PROBE_REASONING_EFFORTS, formatThinkingSuffix, type ModelCatalogEntry, type ProbeReasoningEffort } from "../../data/contracts";
-
-function formatModelTokens(value: number | null): string {
-  if (value === null) return "\u2014";
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(0)}k`;
-  return String(value);
-}
 
 
 function formatProbeDuration(ms: number): string {

@@ -265,29 +265,6 @@ html[data-app="share"] .share-hud-card {
   color: var(--accent-foreground);
 }
 
-/* Raw view: the flat allowlist in an auto-fitting grid that grows to fill the
-   MODEL ACCESS width, so a handful of ids does not leave a tall empty column. */
-.share-model-list.share-model-list-raw {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
-  gap: 6px;
-  max-height: none;
-  margin-top: 16px;
-  padding: 0;
-}
-
-.share-model-list.share-model-list-raw li {
-  min-width: 0;
-}
-
-/* A raw id is the whole point of this view, so let it wrap rather than clip. */
-.share-model-list.share-model-list-raw li code {
-  overflow: visible;
-  text-overflow: clip;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-
 .share-section-heading h2,
 .share-models h2 {
   font-family: var(--font-head);
@@ -471,6 +448,109 @@ html[data-app="share"] .share-hud-card {
   margin-top: 6px;
 }
 
+.share-model-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 8px;
+  margin-top: 16px;
+}
+
+/* One allowed model, shaped like the provider catalog's model card: icon tile,
+   mono id, icon-only copy, then a quiet capabilities/limits line. Only Copy is
+   offered — the recipient cannot probe, disable, or delete. */
+.share-model-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--inner-border);
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+
+.share-model-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.share-model-card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: var(--teal-soft);
+  color: var(--teal);
+}
+
+.share-model-card-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.share-model-card-head button {
+  flex-shrink: 0;
+  padding: 4px;
+  opacity: 0.7;
+}
+
+.share-model-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.share-model-card-icons {
+  display: inline-flex;
+  gap: 5px;
+}
+
+.share-model-card-icons > span {
+  display: inline-flex;
+}
+
+.share-model-card-icons .is-reasoning {
+  color: var(--purple);
+}
+.share-model-card-icons .is-vision {
+  color: var(--status-info);
+}
+.share-model-card-icons .is-tools {
+  color: var(--orange);
+}
+.share-model-card-icons .is-web {
+  color: var(--teal);
+}
+
+.share-model-card-limits {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A limit the catalog is silent about: the card says so, and the tooltip
+   explains why, rather than inventing a number that looks measured. */
+.share-model-card-limits .is-unknown {
+  cursor: help;
+}
+
 .share-model-groups {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -509,68 +589,23 @@ html[data-app="share"] .share-hud-card {
   font-weight: 700;
 }
 
-.share-model-list {
-  display: flex;
-  flex-direction: column;
+/* Inside a provider bucket the group already supplies the frame, so the cards
+   drop theirs and the bucket scrolls as one block. */
+.share-model-group .share-model-grid {
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
-  max-height: 212px;
+  max-height: 300px;
   overflow-y: auto;
+  margin-top: 0;
   padding: 9px;
-  list-style: none;
   scrollbar-color: var(--inner-border) transparent;
   scrollbar-width: thin;
 }
 
-.share-model-list li {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  min-width: 0;
-  padding: 6px 7px 6px 10px;
-  border: 1px solid var(--inner-border);
+.share-model-group .share-model-card {
+  padding: 8px 10px;
   border-radius: 9px;
   background: var(--surface-1);
-}
-
-.share-model-list code {
-  min-width: 0;
-  color: var(--text-primary);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Id and its catalog specs stack, so a wrapped raw id keeps its chips beneath. */
-.share-model-id {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-}
-
-.share-model-specs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-.share-model-spec {
-  padding: 1px 6px;
-  border-radius: var(--radius-pill);
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-family: var(--font-mono);
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  white-space: nowrap;
-}
-
-.share-model-list button {
-  flex: 0 0 auto;
 }
 
 .share-model-empty {
@@ -936,7 +971,34 @@ html[data-app="share"] .share-hud-card {
 .share-quota-meta {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
+}
+
+/* Token-unit cycler: pushes itself to the end of the meta row and reads as a
+   quiet chip, matching the view switch beside it. */
+.share-unit-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  margin-left: auto;
+  padding: 0 9px;
+  border: 1px solid var(--inner-border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.share-unit-switch:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
 }
 
 /* ── Stats section (collapsed by default) ───────────────────────────────── */

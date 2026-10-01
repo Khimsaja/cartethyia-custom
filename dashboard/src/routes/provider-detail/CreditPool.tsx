@@ -58,6 +58,14 @@ export function aggregateCreditPool(entries: readonly QuotaEntry[]): CreditPoolT
  * Sits above the account list so the operator reads "how much is left" before
  * "which account", which is the order the question is asked. Renders nothing
  * for a provider whose accounts report no credit window.
+ *
+ * Every figure here names itself, and the bar agrees with the headline: the
+ * fill is the remaining fraction and the row reads "remaining / limit", so the
+ * green bar and the number beside it are the same quantity. The spent figure
+ * moves to the caption rather than sharing the headline with the remainder —
+ * a bare `450.81 / 3,000` under a label that says neither is what made the
+ * card ambiguous. The quota page draws its bars the same way (green = credit
+ * still available), so the pool and the account rows below it read alike.
  */
 export function CreditPoolCard({ providerId }: { readonly providerId: string }): ReactNode {
   const overview = useQuotaOverview();
@@ -67,6 +75,7 @@ export function CreditPoolCard({ providerId }: { readonly providerId: string }):
 
   const usedPercent = Math.min(100, Math.max(0, (pool.used / pool.limit) * 100));
   const remainingPercent = Math.max(0, 100 - usedPercent);
+  const remaining = Math.max(0, pool.limit - pool.used);
   const tone = quotaBarTone(remainingPercent);
 
   return (
@@ -99,7 +108,7 @@ export function CreditPoolCard({ providerId }: { readonly providerId: string }):
           marginTop: "10px",
         }}
       >
-        <span style={{ fontSize: "12.5px", color: "var(--text-secondary)" }}>Total credits</span>
+        <span style={{ fontSize: "12.5px", color: "var(--text-secondary)" }}>Credits remaining</span>
         <span
           style={{
             fontFamily: "var(--font-mono)",
@@ -109,17 +118,17 @@ export function CreditPoolCard({ providerId }: { readonly providerId: string }):
             color: tone.text,
           }}
         >
-          {formatCredits(pool.used)} / {formatCredits(pool.limit)}
+          {formatCredits(remaining)} / {formatCredits(pool.limit)}
         </span>
       </div>
       <div
         className="quota-bar-track"
         role="progressbar"
-        aria-label="Total credits remaining"
+        aria-label="Credits remaining"
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={Math.round(remainingPercent)}
-        aria-valuetext={`${Math.round(remainingPercent)}% of the credit pool remaining`}
+        aria-valuetext={`${formatCredits(remaining)} of ${formatCredits(pool.limit)} credits remaining`}
         style={{
           marginTop: "8px",
           height: "10px",
@@ -146,7 +155,7 @@ export function CreditPoolCard({ providerId }: { readonly providerId: string }):
           color: "var(--text-tertiary)",
         }}
       >
-        {Math.round(usedPercent)}% used across {pool.accounts}{" "}
+        {formatCredits(pool.used)} used ({Math.round(usedPercent)}%) across {pool.accounts}{" "}
         {pool.accounts === 1 ? "account" : "accounts"}
       </p>
     </div>

@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
-import { Home, Moon, Sun, X } from "lucide-react";
+import { Bot, Brain, Eye, Globe, Home, Moon, Sun, Wrench, X } from "lucide-react";
 import { useModalFocus } from "../../hooks/use-modal-focus";
 import { Button } from "../../components/ui/button";
 import { Card, CardBody } from "../../components/ui/card";
 import { EmptyState, ErrorState, LoadingState } from "../../components/ui/state";
 import { ClipboardButton } from "../../components/patterns/clipboard-button";
 import { GithubBadge } from "../../components/patterns/github-badge";
+import { formatModelTokens, UNKNOWN_LIMITS_TOOLTIP } from "../../shared/model-limits";
 import { readConsoleTheme, applyConsoleTheme, isDarkEffective, writeConsoleTheme, type ConsoleThemeChoice } from "../../shared/theme";
 import { useShareData, type ShareLinkData, type ShareModelInfoData } from "../../hooks/share-data";
 import {
@@ -36,38 +37,95 @@ export function tokenFromPathname(pathname: string): string {
 /** Hint the recipient types: capped at 20 chars, only ~7 survive the label. */
 const NAME_HINT_MAX_LENGTH = 20;
 
-/** Compact context window: 200K / 1.0M. */
-function formatContext(tokens: number): string {
-  if (tokens >= 1_000_000) return `${Number((tokens / 1_000_000).toFixed(1))}M ctx`;
-  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K ctx`;
-  return `${tokens} ctx`;
-}
-
 /**
- * The context window and capabilities of one allowed model, from the catalog.
+ * One allowed model, drawn like the provider catalog's model cards.
  *
- * Rendered beside the model id so a recipient can see what the route supports
- * without opening a second source. Nothing is shown when the catalog has no row
- * for the id — an invented limit would mislead.
+ * The share page shows the same shape an operator sees in provider detail, so
+ * the two read as the same thing: an icon tile, the routable id with an
+ * icon-only copy button, then a quiet line of capabilities and limits — the
+ * limits formatted by the same `formatModelTokens` the catalog card uses. Only
+ * Copy is offered — a recipient cannot probe, disable, or delete a model, and
+ * showing those controls would invite a click that must not work.
+ *
+ * The context window and output cap come from the catalog row the gateway
+ * already serves `/v1/models` from; a name with no row reports the limit as
+ * unavailable rather than an invented number.
  */
-function ModelSpecs({ info }: { readonly info: ShareModelInfoData | undefined }): ReactElement | null {
-  if (!info) return null;
-  const chips: string[] = [];
-  if (info.contextLength !== null) chips.push(formatContext(info.contextLength));
-  const input = info.capabilities?.input ?? [];
-  if (input.length > 0) chips.push(`in: ${input.join(", ")}`);
-  if (info.reasoning) chips.push("reasoning");
-  if (info.toolCall) chips.push("tools");
-  if (info.webSearch) chips.push("web");
-  if (chips.length === 0) return null;
+function ModelCard({
+  id,
+  label,
+  info,
+}: {
+  /** The id as a client must send it. */
+  readonly id: string;
+  /** What the card shows; the bare id in the grouped reading. */
+  readonly label: string;
+  readonly info: ShareModelInfoData | undefined;
+}): ReactElement {
+  const vision = (info?.capabilities?.input ?? []).some(
+    (modality) => modality === "image" || modality === "vision",
+  );
   return (
-    <span className="share-model-specs">
-      {chips.map((chip) => (
-        <span className="share-model-spec" key={chip}>
-          {chip}
+    <div className="share-model-card">
+      <div className="share-model-card-head">
+        <span className="share-model-card-icon" aria-hidden="true">
+          <Bot size={14} />
         </span>
-      ))}
-    </span>
+        <span className="share-model-card-name" title={id}>
+          {label}
+        </span>
+        <ClipboardButton
+          value={id}
+          size="sm"
+          variant="ghost"
+          label=""
+          copiedLabel=""
+          aria-label={`Copy ${id}`}
+          title={`Copy ${id}`}
+        />
+      </div>
+      <div className="share-model-card-meta">
+        <span className="share-model-card-icons">
+          {info?.reasoning ? (
+            <span title="Reasoning" aria-label="Reasoning" className="is-reasoning">
+              <Brain size={12} />
+            </span>
+          ) : null}
+          {vision ? (
+            <span title="Vision" aria-label="Vision" className="is-vision">
+              <Eye size={12} />
+            </span>
+          ) : null}
+          {info?.toolCall ? (
+            <span title="Tool calling" aria-label="Tool calling" className="is-tools">
+              <Wrench size={12} />
+            </span>
+          ) : null}
+          {info?.webSearch ? (
+            <span title="Web search" aria-label="Web search" className="is-web">
+              <Globe size={12} />
+            </span>
+          ) : null}
+        </span>
+        <span className="share-model-card-limits">
+          {info?.contextLength != null ? (
+            `${formatModelTokens(info.contextLength)} ctx`
+          ) : (
+            <span title={UNKNOWN_LIMITS_TOOLTIP} className="is-unknown">
+              n/a ctx
+            </span>
+          )}
+          {" · "}
+          {info?.maxOutputTokens != null ? (
+            `${formatModelTokens(info.maxOutputTokens)} out`
+          ) : (
+            <span title={UNKNOWN_LIMITS_TOOLTIP} className="is-unknown">
+              n/a out
+            </span>
+          )}
+        </span>
+      </div>
+    </div>
   );
 }
 
@@ -501,24 +559,11 @@ export function SharePage(): ReactElement {
               </div>
               {modelGroups.size ? (
                 modelView === "raw" ? (
-                  <ul className="share-model-list share-model-list-raw">
+                  <div className="share-model-grid">
                     {data.modelAllowlist.map((model) => (
-                      <li key={model}>
-                        <span className="share-model-id">
-                          <code title={model}>{model}</code>
-                          <ModelSpecs info={data.modelInfo?.[model]} />
-                        </span>
-                        <ClipboardButton
-                          value={model}
-                          size="sm"
-                          variant="secondary"
-                          label="Copy"
-                          copiedLabel="Copied"
-                          aria-label={`Copy ${model}`}
-                        />
-                      </li>
+                      <ModelCard key={model} id={model} label={model} info={data.modelInfo?.[model]} />
                     ))}
-                  </ul>
+                  </div>
                 ) : (
                   <div className="share-model-groups">
                     {[...modelGroups].sort(([a], [b]) => a.localeCompare(b)).map(([provider, models]) => (
@@ -527,24 +572,16 @@ export function SharePage(): ReactElement {
                           <h3>{provider}</h3>
                           <span>{models.length}</span>
                         </div>
-                        <ul className="share-model-list">
+                        <div className="share-model-grid">
                           {models.map((model) => (
-                            <li key={model}>
-                              <span className="share-model-id">
-                                <code title={model}>{provider === "Other" ? model : model.slice(provider.length + 1)}</code>
-                                <ModelSpecs info={data.modelInfo?.[model]} />
-                              </span>
-                              <ClipboardButton
-                                value={model}
-                                size="sm"
-                                variant="secondary"
-                                label="Copy"
-                                copiedLabel="Copied"
-                                aria-label={`Copy ${model}`}
-                              />
-                            </li>
+                            <ModelCard
+                              key={model}
+                              id={model}
+                              label={provider === "Other" ? model : model.slice(provider.length + 1)}
+                              info={data.modelInfo?.[model]}
+                            />
                           ))}
-                        </ul>
+                        </div>
                       </section>
                     ))}
                   </div>

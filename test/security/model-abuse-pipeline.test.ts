@@ -77,14 +77,15 @@ describe("model-abuse strikes through the real pipeline", () => {
     );
   });
 
-  test("a threshold-1 ban records both the IP and the key", async () => {
+  test("a threshold-1 ban records the client address only", async () => {
     const { app, modelStrikes } = makeHarness(1);
     // First invalid model bans immediately.
     const first = await app.handle(post("bad-model"));
     expect(first.status).toBe(403);
     const bans = await modelStrikes.listBans();
-    expect(bans).toContainEqual({ scope: "ip", identity: "127.0.0.1" });
-    expect(bans).toContainEqual({ scope: "api_key", identity: "contract-key" });
+    // The key is deliberately not banned: it may be shared by every recipient
+    // of a share link, so refusing it would punish callers that did nothing.
+    expect(bans.map((ban) => ban.ip)).toEqual(["127.0.0.1"]);
   });
 
   test("a banned caller is refused before parse, so no telemetry row is produced", async () => {

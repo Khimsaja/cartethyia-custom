@@ -200,16 +200,17 @@ requires the inherited `routing:cli_mapping` scope and matching CLI User-Agent.
 A client that repeatedly requests a model outside its access — one absent from
 its allowlist, denylisted, or resolving to nothing — is answered with a warning
 that counts up, then banned. Each such *consecutive* rejection records a strike
-against both the caller's client IP and its API key; the third (configurable via
-`CARTETHYIA_MODEL_STRIKE_THRESHOLD`) bans both. Recording against two identities
-is deliberate: an IP alone is evaded by rotating keys, a key alone by enrolling a
-new one from the same host, so a ban on either closes both doors. A *valid*-model
-request clears the counters, and a strike counter expires after a quiet window
-(`CARTETHYIA_MODEL_STRIKE_WINDOW_MS`, default 5 min), so one typo — or a client
-that corrected itself — never accumulates toward a ban. A ban has **no TTL**: it
-is permanent until an operator lifts it from the console
-(`GET`/`DELETE /console/api/model-bans`), the only escape hatch, because a false
-positive (a shared NAT) must be fixable.
+against the caller's client IP; the tenth (configurable via
+`CARTETHYIA_MODEL_STRIKE_THRESHOLD`) bans that address. The ban is keyed on the
+address alone: an API key is shared by every recipient of a share link, so
+banning it would refuse callers that did nothing while the address that probed
+mints a fresh key. The address cannot be re-enrolled, which is the point. A
+*valid*-model request clears the counter, and a strike counter expires after a
+quiet window (`CARTETHYIA_MODEL_STRIKE_WINDOW_MS`, default 5 min), so one typo —
+or a client that corrected itself — never accumulates toward a ban. A ban lapses
+on its own after `CARTETHYIA_MODEL_BAN_TTL_MS` (default 1 h), so a false positive
+(a shared NAT) heals without an operator; the console
+(`GET`/`DELETE /console/api/model-bans`) lifts one early.
 
 Placement is load-bearing. The ban gate runs in
 `createApiKeyAuthenticationMiddleware`, *before* canonical parse and route
@@ -241,14 +242,15 @@ strike, never a blocked client.
   route for fairness, escalation per identity so rotating the path cannot dodge
   the ban). All scripted calls are static Lua (no dynamic eval) with
   finite-number result guards (`redisEvalNumber` / `redisEvalTuple`).
-- Model-abuse strikes: 3 consecutive invalid-model requests ban the IP and key
-  (`CARTETHYIA_MODEL_STRIKE_THRESHOLD`); a strike expires after 5 min of quiet
-  (`CARTETHYIA_MODEL_STRIKE_WINDOW_MS`). Redis keys
-  `cartethyia:model-abuse:strike:ip:<ip>` and
-  `cartethyia:model-abuse:strike:key:<keyId>` (window TTL), plus the permanent
-  `cartethyia:model-abuse:bans` set (`<scope>|<identity>` members) — the one key
-  with no TTL, because a ban is lifted only by an operator. The record step is a
-  single static Lua script over its three keys.
+- Model-abuse strikes: 10 consecutive invalid-model requests ban the client
+  address (`CARTETHYIA_MODEL_STRIKE_THRESHOLD`); a strike expires after 5 min of
+  quiet (`CARTETHYIA_MODEL_STRIKE_WINDOW_MS`) and a ban after 1 h
+  (`CARTETHYIA_MODEL_BAN_TTL_MS`). Redis keys
+  `cartethyia:model-abuse:strike:ip:<ip>` (window TTL) and the
+  `cartethyia:model-abuse:bans:ip` sorted set, whose members are the addresses
+  scored with the instant their ban lapses — a ban needs no sweeper, because an
+  elapsed member reads as absent and is dropped. The record step is a single
+  static Lua script over its two keys.
 
 ## How to extend
 

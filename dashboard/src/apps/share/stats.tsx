@@ -1,7 +1,20 @@
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, Scaling } from "lucide-react";
 import { Card } from "../../components/ui/card";
-import { createContext, useContext, useState, type ReactElement, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useState,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import { useShareData, type ShareFamilyStatsData, type ShareLinkPolicyData } from "../../hooks/share-data";
+import {
+  RAW_TOKEN_SCALE,
+  TOKEN_SCALES,
+  TOKEN_SCALE_AUTO,
+  tokenScaleValue,
+} from "../../shared/format";
 
 /**
  * Live stats subscription shared by every consumer on the page.
@@ -13,11 +26,57 @@ import { useShareData, type ShareFamilyStatsData, type ShareLinkPolicyData } fro
  * that subtree referentially stable: a tick re-renders only the components
  * that actually read this context. One subscription, not one per consumer, so
  * the gateway sees a single stream per open page.
+ *
+ * The token unit lives here too, for the same reason: one reading governs every
+ * token figure on the page (quota rows, KPI tile, both tables), and splitting it
+ * per component would let the hero and the table disagree about the same number.
+ * The reading defaults to the exact count — a share recipient checking a quota
+ * wants the number, not a rounded `84K` — and `auto` is one click away for
+ * anyone who would rather see the compact unit each figure lands on.
  */
 const ShareStatsContext = createContext<{
   readonly data: ShareFamilyStatsData | null;
   readonly loading: boolean;
-}>({ data: null, loading: true });
+  /** `TOKEN_SCALE_AUTO`, a `TOKEN_SCALES` index, or `RAW_TOKEN_SCALE`. */
+  readonly unit: number;
+  readonly cycleUnit: () => void;
+}>({ data: null, loading: true, unit: RAW_TOKEN_SCALE, cycleUnit: () => undefined });
+
+/** The viewer's chosen token unit, remembered across reloads. */
+const TOKEN_UNIT_STORAGE_KEY = "cartethyia:share-token-unit";
+
+/**
+ * Reads the remembered unit. Every failure path answers the default — the exact
+ * count — because storage throws in a private window and a stale or hand-edited
+ * value must not put the page into a unit it cannot render.
+ */
+function readStoredUnit(): number {
+  try {
+    const raw = window.localStorage.getItem(TOKEN_UNIT_STORAGE_KEY);
+    if (raw === null) return RAW_TOKEN_SCALE;
+    if (raw === "auto") return TOKEN_SCALE_AUTO;
+    const parsed = Number(raw);
+    return Number.isInteger(parsed) && parsed >= 0 && parsed <= RAW_TOKEN_SCALE
+      ? parsed
+      : RAW_TOKEN_SCALE;
+  } catch {
+    return RAW_TOKEN_SCALE;
+  }
+}
+
+/** The unit one click past `unit`: raw → auto → coarsest → … → K → raw. */
+function nextTokenUnit(unit: number): number {
+  if (unit === TOKEN_SCALE_AUTO) return 0;
+  if (unit >= RAW_TOKEN_SCALE) return TOKEN_SCALE_AUTO;
+  return unit + 1;
+}
+
+/** The switch's label: a compact suffix, `raw`, or the default-unit marker. */
+function tokenUnitLabel(unit: number): string {
+  if (unit === TOKEN_SCALE_AUTO) return "auto";
+  if (unit >= RAW_TOKEN_SCALE) return "raw";
+  return TOKEN_SCALES[unit]?.suffix ?? "auto";
+}
 
 export function ShareStatsProvider({
   path,
@@ -27,10 +86,55 @@ export function ShareStatsProvider({
   readonly children: ReactNode;
 }): ReactElement {
   const state = useShareData<ShareFamilyStatsData>(path, { streamEvent: "stats" });
+  const [unit, setUnit] = useState<number>(() =>
+    typeof window === "undefined" ? RAW_TOKEN_SCALE : readStoredUnit(),
+  );
+  const cycleUnit = useCallback(() => {
+    setUnit((current) => {
+      const next = nextTokenUnit(current);
+      try {
+        window.localStorage.setItem(
+          TOKEN_UNIT_STORAGE_KEY,
+          next === TOKEN_SCALE_AUTO ? "auto" : String(next),
+        );
+      } catch {
+        // A private window or a full quota: the unit still applies for this
+        // view, it just is not remembered.
+      }
+      return next;
+    });
+  }, []);
   return (
-    <ShareStatsContext.Provider value={{ data: state.data, loading: state.loading }}>
+    <ShareStatsContext.Provider value={{ data: state.data, loading: state.loading, unit, cycleUnit }}>
       {children}
     </ShareStatsContext.Provider>
+  );
+}
+
+/**
+ * The token-unit switch.
+ *
+ * One control, not one per figure: the reading a viewer picks is a property of
+ * the page, and a recipient scanning the quota bar and the top-models table is
+ * comparing the same tokens. The page opens on the exact count, matching what
+ * the usage page does; the compact units are for lining figures up by eye, and
+ * `auto` picks the unit each value lands on.
+ */
+function TokenUnitSwitch(): ReactElement {
+  const { unit, cycleUnit } = useContext(ShareStatsContext);
+  const current = tokenUnitLabel(unit);
+  const next = tokenUnitLabel(nextTokenUnit(unit));
+  return (
+    <button
+      type="button"
+      className="share-unit-switch"
+      aria-label={`Token unit: currently ${current}, switch to ${next}`}
+      title={`Show ${next}`}
+      onClick={cycleUnit}
+    >
+      <Scaling size={11} aria-hidden="true" />
+      {current}
+    </button>
   );
 }
 
@@ -50,21 +154,17 @@ export function LiveShareStatsSection(): ReactElement {
   return <ShareStatsSection stats={data} loading={loading} />;
 }
 
-/** Compact token count: 1.2K / 84.2K / 3.4M. Matches the console's key cards. */
-function compact(value: number): string {
-  if (!Number.isFinite(value)) return "—";
-  const amount = Math.max(0, value);
-  if (amount >= 1_000_000_000) return `${Number((amount / 1_000_000_000).toFixed(2))}B`;
-  if (amount >= 1_000_000) return `${Number((amount / 1_000_000).toFixed(2))}M`;
-  if (amount >= 1_000) return `${Number((amount / 1_000).toFixed(2))}K`;
-  return amount.toLocaleString();
+/** A token figure in the viewer's chosen unit. */
+function useTokenFormat(): (value: number) => string {
+  const { unit } = useContext(ShareStatsContext);
+  return useCallback((value: number) => tokenScaleValue(value, unit), [unit]);
 }
 
 /**
  * A whole-number count with thousands separators — requests, errors, and other
  * tallies. Deliberately not compacted: "1.2K requests" hides the exact figure
  * an operator checks against a limit, and a request count is small enough to
- * read in full. Tokens keep `compact` because their magnitudes are large.
+ * read in full. Tokens keep the unit switch because their magnitudes are large.
  */
 export function formatCount(value: number): string {
   if (!Number.isFinite(value)) return "—";
@@ -118,6 +218,7 @@ export function ShareQuotaPanel({
   readonly policy: ShareLinkPolicyData;
   readonly stats: ShareFamilyStatsData | null;
 }): ReactElement {
+  const format = useTokenFormat();
   const rows: readonly { label: string; used: number; limit: number | null }[] = [
     { label: "Lifetime", used: stats?.totals?.totalTokens ?? 0, limit: policy.oneTimeLimit },
     { label: "Daily", used: stats?.totals?.todayTokens ?? 0, limit: policy.dailyLimit },
@@ -143,8 +244,8 @@ export function ShareQuotaPanel({
               className={`share-quota-track${limited ? " is-limited" : " is-unlimited"}`}
               title={
                 limited
-                  ? `${compact(row.used)} of ${compact(row.limit as number)} used`
-                  : `${compact(row.used)} used (no limit set)`
+                  ? `${format(row.used)} of ${format(row.limit as number)} used`
+                  : `${format(row.used)} used (no limit set)`
               }
             >
               {limited ? (
@@ -155,8 +256,8 @@ export function ShareQuotaPanel({
               ) : null}
             </div>
             <span className="share-quota-value">
-              <strong>{compact(row.used)}</strong>
-              {limited ? ` / ${compact(row.limit as number)}` : " used"}
+              <strong>{format(row.used)}</strong>
+              {limited ? ` / ${format(row.limit as number)}` : " used"}
             </span>
           </div>
         );
@@ -169,6 +270,7 @@ export function ShareQuotaPanel({
             {recipients.active} / {recipients.total} recipients active
           </span>
         ) : null}
+        <TokenUnitSwitch />
       </div>
     </div>
   );
@@ -253,6 +355,7 @@ export function ShareStatsSection({
   readonly loading: boolean;
 }): ReactElement {
   const [open, setOpen] = useState(false);
+  const format = useTokenFormat();
   const totals = stats?.totals;
   const models = stats?.models ?? [];
   const ips = stats?.clientIps ?? [];
@@ -300,7 +403,7 @@ export function ShareStatsSection({
                 </div>
                 <div className="share-stat-tile">
                   <span className="share-stat-tile-label">Tokens</span>
-                  <span className="share-stat-tile-value">{compact(totals?.totalTokens ?? 0)}</span>
+                  <span className="share-stat-tile-value">{format(totals?.totalTokens ?? 0)}</span>
                   <span className="share-stat-tile-detail">all time</span>
                 </div>
                 <div className="share-stat-tile">
@@ -358,7 +461,7 @@ export function ShareStatsSection({
                               <BarCell
                                 value={model.tokens}
                                 max={maxModelTokens}
-                                label={compact(model.tokens)}
+                                label={format(model.tokens)}
                               />
                             </td>
                           </tr>
@@ -404,7 +507,7 @@ export function ShareStatsSection({
                             </td>
                             <td className="is-numeric">{formatCount(ip.requests)}</td>
                             <td>
-                              <BarCell value={ip.requests} max={maxIpRequests} label={compact(ip.tokens)} />
+                              <BarCell value={ip.requests} max={maxIpRequests} label={format(ip.tokens)} />
                             </td>
                             <td>{relativeTime(ip.lastSeenAt)}</td>
                           </tr>
