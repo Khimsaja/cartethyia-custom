@@ -284,11 +284,11 @@ confirmation explaining the consequence in either direction before applying it. 
 described under the OAuth refresh contract in `PROVIDERS.md`.
 
 On the provider detail page, the Accounts card leads with a **credit pool** line for providers whose
-accounts report a credit balance: every account's windows summed into one `used / limit` bar with a
-`N% used across M accounts` caption. It reads the already-polled `/quota/overview`, so no backend
-endpoint is added; windows without a positive `limit` are skipped (a rate limit is not a credit) and
-a single account's over-reported `used` is clamped to its own limit. Providers reporting no credit
-window render no card.
+accounts report a credit balance: every account's windows summed into one bar with a headline that
+reads `N credits available of M total` and a `N% used across M accounts` caption. It reads the
+already-polled `/quota/overview`, so no backend endpoint is added; windows without a positive `limit`
+are skipped (a rate limit is not a credit) and a single account's over-reported `used` is clamped to
+its own limit. Providers reporting no credit window render no card.
 
 The provider's Routing Strategy card also carries a **credit floor** (`creditFloor`, nullable). It is
 the reserve the operator wants kept unused on every account of that provider: when the quota sweep

@@ -60,12 +60,13 @@ export function aggregateCreditPool(entries: readonly QuotaEntry[]): CreditPoolT
  * for a provider whose accounts report no credit window.
  *
  * Every figure here names itself, and the bar agrees with the headline: the
- * fill is the remaining fraction and the row reads "remaining / limit", so the
- * green bar and the number beside it are the same quantity. The spent figure
- * moves to the caption rather than sharing the headline with the remainder —
- * a bare `450.81 / 3,000` under a label that says neither is what made the
- * card ambiguous. The quota page draws its bars the same way (green = credit
- * still available), so the pool and the account rows below it read alike.
+ * fill is the remaining fraction and the headline reads "N credits available of
+ * M total", so the green bar and the sentence beside it are the same quantity.
+ * The spent figure moves to the caption rather than sharing the headline with
+ * the remainder — a bare `450.81 / 3,000` under a label that says neither is
+ * what made the card ambiguous. The quota page draws its bars the same way
+ * (green = credit still available), so the pool and the account rows below it
+ * read alike.
  */
 export function CreditPoolCard({ providerId }: { readonly providerId: string }): ReactNode {
   const overview = useQuotaOverview();
@@ -102,23 +103,25 @@ export function CreditPoolCard({ providerId }: { readonly providerId: string }):
       <div
         style={{
           display: "flex",
-          alignItems: "center",
+          alignItems: "baseline",
           justifyContent: "space-between",
           gap: "12px",
           marginTop: "10px",
         }}
       >
-        <span style={{ fontSize: "12.5px", color: "var(--text-secondary)" }}>Credits remaining</span>
-        <span
-          style={{
-            fontFamily: "var(--font-mono)",
-            fontSize: "12.5px",
-            fontWeight: 700,
-            fontVariantNumeric: "tabular-nums",
-            color: tone.text,
-          }}
-        >
-          {formatCredits(remaining)} / {formatCredits(pool.limit)}
+        <span style={{ fontSize: "12.5px", color: "var(--text-secondary)" }}>
+          <span
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontWeight: 700,
+              fontVariantNumeric: "tabular-nums",
+              color: tone.text,
+            }}
+          >
+            {formatCredits(remaining)}
+          </span>{" "}
+          credits available of{" "}
+          <span style={{ fontVariantNumeric: "tabular-nums" }}>{formatCredits(pool.limit)}</span> total
         </span>
       </div>
       <div
