@@ -9,6 +9,7 @@ import type { OAuthRefreshService, OAuthTokenRefresher } from "../authentication
 import { CredentialResolver, parseProviderId, type CredentialAlternative, type CredentialKind } from "../provider-registry";
 import type { ResolvedCredential } from "../provider-registry";
 import { record } from "../authentication/oauth-flow-store";
+import { refreshLeadMs } from "./oauth-refresh-lead";
 
 // ── Credential cache ─────────────────────────────────────────────────────────
 /**
@@ -48,9 +49,6 @@ export function invalidateCredentialCache(accountId?: string): void {
   credCache.delete(accountId);
 }
 
-/** Default proactive OAuth refresh window. */
-export const OAUTH_REFRESH_SKEW_MS = 5 * 60 * 1000;
-
 const resolver = new CredentialResolver();
 
 /** Stored account fields needed by credential resolution and token refresh. */
@@ -75,13 +73,15 @@ export interface AccountWithFreshness {
 /**
  * Loads an account and its optional OAuth state in one query.
  *
- * `dueAt` is the OAuth expiry minus the supplied refresh skew. Non-OAuth
- * accounts and accounts without OAuth state have no due time.
+ * `dueAt` is the OAuth expiry minus the provider's refresh lead
+ * (`refreshLeadMs(providerId)`), so a token becomes due at the point that
+ * provider re-mints its own (Claude ~4h, Codex ~5 days, Antigravity ~5 min).
+ * Non-OAuth accounts and accounts without OAuth state have no due time.
  */
 export async function loadAccountWithFreshness(
   db: CartethyiaDatabase,
   accountId: string,
-  skewMs = OAUTH_REFRESH_SKEW_MS,
+  skewMs?: number,
 ): Promise<AccountWithFreshness | undefined> {
   const selectBuilder = db
     .select({
@@ -104,9 +104,10 @@ export async function loadAccountWithFreshness(
   const rows = await query.where(eq(providerAccounts.id, accountId)).limit(1);
   const row = rows[0];
   if (!row) return undefined;
+  const lead = skewMs ?? refreshLeadMs(row.providerId);
   return {
     row,
-    dueAt: row.expiresAt == null ? undefined : row.expiresAt.getTime() - skewMs,
+    dueAt: row.expiresAt == null ? undefined : row.expiresAt.getTime() - lead,
   };
 }
 

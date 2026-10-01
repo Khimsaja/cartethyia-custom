@@ -29,9 +29,9 @@ import { invalidateCredentialCache } from "../operations/provider-credential-ser
 import { record } from "./oauth-flow-store";
 import {
   loadAccountWithFreshness,
-  OAUTH_REFRESH_SKEW_MS,
   type AccountWithFreshnessRow,
 } from "../operations/provider-credential-service";
+import { refreshLeadMs } from "../operations/oauth-refresh-lead";
 import { pushStructuredConsoleLog } from "../../observability/log-ring";
 
 /**
@@ -47,6 +47,16 @@ import { pushStructuredConsoleLog } from "../../observability/log-ring";
 
 const DEFINITIVE_PATTERN =
   /invalid_grant|invalid_token|unauthorized_client|revoked|refresh_token.*expired/i;
+
+/**
+ * `last_error_category` stamped on an OAuth account whose refresh cannot run
+ * because no refresh token is on record. Distinct from `oauth_revoked` (a
+ * refresh that was attempted and refused): this account was never able to
+ * refresh, so the operator's remedy is to sign in again, not to replace a
+ * revoked credential. Kept as a shared constant so the console and the
+ * refresh path name it identically.
+ */
+export const OAUTH_REAUTH_REQUIRED_CATEGORY = "oauth_reauth_required";
 
 interface OAuthRefreshFailure {
   readonly status?: number | undefined;
@@ -68,8 +78,6 @@ export function classifyOAuthRefreshFailure(
   if (failure.status === 401) return "definitive";
   return "transient";
 }
-
-export { OAUTH_REFRESH_SKEW_MS };
 
 /** How long a lease is valid for before another process may reclaim it. */
 const LEASE_TTL_MS = 15_000;
@@ -236,7 +244,10 @@ function buildRefreshContext(row: AccountRow, includeAccessToken: boolean): OAut
   };
 }
 
-/** Marks an account permanently unusable after a definitive refresh failure, fenced on the lease. */
+/**
+ * Marks an account permanently unusable after a definitive refresh failure,
+ * fenced on the lease.
+ */
 async function disableAccount(
   db: CartethyiaDatabase,
   accountId: string,
@@ -268,9 +279,27 @@ async function disableAccount(
   });
 }
 
+/**
+ * Stamps an OAuth account that has no refresh token on record, so the console
+ * can show "re-auth required" instead of an account that silently stops
+ * working. Not lease-fenced: this is a non-destructive annotation that any
+ * process may write, and the account's credential is not touched.
+ */
+async function markReauthRequired(db: CartethyiaDatabase, accountId: string): Promise<void> {
+  await db
+    .update(providerAccounts)
+    .set({
+      lastError: "OAuth account has no refresh token; sign in again to restore it",
+      lastErrorCategory: OAUTH_REAUTH_REQUIRED_CATEGORY,
+      lastErrorAt: new Date(),
+    })
+    .where(eq(providerAccounts.id, accountId));
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
 function failureMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
@@ -293,26 +322,46 @@ function failureStatus(error: unknown): number | undefined {
   return undefined;
 }
 
-/** Rows whose OAuth token is due for proactive refresh (used by the sweep worker). */
+/**
+ * Rows whose OAuth token is due for proactive refresh (used by the sweep worker).
+ *
+ * The due test is applied in JS, not as one SQL `expires_at < cutoff`, because
+ * the lead is per provider (`refreshLeadMs`): Claude re-mints ~4h ahead, Codex
+ * ~5 days, Antigravity ~5 min, and a single global cutoff cannot express that.
+ * Accounts with no recorded expiry are always due — an account the sweep cannot
+ * see is one whose token dies silently, which is the failure this guards.
+ */
 export async function loadDueOAuthAccounts(
   db: CartethyiaDatabase,
-  skewMs = OAUTH_REFRESH_SKEW_MS,
+  skewMs?: number,
 ): Promise<readonly { readonly id: string; readonly providerId: string }[]> {
-  const cutoff = new Date(Date.now() + skewMs);
-  return db
-    .select({ id: providerAccounts.id, providerId: providerAccounts.providerId })
+  const rows = await db
+    .select({
+      id: providerAccounts.id,
+      providerId: providerAccounts.providerId,
+      expiresAt: providerOauthStates.expiresAt,
+      lastErrorCategory: providerAccounts.lastErrorCategory,
+    })
     .from(providerAccounts)
     .innerJoin(providerOauthStates, eq(providerOauthStates.providerAccountId, providerAccounts.id))
     .where(
       and(
         eq(providerAccounts.credentialKind, "oauth"),
         eq(providerAccounts.status, "active"),
-        or(
-          isNull(providerOauthStates.expiresAt),
-          lt(providerOauthStates.expiresAt, cutoff),
-        ),
       ),
     );
+  const now = Date.now();
+  return rows
+    .filter((row) => {
+      // Already flagged as needing a re-login: refreshing cannot help until the
+      // operator signs in again, and retrying every pass only floods the log.
+      // A successful re-auth clears the category and returns it to the sweep.
+      if (row.lastErrorCategory === OAUTH_REAUTH_REQUIRED_CATEGORY) return false;
+      if (row.expiresAt == null) return true;
+      const lead = skewMs ?? refreshLeadMs(row.providerId);
+      return row.expiresAt.getTime() - lead <= now;
+    })
+    .map((row) => ({ id: row.id, providerId: row.providerId }));
 }
 
 export class OAuthRefreshService {
@@ -341,7 +390,8 @@ export class OAuthRefreshService {
     opts: { force?: boolean; skewMs?: number } = {},
   ): Promise<string | null> {
     const force = opts.force === true;
-    const skewMs = opts.skewMs ?? OAUTH_REFRESH_SKEW_MS;
+    // No explicit skew: the per-provider lead is applied at load time.
+    const skewMs = opts.skewMs;
     // Forced refreshes get their own in-flight slot so they don't merge with
     // a raced non-force call that would otherwise short-circuit.
     const key = force ? `${accountId}:force` : accountId;
@@ -366,7 +416,7 @@ export class OAuthRefreshService {
   async #refreshIfDue(
     accountId: string,
     refresher: OAuthTokenRefresher,
-    skewMs: number,
+    skewMs: number | undefined,
     force: boolean,
   ): Promise<string | null> {
     const account = await loadAccountWithFreshness(this.#db, accountId, skewMs);
@@ -383,7 +433,7 @@ export class OAuthRefreshService {
   async #refreshNow(
     row: AccountRow,
     refresher: OAuthTokenRefresher,
-    skewMs: number,
+    skewMs: number | undefined,
   ): Promise<string | null> {
     pushStructuredConsoleLog("info", "OAuth token refresh started", {
       event: "token_refresh",
@@ -402,11 +452,16 @@ export class OAuthRefreshService {
     }
     if (!row.refreshCiphertext) {
       await releaseLease(this.#db, row.id, owner);
-      pushStructuredConsoleLog("warn", "OAuth token refresh skipped: refresh token missing", {
+      // No refresh token on record: the access token cannot be re-minted, so
+      // the account is dead the moment it expires and every future attempt is
+      // a guaranteed no-op. Stamp the account so the operator sees "re-auth
+      // required" instead of an account that silently stops working.
+      await markReauthRequired(this.#db, row.id);
+      pushStructuredConsoleLog("warn", "OAuth token refresh skipped: re-authentication required", {
         event: "token_refresh",
         accountId: row.id,
         providerId: row.providerId,
-        errorCode: "refresh_token_missing",
+        errorCode: "oauth_reauth_required",
       });
       return null;
     }

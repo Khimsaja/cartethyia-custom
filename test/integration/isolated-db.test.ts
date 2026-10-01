@@ -123,9 +123,9 @@ const expectedColumns: Record<string, readonly ExpectedColumn[]> = {
   ],
   provider_oauth_states: [
     column("provider_account_id", "uuid", "uuid", "NO"),
-    column("refresh_ciphertext", "bytea", "bytea", "NO"),
+    column("refresh_ciphertext", "bytea", "bytea", "YES"),
     column("client_secret_ciphertext", "bytea", "bytea", "YES"),
-    column("expires_at", "timestamp with time zone", "timestamptz", "NO"),
+    column("expires_at", "timestamp with time zone", "timestamptz", "YES"),
     column("lease_owner", "text", "text", "YES"),
     column("lease_expires_at", "timestamp with time zone", "timestamptz", "YES"),
   ],

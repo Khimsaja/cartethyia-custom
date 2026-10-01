@@ -213,7 +213,13 @@ export const providerOauthStates = pgTable("provider_oauth_states", {
   providerAccountId: uuid("provider_account_id")
     .primaryKey()
     .references(() => providerAccounts.id, { onDelete: "cascade" }),
-  refreshCiphertext: bytea("refresh_ciphertext").notNull(),
+  /**
+   * Encrypted refresh token. Nullable: an account can be pasted with only an
+   * access token (or a credential whose refresh token never arrived), and the
+   * account must still be tracked so the refresh sweep can flag it for re-auth
+   * rather than leaving it invisible. A null value means "cannot refresh".
+   */
+  refreshCiphertext: bytea("refresh_ciphertext"),
   /**
    * Encrypted companion secret for the minority of flows whose refresh is not
    * authorized by the refresh token alone: a device-flow client registration
@@ -221,7 +227,12 @@ export const providerOauthStates = pgTable("provider_oauth_states", {
    * most providers refresh with the refresh token by itself.
    */
   clientSecretCiphertext: bytea("client_secret_ciphertext"),
-  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  /**
+   * Access-token expiry. Nullable: a credential pasted without an expiry (an
+   * opaque token, or a bare access token) has no known deadline, and reads as
+   * "always due" so the sweep refreshes it as soon as it can.
+   */
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
   // OAuth refresh lease: fenced compare-and-swap coordination so only one
   // process refreshes a given account's OAuth token at a time, and a losing
   // process reloads instead of clobbering a peer's fresher token.

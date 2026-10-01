@@ -685,7 +685,7 @@ describe("OAuth account identity", () => {
         .from(providerOauthStates)
         .where(eq(providerOauthStates.providerAccountId, first.accountId));
       expect(state).toHaveLength(1);
-      expect(state[0]?.expiresAt.getTime()).toBeGreaterThan(Date.now() + 3_600_000);
+      expect(state[0]?.expiresAt?.getTime()).toBeGreaterThan(Date.now() + 3_600_000);
     });
 
     test("a different email is a different account", async () => {

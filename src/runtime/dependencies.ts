@@ -15,6 +15,7 @@ import { createDefaultProviderRegistry } from "../providers/default-registry";
 import { OAuthRefreshService, loadDueOAuthAccounts } from "../providers/authentication/oauth-refresh-service";
 import type { OAuthTokenRefresher } from "../providers/authentication/oauth-refresh-service";
 import { oauthRefreshSweep } from "../workers/oauth-refresh-worker";
+import { pushStructuredConsoleLog } from "../observability/log-ring";
 import { seedBundledModels } from "../providers/operations/provider-catalog-seeder";
 import { createDatabaseSnapshotBuilder } from "../transport/routing/route-catalog";
 import { DrizzleProviderCatalogStore } from "../console/providers/catalog/store";
@@ -87,6 +88,13 @@ export interface ProductionDeps {
   oauthRefreshService: OAuthRefreshService;
   admissionService: ApiKeyAdmissionService;
 }
+
+/**
+ * Pause between accounts in the OAuth refresh sweep. The token endpoints
+ * rate-limit a burst of refreshes even at low concurrency, so the pass runs
+ * sequentially with this gap rather than in waves.
+ */
+const OAUTH_REFRESH_INTER_ITEM_DELAY_MS = 1_500;
 
 export async function buildProductionDeps(): Promise<ProductionDeps> {
   const db = getDb();
@@ -251,11 +259,23 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
         loadDueAccounts: () => loadDueOAuthAccounts(db),
         refreshService: oauthRefreshService,
         resolveRefresher: (providerId) => registry.resolveRefresher(providerId),
+        // Sequential with a pause between accounts: the OAuth token endpoints
+        // rate-limit a burst of refreshes, and a pass over a handful of
+        // accounts must not look like one. Per-account outcomes are already
+        // pushed to the Console Log ring by `OAuthRefreshService`; this only
+        // covers an error that escaped before reaching it.
+        interItemDelayMs: OAUTH_REFRESH_INTER_ITEM_DELAY_MS,
         onAccountError: (accountId, providerId, error) => {
           log.error(
             `[oauth-refresh] account=${accountId} provider=${providerId} failed:`,
             error as Error,
           );
+          pushStructuredConsoleLog("error", "OAuth refresh sweep: account failed", {
+            event: "token_refresh",
+            accountId,
+            providerId,
+            errorCode: "refresh_sweep_failed",
+          });
         },
       }),
   });

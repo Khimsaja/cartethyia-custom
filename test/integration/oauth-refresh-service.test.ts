@@ -71,13 +71,16 @@ async function insertAccount(opts: {
     .returning({ id: providerAccounts.id });
   if (!row) throw new Error("failed to insert test account");
   createdAccountIds.push(row.id);
-  if (opts.refreshToken !== undefined && opts.expiresAt !== undefined) {
+  // A state row exists whenever a refresh token is provided; the expiry may be
+  // absent (an undated token reads as "always due"). `refreshToken: undefined`
+  // means "no state row at all" — the shape an un-imported account had.
+  if (opts.refreshToken !== undefined) {
     await requireDb()
       .insert(providerOauthStates)
       .values({
         providerAccountId: row.id,
         refreshCiphertext: encryptCredential(opts.refreshToken),
-        expiresAt: opts.expiresAt,
+        expiresAt: opts.expiresAt ?? null,
         ...(opts.clientSecret === undefined
           ? {}
           : { clientSecretCiphertext: encryptCredential(opts.clientSecret) }),
@@ -113,11 +116,13 @@ dbDescribe("OAuthRefreshService", () => {
     }
   });
 
-  test("does not refresh a token that is not yet within the skew window", async () => {
+  test("does not refresh a token that is not yet within the provider lead", async () => {
+    // `claude`'s lead is 4h, so a token with 8h left is not due. The window is
+    // per provider now, not a shared 5-minute skew.
     const accountId = await insertAccount({
       providerId: "claude",
       refreshToken: "refresh-1",
-      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1000),
     });
     const service = new OAuthRefreshService(requireDb());
     let called = false;
@@ -443,24 +448,35 @@ dbDescribe("OAuthRefreshService", () => {
     expect(oauthState?.leaseOwner).toBeNull();
   });
 
-  test("loadDueOAuthAccounts returns only active OAuth accounts within the skew window", async () => {
+  test("loadDueOAuthAccounts returns only active OAuth accounts within the provider lead", async () => {
+    // `claude`'s refresh lead is 4h (`REFRESH_LEAD_MS`): a token expiring
+    // inside that window is due, one beyond it is not. The lead is per
+    // provider, so the window is the provider's, not a shared constant.
     const due = await insertAccount({
       providerId: "claude",
       refreshToken: "refresh-1",
-      expiresAt: new Date(Date.now() + 60 * 1000),
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
     });
     await insertAccount({
       providerId: "claude",
       refreshToken: "refresh-2",
-      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1000),
     });
-    await insertAccount({ providerId: "claude", refreshToken: undefined, expiresAt: undefined });
+    // No recorded expiry reads as "always due" so an account the sweep cannot
+    // date is still refreshed rather than left to expire unseen.
+    const noExpiry = await insertAccount({
+      providerId: "claude",
+      refreshToken: "refresh-3",
+      expiresAt: undefined,
+    });
 
     const rows = await loadDueOAuthAccounts(requireDb());
     // Filtered to this suite's accounts: the shared isolated database also
     // holds other suites' OAuth accounts, and the query is deliberately
-    // table-wide. What this test pins is that among the three rows inserted
-    // above, only the due one is returned.
-    expect(rows.map((r) => r.id).filter((id) => createdAccountIds.includes(id))).toEqual([due]);
+    // table-wide. Among the three rows inserted above, the in-window one and
+    // the undated one are returned; the far-future one is not.
+    expect(
+      rows.map((r) => r.id).filter((id) => createdAccountIds.includes(id)).sort(),
+    ).toEqual([due, noExpiry].sort());
   });
 });

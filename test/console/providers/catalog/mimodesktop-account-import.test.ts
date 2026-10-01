@@ -67,6 +67,6 @@ dbDescribe("mimodesktop account creation with passToken state seeding", () => {
     expect(rows.length).toBe(1);
     const row = rows[0]!;
     expect(decryptCredentialToString(row.provider_accounts.credentialCiphertext!)).toContain("mimo-passtoken-test-123");
-    expect(decryptCredentialToString(row.provider_oauth_states.refreshCiphertext)).toBe("mimo-passtoken-test-123");
+    expect(decryptCredentialToString(row.provider_oauth_states.refreshCiphertext!)).toBe("mimo-passtoken-test-123");
   });
 });

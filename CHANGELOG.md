@@ -5,6 +5,42 @@
 > All changes below are pre-release. Cartethyia has not been tagged or
 > released; this document reflects the current production codebase architecture and capabilities.
 
+### OAuth accounts pasted into the console are now tracked and refreshed
+
+An OAuth account pasted through the console (rather than created by the OAuth
+login flow) got **no `provider_oauth_states` row at all** — only the login flow
+and the MiMo importers wrote one. The proactive refresh sweep inner-joins that
+table, so a pasted account was invisible to it, and its access token died
+silently at first expiry. The token endpoint's `expires_at`/`refresh_ciphertext`
+columns were `NOT NULL`, which is what made the row impossible to write.
+
+- `createAccount` now always writes a state row for an OAuth account. A pasted
+  JSON credential (`{accessToken, refreshToken, expiresAt, …}`) is split so the
+  refresh token lands in `refresh_ciphertext` and the expiry in `expires_at`; a
+  bare access token still gets a row, with a null refresh token.
+- `provider_oauth_states.refresh_ciphertext` and `expires_at` are now nullable
+  (`0024_oauth_state_nullable.sql`). A null expiry reads as "always due"; a
+  null refresh token means the account cannot be re-minted.
+- A pasted OAuth account with no refresh token is stamped
+  `oauth_reauth_required` up front and shown as **Re-login required** in the
+  console, instead of working until it silently stops.
+- `0025_backfill_oauth_states.sql` gives every pre-existing OAuth account
+  without a state row one, so accounts pasted before this change become visible
+  to the sweep and surface as needing re-auth rather than staying broken.
+
+### OAuth refresh: per-provider lead, paced sweep, and Console Log output
+
+- **Per-provider refresh lead** (`operations/oauth-refresh-lead.ts`): Claude
+  ~4h, Codex ~5 days, Antigravity/Kimi ~5 min, default 5 min. A single global
+  5-minute skew could not express those; `loadAccountWithFreshness` and
+  `loadDueOAuthAccounts` now apply the provider's lead.
+- **Paced sweep**: the OAuth refresh pass runs sequentially with a 1.5s gap
+  between accounts (`runSweep`'s new `pace` option) because the token endpoints
+  rate-limit a burst of refreshes.
+- **Console Log**: per-account refresh success/failure and the sweep's own
+  errors now reach the Console Log ring (`token_refresh`), not just the process
+  log.
+
 ### Adjacent assistant turns merge on the Messages wire, fixing the prefill 400
 
 A Responses conversation that called a tool more than once — with the model's

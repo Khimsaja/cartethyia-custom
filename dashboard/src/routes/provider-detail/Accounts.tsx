@@ -115,10 +115,15 @@ export function AccountStatusBadge({
     // An account can be `active` and still have per-model backoffs: the router
     // skips those (account, model) pairs while the account stays usable for
     // every other model. Showing a bare "Active" hid that entirely.
+    //
+    // An OAuth account with no refresh token is also `active` but cannot be
+    // re-minted: it will stop working at first expiry. Surface that now, so the
+    // operator re-logs-in before it fails rather than after.
+    const needsReauth = account.lastErrorCategory === "oauth_reauth_required";
     return (
       <Inline gap="4px">
-        <Badge tone="ok" dot>
-          Active
+        <Badge tone={needsReauth ? "warn" : "ok"} dot>
+          {needsReauth ? "Re-login required" : "Active"}
         </Badge>
         <ModelCooldownChip cooldowns={modelCooldowns} />
       </Inline>

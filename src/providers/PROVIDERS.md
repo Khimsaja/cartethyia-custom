@@ -270,17 +270,21 @@ stay in `integrations/<name>/*-oauth.ts`.
 - **Coordinated refresh.** `oauth-refresh-service.ts` layers an in-process single-flight map over a Postgres
   lease (`lease_owner` / `lease_expires_at`) acquired by conditional `UPDATE`; `persistRefreshed` /
   `disableAccount` are lease-fenced, so a loser whose lease expired writes zero rows instead of clobbering
-  its peer. `loadAccountWithFreshness` supplies the skew-adjusted `dueAt` (`OAUTH_REFRESH_SKEW_MS`, 5 minutes).
+  its peer. `loadAccountWithFreshness` supplies the `dueAt` as expiry minus the **provider's** refresh
+  lead (`REFRESH_LEAD_MS` in `operations/oauth-refresh-lead.ts`; Claude ~4h, Codex ~5 days, Antigravity ~5
+  min; default 5 minutes). A single global skew could not express those differences.
 - **A provider with no refresh grant registers no refresher.** Kilo Code and Devin issue a token with no
   refresh endpoint, so their clients declare `refresh` as a throw and the registry wires them without
   `withRefresher`. That is load-bearing rather than cosmetic: `resolveRefresher` returning `undefined` is
   what makes the credential path (`if (refresher)`) and the 401 retry use the stored token as issued,
   instead of calling a method that always throws and turning a recoverable auth failure into a permanent
-  one. `provider_oauth_states.refresh_ciphertext` is `NOT NULL`, so such a client returns the access secret
-  in the `refresh` field purely to satisfy the identity fingerprint that keys a repeated login to one
-  account; nothing sends it to a token endpoint. Because the issuer advertises no lifetime either, the
-  stored `expires_at` is a far-future fallback — a nearer value would mark a working token as due for a
-  refresh that cannot happen.
+  one. Such a client returns the access secret in the `refresh` field purely to satisfy the identity
+  fingerprint that keys a repeated login to one account; nothing sends it to a token endpoint. Because the
+  issuer advertises no lifetime either, the stored `expires_at` is a far-future fallback — a nearer value
+  would mark a working token as due for a refresh that cannot happen.
+  `provider_oauth_states.refresh_ciphertext` is nullable, so an account whose credential carries no refresh
+  token (a bare access token, or a JSON export without one) still gets a state row and is flagged
+  `oauth_reauth_required` rather than being invisible to the sweep.
 - **Typed refresh failures.** `DEFINITIVE_PATTERN`
   (`invalid_grant|invalid_token|unauthorized_client|revoked|refresh_token.*expired`) marks permanently dead
   credentials; a bare 401 with no body match is still definitive, while timeouts, 5xx, 429, and
@@ -609,8 +613,8 @@ deadlines. Routing, console, and discovery consume providers through these servi
   it must not be repurposed as a per-account override. Account responses report UTC-today
   usage from retained request telemetry and lifetime usage from `telemetry_usage_totals`.
 - **Credential resolution.** `loadAccountWithFreshness` loads the account row plus its optional
-  `provider_oauth_states` row in one query and computes `dueAt` as expiry minus skew (`OAUTH_REFRESH_SKEW_MS`,
-  5m). `resolveCredentialForAccount` decrypts the stored ciphertext into a dispatchable `ResolvedCredential`
+  `provider_oauth_states` row in one query and computes `dueAt` as expiry minus the provider's refresh lead
+  (`REFRESH_LEAD_MS`; default 5m). `resolveCredentialForAccount` decrypts the stored ciphertext into a dispatchable `ResolvedCredential`
   (triggering the refresh service when due); `resolveAccountSecretString` is the string-typed read beside it.
 - **Dispatch-time request context.** `resolveCustomCliHeaders` stamps Codex-CLI identity
   (`codex_cli_rs/<version>`) on chat/responses traffic and Claude-CLI identity (`x-app: cli` + stainless

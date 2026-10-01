@@ -154,18 +154,24 @@ becomes its own target list.
 
 1. `loadDueAccounts` (`loadDueOAuthAccounts(db)`) lists accounts due for
    refresh; a load failure logs `[oauth-refresh] sweep failed to list targets`
-   and ends the pass with no tick.
-2. Eligible accounts run in completed waves of 2, then 3, then 4, then 5
-   (or the configured maximum), so the next wave waits for the previous one
-   to settle instead of continuously filling worker slots.
+   and ends the pass with no tick. An account is due when its expiry is inside
+   its **provider's** refresh lead (`REFRESH_LEAD_MS`, e.g. Claude ~4h, Codex
+   ~5 days, Antigravity ~5 min; default 5 min) or when it has no recorded
+   expiry. Accounts already flagged `oauth_reauth_required` are excluded — a
+   refresh cannot help until the operator re-logs in, and retrying only floods
+   the log.
+2. The pass runs **sequentially** with `OAUTH_REFRESH_INTER_ITEM_DELAY_MS`
+   (1.5s) between accounts, not in waves: the OAuth token endpoints rate-limit
+   a burst of refreshes. `runSweep`'s `pace` option is what enables this.
 3. Per account, `resolveRefresher(providerId)` resolves the provider's
    token-endpoint client; accounts with no registered refresher are skipped.
-   Otherwise `refreshService.ensureFreshAccessToken(account.id, refresher,
-   { skewMs })` refreshes ahead of expiry.
+   Otherwise `refreshService.ensureFreshAccessToken(account.id, refresher)`
+   refreshes ahead of expiry using the provider's lead.
 4. Per-account errors are isolated into `onAccountError` (wired to log
-   `[oauth-refresh] account=<id> provider=<id> failed`), and `onTick({ due,
-   attempted })` reports the pass summary. `attempted` counts only accounts
-   with a refresher.
+   `[oauth-refresh] account=<id> provider=<id> failed` and push a structured
+   Console Log line), and `onTick({ due, attempted })` reports the pass summary.
+   `attempted` counts only accounts with a refresher. Success and failure per
+   account are pushed to the Console Log ring by `OAuthRefreshService`.
 
 ## Quota refresh sweep (`quota-refresh-worker.ts`)
 

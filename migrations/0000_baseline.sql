@@ -66,9 +66,9 @@ CREATE TABLE "provider_accounts" (
 --> statement-breakpoint
 CREATE TABLE "provider_oauth_states" (
   "provider_account_id" uuid PRIMARY KEY NOT NULL,
-  "refresh_ciphertext" bytea NOT NULL,
+  "refresh_ciphertext" bytea,
   "client_secret_ciphertext" bytea,
-  "expires_at" timestamptz NOT NULL,
+  "expires_at" timestamptz,
   "lease_owner" text,
   "lease_expires_at" timestamptz,
   CONSTRAINT "provider_oauth_states_provider_account_id_provider_accounts_id_fk" FOREIGN KEY ("provider_account_id") REFERENCES "provider_accounts"("id") ON DELETE cascade
