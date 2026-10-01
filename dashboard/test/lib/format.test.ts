@@ -56,9 +56,10 @@ describe("formatUptime", () => {
 });
 
 describe("formatNumber", () => {
-  test("rounds and groups", () => {
-    expect(formatNumber(1234.6)).toBe("1,235");
-    expect(formatNumber(0)).toBe("0");
+  test("rounds and groups in the viewer's locale", () => {
+    expect(formatNumber(1234.6, "en-US")).toBe("1,235");
+    expect(formatNumber(1234.6, "id-ID")).toBe("1.235");
+    expect(formatNumber(0, "en-US")).toBe("0");
     expect(formatNumber(undefined)).toBe("—");
   });
 });
@@ -67,20 +68,27 @@ describe("formatCredits", () => {
   test("groups the raw amount instead of abbreviating it", () => {
     // The whole point of this formatter: a 9393-credit balance must read
     // `9,393`, never the compact `9.4K` that suits a chart axis.
-    expect(formatCredits(9393)).toBe("9,393");
-    expect(formatCredits(1_234_567)).toBe("1,234,567");
+    expect(formatCredits(9393, "en-US")).toBe("9,393");
+    expect(formatCredits(1_234_567, "en-US")).toBe("1,234,567");
   });
 
   test("keeps up to two fraction digits, dropping a trailing .00", () => {
-    expect(formatCredits(1234.56)).toBe("1,234.56");
-    expect(formatCredits(1.01)).toBe("1.01");
-    expect(formatCredits(500)).toBe("500");
+    expect(formatCredits(1234.56, "en-US")).toBe("1,234.56");
+    expect(formatCredits(1.01, "en-US")).toBe("1.01");
+    expect(formatCredits(500, "en-US")).toBe("500");
+  });
+
+  test("groups by the viewer's locale so the separators are unambiguous", () => {
+    // A reader whose convention is `.`-thousands / `,`-decimals must not have
+    // to guess whether `4,093.36` is four thousand or four million.
+    expect(formatCredits(4093.36, "id-ID")).toBe("4.093,36");
+    expect(formatCredits(1_234_567, "id-ID")).toBe("1.234.567");
   });
 
   test("renders the placeholder for absent values and keeps zero real", () => {
     expect(formatCredits(undefined)).toBe("—");
     expect(formatCredits(null)).toBe("—");
     expect(formatCredits(Number.NaN)).toBe("—");
-    expect(formatCredits(0)).toBe("0");
+    expect(formatCredits(0, "en-US")).toBe("0");
   });
 });
