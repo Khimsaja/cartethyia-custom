@@ -18,7 +18,7 @@ import {
   DrizzleProviderCatalogStore,
 } from "./providers/catalog/store";
 import { DrizzleProviderDetailStore } from "./providers/detail/store";
-import { createModelRoutingRoutes } from "./routing/model/contracts";
+import { createModelRoutingRoutes } from "./routing/model/routes";
 import { createNetworkPoolRoutes } from "./routing/pools/routes";
 import { DrizzleModelRoutingStore } from "./routing/model/store";
 import { DrizzleNetworkPoolStore } from "./routing/pools/store";
