@@ -6,11 +6,11 @@ import {
   parseServiceUrl,
   probeTcpService,
   readEnvFile,
-} from "./ops-env-utils";
-import type { ProbeResult } from "./ops-env-utils";
-import { resolveRedisMode } from "../src/persistence/readiness";
+} from "../internal/env";
+import type { ProbeResult } from "../internal/env";
+import { resolveRedisMode } from "../../src/persistence/readiness";
 
-const projectRoot = resolve(import.meta.dir, "..");
+const projectRoot = resolve(import.meta.dir, "..", "..");
 
 type SetupMode = "auto" | "native" | "docker";
 

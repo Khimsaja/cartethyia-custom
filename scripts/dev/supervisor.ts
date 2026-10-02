@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * ops-dev-supervisor.ts — `bun run dev` with in-place restart (CTRL+R).
+ * supervisor.ts — `bun run dev` with in-place restart (CTRL+R).
  *
  * The public port (PORT/.env, default 12800 — what clients and the Vite dev
  * proxy already target) hosts a reverse proxy that never goes down. The dev

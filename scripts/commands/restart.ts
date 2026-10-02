@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * ops-restart.ts — rebuild and restart the compiled gateway gracefully.
+ * restart.ts — rebuild and restart the compiled gateway gracefully.
  *
  * Why this exists: a hard kill (`taskkill /F`, `kill -9`) truncates every
  * in-flight response. On Linux the process handles SIGTERM/SIGINT and drains,
@@ -15,7 +15,7 @@
  *   PORT                    gateway port (default 12800)
  *   DRAIN_WAIT_MS           how long to wait for the drain to finish (default 30000)
  */
-import { compiledBinaryPath } from "./build-binary";
+import { compiledBinaryPath } from "../build/binary";
 
 function intEnv(name: string, fallback: number): number {
   const raw = process.env[name];

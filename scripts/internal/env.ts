@@ -7,12 +7,12 @@ import { fileURLToPath } from "node:url";
  * Absolute path of the repository root.
  *
  * Every operational script needs it, and deriving it per script is how
- * `ops-doctor` came to look for `.env` one directory *above* the checkout
+ * `doctor` came to look for `.env` one directory *above* the checkout
  * (it used `../..` from `scripts/`, which is only correct from a nested dir).
  * One authority, derived from this module's own location, so a script can
  * never disagree with its neighbours about where the project lives.
  */
-export const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+export const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 /** Absolute path of the repository's `.env`. */
 export const ENV_PATH = resolve(PROJECT_ROOT, ".env");

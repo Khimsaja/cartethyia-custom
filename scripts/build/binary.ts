@@ -3,7 +3,7 @@
  *
  * Two things here are load-bearing and neither is obvious:
  *
- * 1. **The entry is `dist/main.js`, not `src/main.ts`.** `build-aot.ts` runs
+ * 1. **The entry is `dist/main.js`, not `src/main.ts`.** `aot.ts` runs
  *    Elysia's AOT plugin, which rewrites TypeBox imports into statically wired
  *    mirrors in its output. Bundling the raw source instead discards that work,
  *    and Elysia's CommonJS build reaches TypeBox through a lazy
@@ -22,7 +22,7 @@
  *    first use. The migrations folder is not part of this decision —
  *    `resolveMigrationsFolder()` resolves `<cwd>/migrations` unconditionally.
  *
- * Usage: `bun run scripts/build-binary.ts [--outfile dist/cartethyia]`
+ * Usage: `bun run scripts/build/binary.ts [--outfile dist/cartethyia]`
  */
 const DEFAULT_OUTFILE = "dist/cartethyia";
 
@@ -31,7 +31,7 @@ const DEFAULT_OUTFILE = "dist/cartethyia";
  *
  * Bun appends `.exe` when it compiles for Windows, so the extensionless
  * `dist/cartethyia` handed to it never exists on that platform. This is the one
- * place that knows where the compiled binary lands; `ops-start-binary.ts`
+ * place that knows where the compiled binary lands; `start-production.ts`
  * resolves its target from here instead of re-deriving the name, because a
  * launcher that probed the requested path reported "run bun run build first"
  * immediately after a successful build.

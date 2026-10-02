@@ -131,6 +131,12 @@ export const CONFIG_SPEC = {
 
   // Durable, metadata-only request telemetry retention.
   CARTETHYIA_TELEMETRY_RETENTION_DAYS: { kind: "int", default: 30, min: 3, max: 365 },
+  CARTETHYIA_TELEMETRY_PAYLOAD_MAX_BYTES: {
+    kind: "int",
+    default: 32 * 1024 * 1024,
+    min: 1 * 1024 * 1024,
+    max: 256 * 1024 * 1024,
+  },
 
   // Upstream request timeout + retry backoff
   CARTETHYIA_UPSTREAM_TIMEOUT_MS: { kind: "int", default: 120_000, min: 5_000, max: 600_000 },
@@ -662,5 +668,13 @@ export function resolveTelemetryRetentionDays(): number {
   return readInt(
     "CARTETHYIA_TELEMETRY_RETENTION_DAYS",
     CONFIG_SPEC.CARTETHYIA_TELEMETRY_RETENTION_DAYS,
+  );
+}
+
+/** Combined redacted payload capture limit for the five stored body surfaces. */
+export function resolveTelemetryPayloadMaxBytes(): number {
+  return readInt(
+    "CARTETHYIA_TELEMETRY_PAYLOAD_MAX_BYTES",
+    CONFIG_SPEC.CARTETHYIA_TELEMETRY_PAYLOAD_MAX_BYTES,
   );
 }

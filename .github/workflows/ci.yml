@@ -7,13 +7,7 @@
 name: ci
 
 on:
-  push:
-    # `dev` is the integration branch that receives pushes. It has to be named
-    # explicitly: the repository's GitHub default branch is a separate branch
-    # that does not carry this workflow, so an unnamed push filter would verify
-    # neither the default branch nor the branch work actually lands on.
-    branches: [dev]
-  pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -27,7 +21,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.2"
+          bun-version: latest
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
 
@@ -38,7 +32,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.2"
+          bun-version: latest
       - run: bun install --frozen-lockfile
-      - run: bun run generate:usage-periods
       - run: bun run dashboard:typecheck

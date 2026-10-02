@@ -7,9 +7,9 @@ import {
   parseServiceUrl,
   probeTcpService,
   readEnvFile,
-} from "./ops-env-utils";
-import type { ProbeResult } from "./ops-env-utils";
-import { resolveRedisMode } from "../src/persistence/readiness";
+} from "../internal/env";
+import type { ProbeResult } from "../internal/env";
+import { resolveRedisMode } from "../../src/persistence/readiness";
 
 interface DoctorConfig {
   envPath: string;
@@ -51,8 +51,8 @@ async function resetLockout(args: readonly string[]): Promise<void> {
   }
   process.env.DATABASE_URL = databaseUrl;
 
-  const { getDb, closeDb } = await import("../src/persistence/postgres");
-  const { consoleLockouts } = await import("../src/persistence/schema");
+  const { getDb, closeDb } = await import("../../src/persistence/postgres");
+  const { consoleLockouts } = await import("../../src/persistence/schema");
   const { eq, or } = await import("drizzle-orm");
 
   const db = getDb();

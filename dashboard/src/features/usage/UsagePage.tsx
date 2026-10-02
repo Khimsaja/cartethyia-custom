@@ -95,10 +95,13 @@ const PERIOD_LABELS: Record<Period, string> = {
   "30d": "Last 30 Days",
   all: "All retained",
 };
-const PERIOD_OPTIONS = USAGE_PERIODS.map((value) => ({ value, label: PERIOD_LABELS[value] }));
+const PERIOD_OPTIONS = USAGE_PERIODS.map((value) => ({
+  value,
+  label: PERIOD_LABELS[value as Period] ?? value,
+}));
 
 function periodLabel(period: Period): string {
-  return PERIOD_LABELS[period];
+  return PERIOD_LABELS[period] ?? period;
 }
 
 function asPeriod(value: string | null): Period {

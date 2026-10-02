@@ -76,8 +76,8 @@ tenant data.
   breakdown tab per member. It comes from `console/observability/usage-dimensions`, a module
   with no imports, rather than from `observability/contracts`, which imports Elysia and reaches
   `node:crypto` through the console error path.
-- Usage periods are generated into `src/data/generated/usage-periods.json` by
-  `bun run codegen`; do not hand-maintain a second period list.
+- `src/data/usage-periods.json` is a small static dashboard data file. Keep its
+  values aligned with the backend usage-period contract when that contract changes.
 - Query keys, hooks, and route components must use the existing `consoleRequest`
   API boundary instead of constructing another HTTP client or importing backend
   modules.

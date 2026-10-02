@@ -6,7 +6,7 @@
  * `models-dev-catalog.ts` reads only the committed snapshot (no live `fetch`),
  * so the server never makes an outbound call to models.dev.
  *
- *   bun run scripts/ci-generate-models-dev-snapshot.ts
+ *   bun run scripts/models-dev-snapshot.ts
  *
  * The snapshot is pruned to the fields the resolver reads (limits, modalities,
  * capabilities, cost) and flattened to one row per `provider:model`, which

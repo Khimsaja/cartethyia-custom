@@ -1,78 +1,71 @@
 # Contributing to Cartethyia
 
-Setup, workflow, and PR checks.
+This page covers contribution workflow, code conventions, and pull requests.
 
-## Prerequisites
+For requirements, PostgreSQL/Redis setup, local development, Docker, commands,
+migrations, and verification, use the single source of truth:
 
-- Bun 1.4.2 (see `.bun-version`; Docker pins `oven/bun:1.4.2-debian`)
-- PostgreSQL (external in every mode — native and Docker alike)
-- Redis for `REDIS_MODE=normal`; optional for `REDIS_MODE=single_instance_local`
-- A Node-compatible environment for tooling
+- [Getting started](documentation/getting-started.md)
 
-## Local setup
+## Before changing code
 
-```bash
-bun install
-cp .env.example .env
-# Edit DATABASE_URL and CARTETHYIA_ENCRYPTION_KEY in .env.
-bun run setup     # copies .env if missing, probes Postgres/Redis (the backend migrates at boot)
-bun run doctor    # re-checks the environment and /health/ready
-bun run dev       # backend (bun --hot) + dashboard (Vite) under concurrently
-```
+1. Read the relevant part of `README.md` and
+   `documentation/getting-started.md` when the change affects user-facing behavior
+   or runtime setup.
+2. State the goal, acceptance criteria, and hard constraints.
+3. Use CodeGraph first for blast search when available. Otherwise use the available
+   search tools and inspect the same callers, contracts, and boundaries.
+4. Reproduce the issue, or clearly mark it unverified before editing.
+5. Find the canonical owner and read every affected caller before changing it.
 
-Useful endpoints once running (`http://localhost:12800` by default):
+## Code conventions
 
-```text
-/health        liveness
-/health/ready  readiness (DB + migrations + Redis)
-/metrics       Prometheus metrics
-/v1/*          gateway APIs
-/console       dashboard
-```
+- `src/` is production backend code; `dashboard/src/` is browser code only.
+- Dashboard code must not import Elysia, database drivers, filesystem modules,
+  secrets, or Node-only runtime dependencies.
+- Keep one source of truth for provider metadata, persisted contracts, environment
+  names, routing policy, and dashboard mirrors.
+- Use concrete role filenames such as `contracts.ts`, `routes.ts`, `store.ts`,
+  `service.ts`, and `errors.ts`. Avoid `index.ts` barrels.
+- Keep scripts organized by purpose under `scripts/commands`, `scripts/build`,
+  `scripts/generate`, `scripts/dev`, and `scripts/internal`.
+- Use strict TypeScript: no `any`, suppressions, needless assertions, or weakened
+  compiler settings. Narrow `unknown` at boundaries and use `import type` for types.
+- Comments explain policy, security, protocol behavior, or non-obvious tradeoffs;
+  they should not narrate the next line.
+- Treat network responses, environment variables, database rows, request bodies,
+  and user values as untrusted. Fail closed at security boundaries.
+- Never expose credentials, tokens, keys, or sensitive payloads in logs or reports.
 
-`bun run dev:backend` and `bun run dashboard:dev` run each half separately.
-`bun run dev` runs both under `concurrently`: backend `bun run --hot src/main.ts` on `PORT` (default 12800), dashboard Vite dev server on 5173. No supervisor, no in-place restart — a client hitting the backend mid-restart sees a refused connection. **CTRL+C** stops both.
-`VITE_BACKEND_URL` (see `.env.example`) points Vite at the backend. Production serving: `README.md` (Docker Compose).
+## Implementation rules
 
-## Running tests
+- Fix the cause, not the symptom. Do not disguise a workaround as a bug fix.
+- No overengineering unless the task explicitly asks for it.
+- Every issue must be reproduced or explicitly reported as unverified.
+- Every feature or fix must update the proper logic and handlers across the affected
+  path, not only the first visible caller.
+- For renames, removals, and contract changes: migrate every caller, remove the old
+  path, and search the old name again. Do not leave aliases or compatibility shims.
+- Prove deadness before deleting a symbol: check imports, re-exports, dynamic
+  imports, callbacks, scripts, dashboard usage, and docs.
+- Do not hand-edit generated output; update its source or generator.
+- Update active docs and configuration when the change makes them inaccurate.
 
-The repository does not currently carry a test suite. Verification is
-`bun run typecheck` for the backend and `bun run dashboard:typecheck` for the
-dashboard.
+## Verification
 
-## Verification gate (before every PR)
+The repository does not currently carry an active test suite. Use the gates in
+`documentation/getting-started.md`, then exercise the real boundary for behavior
+changes: a gateway request, browser surface, provider flow, or isolated database
+migration.
 
-Backend change:
-
-```bash
-bun run typecheck
-```
-
-Dashboard change, additionally:
-
-```bash
-bun run dashboard:typecheck
-```
-
-CI (`.github/workflows/ci.yml`) runs exactly these gates. Typecheck and build
-never require Buf, vendor protobuf sources, or network access.
-
-## Code conventions (short version)
-
-What bites new contributors most:
-
-- `src/` production only.
-- No `index.ts` barrels; concrete files. `import type` for types. Strict TS: no `any`, no suppressions, no needless assertions; `unknown` + narrowing at boundaries.
-- Entity dirs use role filenames: `contracts.ts` (types + validation + operations + routes), `routes.ts`, `store.ts`, `service.ts`, `errors.ts`.
-- `scripts/` flat, `ops-*` / `build-*` / `ci-*` prefixes.
-- Comments explain policy, security, non-obvious tradeoffs — not the next line.
-- `README.md` + `.env.example` product/runtime; `CHANGELOG.md` entries under `Unreleased` stay historical once written.
+A typecheck is not runtime proof. Report the exact command, result, reproduction,
+real-boundary evidence, skipped checks, and remaining blockers.
 
 ## Pull requests
 
-- Branch from `main`, keep the change focused, remove callers in the same
-  change (no compat shims).
-- Fill in `.github/pull_request_template.md`: what changed, gates run, docs updated.
-- Every privileged console mutation ends with audit + route-snapshot
-  invalidation; every security layer stays fail-closed; telemetry stays
-  metadata-only and best-effort.
+- Branch from `main` and keep the change focused.
+- Fill in `.github/pull_request_template.md` with the change, gates, and docs status.
+- Keep security boundaries fail-closed.
+- Preserve intentional provider wire bytes, headers, and user-agent behavior.
+- Do not commit, push, deploy, alter production data, or discard unrelated working
+  tree changes unless explicitly asked.

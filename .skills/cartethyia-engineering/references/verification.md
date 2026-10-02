@@ -1,54 +1,49 @@
 # Verification
 
-Every change is verified at its real boundary before completion.
+Use for every fix, refactor, removal, or contract change.
 
 ## Gates
 
 ```bash
 bun run typecheck
-bun run dashboard:typecheck     # when dashboard/ is touched
-bun run build                   # when contracts/entry change (dashboard → AOT → binary)
+bun run dashboard:typecheck  # when dashboard/ changes
+bun run build                # when an entry point or build contract changes
 ```
 
-The repository does not currently carry a test suite, so `typecheck` is the gate
-and `build` proves the artifact still compiles end to end. Typecheck alone is
-never proof of a behavior change: exercise the affected path at its real
-boundary — a live request against the running gateway, the browser, or a
-throwaway `.tmp-<topic>.ts` that calls the real function — and report what you
-observed. State plainly when a surface is unavailable.
+The repository does not currently carry an active test suite. Typecheck proves
+code shape, not behavior. Exercise the real boundary: browser, gateway request,
+or a `.tmp-<topic>.ts` calling production code. Delete temporary files afterward.
 
 ## Bug-fix loop
 
-1. **Reproduce against the real function before changing code.** Write a throwaway `.tmp-<topic>.ts` at the repo root (gitignored via `.tmp-*`) and run it with `bun .tmp-<topic>.ts`. Print the actual output — the real pipeline, not a hand-built stub.
-2. **State the mechanism, then fix the cause.** "X reads Y, which is undefined when Z." If the change only removes a throw, loosens validation, widens a type, adds a fallback, raises a timeout, or swallows an exception, it is hiding until proven otherwise.
-3. **Verify at the real boundary before declaring done** (see above). Re-run the reproduction and read the new output.
-4. **Sync docs in the same change** (`README.md`, `.env.example`, `CHANGELOG.md`, and this skill's references when a documented rule is reversed).
-5. **Hand off:** `git add -A` — new source files are often untracked and `-a` misses them. `dist/` and `.env` are gitignored; `.env.example` is tracked. Tell the user the gateway must be restarted for transport/health changes to take effect.
+1. Reproduce with the same input and boundary as the report.
+2. Find the canonical owner and callers with CodeGraph/Grep.
+3. State the mechanism, not the symptom.
+4. Change the owner; migrate callers; do not add a fallback to hide the failure.
+5. Re-run the reproduction, then the affected gates.
+6. Report what was proven and what could not be verified.
 
-## Proved deadness
+## Rename or removal
 
-Every deletion, and every guard/fallback branch proposed as redundant.
+- Search imports, re-exports, dynamic imports, callbacks, scripts, dashboard, and docs.
+- Remove the old symbol; do not leave an alias or shim.
+- Search the old name again after editing.
+- A declaration-only grep result does not prove deadness; typecheck and caller
+  analysis must rule out indirect dispatch.
 
-1. A symbol is not dead because grep finds only its declaration. Rule out interface dispatch, callback fields, re-exports, dynamic imports, own-file use, and dashboard copies.
-2. For a guard/probe, ask what the *other* arm does first. A skipped transaction or advisory lock can be load-bearing for a partially-implemented dependency.
-3. Easiest proof: delete, run `typecheck`, read the failure. Green output is evidence; confident reading is not.
-4. Wrong removal → restore **with a comment stating why it stays**, so the next agent does not delete it again.
+## Wire and payload changes
 
-## Reproducing wire/encoding bugs
+For translation bugs, compare client request, provider request, provider response,
+and client response. Fix the layer that loses or changes data. Do not alter
+upstream bytes that are intentionally preserved.
 
-Drive the **real** pipeline from a `.tmp-<topic>.ts`, not a reimplementation:
+## Schema changes
 
-1. **Parse the client surface** — `new MessagesAdapter().parse({ body, headers })` (or Chat/Responses adapter) with a realistic body. A minimal body hides the bug.
-2. **Apply the same repair passes the dispatcher does** — for the buddy family, `dropIncompleteToolRounds` runs **before** `repairRequestToolCalls`; every other route runs repair alone (see `src/transport/request/preparer.ts`).
-3. **Encode for the target wire** — `canonicalToChatPayload(request)` / `canonicalToClaudeMessagesPayload(request)`, then the provider's `prePayload` hook, since that is where system prompt, tool-name normalization, and reasoning fields land.
-4. **Print the final `payload.messages` per turn** with `JSON.stringify`, plus reasoning/tool fields. Probe the whole space of turn shapes — the failing shape is often the one you did not think of.
+Exercise a new migration against an isolated database when available. Keep the
+runtime schema, baseline, forward migration, and readers/writers aligned. Never
+edit a migration that has already been recorded.
 
-**Fix rule:** if the same fact is re-derived in multiple call sites, do not patch the failing one. Hoist it next to the type it describes and switch every consumer.
+## Completion
 
-## Migration ledger gotcha
-
-`applySqlMigrations` skips any file already in `cartethyia_schema_migrations`, so editing `drizzle/migrations/0000_baseline.sql` never re-runs on an existing database. Hand-written follow-ups live in `drizzle/migrations/manual/` and must be applied by hand to every database. If a schema change must land on an existing deployment, say so and name the migration.
-
-## Clean up
-
-Remove every `.tmp-*` or `dashboard/tmp-*` before yielding. Leave no throwaway files in the tree.
+Report commands, relevant output, the boundary exercised, and limitations. Do
+not say a gate passed when it was not run.
