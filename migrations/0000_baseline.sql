@@ -6,7 +6,7 @@ CREATE TYPE "public"."health_entity_kind" AS ENUM('account', 'pool');
 --> statement-breakpoint
 CREATE TYPE "public"."health_status" AS ENUM('active', 'cooldown', 'disabled');
 --> statement-breakpoint
-CREATE TYPE "public"."network_pool_kind" AS ENUM('http', 'socks5');
+CREATE TYPE "public"."network_pool_kind" AS ENUM('http', 'socks5', 'bridge');
 --> statement-breakpoint
 CREATE TYPE "public"."pool_routing_strategy" AS ENUM('least_loaded', 'round_robin');
 --> statement-breakpoint

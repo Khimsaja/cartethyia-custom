@@ -85,7 +85,9 @@ export const credentialKind = pgEnum("credential_kind", ["api_key", "oauth", "no
 // models.wire_family.
 export const wireFamily = pgEnum("wire_family", ["chat", "responses", "messages"]);
 
-export const networkPoolKind = pgEnum("network_pool_kind", ["http", "socks5"]);
+// `bridge` is a carte-bridge instance dialed as an application relay (or a
+// CONNECT tunnel where the runtime holds a socket) rather than an RFC proxy.
+export const networkPoolKind = pgEnum("network_pool_kind", ["http", "socks5", "bridge"]);
 
 //  health_events.entity_kind — distinguishes which owning
 // table entity_id/account_id/network_pool_id references.

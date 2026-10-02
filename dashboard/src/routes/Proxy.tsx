@@ -58,7 +58,7 @@ import {
 import { downloadTextFile } from "../shared/download";
 import { toast } from "../shared/toast";
 import { getErrorMessage } from "../shared/helpers";
-const transportKinds = ["http", "https", "socks5"] as const;
+const transportKinds = ["http", "https", "socks5", "bridge"] as const;
 type TransportKind = (typeof transportKinds)[number];
 
 
@@ -305,6 +305,10 @@ function detectProxyKind(line: string): TransportKind {
   const s = line.trim().toLowerCase();
   if (s.startsWith("https://")) return "https";
   if (s.startsWith("socks5://") || s.startsWith("socks://")) return "socks5";
+  // A carte-bridge front door is a pool the operator already deployed, so it is
+  // never pasted as a raw `host:port`; it only ever arrives as an explicit
+  // `bridge://` line (or a URL the operator tags in the bulk form).
+  if (s.startsWith("bridge://")) return "bridge";
   return "http";
 }
 
@@ -392,7 +396,7 @@ function ProxyBulkForm({ onClose }: { readonly onClose: () => void }): ReactNode
     <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <span style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
-          Paste one per line · http / https / socks5
+          Paste one per line · http / https / socks5 · bridge:// for a carte-bridge
         </span>
         <Button variant="secondary" size="sm" type="button" onClick={handlePaste}>
           Paste
@@ -401,7 +405,7 @@ function ProxyBulkForm({ onClose }: { readonly onClose: () => void }): ReactNode
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder={"http://10.0.1.5:8080\nhttps://10.0.1.6:8443\nsocks5://10.0.1.7:1080"}
+        placeholder={"http://10.0.1.5:8080\nhttps://10.0.1.6:8443\nsocks5://10.0.1.7:1080\nbridge://relay.example.com"}
         rows={8}
         style={{
           width: "100%",
