@@ -37,6 +37,23 @@ claim or setting wrong. Do not leave deleted paths or symbols as false authority
 Before deleting a symbol, check imports, re-exports, dynamic imports, callbacks,
 simple reflection, scripts, and docs. After deletion, typecheck and search the old name.
 
+Absence of a producer inside `src/` is not proof a reader is dead. Classify the
+value by who can still supply it, and record the verdict:
+
+- **Dead** — no producer anywhere, including history. Delete it.
+- **Live contract** — the shape is persisted with no backfill migration, so
+  pre-existing rows still carry it. Keep it and pin it with a test; deleting it
+  silently disables the feature for those rows.
+- **Replayable** — the value arrives from a client or a peer instance, not from
+  our database. A client replays ids it stored under an older build, and an
+  upstream error string can embed another gateway's own formatted text. Keep it.
+
+For the third class, trace the boundary rather than the call site: ask which
+remote process could still emit the shape, and whether the wire format rejects
+it outright if unrecognized. A separator outside the upstream's accepted
+character set is not cosmetic — an undecoded composite fails the provider's own
+validation.
+
 ## Evidence
 
 Reports distinguish gates run, boundaries exercised, remaining failures, and
