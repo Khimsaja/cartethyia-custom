@@ -16,12 +16,13 @@ COPY package.json bun.lock tsconfig.json ./
 COPY dashboard/package.json ./dashboard/package.json
 RUN bun install --frozen-lockfile
 
-# Dashboard-only layer: backend changes reuse the dashboard build.
+# Copy source contracts before dashboard typecheck: dashboard mirrors several
+# backend types from src/ and cannot build against dashboard alone.
+COPY src ./src
 COPY dashboard ./dashboard
 RUN bun run dashboard:build
 
 # Backend build layer: AOT output is required before standalone compilation.
-COPY src ./src
 COPY scripts ./scripts
 COPY migrations ./migrations
 RUN bun run build:aot && bun run build:binary --outfile /build/dist/cartethyia
