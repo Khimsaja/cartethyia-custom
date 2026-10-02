@@ -40,7 +40,7 @@ import type { ProviderAdapter, ResolvedCredential } from "../../providers/provid
 import type { ValidatedNetworkBindingFactory } from "../../network/pool/resolver";
 import type { CartethyiaDatabase } from "../../persistence/postgres";
 import type { Reservation, RouteCandidate, RouteSnapshotService } from "../routing/route-model";
-import type { AdmissionLease } from "../../security/admission";
+import type { AdmissionLease } from "../../security/admission/contracts";
 import type { NetworkPoolSelector } from "../../network/pool/selector";
 import type { TelemetryBatchBuffer } from "../../observability/telemetry-buffer";
 import type { ProviderExchangeCapture } from "./attempt-finalize";
