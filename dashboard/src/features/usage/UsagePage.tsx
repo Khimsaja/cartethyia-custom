@@ -1247,12 +1247,28 @@ export default function Usage(): ReactNode {
       return false;
     }
   });
+  const [hideApiKey, setHideApiKey] = useState(() => {
+    try {
+      return localStorage.getItem("cartethyia:usage:hide-api-key") === "true";
+    } catch {
+      return false;
+    }
+  });
 
   const toggleHideProviderName = () => {
     setHideProviderName((prev) => {
       const next = !prev;
       try {
         localStorage.setItem("cartethyia:usage:hide-provider", String(next));
+      } catch {}
+      return next;
+    });
+  };
+  const toggleHideApiKey = () => {
+    setHideApiKey((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("cartethyia:usage:hide-api-key", String(next));
       } catch {}
       return next;
     });
@@ -1533,7 +1549,17 @@ export default function Usage(): ReactNode {
                 title={hideProviderName ? "Show real provider names" : "Mask provider names as Mysterious"}
                 style={{ fontSize: "11px", height: "26px", padding: "0 8px", color: "var(--text-secondary)" }}
               >
-                {hideProviderName ? "Masked" : "Mask"}
+                {hideProviderName ? "Provider masked" : "Mask provider"}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={hideApiKey ? <EyeOff size={13} /> : <Eye size={13} />}
+                onClick={toggleHideApiKey}
+                title={hideApiKey ? "Show API key labels" : "Hide API key labels"}
+                style={{ fontSize: "11px", height: "26px", padding: "0 8px", color: "var(--text-secondary)" }}
+              >
+                {hideApiKey ? "API key hidden" : "Hide API key"}
               </Button>
               <LiveInFlightPill />
             </Inline>

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
-import { Bot, Brain, Eye, Globe, Home, Moon, Sun, Wrench, X } from "lucide-react";
+import { Bot, Brain, Eye, FlaskConical, Globe, Home, Moon, Sun, Wrench, X } from "lucide-react";
 import { useModalFocus } from "../../hooks/use-modal-focus";
 import { Button } from "../../components/ui/button";
 import { Card, CardBody } from "../../components/ui/card";
@@ -82,27 +82,6 @@ function ModelCard({
         <span className="share-model-card-name" title={id}>
           {label}
         </span>
-        <ClipboardButton
-          value={id}
-          size="sm"
-          variant="ghost"
-          label=""
-          copiedLabel=""
-          aria-label={`Copy ${id}`}
-          title={`Copy ${id}`}
-        />
-        {canProbe ? (
-          <Button
-            variant="secondary"
-            size="sm"
-            loading={probing}
-            disabled={probing}
-            onClick={() => onProbe(id)}
-            title="Probe this model using the shared API key"
-          >
-            {probing ? "Testing…" : "Probe"}
-          </Button>
-        ) : null}
       </div>
       <div className="share-model-card-meta">
         <span className="share-model-card-icons">
@@ -145,6 +124,30 @@ function ModelCard({
           )}
         </span>
       </div>
+      <div className="share-model-card-actions">
+        {canProbe ? (
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={<FlaskConical size={13} />}
+            loading={probing}
+            disabled={probing}
+            onClick={() => onProbe(id)}
+            title="Test this model using the shared API key"
+          >
+            {probing ? "Testing…" : "Test"}
+          </Button>
+        ) : null}
+        <ClipboardButton
+          value={id}
+          size="sm"
+          variant="ghost"
+          label=""
+          copiedLabel=""
+          aria-label={`Copy ${id}`}
+          title={`Copy ${id}`}
+        />
+      </div>
     </div>
   );
 }
@@ -171,8 +174,8 @@ export function SharePage(): ReactElement {
   const [storageWarning, setStorageWarning] = useState<string | null>(null);
   const [issueBusy, setIssueBusy] = useState(false);
   const [issueError, setIssueError] = useState<string | null>(null);
-  const [probingModel, setProbingModel] = useState<string | null>(null);
-  const probeAbortRef = useRef<AbortController | null>(null);
+  const [probingModels, setProbingModels] = useState<ReadonlySet<string>>(() => new Set());
+  const probeAbortRef = useRef<Map<string, AbortController>>(new Map());
   const [issueConflict, setIssueConflict] = useState(false);
   const [sharePopupOpen, setSharePopupOpen] = useState(false);
   const sharePopupRef = useRef<HTMLElement>(null);
@@ -265,11 +268,10 @@ export function SharePage(): ReactElement {
   const canProbe = data?.kind === "handoff" ? Boolean(data.key) : Boolean(visibleSecret?.key);
   const probeModel = async (model: string): Promise<void> => {
     const key = data?.kind === "handoff" ? data.key : (restoredSecret ?? secret)?.key;
-    if (!key || probingModel !== null) return;
-    probeAbortRef.current?.abort();
+    if (!key || probingModels.has(model)) return;
     const controller = new AbortController();
-    probeAbortRef.current = controller;
-    setProbingModel(model);
+    probeAbortRef.current.set(model, controller);
+    setProbingModels((current) => new Set(current).add(model));
     const startedAt = performance.now();
     let firstByteAt: number | null = null;
     try {
@@ -311,11 +313,17 @@ export function SharePage(): ReactElement {
     } catch (error: unknown) {
       toast.error("Model probe failed", error instanceof Error ? error.message : "The request could not be completed.");
     } finally {
-      if (probeAbortRef.current === controller) probeAbortRef.current = null;
-      setProbingModel(null);
+      if (probeAbortRef.current.get(model) === controller) probeAbortRef.current.delete(model);
+      setProbingModels((current) => {
+        const next = new Set(current);
+        next.delete(model);
+        return next;
+      });
     }
   };
-  useEffect(() => () => probeAbortRef.current?.abort(), []);
+  useEffect(() => () => {
+    for (const controller of probeAbortRef.current.values()) controller.abort();
+  }, []);
   // Only an enrollment link can mint; a handoff link already carries its key.
   const canIssue =
     Boolean(enrollment?.canIssue) && !enrollment?.alreadyIssued && !issueConflict && !visibleSecret;
@@ -663,7 +671,7 @@ export function SharePage(): ReactElement {
                 modelView === "raw" ? (
                   <div className="share-model-grid">
                     {data.modelAllowlist.map((model) => (
-                      <ModelCard key={model} id={model} label={model} info={data.modelInfo?.[model]} canProbe={canProbe} probing={probingModel === model} onProbe={probeModel} />
+                      <ModelCard key={model} id={model} label={model} info={data.modelInfo?.[model]} canProbe={canProbe} probing={probingModels.has(model)} onProbe={probeModel} />
                     ))}
                   </div>
                 ) : (
@@ -682,7 +690,7 @@ export function SharePage(): ReactElement {
                               label={provider === "Other" ? model : model.slice(provider.length + 1)}
                               info={data.modelInfo?.[model]}
                               canProbe={canProbe}
-                              probing={probingModel === model}
+                              probing={probingModels.has(model)}
                               onProbe={probeModel}
                             />
                           ))}

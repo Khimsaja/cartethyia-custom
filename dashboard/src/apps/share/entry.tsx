@@ -1,4 +1,5 @@
 import { StrictMode } from "react";
+import { Toaster } from "sonner";
 import { createRoot } from "react-dom/client";
 
 import { SharePage } from "./page";
@@ -14,5 +15,13 @@ if (root === null) {
 createRoot(root).render(
   <StrictMode>
     <SharePage />
+    <Toaster
+      position="top-right"
+      offset={{ top: "1rem", right: "1rem" }}
+      mobileOffset={{ top: "1rem", left: "1rem", right: "1rem" }}
+      visibleToasts={2}
+      richColors
+      toastOptions={{ className: "toast-surface select-text" }}
+    />
   </StrictMode>,
 );
