@@ -57,7 +57,6 @@ CREATE TABLE "provider_accounts" (
   "cooldown_until" timestamptz,
   "last_recovered_at" timestamptz,
   "model_cooldowns" jsonb DEFAULT '{}'::jsonb NOT NULL,
-  "max_inflight" integer,
   "sort_index" integer DEFAULT 0 NOT NULL,
   "static_token" boolean DEFAULT false NOT NULL,
   "created_at" timestamptz DEFAULT now() NOT NULL,

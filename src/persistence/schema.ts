@@ -180,8 +180,6 @@ export const providerAccounts = pgTable("provider_accounts", {
   cooldownUntil: timestamp("cooldown_until", { withTimezone: true }),
   lastRecoveredAt: timestamp("last_recovered_at", { withTimezone: true }),
   modelCooldowns: jsonb("model_cooldowns").notNull().default({}),
-  /** Legacy per-account ceiling retained for stored rows only. Routing ignores it. */
-  maxInflight: integer("max_inflight"),
   /**
    * Stable list position within (tenant, provider). Accounts were ordered by
    * `created_at`, which let two same-millisecond rows swap between loads; this
