@@ -319,3 +319,73 @@ redisDescribe("RedisAdmissionCounterStore", () => {
 function bucketOf(now: number): string {
   return new Date(now).toISOString().slice(0, 10);
 }
+
+/**
+ * The ordering constraint that keeps the response path synchronous.
+ *
+ * `completeAttempt` awaits `lease.commitUsage()` *before* the dispatch handler
+ * returns its `Response`, which reads like bookkeeping that could be deferred
+ * to shave latency off the client's first byte. It cannot: `RECONCILE_SCRIPT`
+ * returns `1` (a silent no-op) when the lease is already `released`, and on the
+ * non-streaming path the attempt loop releases the lease in its `finally` the
+ * moment the handler returns. Deferring the commit past that point therefore
+ * discards the charge with no error anywhere.
+ *
+ * Measured: a reservation for 100 tokens released before its 9,999-token
+ * reconcile leaves the daily counter at 0. This test exists so that ordering
+ * is not "optimized" away by someone reading the await as latency to remove.
+ */
+redisDescribe("charge ordering", () => {
+  let client: Redis;
+  let store: RedisAdmissionCounterStore;
+
+  beforeAll(async () => {
+    client = new Redis(testRedisUrl as string, { maxRetriesPerRequest: 2 });
+    await client.ping();
+    store = new RedisAdmissionCounterStore(client);
+  });
+
+  afterAll(async () => {
+    client.disconnect();
+  });
+
+  test("releasing before reconciling silently discards the charge", async () => {
+    const apiKeyId = `order-${crypto.randomUUID()}`;
+    const now = Date.now();
+    const reservationId = `res-${apiKeyId}`;
+    await store.reserve({
+      reservationId,
+      apiKeyId,
+      now,
+      estimatedTokens: 100,
+      rpmLimit: null,
+      dailyLimit: 1_000_000,
+      monthlyLimit: null,
+      lifetimeBudget: null,
+      lifetimeConsumed: 0,
+      concurrencyLimit: null,
+      tenantId: `tenant-${apiKeyId}`,
+      tenantConcurrencyLimit: null,
+    });
+
+    // The order that must never happen on the response path.
+    await store.release(apiKeyId, 100, reservationId);
+    // No throw: the script treats an already-released lease as an idempotent
+    // replay, which is correct for a retried commit and catastrophic for one
+    // that was merely deferred.
+    await store.reconcile(apiKeyId, 100, 9_999, reservationId);
+
+    const daily = await client.get(`admission:daily:${apiKeyId}:${bucketOf(now)}`);
+    expect(Number(daily ?? "0")).toBe(0);
+
+    // Cleanup this case's keys.
+    const keys: string[] = [];
+    let cursor = "0";
+    do {
+      const [next, found] = await client.scan(cursor, "MATCH", `admission:*${apiKeyId}*`, "COUNT", 200);
+      cursor = next;
+      keys.push(...found);
+    } while (cursor !== "0");
+    if (keys.length > 0) await client.del(...keys);
+  });
+});
