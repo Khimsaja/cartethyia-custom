@@ -534,14 +534,22 @@ html[data-app="share"] .share-hud-card {
 }
 
 .share-model-card-actions {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: center;
   gap: 8px;
+  min-width: 0;
   margin-top: auto;
 }
 
+.share-model-card-actions > * {
+  min-width: 0;
+  width: 100%;
+}
+
 .share-model-card-actions .btn {
-  min-width: 160px;
+  min-width: 0;
+  width: 100%;
 }
 
 .share-model-card-meta {
