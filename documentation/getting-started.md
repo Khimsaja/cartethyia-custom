@@ -63,7 +63,7 @@ protects stored provider credentials. Do not paste it into issues, logs, or scre
 ## Run the installer
 
 ```bash
-bun run install
+bun run setup:interactive
 ```
 
 It checks Bun, `.env`, placeholder secrets, PostgreSQL, and Redis when required.

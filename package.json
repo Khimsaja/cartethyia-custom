@@ -17,7 +17,7 @@
     "setup": "bun run scripts/commands/setup.ts",
     "start": "bun run scripts/commands/start-production.ts",
     "doctor": "bun run scripts/commands/doctor.ts",
-    "install": "bun run scripts/commands/install.ts",
+    "setup:interactive": "bun run scripts/commands/install.ts",
     "restart": "bun run scripts/commands/restart.ts",
     "build:aot": "bun run scripts/build/aot.ts",
     "dev:stack": "concurrently -n BACKEND,DASHBOARD -c cyan,magenta --kill-others-on-fail \"bun run dev:backend\" \"bun run dashboard:dev\"",
