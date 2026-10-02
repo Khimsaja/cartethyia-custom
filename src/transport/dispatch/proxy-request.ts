@@ -308,6 +308,38 @@ export async function handleProviderProxyRequest(
         const streamProviderId = candidate.provider_id;
         const streamAccountId = candidate.provider_account_id;
         const streamAccountLabel = candidate.provider_account_label;
+        /**
+         * Completion context shared by every terminal outcome of this stream.
+         *
+         * Built once rather than written out at each `completeAttempt` call.
+         * Three hand-written copies had already drifted: the success path and
+         * the truncation path both carried `networkPoolId`, and the error path
+         * did not — so a pool that failed a stream was never parked, which is
+         * exactly the pool an operator needs taken out of rotation. The effect
+         * is not cosmetic: `completeAttempt` gates `recordPoolDispatchOutcome`
+         * (and the 402/407 `disablePoolForProxyHttpStatus` branch) on this
+         * field, and omitting it silently skipped both.
+         *
+         * The account and pool fields are conditionally spread so an absent
+         * value stays absent rather than becoming an explicit `undefined`,
+         * which `exactOptionalPropertyTypes` and the completion contract both
+         * distinguish.
+         */
+        const streamCompletionContext = () =>
+          completionContext({
+            providerId: streamProviderId,
+            modelId: streamRouteCandidate.model_id,
+            tenantId: streamPrepared.authorization.tenantId,
+            ingressBody: state.ingressBody,
+            providerCapture,
+            db: deps.db,
+            ...(streamAccountId ? { accountId: streamAccountId } : {}),
+            ...(streamAccountLabel ? { accountLabel: streamAccountLabel } : {}),
+            ...(streamNetworkPoolId ? { networkPoolId: streamNetworkPoolId } : {}),
+            ...(streamLease ? { lease: streamLease } : {}),
+            ...(deps.telemetryBuffer ? { telemetryBuffer: deps.telemetryBuffer } : {}),
+            ...(deps.snapshotService ? { snapshotService: deps.snapshotService } : {}),
+          });
         const streamOptions = {
           created: Date.now() / 1000,
           include_usage: canonicalRequest.generation_controls["extension:include_usage"] === true,
@@ -773,20 +805,7 @@ export async function handleProviderProxyRequest(
                     error: truncationError,
                   }
                 : {}),
-              ...completionContext({
-                providerId: streamProviderId,
-                modelId: streamRouteCandidate.model_id,
-                tenantId: streamPrepared.authorization.tenantId,
-                ingressBody: state.ingressBody,
-                providerCapture,
-                db: deps.db,
-                ...(streamAccountId ? { accountId: streamAccountId } : {}),
-                ...(streamAccountLabel ? { accountLabel: streamAccountLabel } : {}),
-                ...(streamNetworkPoolId ? { networkPoolId: streamNetworkPoolId } : {}),
-                ...(streamLease ? { lease: streamLease } : {}),
-                ...(deps.telemetryBuffer ? { telemetryBuffer: deps.telemetryBuffer } : {}),
-                ...(deps.snapshotService ? { snapshotService: deps.snapshotService } : {}),
-              }),
+              ...streamCompletionContext(),
               ...ttfbFields(firstByteAt, firstContentDeltaAtMs, state.upstreamDispatchStartedAtMs),
               usage: finalUsage,
               commitUsage: finalUsage,
@@ -838,19 +857,7 @@ export async function handleProviderProxyRequest(
           const cancelled = terminal.status === "cancelled";
           await completeAttempt(state, {
             status: terminal.status,
-            ...completionContext({
-              providerId: streamProviderId,
-              modelId: streamRouteCandidate.model_id,
-              tenantId: streamPrepared.authorization.tenantId,
-              ingressBody: state.ingressBody,
-              providerCapture,
-              db: deps.db,
-              ...(streamAccountId ? { accountId: streamAccountId } : {}),
-              ...(streamAccountLabel ? { accountLabel: streamAccountLabel } : {}),
-              ...(streamLease ? { lease: streamLease } : {}),
-              ...(deps.telemetryBuffer ? { telemetryBuffer: deps.telemetryBuffer } : {}),
-              ...(deps.snapshotService ? { snapshotService: deps.snapshotService } : {}),
-            }),
+            ...streamCompletionContext(),
             ...ttfbFields(firstByteAt, firstContentDeltaAtMs, state.upstreamDispatchStartedAtMs),
             errorCategory: terminal.errorCategory,
             // Every fallback category the classifier returns (client close,
