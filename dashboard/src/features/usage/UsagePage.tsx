@@ -44,9 +44,9 @@ import {
   useUsageRequests,
   useUsageSummary,
 } from "../../hooks/system";
-import { providerDisplayName, requestProviderId } from "../../shared/provider-names";
+import { requestProviderId } from "../../shared/request-provider";
 
-import { useProviderAccounts } from "../../hooks/providers";
+import { useProviderAccounts, useProviders } from "../../hooks/providers";
 import { useInFlight, type InFlightState } from "../../hooks/live";
 import { useTrackedTimeout } from "../../hooks/use-timeout";
 import { USAGE_PERIODS, type UsagePeriod as Period } from "../../data/usage-periods";
@@ -449,7 +449,11 @@ function PillTabs<T extends string>({
   readonly ariaLabel: string;
 }): ReactNode {
   return (
-    <div role="tablist" aria-label={ariaLabel} style={{ display: "flex", gap: "4px" }}>
+    <div
+      role="tablist"
+      aria-label={ariaLabel}
+      style={{ display: "flex", flexWrap: "wrap", gap: "4px", minWidth: 0 }}
+    >
       {options.map((option) => (
         <Button
           key={option.id}
@@ -586,6 +590,11 @@ function BreakdownSnapshot({
   readonly onToggleWide: () => void;
 }): ReactNode {
   const byQuery = useUsageBy(period, dimension);
+  const providersQuery = useProviders();
+  const providerNames = useMemo(
+    () => new Map((providersQuery.data ?? []).map((provider) => [provider.providerId, provider.label || provider.displayName])),
+    [providersQuery.data],
+  );
   const rows = byQuery.data?.rows ?? [];
   const maxTotal = rows.length > 0 ? Math.max(...rows.map((row) => row.total)) : 1;
   const totalRequests = rows.reduce((sum, row) => sum + row.requests, 0);
@@ -644,7 +653,7 @@ function BreakdownSnapshot({
               const pct = maxTotal > 0 ? Math.max(2, (row.total / maxTotal) * 100) : 2;
               const displayName =
                 dimension === "provider"
-                  ? providerDisplayName(row.name)
+                  ? (providerNames.get(row.name) ?? row.name)
                   : dimension === "key"
                     ? (row.label ?? `${row.name.slice(0, 8)}…`)
                     : row.name;
@@ -1249,6 +1258,11 @@ export default function Usage(): ReactNode {
     });
   };
   const summaryQuery = useUsageSummary(period);
+  const providersQuery = useProviders();
+  const providerNames = useMemo(
+    () => new Map((providersQuery.data ?? []).map((provider) => [provider.providerId, provider.label || provider.displayName])),
+    [providersQuery.data],
+  );
   const [requestLimit, setRequestLimit] = useState(50);
   const [requestStatusFilter, setRequestStatusFilter] = useState<number | null>(null);
   const requestsQuery = useUsageRequests(period, requestLimit, requestStatusFilter);
@@ -1510,7 +1524,7 @@ export default function Usage(): ReactNode {
           }
           icon={<Activity size={16} />}
           action={
-            <Inline gap="12px" align="center">
+            <Inline gap="12px" align="center" style={{ flexWrap: "wrap" }}>
               <Button
                 variant="ghost"
                 size="sm"
@@ -1589,7 +1603,7 @@ export default function Usage(): ReactNode {
                           title={rowProviderId ?? "—"}
                           style={{ fontSize: "12px", fontWeight: 600 }}
                         >
-                          {hideProviderName ? "Mysterious" : rowProviderId ? providerDisplayName(rowProviderId) : "—"}
+                          {hideProviderName ? "Mysterious" : rowProviderId ? (providerNames.get(rowProviderId) ?? rowProviderId) : "—"}
                         </span>
                       </div>
                       <div

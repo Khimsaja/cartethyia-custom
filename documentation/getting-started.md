@@ -139,30 +139,28 @@ Backups can contain provider credentials and API-key data. Treat them like passw
 ## Test database
 
 PostgreSQL is also the required database for integration and contract checks. Keep it
-separate from your development database. The repository provides a disposable local
-PostgreSQL container with safe test credentials:
+separate from your development database. If PostgreSQL is already running locally
+(for example through Laragon), create `.env.test` with a dedicated database and run:
+
+```bash
+bun run test-db:check
+```
+
+The check reads only `TEST_DATABASE_URL`; it refuses to fall back to `DATABASE_URL`.
+Apply migrations before database-backed checks. Never use production data for tests.
+
+If local PostgreSQL is not available, use the disposable Compose database only as an
+optional fallback:
 
 ```bash
 cp .env.test.example .env.test
 bun run test-db:up
-```
-
-The test database listens on `127.0.0.1:55432` and uses `TEST_DATABASE_URL` from
-`.env.test`. Apply migrations before running database-backed checks. Stop it when done:
-
-```bash
+bun run test-db:check
 bun run test-db:down
 ```
 
-To remove the test volume and start clean:
-
-```bash
-bun run test-db:reset
-```
-
-The current checkout does not carry an active test suite, but this database is the
-required isolated target for restoring or adding integration/contract tests. Never use
-`DATABASE_URL` or production data for test checks.
+The current checkout does not carry an active test suite, but this isolated database
+is the target for restoring or adding integration/contract tests.
 
 ## Verification
 

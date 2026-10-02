@@ -32,9 +32,12 @@ Treat theme, backdrop, responsive layout, and model grouping as UI behavior to v
 
 - Markup/layout structure only: use a throwaway SSR script with every query seeded;
   assert ids, text, count, and order. SSR does not prove CSS, effects, or stateful interaction.
-- CSS/layout/overflow: use a real browser engine. Build first, serve the built
-  dashboard on a separate port, measure DOM geometry at short and tall viewports,
-  inspect screenshots, then tear down the temporary browser/profile/server.
+- CSS/layout/overflow: use a real browser engine headlessly whenever Edge/Chrome
+  CDP is available; do not require a visible browser window. Build first, serve
+  the built dashboard on a separate port, measure DOM geometry at short and tall
+  viewports, inspect screenshots, then tear down the temporary browser/profile/server.
+  If no CDP-capable browser exists, mark UI verification unverified instead of
+  substituting markup guesses.
 - API stubbing: intercept only the console API pattern, read actual request shapes,
   and use a fresh browser connection when changing handlers. Never pause the module graph.
 

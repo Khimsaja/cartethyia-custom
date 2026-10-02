@@ -34,7 +34,6 @@ import {
   useSyncProviderModels,
   useTestByokConnection,
 } from "../../hooks/providers";
-import { providerDisplayName } from "../../shared/provider-names";
 import { getErrorMessage } from "../../shared/helpers";
 
 const wireFamilies = ["chat", "responses", "messages"] as const;
@@ -756,7 +755,7 @@ const ProviderCard = memo(function ProviderCard({
   provider: ProviderResponse;
 }): ReactNode {
   const isFounding = FOUNDING_IDS.has(provider.providerId.toLowerCase());
-  const displayName = providerDisplayName(provider.providerId, provider.label);
+  const displayName = provider.label || provider.displayName;
   const modelsQuery = useProviderModels(provider.providerId);
   const modelCount = modelsQuery.data?.length;
   const accountsQuery = useProviderAccounts(provider.providerId);
@@ -920,7 +919,7 @@ const ProviderCard = memo(function ProviderCard({
 function compareConfiguredProviders(a: ProviderResponse, b: ProviderResponse): number {
   const configuredRank = Number(Boolean(b.configured)) - Number(Boolean(a.configured));
   if (configuredRank !== 0) return configuredRank;
-  return providerDisplayName(a.providerId, a.label).localeCompare(providerDisplayName(b.providerId, b.label));
+  return (a.label || a.displayName).localeCompare(b.label || b.displayName);
 }
 
 // ── Sections Definition ───────────────────────────────────────────────────────

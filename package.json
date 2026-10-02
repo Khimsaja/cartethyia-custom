@@ -17,7 +17,6 @@
     "setup": "bun run scripts/commands/setup.ts",
     "start": "bun run scripts/commands/start-production.ts",
     "doctor": "bun run scripts/commands/doctor.ts",
-    "setup:interactive": "bun run scripts/commands/install.ts",
     "restart": "bun run scripts/commands/restart.ts",
     "build:aot": "bun run scripts/build/aot.ts",
     "dev:stack": "concurrently -n BACKEND,DASHBOARD -c cyan,magenta --kill-others-on-fail \"bun run dev:backend\" \"bun run dashboard:dev\"",
@@ -27,8 +26,10 @@
     "build:binary": "bun run scripts/build/binary.ts",
     "test-db:down": "docker compose -f docker-compose.test.yml down",
     "dashboard:dev": "bun run --cwd dashboard dev",
+    "test-db:check": "bun run scripts/commands/test-db-check.ts",
     "test-db:reset": "docker compose -f docker-compose.test.yml down -v && docker compose -f docker-compose.test.yml up -d --wait postgres-test",
     "dashboard:build": "bun run --cwd dashboard build",
+    "setup:interactive": "bun run scripts/commands/install.ts",
     "dashboard:typecheck": "bun run --cwd dashboard typecheck"
   },
   "dependencies": {

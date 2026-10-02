@@ -11,7 +11,7 @@ import { responsesAdapter } from "./transport/surface/responses/adapter";
 import { messagesAdapter } from "./transport/surface/messages/adapter";
 import { completionAdapter } from "./transport/surface/completion";
 import { SurfaceAdapterRegistry } from "./transport/surface/adapters";
-import { GatewayError } from "./transport/gateway-error";
+import { GatewayError, publicGatewayErrorBody } from "./transport/gateway-error";
 import { shutdownError, shutdownNotice } from "./transport/shutdown-notice";
 import type { CanonicalAdapter } from "./transport/middleware/request-context";
 import type { ApiKeyAuthorizationSnapshot } from "./security/api-key-auth";
@@ -203,19 +203,17 @@ export function createGatewayApp(deps: GatewayAppDeps) {
       (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
     );
     if (reserved) {
-      return new Response(
-        JSON.stringify({ error: { code: "not_found", message: "Route not found" } }),
-        {
-          status: 404,
-          headers: {
-            "content-type": "application/json; charset=utf-8",
-            "cache-control": "no-store",
-            "content-security-policy": API_CONTENT_SECURITY_POLICY,
-            "x-frame-options": X_FRAME_OPTIONS,
-            "x-content-type-options": "nosniff",
-          },
+      const notFound = new GatewayError("not_found", 404, "Route not found");
+      return new Response(JSON.stringify(publicGatewayErrorBody(notFound)), {
+        status: notFound.status,
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "cache-control": "no-store",
+          "content-security-policy": API_CONTENT_SECURITY_POLICY,
+          "x-frame-options": X_FRAME_OPTIONS,
+          "x-content-type-options": "nosniff",
         },
-      );
+      });
     }
     return serveDashboard({ request });
   };

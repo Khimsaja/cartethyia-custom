@@ -23,6 +23,8 @@ acceptance criteria.
    `Grep`, `Glob`, or a targeted command) and obtain the same context manually.
 4. Read the relevant skill reference before subsystem work.
 5. Inspect the target, callers, contracts, config, and docs before editing.
+6. When a browser/CDP runtime is available, use it headlessly for dashboard/UI
+   verification; do not replace measurable browser evidence with markup guesses.
 
 Do not spend a turn only restating a plan. The first useful action should read,
 search, reproduce, edit, or verify something.
@@ -55,6 +57,9 @@ removal condition.
 - Preserve intentional provider wire bytes, headers, and user-agent behavior.
 - Keep one source of truth for provider metadata, persisted contracts, environment
   names, routing policy, and dashboard mirrors.
+- Development is local-first: use an available local PostgreSQL (including Laragon
+  on Windows) and local Redis/in-memory mode before considering Docker. Docker is
+  an optional deployment/test fallback, never a default development prerequisite.
 - Keep scripts flat with `ops-`, `build-`, or `ci-` prefixes. Avoid barrel files;
   use role names such as `contracts.ts`, `routes.ts`, `store.ts`, `service.ts`,
   and `errors.ts`.
@@ -81,9 +86,10 @@ bun run build                # when entry points or build contracts change
 ```
 
 The repository does not currently carry an active test suite. Typecheck is not
-behavioral proof. Exercise the real boundary: a live gateway request, browser
-surface, database migration in an isolated environment, or a temporary script
-calling production code. If that boundary cannot be used, say exactly why.
+behavioral proof. Exercise the real boundary: a live gateway request, headless
+browser/CDP surface when available, database migration in an isolated environment,
+or a temporary script calling production code. If a browser/CDP runtime is
+available, UI claims require that automation evidence; if unavailable, say exactly why.
 
 ## Safety and git
 
