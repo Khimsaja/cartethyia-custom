@@ -7,6 +7,7 @@ import { EmptyState, ErrorState, LoadingState } from "../../components/ui/state"
 import { ClipboardButton } from "../../components/patterns/clipboard-button";
 import { downloadTextFile } from "../../shared/download";
 import { GithubBadge } from "../../components/patterns/github-badge";
+import { toast } from "../../shared/toast";
 import { formatModelTokens, UNKNOWN_LIMITS_TOOLTIP } from "../../shared/model-limits";
 import { readConsoleTheme, applyConsoleTheme, isDarkEffective, writeConsoleTheme, type ConsoleThemeChoice } from "../../shared/theme";
 import { useShareData, type ShareLinkData, type ShareModelInfoData } from "../../hooks/share-data";
@@ -56,12 +57,18 @@ function ModelCard({
   id,
   label,
   info,
+  canProbe,
+  probing,
+  onProbe,
 }: {
   /** The id as a client must send it. */
   readonly id: string;
   /** What the card shows; the bare id in the grouped reading. */
   readonly label: string;
   readonly info: ShareModelInfoData | undefined;
+  readonly canProbe: boolean;
+  readonly probing: boolean;
+  readonly onProbe: (model: string) => void;
 }): ReactElement {
   const vision = (info?.capabilities?.input ?? []).some(
     (modality) => modality === "image" || modality === "vision",
@@ -84,6 +91,18 @@ function ModelCard({
           aria-label={`Copy ${id}`}
           title={`Copy ${id}`}
         />
+        {canProbe ? (
+          <Button
+            variant="secondary"
+            size="sm"
+            loading={probing}
+            disabled={probing}
+            onClick={() => onProbe(id)}
+            title="Probe this model using the shared API key"
+          >
+            {probing ? "Testing…" : "Probe"}
+          </Button>
+        ) : null}
       </div>
       <div className="share-model-card-meta">
         <span className="share-model-card-icons">
@@ -152,6 +171,8 @@ export function SharePage(): ReactElement {
   const [storageWarning, setStorageWarning] = useState<string | null>(null);
   const [issueBusy, setIssueBusy] = useState(false);
   const [issueError, setIssueError] = useState<string | null>(null);
+  const [probingModel, setProbingModel] = useState<string | null>(null);
+  const probeAbortRef = useRef<AbortController | null>(null);
   const [issueConflict, setIssueConflict] = useState(false);
   const [sharePopupOpen, setSharePopupOpen] = useState(false);
   const sharePopupRef = useRef<HTMLElement>(null);
@@ -241,6 +262,60 @@ export function SharePage(): ReactElement {
   };
   const visibleSecret = restoredSecret ?? secret;
   const data = state.data;
+  const canProbe = data?.kind === "handoff" ? Boolean(data.key) : Boolean(visibleSecret?.key);
+  const probeModel = async (model: string): Promise<void> => {
+    const key = data?.kind === "handoff" ? data.key : (restoredSecret ?? secret)?.key;
+    if (!key || probingModel !== null) return;
+    probeAbortRef.current?.abort();
+    const controller = new AbortController();
+    probeAbortRef.current = controller;
+    setProbingModel(model);
+    const startedAt = performance.now();
+    let firstByteAt: number | null = null;
+    try {
+      const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${key}`,
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+        },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: "user", content: "Reply with exactly: OK" }],
+          stream: true,
+          max_tokens: 16,
+        }),
+        cache: "no-store",
+        referrerPolicy: "no-referrer",
+        signal: controller.signal,
+      });
+      if (!response.ok || !response.body) {
+        throw new Error(`Request failed with HTTP ${response.status}`);
+      }
+      const reader = response.body.getReader();
+      try {
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk.value && chunk.value.byteLength > 0 && firstByteAt === null) {
+            firstByteAt = performance.now();
+          }
+          if (chunk.done) break;
+        }
+      } finally {
+        reader.releaseLock();
+      }
+      const totalMs = Math.round(performance.now() - startedAt);
+      const ttftMs = Math.round((firstByteAt ?? performance.now()) - startedAt);
+      toast.success("Model probe complete", `${model} · TTFT ${ttftMs} ms · Total ${totalMs} ms`);
+    } catch (error: unknown) {
+      toast.error("Model probe failed", error instanceof Error ? error.message : "The request could not be completed.");
+    } finally {
+      if (probeAbortRef.current === controller) probeAbortRef.current = null;
+      setProbingModel(null);
+    }
+  };
+  useEffect(() => () => probeAbortRef.current?.abort(), []);
   // Only an enrollment link can mint; a handoff link already carries its key.
   const canIssue =
     Boolean(enrollment?.canIssue) && !enrollment?.alreadyIssued && !issueConflict && !visibleSecret;
@@ -588,7 +663,7 @@ export function SharePage(): ReactElement {
                 modelView === "raw" ? (
                   <div className="share-model-grid">
                     {data.modelAllowlist.map((model) => (
-                      <ModelCard key={model} id={model} label={model} info={data.modelInfo?.[model]} />
+                      <ModelCard key={model} id={model} label={model} info={data.modelInfo?.[model]} canProbe={canProbe} probing={probingModel === model} onProbe={probeModel} />
                     ))}
                   </div>
                 ) : (
@@ -606,6 +681,9 @@ export function SharePage(): ReactElement {
                               id={model}
                               label={provider === "Other" ? model : model.slice(provider.length + 1)}
                               info={data.modelInfo?.[model]}
+                              canProbe={canProbe}
+                              probing={probingModel === model}
+                              onProbe={probeModel}
                             />
                           ))}
                         </div>
