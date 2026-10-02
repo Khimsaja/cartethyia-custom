@@ -66,3 +66,18 @@ for requirements, PostgreSQL setup, local in-memory Redis mode, Docker, commands
 and verification steps.
 
 For contribution rules and repository workflow, see `CONTRIBUTING.md`.
+
+## License
+
+Cartethyia is licensed under the **GNU General Public License v3.0 only**.
+See [`LICENSE`](LICENSE) for the complete terms.
+
+You may use, copy, modify, and share this software under GPLv3. If you distribute
+Cartethyia or a modified version, you must keep the license and copyright notices,
+provide the corresponding source code, and license the covered work under GPLv3.
+You may not add restrictions that remove the freedoms granted by the license.
+
+This software is provided **without warranty**. It is distributed in the hope that
+it will be useful, but there is no guarantee that it is fit for a particular purpose,
+secure, available, or free from defects. See the warranty disclaimer and limitation
+of liability in `LICENSE`.
