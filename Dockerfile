@@ -33,7 +33,7 @@ FROM alpine:latest
 WORKDIR /app
 
 # curl powers HEALTHCHECK; util-linux provides setpriv for non-root startup.
-RUN apk add --no-cache ca-certificates curl util-linux \
+RUN apk add --no-cache ca-certificates curl libgcc libstdc++ util-linux \
     && addgroup -S -g 10001 cartethyia \
     && adduser -S -D -H -u 10001 -G cartethyia cartethyia \
     && mkdir -p /app/data \
