@@ -142,9 +142,10 @@ export type Provider = typeof providers.$inferSelect;
 
 // Upstream account credentials plus the full health state machine.
 // `tenant_id` null means the account is shared pool-wide; populated means
-// tenant-owned/BYOK. Provider routing supplies the concurrency ceiling and
-// network-pool policy; the legacy per-account `max_inflight` column is inert
-// and must not be repurposed as an override.
+// tenant-owned/BYOK. The concurrency ceiling lives in provider routing
+// (`provider_routing_settings.max_inflight`) and network pools
+// (`network_pools.max_inflight`); the per-account override that once sat here
+// was retired by `0029_retire_per_account_max_inflight.sql`.
 export const providerAccounts = pgTable("provider_accounts", {
   id: uuid("id").primaryKey().defaultRandom(),
   providerId: text("provider_id")
