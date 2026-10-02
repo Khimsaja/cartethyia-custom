@@ -54,6 +54,25 @@ it outright if unrecognized. A separator outside the upstream's accepted
 character set is not cosmetic — an undecoded composite fails the provider's own
 validation.
 
+## A legacy era must be dated, not assumed
+
+A comment that says "older builds stored X" is a claim about history, and it is
+as checkable as any other. Before preserving behavior on its authority, date the
+era: `git log --reverse -S'<field>'` shows when each key appeared. If both keys
+landed in the same commit, no pre-flag era existed, and the branch is not
+preserving old data — it is reinterpreting a shape the *current* UI still
+writes.
+
+That distinction decides the fix direction, and they are opposites. Real legacy
+data is retired by backfilling it and then deleting the branch. A phantom legacy
+rule is retired by deleting the branch, because the "legacy" write is still live
+and the branch is actively granting consent nobody gave. Check what still writes
+the shape — the current writer, not the imagined old one — before choosing.
+
+Compare against the symmetric sibling: when two controls have identical UI and
+one needs a compatibility branch the other does not, suspect the branch rather
+than the sibling.
+
 ## Evidence
 
 Reports distinguish gates run, boundaries exercised, remaining failures, and
