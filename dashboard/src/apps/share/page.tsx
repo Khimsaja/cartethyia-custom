@@ -45,9 +45,9 @@ const NAME_HINT_MAX_LENGTH = 20;
  * The share page shows the same shape an operator sees in provider detail, so
  * the two read as the same thing: an icon tile, the routable id with an
  * icon-only copy button, then a quiet line of capabilities and limits — the
- * limits formatted by the same `formatModelTokens` the catalog card uses. Only
- * Copy is offered — a recipient cannot probe, disable, or delete a model, and
- * showing those controls would invite a click that must not work.
+ * limits formatted by the same `formatModelTokens` the catalog card uses. Copy and
+ * Test are offered when a share key is available; admin actions such as disable
+ * or delete are never exposed.
  *
  * The context window and output cap come from the catalog row the gateway
  * already serves `/v1/models` from; a name with no row reports the limit as

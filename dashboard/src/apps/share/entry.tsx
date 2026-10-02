@@ -20,8 +20,24 @@ createRoot(root).render(
       offset={{ top: "1rem", right: "1rem" }}
       mobileOffset={{ top: "1rem", left: "1rem", right: "1rem" }}
       visibleToasts={2}
-      richColors
-      toastOptions={{ className: "toast-surface select-text" }}
+      toastOptions={{
+        className: "toast-surface select-text",
+        style: {
+          background: "var(--glass-bg-2)",
+          border: "1px solid var(--glass-border-2)",
+          color: "var(--text-primary)",
+          fontSize: "12.5px",
+        },
+        classNames: { title: "select-text", description: "select-text" },
+        actionButtonStyle: {
+          background: "var(--accent)",
+          color: "var(--accent-foreground)",
+        },
+        cancelButtonStyle: {
+          background: "var(--surface-muted)",
+          color: "var(--text-primary)",
+        },
+      }}
     />
   </StrictMode>,
 );
