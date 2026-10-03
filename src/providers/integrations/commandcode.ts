@@ -61,16 +61,15 @@ export function convertMessages(messages: CanonicalRequest["messages"]): { messa
     // re-homes them). Checking only `role: "tool"` dropped every result from a
     // Messages-origin history, leaving the assistant's `tool_calls` unanswered.
     if (canContainToolResult(message)) {
+      const parts: Array<Record<string, unknown>> = [];
       for (const block of toolResultParts(message)) {
         const content = typeof block.content === "string" ? block.content : JSON.stringify(block.content);
-        out.push({ role: "tool", tool_call_id: block.call_id, content });
+        parts.push({ type: "text", text: `Tool ${block.call_id} result: ${content}` });
       }
-      // Any non-result content on the same turn still follows as a user turn;
-      // a turn that was nothing but results must not emit an empty one.
       const remaining = message.content.filter((part) => part.kind !== "toolResult");
       const remainingText = joinTextParts(remaining);
-      if (message.role === "tool") continue;
-      if (remainingText.length > 0) out.push({ role: "user", content: remainingText });
+      if (remainingText.length > 0) parts.push({ type: "text", text: remainingText });
+      if (parts.length > 0) out.push({ role: "user", content: parts });
       continue;
     }
     if (message.role === "assistant") {
@@ -86,7 +85,7 @@ export function convertMessages(messages: CanonicalRequest["messages"]): { messa
       out.push(msg);
       continue;
     }
-    out.push({ role: "user", content: joinTextParts(message.content) });
+    out.push({ role: "user", content: [{ type: "text", text: joinTextParts(message.content) }] });
   }
   if (system === undefined) return { messages: out };
   return { messages: out, system };
