@@ -11,7 +11,8 @@ const DIALOG_SIZE_WIDTH: Record<DialogSize, number> = {
   sm: 420,
   md: 640,
   lg: 880,
-  xl: 1160,
+  /** Wide data/workspace dialogs; expanded mode remains the explicit full-width escape hatch. */
+  xl: 960,
 };
 
 export interface DialogProps {

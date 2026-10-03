@@ -49,7 +49,7 @@ export function HealthEventsModal({
   const events = query.data ?? [];
 
   return (
-    <Dialog open={true} onClose={onClose} title={`Health & Error Log — ${title}`} size="xl">
+    <Dialog open={true} onClose={onClose} title={`Health & Error Log — ${title}`} size="lg">
       <div style={{ display: "flex", flexDirection: "column", gap: "14px", minWidth: 0 }}>
         <div
           style={{
