@@ -4,7 +4,6 @@ import { useRoutingStrategy } from "../../hooks/use-routing-strategy";
 import { Switch } from "../../components/ui/switch";
 import { Inline } from "../../components/ui/inline";
 import { formatCredits } from "../../shared/format";
-import { quotaBarTone } from "../../shared/quota-formatters";
 
 export interface CreditPoolTotals {
   /** Credits spent across every account's windows. */
@@ -56,20 +55,12 @@ export function aggregateCreditPool(entries: readonly QuotaEntry[]): CreditPoolT
 }
 
 /**
- * The provider's credit pool: every account's credits summed into one bar.
+ * The provider's total credits: every account's credit windows summed into one
+ * pool and shown as a simple available-versus-total summary.
  *
  * Sits above the account list so the operator reads "how much is left" before
  * "which account", which is the order the question is asked. Renders nothing
  * for a provider whose accounts report no credit window.
- *
- * Every figure here names itself, and the bar agrees with the headline: the
- * fill is the remaining fraction and the headline reads "N credits available of
- * M total", so the green bar and the sentence beside it are the same quantity.
- * The spent figure moves to the caption rather than sharing the headline with
- * the remainder — a bare `450.81 / 3,000` under a label that says neither is
- * what made the card ambiguous. The quota page draws its bars the same way
- * (green = credit still available), so the pool and the account rows below it
- * read alike.
  */
 export function CreditPoolCard({
   providerId,
@@ -84,9 +75,7 @@ export function CreditPoolCard({
   const pool = aggregateCreditPool(entries);
 
   const usedPercent = pool ? Math.min(100, Math.max(0, (pool.used / pool.limit) * 100)) : 0;
-  const remainingPercent = Math.max(0, 100 - usedPercent);
   const remaining = pool ? Math.max(0, pool.limit - pool.used) : 0;
-  const tone = quotaBarTone(remainingPercent);
   const accountsLabel = `${accountCount} ${accountCount === 1 ? "account" : "accounts"}`;
 
   return (
@@ -108,7 +97,7 @@ export function CreditPoolCard({
           color: "var(--text-secondary)",
         }}
       >
-        CREDIT POOL
+        TOTAL CREDITS
       </p>
       {pool ? (
         <>
@@ -127,7 +116,7 @@ export function CreditPoolCard({
                   fontFamily: "var(--font-mono)",
                   fontWeight: 700,
                   fontVariantNumeric: "tabular-nums",
-                  color: tone.text,
+                  color: "var(--status-success)",
                 }}
               >
                 {formatCredits(remaining)}
@@ -138,33 +127,6 @@ export function CreditPoolCard({
               </span>{" "}
               total
             </span>
-          </div>
-          <div
-            className="quota-bar-track"
-            role="progressbar"
-            aria-label="Credits remaining"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={Math.round(remainingPercent)}
-            aria-valuetext={`${formatCredits(remaining)} of ${formatCredits(pool.limit)} credits remaining`}
-            style={{
-              marginTop: "8px",
-              height: "10px",
-              borderRadius: "4px",
-              background: "var(--inner-border)",
-              overflow: "hidden",
-            }}
-          >
-            <div
-              className="quota-bar-fill"
-              style={{
-                width: `${remainingPercent}%`,
-                height: "100%",
-                borderRadius: "3px",
-                background: tone.bar,
-                transition: "width var(--dur-macro) var(--ease-spring)",
-              }}
-            />
           </div>
           <p
             style={{

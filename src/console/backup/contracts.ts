@@ -346,6 +346,8 @@ export function columnNames(table: Table): ReadonlySet<string> {
 const LEGACY_DROPPED_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   provider_accounts: ["max_inflight"],
   api_keys: [
+    "model_allowlist",
+    "model_denylist",
     "provider_allowlist",
     "share_popup_image_url",
     "share_popup_mode",

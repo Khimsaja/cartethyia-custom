@@ -57,4 +57,38 @@ describe("legacy dropped columns on restore", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain("is not a column");
   });
+
+  test("migrates legacy model allow/deny policy into the current single policy", () => {
+    const payload = {
+      app: "cartethyia",
+      version: 1,
+      exportedAt: "2026-10-01T00:00:00.000Z",
+      sections: {
+        config: {
+          api_keys: [
+            {
+              id: "00000000-0000-0000-0000-000000000002",
+              label: "legacy",
+              model_allowlist: ["alpha"],
+              model_denylist: [],
+            },
+          ],
+        },
+      },
+    };
+    const result = validateRestorePayload(payload, "tenant-1");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const rows = result.value.tables.get(
+        tablesForSection("config").find((table) => tableName(table) === "api_keys")!,
+      )?.rows;
+      expect(rows?.[0]).toMatchObject({
+        model_access_mode: "whitelist",
+        model_list: ["alpha"],
+      });
+      expect(rows?.[0]).not.toHaveProperty("model_allowlist");
+      expect(rows?.[0]).not.toHaveProperty("model_denylist");
+    }
+  });
+
 });
