@@ -96,14 +96,12 @@ export function modelRejectionReason(
   }
   if (list == null || listSize(list) === 0) return null;
   if (names.some((name) => listIncludes(list, name))) return null;
-  // Reverse direction, provider-unknown only: a QUALIFIED whitelist entry must
-  // authorize a bare request, because the preparer cannot know the provider yet
-  // and the dashboard writes the qualified form. Scoped to `targetProvider ===
-  // undefined` so it can never become an over-permission once admission runs.
-  if (targetProvider === undefined) {
-    const bareCandidates = new Set(names.map((name) => bareModelId(name)));
-    if ([...list].some((entry) => bareCandidates.has(bareModelId(entry)))) return null;
-  }
+  // Alias/combo namespaces (for example `bansos/...`) are not upstream
+  // provider ids. Discovery exposes their bare target forms, so admission
+  // must apply the same bare-form decision after a provider is selected;
+  // otherwise `/v1/models` advertises an alias that the lease check rejects.
+  const bareCandidates = new Set(names.map((name) => bareModelId(name)));
+  if ([...list].some((entry) => bareCandidates.has(bareModelId(entry)))) return null;
   return "model-not-allowed";
 }
 

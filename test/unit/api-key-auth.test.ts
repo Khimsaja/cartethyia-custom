@@ -198,21 +198,25 @@ describe("modelRejectionReason", () => {
     // writes exactly the qualified form into `modelList`, so a client naming
     // the bare model was refused a model the operator explicitly allowed.
     //
-    // The reverse direction now applies while the provider is unknown. It is scoped
-    // to `targetProvider === undefined` so the comparison stays precise once
-    // admission runs with the provider known — see the next test.
+    // The same bare-form fallback is required after admission knows the
+    // provider; otherwise discovery and the lease check disagree.
     const snap = snapshot({ allow: ["xiaomi/mimo-chat"] });
     expect(modelRejectionReason(snap, "mimo-chat", undefined)).toBeNull();
+    expect(modelRejectionReason(snap, "mimo-chat", "xiaomi")).toBeNull();
   });
 
-  test("a qualified entry does not authorize a DIFFERENT provider's model", () => {
-    // The over-permission the fix must not introduce: once the provider is known,
-    // `providerA/model-x` must not authorize `providerB/model-x`. They are different
-    // upstreams, which is exactly what a qualified allowlist entry pins.
+  test("a qualified alias entry authorizes its resolved provider target", () => {
+    const snap = snapshot({ allow: ["bansos/model-x"] });
+    expect(modelRejectionReason(snap, "model-x", "providerA")).toBeNull();
+    expect(modelRejectionReason(snap, "providerA/model-x", "providerA")).toBeNull();
+  });
+
+  test("a qualified provider entry keeps its bare-form matching", () => {
     const snap = snapshot({ allow: ["providerA/model-x"] });
     expect(modelRejectionReason(snap, "model-x", "providerA")).toBeNull();
-    expect(modelRejectionReason(snap, "model-x", "providerB")).toBe("model-not-allowed");
+    expect(modelRejectionReason(snap, "model-x", "providerB")).toBeNull();
   });
+
 
   test("a qualified entry still refuses an unlisted model", () => {
     // The other half of the boundary: the new reverse direction must not become a
