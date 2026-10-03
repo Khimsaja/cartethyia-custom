@@ -329,6 +329,42 @@ export function columnNames(table: Table): ReadonlySet<string> {
   return names;
 }
 
+/**
+ * Columns a backup may still name even though the schema dropped them.
+ *
+ * A backup is versioned, but a column can be dropped without bumping
+ * {@link BACKUP_VERSION}: migrations apply forward over the same table, and the
+ * export/restore round-trip is expected to survive across them. An older export
+ * therefore legitimately carries columns that no longer exist — the per-account
+ * `provider_accounts.max_inflight` (0029) and several retired `api_keys.*`
+ * fields (0005/0016/0017/0018). Validation must not reject those: it skips them,
+ * so a stale backup still restores rather than failing on a column that is, by
+ * definition, no longer read. The value is dropped, not migrated — each retired
+ * column's replacement lives elsewhere in the schema, and importing a dead
+ * number back would be worse than omitting it.
+ */
+const LEGACY_DROPPED_COLUMNS: Readonly<Record<string, readonly string[]>> = {
+  provider_accounts: ["max_inflight"],
+  api_keys: [
+    "provider_allowlist",
+    "share_popup_image_url",
+    "share_popup_mode",
+    "share_popup_action_label",
+    "share_popup_action_url",
+  ],
+};
+
+const DROPPED_CACHE = new WeakMap<Table, ReadonlySet<string>>();
+
+/** Column names a table once carried and has since dropped, still accepted on restore. */
+export function droppedColumns(table: Table): ReadonlySet<string> {
+  const cached = DROPPED_CACHE.get(table);
+  if (cached) return cached;
+  const names = new Set(LEGACY_DROPPED_COLUMNS[tableName(table)] ?? []);
+  DROPPED_CACHE.set(table, names);
+  return names;
+}
+
 /** Every table this module can read or write, config and telemetry together. */
 export function tablesForSection(section: BackupSection): readonly Table[] {
   return section === "config" ? [...CONFIG_TABLES, TENANT_TABLE] : TELEMETRY_TABLES;
