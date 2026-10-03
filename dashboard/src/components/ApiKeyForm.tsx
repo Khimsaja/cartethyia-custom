@@ -280,7 +280,8 @@ export interface KeyFormInput {
   keyMode: ApiKeyResponse["keyMode"];
   keyPrefix?: string;
   key?: string;
-  modelAllowlist: string[];
+  modelAccessMode: "whitelist" | "blacklist";
+  modelList: string[];
   clientRouterDenylist: string[];
   scopes: string[];
   requestsPerMinute?: number | null;
@@ -350,8 +351,12 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose }: KeyFormProps
     const s = (record as unknown as { scopes?: string[] })?.scopes;
     return s && s.length ? [...s] : ["routing:invoke"];
   });
+  const [modelAccessMode, setModelAccessMode] = useState<"whitelist" | "blacklist">(
+    (record as unknown as { modelAccessMode?: "whitelist" | "blacklist" | null })?.modelAccessMode ??
+      "whitelist",
+  );
   const [models, setModels] = useState<string[]>(() => {
-    const m = (record as unknown as { modelAllowlist?: string[] | null })?.modelAllowlist;
+    const m = (record as unknown as { modelList?: string[] | null })?.modelList;
     return m ? [...m] : [];
   });
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -406,7 +411,8 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose }: KeyFormProps
       label: label.trim(),
       ...keyCredentialFields(keyMode, customKey, prefix),
       scopes,
-      modelAllowlist: models,
+      modelAccessMode,
+      modelList: models,
       clientRouterDenylist: blockedRouters,
       requestsPerMinute: parseLimitOrNull(rpm),
       maxConcurrentRequests: parseLimitOrNull(concurrent),
@@ -749,12 +755,57 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose }: KeyFormProps
               marginBottom: "6px",
             }}
           >
-            Allowed models
+            Model access
+          </label>
+          <div
+            role="group"
+            aria-label="Model access mode"
+            style={{ display: "flex", gap: "6px", marginBottom: "8px" }}
+          >
+            {(["whitelist", "blacklist"] as const).map((option) => (
+              <button
+                key={option}
+                type="button"
+                aria-pressed={modelAccessMode === option}
+                disabled={busy}
+                onClick={() => setModelAccessMode(option)}
+                title={
+                  option === "whitelist"
+                    ? "Only the listed models may be used. An empty list allows every model."
+                    : "The listed models are refused. Everything else is allowed."
+                }
+                style={{
+                  flex: 1,
+                  padding: "5px 8px",
+                  fontSize: "11px",
+                  fontWeight: 600,
+                  borderRadius: "7px",
+                  border: `1px solid ${modelAccessMode === option ? "var(--accent)" : "var(--inner-border)"}`,
+                  background: modelAccessMode === option ? "var(--accent-soft)" : "var(--surface-2)",
+                  color: modelAccessMode === option ? "var(--accent)" : "var(--text-secondary)",
+                  cursor: busy ? "not-allowed" : "pointer",
+                  opacity: busy ? 0.6 : 1,
+                }}
+              >
+                {option === "whitelist" ? "Whitelist" : "Blacklist"}
+              </button>
+            ))}
+          </div>
+          <label
+            style={{
+              fontSize: "11px",
+              fontWeight: 600,
+              color: "var(--text-secondary)",
+              display: "block",
+              marginBottom: "6px",
+            }}
+          >
+            {modelAccessMode === "whitelist" ? "Allowed models" : "Blocked models"}
           </label>
           <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "8px" }}>
             {models.length === 0 ? (
               <span style={{ fontSize: "11px", color: "var(--text-tertiary)" }}>
-                All models allowed
+                {modelAccessMode === "whitelist" ? "All models allowed" : "No models blocked"}
               </span>
             ) : (
               models.map((m) => (
@@ -776,7 +827,7 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose }: KeyFormProps
                   {m}
                   <button
                     type="button"
-                    aria-label={`Remove ${m} from allowed models`}
+                    aria-label={`Remove ${m} from the model list`}
                     onClick={() => setModels((prev) => prev.filter((x) => x !== m))}
                     disabled={busy}
                     style={{
@@ -809,7 +860,7 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose }: KeyFormProps
             onToggle={(v) =>
               setModels((prev) => (prev.includes(v) ? prev.filter((x) => x !== v) : [...prev, v]))
             }
-            title="Select allowed models"
+            title={modelAccessMode === "whitelist" ? "Select allowed models" : "Select blocked models"}
             multi
           />
         </div>

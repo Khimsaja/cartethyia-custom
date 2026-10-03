@@ -254,12 +254,16 @@ export function shadowsAliasOrCombo(
   comboNames: ReadonlySet<string>,
   snapshot: ApiKeyAuthorizationSnapshot,
 ): boolean {
+  // Shadowing exists only to collapse a bare whitelist entry that is really an
+  // alias/combo into a single public row. A blacklist grants nothing, so every
+  // catalog row stays visible unless it is explicitly denied — nothing to hide.
+  if (snapshot.model_access_mode !== "whitelist") return false;
   const qualified = `${row.providerId}/${row.modelId}`;
   // An explicit qualified entry is an unambiguous grant — never shadow it.
-  if (listIncludes(snapshot.model_allowlist, qualified)) return false;
+  if (listIncludes(snapshot.model_list, qualified)) return false;
   const bare = lastSegment(row.modelId);
   for (const [alias, target] of aliasTargets) {
-    if (!listIncludes(snapshot.model_allowlist, alias)) continue;
+    if (!listIncludes(snapshot.model_list, alias)) continue;
     // Hide every qualified form the alias covers: the alias itself already
     // represents the route, with the target's real limits and capabilities.
     if (target === qualified || target === row.modelId) return true;
@@ -268,7 +272,7 @@ export function shadowsAliasOrCombo(
     if (bare === alias || bare === bareTarget) return true;
   }
   for (const name of comboNames) {
-    if (!listIncludes(snapshot.model_allowlist, name)) continue;
+    if (!listIncludes(snapshot.model_list, name)) continue;
     if (row.modelId === name || bare === name) return true;
   }
   return false;
@@ -378,14 +382,9 @@ export class PublicModelCatalogStore {
       })
       .filter((row) =>
         matchesModelPrefix(modelPrefix, row.modelId, `${row.providerId}/${row.modelId}`) ||
-        isModelAllowed(snapshot, row.modelId) ||
-        isModelAllowed(snapshot, `${row.providerId}/${row.modelId}`),
+        isModelAllowed(snapshot, row.modelId, row.providerId),
       )
-      .filter(
-        (m) =>
-          isModelAllowed(snapshot, m.modelId) ||
-          isModelAllowed(snapshot, `${m.providerId}/${m.modelId}`),
-      )
+      .filter((m) => isModelAllowed(snapshot, m.modelId, m.providerId))
       .filter((m) => !shadowsAliasOrCombo(m, aliasTargets, comboNames, snapshot))
       .map((m) => {
         const capabilities = normalizeModalities(m.modalities);
@@ -592,10 +591,8 @@ export class PublicModelCatalogStore {
       if (
         row &&
         (matchesModelPrefix(modelPrefix, row.modelId, `${row.providerId}/${row.modelId}`) ||
-          isModelAllowed(snapshot, row.modelId) ||
-          isModelAllowed(snapshot, `${row.providerId}/${row.modelId}`)) &&
-        (isModelAllowed(snapshot, row.modelId) ||
-          isModelAllowed(snapshot, `${row.providerId}/${row.modelId}`))
+          isModelAllowed(snapshot, row.modelId, row.providerId)) &&
+        isModelAllowed(snapshot, row.modelId, row.providerId)
       ) {
         const capabilities = normalizeModalities(row.modalities);
         return {

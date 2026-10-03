@@ -950,7 +950,10 @@ describe("ApiKeyAdmissionService", () => {
     const service = new ApiKeyAdmissionService(store, () => NOW);
     const failure = await service
       .admit({
-        authorization: snapshot({ model_denylist: ["claude-opus-4-7"] }),
+        authorization: snapshot({
+          model_access_mode: "blacklist",
+          model_list: ["claude-opus-4-7"],
+        }),
         targetProvider: "anthropic",
         targetModel: "claude-opus-4-7",
       })
@@ -970,7 +973,10 @@ describe("ApiKeyAdmissionService", () => {
     const service = new ApiKeyAdmissionService(store, () => NOW);
     await expect(
       service.admit({
-        authorization: snapshot({ model_allowlist: ["anthropic/claude-sonnet-4-6"] }),
+        authorization: snapshot({
+          model_access_mode: "whitelist",
+          model_list: ["anthropic/claude-sonnet-4-6"],
+        }),
         targetProvider: "anthropic",
         targetModel: "claude-sonnet-4-6",
       }),

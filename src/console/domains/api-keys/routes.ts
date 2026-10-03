@@ -10,7 +10,7 @@ import { hashShareToken } from "../../../persistence/share-store";
 import type { AccessDecision } from "../../../security/access-control";
 import { ConsoleDomainError, errorResponse, requireTenantScope } from "../../shared/errors";
 import { literalUnion } from "../../shared/elysia-schema";
-import { API_KEY_MODES, type ShareLinkKind } from "../../../persistence/schema";
+import { API_KEY_MODES, API_KEY_MODEL_ACCESS_MODES, type ShareLinkKind } from "../../../persistence/schema";
 import type { ApiKeyConfig, ApiKeyResponse, UpdateApiKeyResponse } from "./contracts";
 import type { ApiKeyPatch, ApiKeyRecord } from "../../../persistence/api-key-store";
 import {
@@ -136,8 +136,8 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
         ...(request.lifetimeTokenBudget == null ? {} : { lifetimeTokenBudget: request.lifetimeTokenBudget }),
         ...(request.maxConcurrentRequests == null ? {} : { maxConcurrentRequests: request.maxConcurrentRequests }),
         ...(request.modelPrefix === undefined ? {} : { modelPrefix: request.modelPrefix }),
-        ...(request.modelAllowlist === undefined ? {} : { modelAllowlist: request.modelAllowlist }),
-        ...(request.modelDenylist === undefined ? {} : { modelDenylist: request.modelDenylist }),
+        modelAccessMode: request.modelAccessMode ?? "whitelist",
+        ...(request.modelList === undefined ? {} : { modelList: request.modelList }),
         ...(request.clientRouterDenylist === undefined
           ? {}
           : { clientRouterDenylist: request.clientRouterDenylist }),
@@ -251,8 +251,8 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
         ...(patchRequest.lifetimeTokenBudget === undefined ? {} : { lifetimeTokenBudget: patchRequest.lifetimeTokenBudget }),
         ...(patchRequest.maxConcurrentRequests === undefined ? {} : { maxConcurrentRequests: patchRequest.maxConcurrentRequests }),
         ...(patchRequest.modelPrefix === undefined ? {} : { modelPrefix: patchRequest.modelPrefix }),
-        ...(patchRequest.modelAllowlist === undefined ? {} : { modelAllowlist: patchRequest.modelAllowlist }),
-        ...(patchRequest.modelDenylist === undefined ? {} : { modelDenylist: patchRequest.modelDenylist }),
+        ...(patchRequest.modelAccessMode === undefined ? {} : { modelAccessMode: patchRequest.modelAccessMode }),
+        ...(patchRequest.modelList === undefined ? {} : { modelList: patchRequest.modelList }),
         ...(patchRequest.clientRouterDenylist === undefined
           ? {}
           : { clientRouterDenylist: patchRequest.clientRouterDenylist }),
@@ -624,8 +624,8 @@ const apiKeyBody = t.Object({
   lifetimeTokenBudget: t.Optional(t.Union([t.Number(), t.Null()])),
   maxConcurrentRequests: t.Optional(t.Union([t.Number(), t.Null()])),
   modelPrefix: t.Optional(t.String()),
-  modelAllowlist: t.Optional(t.Array(t.String())),
-  modelDenylist: t.Optional(t.Array(t.String())),
+  modelAccessMode: t.Optional(literalUnion(API_KEY_MODEL_ACCESS_MODES)),
+  modelList: t.Optional(t.Array(t.String())),
   clientRouterDenylist: t.Optional(t.Array(t.String())),
   notesTitle: t.Optional(t.String()),
   notesSubtitle: t.Optional(t.String()),

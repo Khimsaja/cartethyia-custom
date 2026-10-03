@@ -515,6 +515,16 @@ export const API_KEY_MODES = ["personal", "share"] as const;
 export type ApiKeyMode = (typeof API_KEY_MODES)[number];
 
 /**
+ * How a key's `modelList` is interpreted. Exactly two modes, never a
+ * combination: `whitelist` allows only the listed names (an empty list allows
+ * everything), `blacklist` refuses the listed names (an empty list refuses
+ * nothing). Every model-authorization surface — the request path, admission,
+ * `/v1/models`, and the share page — reads this one pair.
+ */
+export const API_KEY_MODEL_ACCESS_MODES = ["whitelist", "blacklist"] as const;
+export type ApiKeyModelAccessMode = (typeof API_KEY_MODEL_ACCESS_MODES)[number];
+
+/**
  * Inbound `/v1/*` keys never store plaintext secrets. Personal keys carry an
  * authentication hash; share templates carry policy and child keys point back
  * to the template that issued them.
@@ -560,8 +570,16 @@ export const apiKeys = pgTable(
       .notNull()
       .default(0),
     maxConcurrentRequests: integer("max_concurrent_requests"),
-    modelAllowlist: jsonb("model_allowlist").$type<readonly string[]>(),
-    modelDenylist: jsonb("model_denylist").$type<readonly string[]>(),
+    /**
+     * `whitelist` = only the names in `modelList` may be used (empty = all);
+     * `blacklist` = the names in `modelList` are refused (empty = none). One
+     * list, one mode — the old separate allow/deny columns are retired.
+     */
+    modelAccessMode: text("model_access_mode")
+      .$type<ApiKeyModelAccessMode>()
+      .notNull()
+      .default("whitelist"),
+    modelList: jsonb("model_list").$type<readonly string[]>(),
     /**
      * Client-router ids this key refuses. A request whose fingerprint names one
      * of these is rejected before routing, so an operator can stop a downstream

@@ -353,7 +353,7 @@ export function SharePage(): ReactElement {
     Boolean(enrollment?.canIssue) && !enrollment?.alreadyIssued && !issueConflict && !visibleSecret;
   const handoffKey = data?.kind === "handoff" ? data.key : null;
   const modelGroups = new Map<string, string[]>();
-  for (const model of data?.modelAllowlist ?? []) {
+  for (const model of data?.models ?? []) {
     const slash = model.indexOf("/");
     const provider = slash > 0 ? model.slice(0, slash) : "Other";
     const models = modelGroups.get(provider) ?? [];
@@ -681,14 +681,14 @@ export function SharePage(): ReactElement {
                       Grouped
                     </button>
                   </div>
-                  {data.modelAllowlist.length ? (
+                  {data.models.length ? (
                     <ClipboardButton
-                      value={data.modelAllowlist.join(", ")}
+                      value={data.models.join(", ")}
                       size="sm"
                       variant="secondary"
                       label="Copy all"
                       copiedLabel="Copied"
-                      aria-label="Copy all allowed models"
+                      aria-label="Copy all granted models"
                     />
                   ) : null}
                 </div>
@@ -696,7 +696,7 @@ export function SharePage(): ReactElement {
               {modelGroups.size ? (
                 modelView === "raw" ? (
                   <div className="share-model-grid">
-                    {data.modelAllowlist.map((model) => (
+                    {data.models.map((model) => (
                       <ModelCard key={model} id={model} label={model} info={data.modelInfo?.[model]} canProbe={canProbe} probing={probingModels.has(model)} onProbe={probeModel} result={probeResults.get(model)} />
                     ))}
                   </div>
@@ -729,9 +729,6 @@ export function SharePage(): ReactElement {
               ) : (
                 <p className="share-model-empty">Model access follows the share template policy.</p>
               )}
-              {data.modelDenylist?.length ? (
-                <p className="share-model-policy">Excluded models: {data.modelDenylist.join(", ")}</p>
-              ) : null}
               {data.modelPrefix ? (
                 <p className="share-model-policy">Required model prefix: {data.modelPrefix}</p>
               ) : null}

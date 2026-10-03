@@ -94,14 +94,14 @@ function snapshotForShare(row: ShareLinkPolicy): ApiKeyAuthorizationSnapshot {
   return {
     api_key_id: row.id,
     tenant_id: row.tenantId,
-    model_allowlist: row.modelAllowlist,
-    model_denylist: row.modelDenylist,
+    model_access_mode: row.modelAccessMode ?? "whitelist",
+    ...(row.modelList ? { model_list: row.modelList } : {}),
   };
 }
 
 /**
- * Context window and capabilities for each allowed model, keyed by the name as
- * it appears in `modelAllowlist`.
+ * Context window and capabilities for each granted model, keyed by the name as
+ * it appears in the policy's `models` list.
  *
  * Read from the same `models` catalog `/v1/models` answers from, so the share
  * page and the API never disagree about what a model can do. An entry may be
@@ -155,7 +155,10 @@ function normalizeShareCapabilities(
 /** Resolves the models a share recipient may use. */
 async function modelsForShare(db: CartethyiaDatabase, row: ShareLinkPolicy): Promise<string[]> {
   const snapshot = snapshotForShare(row);
-  const configured = row.modelAllowlist;
+  // A whitelist grants only its listed names, so the list is authoritative. A
+  // blacklist grants everything except its names, so the full catalog is the
+  // starting set and `isModelAllowed` removes the denied rows below.
+  const configured = row.modelAccessMode === "whitelist" ? row.modelList : null;
   if (configured !== null && configured.length > 0) {
     return configured
       .filter((slug) => {
@@ -213,7 +216,7 @@ async function resolveFamilyStats(
   // unrestricted link (no allowlist) passes `undefined` and ranks everything —
   // there is nothing to exclude, and filtering against the enabled catalog
   // would hide real traffic for a model the catalog does not describe.
-  const configured = resolved.key.modelAllowlist;
+  const configured = resolved.key.modelAccessMode === "whitelist" ? resolved.key.modelList : null;
   const allowedModels =
     configured !== null && configured.length > 0
       ? await modelsForShare(db, resolved.key)
@@ -246,7 +249,7 @@ export function createShareRouter(options: ShareRouterOptions): Elysia {
       const row = resolved.key;
       const clientIp = options.resolveClientIp(request);
       const clientIpKey = clientIp === null ? undefined : canonicalClientIpKey(clientIp);
-      const [modelAllowlist, alreadyIssued] = await Promise.all([
+      const [models, alreadyIssued] = await Promise.all([
         modelsForShare(db, row),
         // Only an enrollment link hands out keys, so only it can be exhausted
         // by the one-active-key-per-IP rule.
@@ -254,7 +257,7 @@ export function createShareRouter(options: ShareRouterOptions): Elysia {
           ? shareStore.hasActiveSharedKeyForIp(clientIpKey)
           : Promise.resolve(false),
       ]);
-      const modelInfo = await modelInfoForShare(db, row, modelAllowlist);
+      const modelInfo = await modelInfoForShare(db, row, models);
       void shareStore.touchView(tokenHash).catch(() => undefined);
       const policy = {
         name: row.name,
@@ -265,9 +268,8 @@ export function createShareRouter(options: ShareRouterOptions): Elysia {
         requestsPerMinute: row.requestsPerMinute,
         maxConcurrentRequests: row.maxConcurrentRequests,
         modelPrefix: row.modelPrefix,
-        modelAllowlist,
+        models,
         modelInfo,
-        modelDenylist: row.modelDenylist,
         notes: {
           title: row.notesTitle,
           subtitle: row.notesSubtitle,

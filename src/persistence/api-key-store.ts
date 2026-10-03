@@ -2,7 +2,7 @@
 
 import { and, eq, isNull, sql } from "drizzle-orm";
 import type { CartethyiaDatabase } from "./postgres";
-import { apiKeys, shareLinks, type ApiKeyMode } from "./schema";
+import { apiKeys, shareLinks, type ApiKeyMode, type ApiKeyModelAccessMode } from "./schema";
 import type { AccessScope } from "../security/access-control";
 
 /** Persisted API key. Only its one-way hash authenticates; plaintext is never stored. */
@@ -35,8 +35,8 @@ export interface ApiKeyRecord {
   readonly lifetimeTokenBudget?: number;
   readonly maxConcurrentRequests?: number;
   readonly modelPrefix?: string;
-  readonly modelAllowlist?: readonly string[];
-  readonly modelDenylist?: readonly string[];
+  readonly modelAccessMode?: ApiKeyModelAccessMode;
+  readonly modelList?: readonly string[];
   /** Client-router ids this key refuses; see the schema column for the contract. */
   readonly clientRouterDenylist?: readonly string[];
   readonly createdAt: Date;
@@ -145,8 +145,8 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
         ? {}
         : { maxConcurrentRequests: row.maxConcurrentRequests }),
       ...(row.modelPrefix === null ? {} : { modelPrefix: row.modelPrefix }),
-      ...(row.modelAllowlist === null ? {} : { modelAllowlist: row.modelAllowlist as string[] }),
-      ...(row.modelDenylist === null ? {} : { modelDenylist: row.modelDenylist as string[] }),
+      modelAccessMode: row.modelAccessMode,
+      ...(row.modelList === null ? {} : { modelList: row.modelList as string[] }),
       ...(row.clientRouterDenylist === null
         ? {}
         : { clientRouterDenylist: row.clientRouterDenylist as string[] }),
@@ -241,8 +241,8 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
       lifetimeTokenBudget: record.lifetimeTokenBudget ?? null,
       maxConcurrentRequests: record.maxConcurrentRequests ?? null,
       modelPrefix: record.modelPrefix ?? null,
-      modelAllowlist: record.modelAllowlist ?? null,
-      modelDenylist: record.modelDenylist ?? null,
+      modelAccessMode: record.modelAccessMode ?? "whitelist",
+      modelList: record.modelList ?? null,
       clientRouterDenylist: record.clientRouterDenylist ?? null,
       lifetimeTokensConsumed: record.tokensConsumed,
     });
@@ -314,8 +314,8 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
             ? { maxConcurrentRequests: patch.maxConcurrentRequests }
             : {}),
           ...(patch.modelPrefix !== undefined ? { modelPrefix: patch.modelPrefix } : {}),
-          ...(patch.modelAllowlist !== undefined ? { modelAllowlist: patch.modelAllowlist } : {}),
-          ...(patch.modelDenylist !== undefined ? { modelDenylist: patch.modelDenylist } : {}),
+          ...(patch.modelAccessMode !== undefined ? { modelAccessMode: patch.modelAccessMode } : {}),
+          ...(patch.modelList !== undefined ? { modelList: patch.modelList } : {}),
           ...(patch.clientRouterDenylist !== undefined
             ? { clientRouterDenylist: patch.clientRouterDenylist }
             : {}),

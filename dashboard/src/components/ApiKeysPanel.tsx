@@ -207,7 +207,11 @@ export function ApiKeysPanel(): ReactNode {
                     <span>Monthly {limitLabel(key.monthlyTokenLimit)}</span>
                     <span>One-time {limitLabel(key.lifetimeTokenBudget)}</span>
                     <span>Concurrent {limitLabel(key.maxConcurrentRequests)}</span>
-                    <span>Models {key.modelAllowlist?.length ? key.modelAllowlist.length : "All"}</span>
+                    <span>
+                      {key.modelAccessMode === "blacklist"
+                        ? `Blocked ${key.modelList?.length ?? 0}`
+                        : `Models ${key.modelList?.length ? key.modelList.length : "All"}`}
+                    </span>
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: "6px", flexShrink: 0, flexWrap: "wrap" }}>

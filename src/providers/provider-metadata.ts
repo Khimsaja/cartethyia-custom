@@ -163,7 +163,18 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
     baseUrl: "https://api.kilo.ai/api/openrouter",
     credentialUrl: "https://app.kilo.ai/device-auth",
   },
-  { id: "commandcode", displayName: "Command Code", baseUrl: "https://api.commandcode.ai/alpha/generate", credentialUrl: "https://commandcode.ai/studio", credentialHint: "Use the API key from the Command Code CLI, or create one in the studio." },
+  {
+    // Command Code's adapter stamps its own client identity headers
+    // (`x-command-code-version`, `x-cli-environment`, `x-session-id`) and never
+    // reads the route User-Agent, so the Routing Strategy panel must not offer
+    // a custom User-Agent for it — the field would be silently ignored.
+    id: "commandcode",
+    displayName: "Command Code",
+    baseUrl: "https://api.commandcode.ai/alpha/generate",
+    hasAdapterUserAgent: true,
+    credentialUrl: "https://commandcode.ai/studio",
+    credentialHint: "Use the API key from the Command Code CLI, or create one in the studio.",
+  },
   { id: "qoder", displayName: "Qoder", baseUrl: "https://api2.qoder.sh/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1", hasAdapterUserAgent: true, credentialUrl: "https://qoder.com", credentialHint: "Signed in with a Qoder account; there is no key to paste." },
   { id: "ollamacloud", displayName: "Ollama Cloud", baseUrl: "https://ollama.com/v1", credentialUrl: "https://ollama.com/settings/keys" },
   { id: "gemini", displayName: "Google Gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta", credentialUrl: "https://aistudio.google.com/app/apikey" },

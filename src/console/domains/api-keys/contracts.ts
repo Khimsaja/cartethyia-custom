@@ -8,7 +8,7 @@ import { randomBytes } from "node:crypto";
 import type { ApiKeyRecord, ApiKeyStore } from "../../../persistence/api-key-store";
 import { hashSecret } from "../../../security/crypto";
 import { type ShareLinkStore, type ShareLinkSummary } from "../../../persistence/share-store";
-import { API_KEY_MODES, type ApiKeyMode, type ShareLinkKind } from "../../../persistence/schema";
+import { API_KEY_MODES, type ApiKeyMode, type ApiKeyModelAccessMode, type ShareLinkKind } from "../../../persistence/schema";
 import { isValidTenantKeyScope, type AccessScope } from "../../../security/access-control";
 import { normalizeClientRouterId } from "../../../security/client-router-fingerprint";
 import type { ShareActivityPort } from "../../share/share-usage";
@@ -49,8 +49,8 @@ export interface CreateApiKeyRequest {
   lifetimeTokenBudget?: number | null;
   maxConcurrentRequests?: number | null;
   modelPrefix?: string;
-  modelAllowlist?: readonly string[];
-  modelDenylist?: readonly string[];
+  modelAccessMode?: ApiKeyModelAccessMode;
+  modelList?: readonly string[];
   /** Client-router ids this key refuses; see `client-router-fingerprint.ts`. */
   clientRouterDenylist?: readonly string[];
   notesTitle?: string;
@@ -80,8 +80,8 @@ export interface ApiKeyResponse {
   readonly monthlyTokenLimit?: number;
   readonly lifetimeTokenBudget?: number;
   readonly modelPrefix?: string;
-  readonly modelAllowlist?: readonly string[];
-  readonly modelDenylist?: readonly string[];
+  readonly modelAccessMode?: ApiKeyModelAccessMode;
+  readonly modelList?: readonly string[];
   readonly clientRouterDenylist?: readonly string[];
   readonly maxConcurrentRequests?: number;
   readonly notesTitle?: string;
@@ -330,8 +330,8 @@ export function sanitizeApiKeyResponse(record: ApiKeyRecord): ApiKeyResponse {
     ...(record.lifetimeTokenBudget === undefined ? {} : { lifetimeTokenBudget: record.lifetimeTokenBudget }),
     ...(record.maxConcurrentRequests === undefined ? {} : { maxConcurrentRequests: record.maxConcurrentRequests }),
     ...(record.modelPrefix === undefined ? {} : { modelPrefix: record.modelPrefix }),
-    ...(record.modelAllowlist === undefined ? {} : { modelAllowlist: record.modelAllowlist }),
-    ...(record.modelDenylist === undefined ? {} : { modelDenylist: record.modelDenylist }),
+    ...(record.modelAccessMode === undefined ? {} : { modelAccessMode: record.modelAccessMode }),
+    ...(record.modelList === undefined ? {} : { modelList: record.modelList }),
     ...(record.clientRouterDenylist === undefined
       ? {}
       : { clientRouterDenylist: record.clientRouterDenylist }),
