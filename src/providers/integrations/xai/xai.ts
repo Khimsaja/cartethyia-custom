@@ -72,9 +72,7 @@ const xaiModel = (
     out: outputLimit,
     vision: options.vision ?? true,
     reasoning: options.reasoning ?? true,
-    toolCall: true,
-    webSearch: true,
-  });
+    toolCall: true,});
 
 /**
  * Static fallback catalog.

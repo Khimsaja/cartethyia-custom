@@ -80,9 +80,7 @@ function codexResponsesModel(
     out: outputLimit,
     vision: true,
     reasoning: true,
-    toolCall: true,
-    webSearch: true,
-  });
+    toolCall: true,});
 }
 
 export const CODEX_MODELS: readonly ModelDefinition[] = [

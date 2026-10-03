@@ -50,6 +50,7 @@ import {
   useUsageSummary,
 } from "../../hooks/system";
 import { requestProviderId } from "../../shared/request-provider";
+import { usageApiKeyLabel, usageClientLabel } from "../../shared/usage-labels";
 
 import { useProviderAccounts, useProviders } from "../../hooks/providers";
 import { useInFlight, type InFlightState } from "../../hooks/live";
@@ -63,6 +64,8 @@ import {
   TOKEN_SCALE_AUTO,
   TOKEN_SCALES,
   formatBytes,
+  formatChartTick,
+  formatChartTooltip,
   formatCredits,
   formatDuration,
   formatNumber,
@@ -183,11 +186,7 @@ function formatTime(value: string): string {
   return date.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
-function formatDateTime(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString();
-}
+
 /**
  * Wire surface mapped to its protocol family name for the status cell.
  * The `API KEY` column already identifies the client, so the status cell
@@ -561,7 +560,7 @@ function ChartPanel({ period, metric }: { readonly period: Period; readonly metr
           <XAxis
             dataKey="t"
             tick={{ fontSize: 10, fill: "var(--text-tertiary)" }}
-            tickFormatter={(value: string) => value.slice(5, 16)}
+            tickFormatter={(value: string) => formatChartTick(value)}
             axisLine={false}
             tickLine={false}
             minTickGap={28}
@@ -582,7 +581,7 @@ function ChartPanel({ period, metric }: { readonly period: Period; readonly metr
               color: "var(--text-primary)",
             }}
             formatter={(value) => [formatNumber(Number(value)), metric]}
-            labelFormatter={(label) => formatDateTime(String(label))}
+            labelFormatter={(label) => formatChartTooltip(String(label))}
           />
           <Area
             type="monotone"
@@ -1691,14 +1690,14 @@ export default function Usage(): ReactNode {
                     <td style={{ maxWidth: "140px" }}>
                       <div
                         className="truncate"
-                        title={row.apiKeyLabel ?? row.apiKeyId ?? "—"}
+                        title={usageApiKeyLabel(row)}
                         style={{ fontSize: "12px", fontWeight: 600 }}
                       >
-                        {row.apiKeyLabel ?? "—"}
+                        {usageApiKeyLabel(row)}
                       </div>
                       <div
                         className="truncate"
-                        title={row.clientName ?? row.userAgent ?? "—"}
+                        title={usageClientLabel(row)}
                         style={{
                           fontFamily: "var(--font-mono)",
                           fontSize: "11px",
@@ -1706,7 +1705,7 @@ export default function Usage(): ReactNode {
                           marginTop: "1px",
                         }}
                       >
-                        {row.clientName ?? row.userAgent ?? "—"}
+                        {usageClientLabel(row)}
                       </div>
                     </td>
                     <td style={{ whiteSpace: "nowrap", fontSize: "11px" }}>

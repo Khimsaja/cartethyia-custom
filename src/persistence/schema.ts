@@ -793,6 +793,7 @@ export interface ConsoleSettingsPreferences {
    */
   telemetryPayloads?: "full" | "metadata" | "none";
   privacyMode?: "masked" | "full";
+  webSearchOrder?: readonly string[];
 }
 
 export const consoleSettings = pgTable("console_settings", {

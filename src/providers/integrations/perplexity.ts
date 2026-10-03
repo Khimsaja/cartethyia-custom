@@ -23,9 +23,7 @@ export const PERPLEXITY_MODELS: readonly ModelDefinition[] = [
     endpoint: "/search",
     ctx: null,
     out: null,
-    toolCall: false,
-    webSearch: true,
-  }),
+    toolCall: false,}),
   defineModel({
     id: "perplexity-deep-research",
     wireFamily: "chat",
@@ -33,9 +31,7 @@ export const PERPLEXITY_MODELS: readonly ModelDefinition[] = [
     ctx: null,
     out: null,
     reasoning: true,
-    toolCall: false,
-    webSearch: true,
-  }),
+    toolCall: false,}),
 ];
 
 

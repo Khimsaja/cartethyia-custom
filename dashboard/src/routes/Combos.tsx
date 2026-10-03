@@ -7,10 +7,9 @@ import { Input } from "../components/ui/input";
 import { Select } from "../components/ui/select";
 import { EmptyState, ErrorState, LoadingState } from "../components/ui/state";
 import { Inline } from "../components/ui/inline";
-import { Stack } from "../components/ui/stack";
 import { ModelPickerModal } from "../components/ModelPicker";
 import { SortableList } from "../components/SortableList";
-import { WebSearchPanel } from "../components/WebSearchPanel";
+import { Stack } from "../components/ui/stack";
 import { getErrorMessage } from "../shared/helpers";
 import { useTrackedTimeout } from "../hooks/use-timeout";
 import { useClipboard } from "../hooks/use-clipboard";
@@ -777,13 +776,11 @@ function CombosSection(): ReactNode {
 }
 
 // ── Main Page ────────────────────────────────────────────────────────────────
-
 export default function Combos(): ReactNode {
   return (
     <Stack gap="16px">
       <CombosSection />
       <AliasesSection />
-      <WebSearchPanel />
     </Stack>
   );
 }

@@ -1,4 +1,4 @@
-import { ChevronDown, Eye, EyeOff, Plus, Trash2 } from "lucide-react";
+import { ChevronDown, Eye, EyeOff, GripVertical, Plus, Trash2 } from "lucide-react";
 import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import {
@@ -404,6 +404,8 @@ function CustomProviderCard({ customProvider }: { customProvider: ProviderRespon
                   isError={accountsQuery.isError}
                   hasData={false}
                 />
+              ) : accounts.length === 0 ? (
+                <Badge>No connections</Badge>
               ) : counts?.active > 0 ? (
                 <Badge tone="ok" dot>
                   {counts.active} Healthy
@@ -412,28 +414,27 @@ function CustomProviderCard({ customProvider }: { customProvider: ProviderRespon
                 <Badge tone="warn" dot>
                   {counts.disabled} Unhealthy
                 </Badge>
+              ) : counts?.cooldown > 0 ? (
+                <Badge tone="warn" dot>
+                  {counts.cooldown} Cooldown
+                </Badge>
+              ) : counts?.cooling > 0 ? (
+                <Badge tone="warn" dot>
+                  {counts.cooling} Cooling
+                </Badge>
+              ) : counts?.exhausted > 0 ? (
+                <Badge tone="warn" dot>
+                  {counts.exhausted} Exhausted
+                </Badge>
               ) : (
-                <Badge>No connections</Badge>
+                <Badge tone="warn" dot>
+                  {accounts.length} Connected
+                </Badge>
               )}
               {accountsQuery.isError && accounts !== undefined ? (
                 <Badge tone="warn">Connections unavailable</Badge>
               ) : null}
-              {counts?.cooldown > 0 ? (
-                <Badge tone="warn" dot>
-                  {counts.cooldown} Cooldown
-                </Badge>
-              ) : null}
-              {counts?.cooling > 0 ? (
-                <Badge tone="warn" dot>
-                  {counts.cooling} Cooling
-                </Badge>
-              ) : null}
-              {counts?.disabled > 0 ? <Badge>Disabled</Badge> : null}
-              {counts?.exhausted > 0 ? (
-                <Badge tone="warn" dot>
-                  {counts.exhausted} Exhausted
-                </Badge>
-              ) : null}
+
             </div>
           </div>
 
@@ -831,6 +832,8 @@ const ProviderCard = memo(function ProviderCard({
                   isError={accountsQuery.isError}
                   hasData={false}
                 />
+              ) : accounts.length === 0 ? (
+                <Badge>No connections</Badge>
               ) : counts?.active > 0 ? (
                 <Badge tone="ok" dot>
                   {counts.active} Healthy
@@ -839,29 +842,25 @@ const ProviderCard = memo(function ProviderCard({
                 <Badge tone="warn" dot>
                   {counts.disabled} Unhealthy
                 </Badge>
-              ) : (
-                <Badge>No connections</Badge>
-              )}
-              {accountsQuery.isError && accounts !== undefined ? (
-                <Badge tone="warn">Connections unavailable</Badge>
-              ) : null}
-              {counts?.cooldown > 0 ? (
+              ) : counts?.cooldown > 0 ? (
                 <Badge tone="warn" dot>
                   {counts.cooldown} Cooldown
                 </Badge>
-              ) : null}
-              {/* A per-model throttle keeps the account `active`, so it needs
-                  its own badge: without it the card read as healthy while the
-                  account's detail page reported models cooling. */}
-              {counts?.cooling > 0 ? (
+              ) : counts?.cooling > 0 ? (
                 <Badge tone="warn" dot>
                   {counts.cooling} Cooling
                 </Badge>
-              ) : null}
-              {counts?.exhausted > 0 ? (
+              ) : counts?.exhausted > 0 ? (
                 <Badge tone="warn" dot>
                   {counts.exhausted} Exhausted
                 </Badge>
+              ) : (
+                <Badge tone="warn" dot>
+                  {accounts.length} Connected
+                </Badge>
+              )}
+              {accountsQuery.isError && accounts !== undefined ? (
+                <Badge tone="warn">Connections unavailable</Badge>
               ) : null}
             </div>
           </div>
@@ -964,20 +963,66 @@ const SECTIONS = [
 
 export default function Providers(): ReactNode {
   const q = useProviders();
-
   const allProviders = useMemo(() => q.data ?? [], [q.data]);
   const customProviders = useMemo(
     () => [...allProviders.filter((p) => !p.isBuiltIn)].sort(compareConfiguredProviders),
     [allProviders],
   );
   const builtInProviders = useMemo(() => allProviders.filter((p) => p.isBuiltIn), [allProviders]);
-
+  const searchProviders = useMemo(
+    () => builtInProviders.filter((p) => p.providerId === "exa" || p.providerId === "tavily" || p.providerId === "brave"),
+    [builtInProviders],
+  );
+  const llmProviders = useMemo(
+    () => builtInProviders.filter((p) => p.providerId !== "exa" && p.providerId !== "tavily" && p.providerId !== "brave"),
+    [builtInProviders],
+  );
+  const [tab, setTab] = useState<"all" | "llm" | "search">("all");
+  const [sortBy, setSortBy] = useState<"name" | "configured">("name");
+  const [searchOrder, setSearchOrder] = useState<string[] | null>(null);
+  useEffect(() => {
+    // Seed from server preference; fallback to localStorage for immediate UX before first fetch
+    import("../../data/api").then(({ consoleRequest }) =>
+      consoleRequest<{ preferences: { webSearchOrder?: string[] } }>("/settings/runtime").then((r)=>{
+        const o=r.preferences?.webSearchOrder;
+        if(o?.length) setSearchOrder(o as string[]);
+        else { try{ const s=localStorage.getItem("cartethyia:search-order"); if(s) setSearchOrder(JSON.parse(s)); }catch{} }
+      }).catch(()=>{ try{ const s=localStorage.getItem("cartethyia:search-order"); if(s) setSearchOrder(JSON.parse(s)); }catch{} })
+    );
+  }, []);
+  const persistOrder = (ids: string[]) => {
+    setSearchOrder(ids);
+    try{ localStorage.setItem("cartethyia:search-order", JSON.stringify(ids)); }catch{}
+    import("../../data/api").then(({ consoleRequest }) => consoleRequest("/settings/runtime",{method:"PATCH", body: JSON.stringify({ webSearchOrder: ids })}).catch(()=>{}));
+  };
+  const orderedSearch = useMemo(() => {
+    if (!searchOrder) return [...searchProviders].sort((a,b)=>(a.label||a.displayName).localeCompare(b.label||b.displayName));
+    const idx=new Map(searchOrder.map((id,i)=>[id,i] as const));
+    return [...searchProviders].sort((a,b)=>(idx.get(a.providerId)??999)-(idx.get(b.providerId)??999));
+  }, [searchProviders, searchOrder]);
+  const sortFn = (a: ProviderResponse, b: ProviderResponse) => {
+    if (sortBy === "configured") {
+      const diff = Number(Boolean(b.configured)) - Number(Boolean(a.configured));
+      if (diff !== 0) return diff;
+    }
+    return (a.label || a.displayName).localeCompare(b.label || b.displayName);
+  };
   const sections = useMemo(() => {
+    if (tab === "search") {
+      return [
+        {
+          title: "Search Providers",
+          subtitle: "Drag to reorder — top is tried first on POST /v1/search",
+          providers: orderedSearch,
+        },
+      ].filter((s) => s.providers.length > 0);
+    }
+    const source = tab === "llm" ? llmProviders : builtInProviders;
     return SECTIONS.map((section) => ({
       ...section,
-      providers: builtInProviders.filter(section.filter).sort(compareConfiguredProviders),
+      providers: source.filter(section.filter).sort(sortFn),
     })).filter((section) => section.providers.length > 0);
-  }, [builtInProviders]);
+  }, [builtInProviders, llmProviders, orderedSearch, tab, sortBy]);
 
   if (q.isPending && !q.data) return <LoadingState label="Loading providers..." />;
   if (q.isError)
@@ -990,6 +1035,47 @@ export default function Providers(): ReactNode {
 
   return (
     <Stack gap="24px">
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: "4px" }}>
+          {(["all", "llm", "search"] as const).map((t) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              style={{
+                padding: "6px 12px",
+                borderRadius: "8px",
+                fontSize: "12px",
+                fontWeight: 600,
+                border: tab === t ? "1px solid var(--accent)" : "1px solid var(--inner-border)",
+                background: tab === t ? "var(--accent-soft)" : "var(--surface-1)",
+                color: tab === t ? "var(--accent)" : "var(--text-secondary)",
+                cursor: "pointer",
+              }}
+            >
+              {t === "all" ? "All" : t === "llm" ? "LLM" : "Search"}
+              {t === "search" ? ` (${searchProviders.length})` : t === "llm" ? ` (${llmProviders.length})` : ""}
+            </button>
+          ))}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "6px", marginLeft: "auto" }}>
+          <span style={{ fontSize: "11px", color: "var(--text-tertiary)" }}>Sort</span>
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
+            style={{
+              fontSize: "12px",
+              padding: "4px 8px",
+              borderRadius: "6px",
+              border: "1px solid var(--inner-border)",
+              background: "var(--surface-1)",
+            }}
+          >
+            <option value="name">Name</option>
+            <option value="configured">Connected</option>
+          </select>
+        </div>
+      </div>
+      
       <CustomProvidersSection customProviders={customProviders} />
 
       {sections.length === 0 ? (
@@ -1015,11 +1101,41 @@ export default function Providers(): ReactNode {
               ) : null}
             </Stack>
 
-            <ProviderCardGrid>
-              {section.providers.map((p) => (
-                <ProviderCard key={p.providerId} provider={p} />
-              ))}
-            </ProviderCardGrid>
+            {tab === "search" ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                {section.providers.map((p, idx) => (
+                  <div
+                    key={p.providerId}
+                    draggable
+                    onDragStart={(e) => { e.dataTransfer.setData("text/plain", p.providerId); e.dataTransfer.effectAllowed="move"; }}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      const from=e.dataTransfer.getData("text/plain");
+                      if(!from || from===p.providerId) return;
+                      const ids=orderedSearch.map(x=>x.providerId);
+                      const a=ids.indexOf(from), b=ids.indexOf(p.providerId);
+                      if(a<0||b<0) return;
+                      ids.splice(a,1); ids.splice(b,0,from);
+                      persistOrder(ids);
+                    }}
+                    style={{ display:"flex", alignItems:"stretch", gap:"6px" }}
+                  >
+                    <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:"2px", paddingTop:"8px" }}>
+                      <GripVertical size={14} style={{ color:"var(--text-tertiary)", cursor:"grab" }} />
+                      <span style={{ fontSize:"10px", color:"var(--text-tertiary)", fontWeight:700 }}>{idx+1}</span>
+                    </div>
+                    <div style={{ flex:1, minWidth:0 }}><ProviderCard provider={p} /></div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <ProviderCardGrid>
+                {section.providers.map((p) => (
+                  <ProviderCard key={p.providerId} provider={p} />
+                ))}
+              </ProviderCardGrid>
+            )}
           </section>
         ))
       )}

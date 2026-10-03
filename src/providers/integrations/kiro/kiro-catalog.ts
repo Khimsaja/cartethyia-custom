@@ -65,13 +65,13 @@ function kiroModel(options: {
  * guessing at what an individual account's plan reaches.
  */
 export const KIRO_MODELS: readonly ModelDefinition[] = [
-  kiroModel({ id: "claude-opus-5", ctx: 1_000_000, out: 128_000, vision: true, reasoning: true, toolCall: true, webSearch: true }),
-  kiroModel({ id: "claude-opus-4.8", ctx: 1_000_000, out: 128_000, vision: true, reasoning: true, toolCall: true, webSearch: true }),
-  kiroModel({ id: "claude-opus-4.7", ctx: 1_000_000, out: 128_000, vision: true, reasoning: true, toolCall: true, webSearch: true }),
-  kiroModel({ id: "claude-opus-4.5", ctx: 200_000, out: 64_000, vision: true, reasoning: true, toolCall: true, webSearch: true }),
-  kiroModel({ id: "claude-sonnet-5", ctx: 1_000_000, out: 128_000, vision: true, reasoning: true, toolCall: true, webSearch: true }),
-  kiroModel({ id: "claude-sonnet-4.5", ctx: 1_000_000, out: 64_000, vision: true, reasoning: true, toolCall: true, webSearch: true }),
-  kiroModel({ id: "claude-haiku-4.5", ctx: 200_000, out: 64_000, vision: true, reasoning: true, toolCall: true, webSearch: true }),
+  kiroModel({ id: "claude-opus-5", ctx: 1_000_000, out: 128_000, vision: true, reasoning: true, toolCall: true,}),
+  kiroModel({ id: "claude-opus-4.8", ctx: 1_000_000, out: 128_000, vision: true, reasoning: true, toolCall: true,}),
+  kiroModel({ id: "claude-opus-4.7", ctx: 1_000_000, out: 128_000, vision: true, reasoning: true, toolCall: true,}),
+  kiroModel({ id: "claude-opus-4.5", ctx: 200_000, out: 64_000, vision: true, reasoning: true, toolCall: true,}),
+  kiroModel({ id: "claude-sonnet-5", ctx: 1_000_000, out: 128_000, vision: true, reasoning: true, toolCall: true,}),
+  kiroModel({ id: "claude-sonnet-4.5", ctx: 1_000_000, out: 64_000, vision: true, reasoning: true, toolCall: true,}),
+  kiroModel({ id: "claude-haiku-4.5", ctx: 200_000, out: 64_000, vision: true, reasoning: true, toolCall: true,}),
   kiroModel({ id: "gpt-5.6-sol", ctx: 272_000, out: 128_000, reasoning: true, toolCall: true }),
   kiroModel({ id: "gpt-5.6-terra", ctx: 272_000, out: 128_000, reasoning: true, toolCall: true }),
   kiroModel({ id: "gpt-5.6-luna", ctx: 272_000, out: 128_000, reasoning: true, toolCall: true }),

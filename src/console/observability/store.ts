@@ -121,21 +121,12 @@ function chartBucketSeconds(period: string): number {
 
 /**
  * The model id with the client's requested reasoning effort as a display
- * suffix, or `default` when the request carried none.
- *
- * The model id is the routing key, so the effort rides as a suffix — grouping,
- * routing, and cost joins keep reading the bare id. `requested_effort` is NULL
- * both when the client stated no effort and when it stated one the canonical
- * model does not carry (`auto`): `parseReasoningIntent` keeps only a value in
- * `REASONING_EFFORTS`, so an `auto` effort is dropped before it is recorded. In
- * both cases no effort was resolved for the request, so the row reads `default`
- * rather than leaving the column bare and inviting the reader to guess whether
- * the effort was unset or merely undisplayed.
+ * suffix — only when the request actually carried one.
  */
 function modelWithEffort(event: typeof telemetryEvents.$inferSelect): string | undefined {
   const model = event.requestedModel;
   if (!model) return undefined;
-  return `${model} (${event.requestedEffort ?? "default"})`;
+  return event.requestedEffort ? `${model} (${event.requestedEffort})` : model;
 }
 
 function mapUsageRequestItem(

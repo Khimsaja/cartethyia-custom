@@ -92,7 +92,7 @@ const grokModel = (
   reasoning,
   ...(reasoningEfforts === undefined ? {} : { reasoningEfforts }),
   toolCall: true,
-  webSearch: true,
+  webSearch: false,
   cost: modelsDevCatalog.costFor(GROK_PROVIDER_ID, modelId),
 });
 
@@ -215,9 +215,7 @@ export async function fetchGrokModels(
         reasoning,
         ...(menu.efforts.length === 0 ? {} : { reasoningEfforts: menu.efforts }),
         toolCall: true,
-        webSearch:
-          (entry.supports_backend_search ?? entry.supportsBackendSearch) === true ||
-          reference?.webSearch === true,
+        webSearch: false,
         cost: modelsDevCatalog.costFor(GROK_PROVIDER_ID, id),
       };
       models.set(id, model);

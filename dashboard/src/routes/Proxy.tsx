@@ -1457,7 +1457,7 @@ export default function Proxy(): ReactNode {
       </Dialog>
 
 
-      <Card>
+      <Card style={pools.length === 0 && !isPending && !isError ? { minHeight: "min(78dvh, calc(100dvh - 160px))", display: "flex", flexDirection: "column" } : undefined}>
         <CardHeader
           title="Proxy Pool"
           subtitle="Outbound proxy servers — HTTP, HTTPS, and SOCKS5"
@@ -1483,7 +1483,7 @@ export default function Proxy(): ReactNode {
             </Inline>
           }
         />
-        <CardBody>
+        <CardBody style={pools.length === 0 && !isPending && !isError ? { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", paddingBottom: "8px" } : undefined}>
           <ProxySummaryTiles pools={pools} />
 
           {/* Selection & Batch Toolbar (Image 2 style) */}
@@ -1654,10 +1654,12 @@ export default function Proxy(): ReactNode {
           {isPending && <LoadingState />}
           {isError && <ErrorState title="Error" message="Failed to load network pools" />}
           {!isPending && !isError && pools.length === 0 && (
-            <EmptyState
-              title="No network pools"
-              message="No network pools configured. Create one to route traffic through proxies."
-            />
+            <div style={{ width: "100%", maxWidth: "480px", margin: "0 auto" }}>
+              <EmptyState
+                title="No network pools"
+                message="No network pools configured. Create one to route traffic through proxies."
+              />
+            </div>
           )}
           {!isPending && !isError && pools.length > 0 && (
             <div className="proxy-table-scroll">

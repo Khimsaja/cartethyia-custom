@@ -26,6 +26,7 @@ import {
 const SCOPE_DESCRIPTIONS: Record<TenantScope, string> = {
   "routing:invoke": "Call /v1/* gateway routes within this tenant.",
   "routing:cli_mapping": "Resolve persisted CLI source→target model mappings.",
+  "search:invoke": "Call POST /v1/search with exa/tavily/brave.",
   "dashboard:read": "Read this tenant's configuration and usage.",
   "dashboard:write": "Modify this tenant's configuration.",
   "providers:read": "Read provider rows, including accounts.",
@@ -349,7 +350,7 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose }: KeyFormProps
   const [concurrent, setConcurrent] = useState(record?.maxConcurrentRequests?.toString() ?? "");
   const [scopes, setScopes] = useState<string[]>(() => {
     const s = (record as unknown as { scopes?: string[] })?.scopes;
-    return s && s.length ? [...s] : ["routing:invoke"];
+    return s && s.length ? [...s] : ["routing:invoke", "search:invoke"];
   });
   const [modelAccessMode, setModelAccessMode] = useState<"whitelist" | "blacklist">(
     (record as unknown as { modelAccessMode?: "whitelist" | "blacklist" | null })?.modelAccessMode ??

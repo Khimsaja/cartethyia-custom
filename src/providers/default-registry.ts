@@ -113,7 +113,6 @@ export const PROVIDER_CAPABILITIES = {
           vision: true,
           reasoning: true,
           toolCall: true,
-          webSearch: true,
         }),
       );
     },

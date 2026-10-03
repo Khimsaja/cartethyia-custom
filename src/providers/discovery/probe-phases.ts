@@ -372,7 +372,7 @@ export async function resolveProbeAdapter(args: {
 
 /** The reasoning shape a Responses-wire probe carries. */
 export interface ProbeReasoning {
-  effort: "minimal" | "low" | "medium" | "high" | "xhigh";
+  effort: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   summary_mode: "auto" | "concise" | "detailed";
 }
 
