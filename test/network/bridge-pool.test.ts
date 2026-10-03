@@ -4,15 +4,15 @@
  * A `bridge` pool is a carte-bridge front door. Where the front door's runtime
  * holds a raw socket it answers RFC CONNECT and the pool tunnels like any HTTP
  * proxy; on the serverless runtimes it cannot, and the pool must fall back to
- * the bridge's own `?url=` relay form instead of failing the request.
+ * the bridge's own header-based relay form instead of failing the request.
  *
  * That preference-then-fallback is the whole behaviour, and it can only be
  * proven against a live peer: a mock fetch would assert the branch was chosen,
  * not that a real CONNECT handshake was attempted and its refusal correctly
  * reinterpreted. So both servers here are real: a plain HTTP upstream that
  * records the headers it received, and a bridge front door whose CONNECT
- * handling is switched between "tunnel", "refuse with a status", and "reset the
- * socket" to drive each path of the fetcher.
+ * handling is switched between "tunnel", "refuse with a status", and "reset
+ * the socket" to drive each path of the fetcher.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createServer, type Server } from "node:http";
@@ -85,21 +85,35 @@ interface BridgeStats {
  * "tunnels via CONNECT" test assert the tunnel actually carried the request
  * rather than the relay quietly serving it.
  */
-function createBridge(behaviour: ConnectBehaviour): { server: Server; stats: BridgeStats } {
+function createBridge(
+  behaviour: ConnectBehaviour,
+  expectedBridgeAuth?: string,
+): { server: Server; stats: BridgeStats } {
   const stats: BridgeStats = { connects: 0, relays: 0 };
   const server = createServer(async (req, res) => {
     stats.relays += 1;
     const targetOrigin = req.headers["x-bridge-target"];
-    const targetPath = req.headers["x-bridge-path"] ?? "/";
+    const rawTargetPath = req.headers["x-bridge-path"];
+    const targetPath = typeof rawTargetPath === "string" ? rawTargetPath : "/";
     if (typeof targetOrigin !== "string" || !targetOrigin) {
       res.writeHead(400, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "missing_bridge_target" }));
       return;
     }
+    if (expectedBridgeAuth && req.headers["x-bridge-auth"] !== expectedBridgeAuth) {
+      res.writeHead(401);
+      res.end();
+      return;
+    }
     const target = new URL(targetPath, targetOrigin);
     const upstreamHeaders = new Headers();
     for (const [name, value] of Object.entries(req.headers)) {
-      if (value === undefined || name === "x-bridge-target" || name === "x-bridge-path") continue;
+      if (
+        value === undefined ||
+        name === "x-bridge-target" ||
+        name === "x-bridge-path" ||
+        name === "x-bridge-auth"
+      ) continue;
       upstreamHeaders.set(name, Array.isArray(value) ? value.join(", ") : value);
     }
     upstreamHeaders.set("host", target.host);
@@ -157,10 +171,20 @@ afterAll(async () => {
 });
 
 /** Builds a fetcher bound to a bridge front door with the given CONNECT behaviour. */
-async function fetchThroughBridge(behaviour: ConnectBehaviour) {
-  const { server, stats } = createBridge(behaviour);
+async function fetchThroughBridge(behaviour: ConnectBehaviour, credentials?: string) {
+  const expectedBridgeAuth = credentials
+    ? `Basic ${Buffer.from(credentials).toString("base64")}`
+    : undefined;
+  const { server, stats } = createBridge(behaviour, expectedBridgeAuth);
   const bridge = await listen(server);
-  const agent = createBridgeAgent(`http://127.0.0.1:${bridge.port}`, undefined, LOOPBACK_POLICY);
+  const userinfo = credentials
+    ? credentials
+        .split(":")
+        .map((part) => encodeURIComponent(part))
+        .join(":") + "@"
+    : "";
+  const endpoint = `http://${userinfo}127.0.0.1:${bridge.port}`;
+  const agent = createBridgeAgent(endpoint, undefined, LOOPBACK_POLICY);
   const fetchFn = createValidatedFetch({ agent, policy: LOOPBACK_POLICY });
   return { bridge, fetchFn, stats };
 }
@@ -187,7 +211,7 @@ describe("bridge pool transport", () => {
     }
   });
 
-  test("falls back to the ?url= relay when the front door refuses CONNECT with a status", async () => {
+  test("falls back to the header relay when the front door refuses CONNECT with a status", async () => {
     const { bridge, fetchFn, stats } = await fetchThroughBridge("refuse");
     try {
       const response = await fetchFn(upstreamUrl, {
@@ -206,7 +230,7 @@ describe("bridge pool transport", () => {
     }
   });
 
-  test("falls back to the ?url= relay when the front door resets the CONNECT socket", async () => {
+  test("falls back to the header relay when the front door resets the CONNECT socket", async () => {
     const { bridge, fetchFn, stats } = await fetchThroughBridge("reset");
     try {
       const response = await fetchFn(upstreamUrl, {
@@ -215,6 +239,23 @@ describe("bridge pool transport", () => {
       });
       expect(response.status).toBe(200);
       const body = (await response.json()) as { path: string; auth: string };
+      expect(body.auth).toBe("Bearer sk-ant-EXAMPLE");
+      expect(stats.connects).toBe(1);
+      expect(stats.relays).toBe(1);
+    } finally {
+      await close(bridge);
+    }
+  });
+
+  test("sends bridge credentials separately from provider authorization", async () => {
+    const { bridge, fetchFn, stats } = await fetchThroughBridge("refuse", "pool-user:pool-pass");
+    try {
+      const response = await fetchFn(upstreamUrl, {
+        method: "GET",
+        headers: { authorization: "Bearer sk-ant-EXAMPLE" },
+      });
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { auth: string };
       expect(body.auth).toBe("Bearer sk-ant-EXAMPLE");
       expect(stats.connects).toBe(1);
       expect(stats.relays).toBe(1);

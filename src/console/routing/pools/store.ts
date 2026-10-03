@@ -389,7 +389,7 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
    *
    * Every `TransportKind` dials directly and gets a real end-to-end probe: an
    * http/https/socks5 pool tunnels to the canary, and a `bridge` pool dials the
-   * bridge (CONNECT first, its `?url=` relay on refusal), so a passing probe
+   * bridge (CONNECT first, its header relay on refusal), so a passing probe
    * always means real traffic reached the canary through the configured egress.
    * (A former daemon-backed kind returned a fabricated `"healthy"` here because
    * its activation happened on save; with that flavor removed, a pass is real.)

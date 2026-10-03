@@ -58,9 +58,19 @@ import {
 import { downloadTextFile } from "../shared/download";
 import { toast } from "../shared/toast";
 import { getErrorMessage } from "../shared/helpers";
-const transportKinds = ["http", "https", "socks5", "bridge"] as const;
+const transportKinds = ["http", "https", "socks5"] as const;
 type TransportKind = (typeof transportKinds)[number];
 
+function maskProxyValue(value: string): string {
+  if (!value) return "***";
+  try {
+    const url = new URL(value.includes("://") ? value : `https://${value}`);
+    const port = url.port ? `:${url.port}` : "";
+    return `${url.protocol}//***${port}`;
+  } catch {
+    return "***";
+  }
+}
 
 
 /** Averages are only meaningful once something has been measured; say so
@@ -305,10 +315,6 @@ function detectProxyKind(line: string): TransportKind {
   const s = line.trim().toLowerCase();
   if (s.startsWith("https://")) return "https";
   if (s.startsWith("socks5://") || s.startsWith("socks://")) return "socks5";
-  // A carte-bridge front door is a pool the operator already deployed, so it is
-  // never pasted as a raw `host:port`; it only ever arrives as an explicit
-  // `bridge://` line (or a URL the operator tags in the bulk form).
-  if (s.startsWith("bridge://")) return "bridge";
   return "http";
 }
 
@@ -396,16 +402,32 @@ function ProxyBulkForm({ onClose }: { readonly onClose: () => void }): ReactNode
     <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <span style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
-          Paste one per line · http / https / socks5 · bridge:// for a carte-bridge
+          Paste one per line · http / https / socks5
         </span>
         <Button variant="secondary" size="sm" type="button" onClick={handlePaste}>
           Paste
         </Button>
       </div>
+      <div
+        style={{
+          padding: "10px 12px",
+          borderRadius: "8px",
+          border: "1px solid var(--inner-border)",
+          background: "var(--surface-2)",
+          color: "var(--text-secondary)",
+          fontSize: "11px",
+          lineHeight: 1.55,
+        }}
+      >
+        <strong style={{ color: "var(--text-primary)" }}>How to add proxies</strong>
+        <div>One proxy per line. Supported formats: HTTP, HTTPS, and SOCKS5.</div>
+        <div>Authentication is optional: <code>https://username:password@host:port</code>.</div>
+        <div>Without credentials: <code>http://host:port</code>. The username/password stays private.</div>
+      </div>
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder={"http://10.0.1.5:8080\nhttps://10.0.1.6:8443\nsocks5://10.0.1.7:1080\nbridge://relay.example.com"}
+        placeholder={"http://user:pass@10.0.1.5:8080\nhttps://user:pass@10.0.1.6:8443\nsocks5://user:pass@10.0.1.7:1080"}
         rows={8}
         style={{
           width: "100%",
@@ -723,9 +745,9 @@ const PoolRow = memo(function PoolRow({
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
           }}
-          title={poolLabel}
+          title="Proxy name masked"
         >
-          {poolLabel}
+          {maskProxyValue(poolLabel)}
         </span>
         <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "3px", minWidth: 0 }}>
           {pool.status === "disabled" ? (
@@ -755,9 +777,9 @@ const PoolRow = memo(function PoolRow({
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
             }}
-            title={`egress ${pool.egressIp} · ${display.endpoint}`}
+            title="Proxy address masked"
           >
-            {pool.egressIp}
+            {maskProxyValue(display.endpoint)}
           </span>
         ) : (
           <span style={{ fontSize: "11px", color: "var(--text-tertiary)" }} title="Test the pool to read its egress address">

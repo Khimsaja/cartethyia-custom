@@ -66,7 +66,9 @@ function relayRequest(
  * access-log URL.
  *
  * The caller's `Host` is dropped: it names the bridge, and the bridge rewrites
- * Host for the upstream itself.
+ * Host for the upstream itself. If the endpoint has userinfo credentials, they
+ * are moved into `x-bridge-auth` and removed from the request URL; the
+ * provider's `Authorization` header remains untouched.
  */
 function bridgeRequest(
   bridgeEndpoint: URL,
@@ -78,6 +80,12 @@ function bridgeRequest(
   headers.delete("host");
   headers.set("x-bridge-target", target.origin);
   headers.set("x-bridge-path", `${target.pathname}${target.search}`);
+  if (bridgeUrl.username || bridgeUrl.password) {
+    const credentials = `${decodeURIComponent(bridgeUrl.username)}:${decodeURIComponent(bridgeUrl.password)}`;
+    headers.set("x-bridge-auth", `Basic ${Buffer.from(credentials).toString("base64")}`);
+    bridgeUrl.username = "";
+    bridgeUrl.password = "";
+  }
   return { url: bridgeUrl, init: { ...init, headers } };
 }
 
