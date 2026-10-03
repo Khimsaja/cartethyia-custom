@@ -3,6 +3,8 @@ import {
   Clock,
   Cloud,
   Download,
+  Eye,
+  EyeOff,
   FlaskConical,
   Gauge,
   Loader2,
@@ -639,6 +641,7 @@ const PoolRow = memo(function PoolRow({
   onActivity,
   speedResult,
   isSpeedTesting,
+  maskValues,
 }: {
   readonly pool: NetworkPoolResponse;
   readonly isSelected: boolean;
@@ -651,6 +654,7 @@ const PoolRow = memo(function PoolRow({
   readonly onActivity: (pool: NetworkPoolResponse) => void;
   readonly speedResult?: StoredSpeedResult;
   readonly isSpeedTesting: boolean;
+  readonly maskValues: boolean;
 }): ReactNode {
   const updatePool = useUpdateNetworkPool();
   const clearCooldown = useClearNetworkPoolCooldown();
@@ -745,9 +749,9 @@ const PoolRow = memo(function PoolRow({
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
           }}
-          title="Proxy name masked"
+          title={maskValues ? "Proxy name masked" : poolLabel}
         >
-          {maskProxyValue(poolLabel)}
+          {maskValues ? maskProxyValue(poolLabel) : poolLabel}
         </span>
         <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "3px", minWidth: 0 }}>
           {pool.status === "disabled" ? (
@@ -777,9 +781,9 @@ const PoolRow = memo(function PoolRow({
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
             }}
-            title="Proxy address masked"
+            title={maskValues ? "Proxy address masked" : `egress ${pool.egressIp} · ${display.endpoint}`}
           >
-            {maskProxyValue(display.endpoint)}
+            {pool.egressIp}
           </span>
         ) : (
           <span style={{ fontSize: "11px", color: "var(--text-tertiary)" }} title="Test the pool to read its egress address">
@@ -1153,6 +1157,7 @@ export default function Proxy(): ReactNode {
   const [showRelayDeploy, setShowRelayDeploy] = useState(false);
   const [editingPool, setEditingPool] = useState<NetworkPoolResponse | null>(null);
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(new Set());
+  const [maskValues, setMaskValues] = useState(false);
   const [testingIds, setTestingIds] = useState<ReadonlySet<string>>(new Set());
   const speedTest = useSpeedTestNetworkPool();
   const [speedBytes, setSpeedBytes] = useState(SPEED_TEST_DEFAULT_BYTES);
@@ -1531,6 +1536,15 @@ export default function Proxy(): ReactNode {
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "6px" }}>
                 <Button
+                  variant="ghost"
+                  size="sm"
+                  icon={maskValues ? <EyeOff size={12} /> : <Eye size={12} />}
+                  onClick={() => setMaskValues((current) => !current)}
+                  title={maskValues ? "Show proxy names and URLs" : "Mask proxy names and URLs"}
+                >
+                  {maskValues ? "Unmask" : "Mask"}
+                </Button>
+                <Button
                   variant="secondary"
                   size="sm"
                   disabled={testingIds.size > 0 || pools.length === 0}
@@ -1675,6 +1689,7 @@ export default function Proxy(): ReactNode {
                     onActivity={setActivityPool}
                     speedResult={speedResults[pool.id]}
                     isSpeedTesting={speedTestingIds.has(pool.id)}
+                    maskValues={maskValues}
                   />
                 ))}
               </DataTable>
