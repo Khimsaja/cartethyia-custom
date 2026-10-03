@@ -284,6 +284,7 @@ export function registerConsoleDomains(
       snapshotInvalidator: ctx.routeSnapshotService,
       apiKeyStore,
       admissionService: ctx.admissionService,
+      auditSink: ctx.auditRecorder,
     }),
   );
   console.use(createModelRoutingRoutes({ store: modelRoutingStore, accessResolver: ctx.accessResolver, auditSink: ctx.auditRecorder, snapshotInvalidator: ctx.routeSnapshotService }));

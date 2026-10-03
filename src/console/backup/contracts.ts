@@ -11,7 +11,8 @@
  * it holds captured prompt/response bodies. The user asked for metadata-only
  * history, and a backup is a file that gets copied around, so bodies stay out
  * of it. A backup is therefore not a substitute for a database dump, and the
- * layer doc says so.
+ * layer doc says so. Studio sessions are included in config because they are
+ * tenant-owned saved work; health events remain derived runtime history.
  *
  * A backup carries provider credentials and API-key hashes because that *is*
  * the configuration — the same secret material the dashboard already hands the
@@ -34,6 +35,7 @@ import {
   providerRoutingSettings,
   providers,
   shareLinks,
+  studioSessions,
   tenantDisabledModels,
   tenants,
   telemetryEvents,
@@ -79,6 +81,7 @@ export const CONFIG_TABLES = [
   cliToolMappings,
   cliToolSettings,
   consoleSettings,
+  studioSessions,
   apiKeys,
 ] as const satisfies readonly Table[];
 
@@ -88,8 +91,8 @@ export const CONFIG_TABLES = [
  * Every tenant-scoped table cascades from `tenants`, and several of those are
  * **not** part of a config backup: `telemetry_events`,
  * `telemetry_usage_totals`, `telemetry_payloads`, `console_users`,
- * `console_sessions`, `studio_sessions`. Deleting the tenant
- * to re-insert it would therefore destroy the usage history this feature exists
+ * `console_sessions`. Deleting the tenant
+ * to re-insert it would therefore destroy usage history and Studio data this feature exists
  * to preserve — and log out every console user as a side effect. A restore
  * ensures the tenant exists (needed when importing into a fresh database) and
  * leaves its identity alone.
