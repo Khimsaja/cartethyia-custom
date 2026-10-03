@@ -706,6 +706,7 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
           ? { providerResponse: captured.providerResponse }
           : {}),
       },
+      ...(captured.signals === undefined ? {} : { payloadSignals: captured.signals }),
     };
   }
 
@@ -811,21 +812,35 @@ async function readCapturedBodies(
       clientResponse: unknown;
       providerRequest: unknown;
       providerResponse: unknown;
+      signals?: { toolCalls: number; images: number; attachments: number };
     }
   | undefined
 > {
   if (!row) return undefined;
   const reference = payloadReferenceFromRow(row);
   if (!reference) return undefined;
-  const stored = await readPayloadFrame(reference);
-  if (!stored || typeof stored !== "object") return undefined;
-  const record = stored as Record<string, unknown>;
-  const bodies = {
-    request: record["request_body"] ?? undefined,
-    response: record["response_body"] ?? undefined,
-    clientResponse: record["client_response_body"] ?? undefined,
-    providerRequest: record["provider_request_body"] ?? undefined,
-    providerResponse: record["provider_response_body"] ?? undefined,
-  };
-  return Object.values(bodies).some((body) => body !== undefined) ? bodies : undefined;
+  try {
+    const stored = await readPayloadFrame(reference);
+    if (!stored || typeof stored !== "object") return undefined;
+    const record = stored as Record<string, unknown>;
+    const bodies = {
+      request: record["request_body"] ?? undefined,
+      response: record["response_body"] ?? undefined,
+      clientResponse: record["client_response_body"] ?? undefined,
+      providerRequest: record["provider_request_body"] ?? undefined,
+      providerResponse: record["provider_response_body"] ?? undefined,
+    };
+    const signals =
+      typeof record["signals"] === "object" &&
+      record["signals"] !== null &&
+      !Array.isArray(record["signals"])
+        ? (record["signals"] as { toolCalls: number; images: number; attachments: number })
+        : undefined;
+    return {
+      ...bodies,
+      ...(signals === undefined ? {} : { signals }),
+    };
+  } catch {
+    return undefined;
+  }
 }

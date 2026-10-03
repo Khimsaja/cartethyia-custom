@@ -177,6 +177,15 @@ export function assertUsageRequestDetail(value: unknown): UsageRequestDetail {
   if (value.payloads !== undefined && value.payloads !== null && !isRecord(value.payloads)) {
     throw invalidResponse("Invalid usage request response");
   }
+  if (value.payloadSignals !== undefined) {
+    if (!isRecord(value.payloadSignals)) throw invalidResponse("Invalid usage request response");
+    for (const field of ["toolCalls", "images", "attachments"]) {
+      const count = value.payloadSignals[field];
+      if (typeof count !== "number" || !Number.isInteger(count) || count < 0) {
+        throw invalidResponse("Invalid usage request response");
+      }
+    }
+  }
   return value as unknown as UsageRequestDetail;
 }
 

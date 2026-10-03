@@ -77,8 +77,12 @@ export function convertMessages(messages: CanonicalRequest["messages"]): { messa
       const text = joinTextParts(message.content);
       const toolCalls = toolCallParts(message).map((b) => ({ id: b.call_id, type: "function" as const, function: { name: b.name, arguments: typeof b.arguments === "string" ? b.arguments : JSON.stringify(b.arguments) } }));
       const msg: Record<string, unknown> = { role: "assistant" };
-      msg["content"] = text.length > 0 ? text : toolCalls.length > 0 ? null : "";
-      if (toolCalls.length > 0) msg["tool_calls"] = toolCalls;
+      if (toolCalls.length > 0) {
+        msg["content"] = text.length > 0 ? text : "";
+        msg["tool_calls"] = toolCalls;
+      } else {
+        msg["content"] = text.length > 0 ? text : "";
+      }
       out.push(msg);
       continue;
     }

@@ -181,16 +181,19 @@ dbDescribe("model authorization", () => {
     });
 
     test("a whitelist entry matches its bare form and vice versa", async () => {
-      // Dual-form matching, as `modelRejectionReason` documents: a bare entry
-      // matches its provider-qualified use and a qualified entry matches a bare
-      // request while the provider is still unknown.
+      // Bare entry authorizes a qualified use; a qualified entry only
+      // authorizes the same-provider qualified use. The reverse (qualified
+      // allow bare with no provider) is intentionally isolated so
+      // `providerA/model-x` never authorizes `providerB/model-x` — see
+      // `src/security/model-access-rule.ts` and `test/unit/api-key-auth.test.ts`.
       const bareEntry = await world.createKey({ modelList: ["model-allowed"] });
       expect((await chat(`${world.providerId}/model-allowed`, bareEntry.token)).status).toBe(200);
 
       const qualifiedEntry = await world.createKey({
         modelList: [`${world.providerId}/model-allowed`],
       });
-      expect((await chat("model-allowed", qualifiedEntry.token)).status).toBe(200);
+      expect((await chat(`${world.providerId}/model-allowed`, qualifiedEntry.token)).status).toBe(200);
+      expect((await chat("model-allowed", qualifiedEntry.token)).status).toBe(404);
     });
 
     test("an empty whitelist means no restriction, not no access", async () => {
