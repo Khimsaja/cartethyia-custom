@@ -12,7 +12,7 @@ import {
 } from "../providers/operations/provider-catalog-service";
 import type { BundledProviderCatalog } from "../providers/operations/provider-catalog-service";
 import { createDefaultProviderRegistry } from "../providers/default-registry";
-import { OAuthRefreshService, loadDueOAuthAccounts } from "../providers/authentication/oauth-refresh-service";
+import { OAuthRefreshService, loadDueOAuthAccounts, reconcileStaticTokenAccounts } from "../providers/authentication/oauth-refresh-service";
 import type { OAuthTokenRefresher } from "../providers/authentication/oauth-refresh-service";
 import { oauthRefreshSweep } from "../workers/oauth-refresh-worker";
 import { pushStructuredConsoleLog } from "../observability/log-ring";
@@ -274,6 +274,10 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
     run: () => runtimeMetricsSampler.sample(),
   });
   const oauthRefreshService = new OAuthRefreshService(db);
+  // Converge accounts an earlier build parked on a dead refresh grant: an
+  // account whose stored access token is still usable becomes a static token
+  // (and returns to rotation) instead of staying disabled for re-auth.
+  await reconcileStaticTokenAccounts(db);
   scheduledTasks.register({
     name: "oauth-refresh-sweep",
     intervalMs: 60_000,

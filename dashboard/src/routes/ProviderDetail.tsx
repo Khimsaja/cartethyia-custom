@@ -403,7 +403,7 @@ export default function ProviderDetail(): ReactNode {
             }
           />
           <CardBody style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-            <CreditPoolCard providerId={id} />
+            <CreditPoolCard providerId={id} accountCount={accounts.length} />
             {accountsQuery.isPending ? (
               <LoadingState label="Loading accounts..." />
             ) : accountsQuery.isError ? (

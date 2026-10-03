@@ -70,14 +70,12 @@ const createAccountBody = t.Object({
   credentialKind: literalUnion(CREDENTIAL_KINDS),
   secret: t.String(),
   authState: t.Optional(t.Record(t.String(), t.Unknown())),
-  minCreditBalance: t.Optional(t.Nullable(t.Integer({ minimum: 0, maximum: 1_000_000_000 }))),
 });
 const updateAccountBody = t.Object({
   label: t.Optional(t.String()),
   secret: t.Optional(t.String()),
   status: t.Optional(literalUnion(ACCOUNT_STATUSES)),
   staticToken: t.Optional(t.Boolean()),
-  minCreditBalance: t.Optional(t.Nullable(t.Integer({ minimum: 0, maximum: 1_000_000_000 }))),
 });
 const registerModelsBody = t.Object({
   modelIds: t.Array(t.String()),

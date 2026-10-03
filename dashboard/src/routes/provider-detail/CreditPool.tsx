@@ -1,5 +1,8 @@
 import type { ReactNode } from "react";
 import { useQuotaOverview, type QuotaEntry } from "../../hooks/quota";
+import { useRoutingStrategy } from "../../hooks/use-routing-strategy";
+import { Switch } from "../../components/ui/switch";
+import { Inline } from "../../components/ui/inline";
 import { formatCredits } from "../../shared/format";
 import { quotaBarTone } from "../../shared/quota-formatters";
 
@@ -68,16 +71,23 @@ export function aggregateCreditPool(entries: readonly QuotaEntry[]): CreditPoolT
  * (green = credit still available), so the pool and the account rows below it
  * read alike.
  */
-export function CreditPoolCard({ providerId }: { readonly providerId: string }): ReactNode {
+export function CreditPoolCard({
+  providerId,
+  accountCount,
+}: {
+  readonly providerId: string;
+  readonly accountCount: number;
+}): ReactNode {
   const overview = useQuotaOverview();
+  const routing = useRoutingStrategy(providerId, false);
   const entries = (overview.data?.accounts ?? []).filter((entry) => entry.provider === providerId);
   const pool = aggregateCreditPool(entries);
-  if (!pool) return null;
 
-  const usedPercent = Math.min(100, Math.max(0, (pool.used / pool.limit) * 100));
+  const usedPercent = pool ? Math.min(100, Math.max(0, (pool.used / pool.limit) * 100)) : 0;
   const remainingPercent = Math.max(0, 100 - usedPercent);
-  const remaining = Math.max(0, pool.limit - pool.used);
+  const remaining = pool ? Math.max(0, pool.limit - pool.used) : 0;
   const tone = quotaBarTone(remainingPercent);
+  const accountsLabel = `${accountCount} ${accountCount === 1 ? "account" : "accounts"}`;
 
   return (
     <div
@@ -100,67 +110,122 @@ export function CreditPoolCard({ providerId }: { readonly providerId: string }):
       >
         CREDIT POOL
       </p>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "baseline",
-          justifyContent: "space-between",
-          gap: "12px",
-          marginTop: "10px",
-        }}
-      >
-        <span style={{ fontSize: "12.5px", color: "var(--text-secondary)" }}>
-          <span
+      {pool ? (
+        <>
+          <div
             style={{
-              fontFamily: "var(--font-mono)",
-              fontWeight: 700,
-              fontVariantNumeric: "tabular-nums",
-              color: tone.text,
+              display: "flex",
+              alignItems: "baseline",
+              justifyContent: "space-between",
+              gap: "12px",
+              marginTop: "10px",
             }}
           >
-            {formatCredits(remaining)}
-          </span>{" "}
-          credits available of{" "}
-          <span style={{ fontVariantNumeric: "tabular-nums" }}>{formatCredits(pool.limit)}</span> total
-        </span>
-      </div>
-      <div
-        className="quota-bar-track"
-        role="progressbar"
-        aria-label="Credits remaining"
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={Math.round(remainingPercent)}
-        aria-valuetext={`${formatCredits(remaining)} of ${formatCredits(pool.limit)} credits remaining`}
-        style={{
-          marginTop: "8px",
-          height: "10px",
-          borderRadius: "4px",
-          background: "var(--inner-border)",
-          overflow: "hidden",
-        }}
-      >
+            <span style={{ fontSize: "12.5px", color: "var(--text-secondary)" }}>
+              <span
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontWeight: 700,
+                  fontVariantNumeric: "tabular-nums",
+                  color: tone.text,
+                }}
+              >
+                {formatCredits(remaining)}
+              </span>{" "}
+              credits available of{" "}
+              <span style={{ fontVariantNumeric: "tabular-nums" }}>
+                {formatCredits(pool.limit)}
+              </span>{" "}
+              total
+            </span>
+          </div>
+          <div
+            className="quota-bar-track"
+            role="progressbar"
+            aria-label="Credits remaining"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(remainingPercent)}
+            aria-valuetext={`${formatCredits(remaining)} of ${formatCredits(pool.limit)} credits remaining`}
+            style={{
+              marginTop: "8px",
+              height: "10px",
+              borderRadius: "4px",
+              background: "var(--inner-border)",
+              overflow: "hidden",
+            }}
+          >
+            <div
+              className="quota-bar-fill"
+              style={{
+                width: `${remainingPercent}%`,
+                height: "100%",
+                borderRadius: "3px",
+                background: tone.bar,
+                transition: "width var(--dur-macro) var(--ease-spring)",
+              }}
+            />
+          </div>
+          <p
+            style={{
+              margin: "8px 0 0",
+              fontSize: "10.5px",
+              color: "var(--text-tertiary)",
+            }}
+          >
+            {formatCredits(pool.used)} used ({Math.round(usedPercent)}%) across {pool.accounts}{" "}
+            {pool.accounts === 1 ? "account" : "accounts"}
+          </p>
+        </>
+      ) : null}
+
+      {routing.isLoading || routing.isError ? null : (
         <div
-          className="quota-bar-fill"
           style={{
-            width: `${remainingPercent}%`,
-            height: "100%",
-            borderRadius: "3px",
-            background: tone.bar,
-            transition: "width var(--dur-macro) var(--ease-spring)",
+            display: "flex",
+            alignItems: "flex-start",
+            justifyContent: "space-between",
+            gap: "12px",
+            marginTop: pool ? "12px" : "10px",
+            paddingTop: pool ? "12px" : 0,
+            borderTop: pool ? "1px solid var(--inner-border)" : undefined,
           }}
-        />
-      </div>
-      <p
-        style={{
-          margin: "8px 0 0",
-          fontSize: "10.5px",
-          color: "var(--text-tertiary)",
-        }}
-      >
-        {formatCredits(pool.used)} used ({Math.round(usedPercent)}%) across {pool.accounts}{" "}
-        {pool.accounts === 1 ? "account" : "accounts"}
-      </p>
+        >
+          <div style={{ minWidth: 0 }}>
+            <label htmlFor="credit-limit-enabled" style={{ fontSize: "12.5px", fontWeight: 600 }}>
+              Minimum balance
+            </label>
+            <div style={{ fontSize: "11px", color: "var(--text-tertiary)" }}>
+              Keep at least this many credits unused on every account. Accounts at or below this
+              balance are skipped by routing. Applied globally to all {accountsLabel} in this
+              provider.
+            </div>
+          </div>
+          <Inline gap="10px" style={{ flexShrink: 0, alignItems: "center" }}>
+            <Switch
+              id="credit-limit-enabled"
+              checked={routing.creditLimitEnabled}
+              onChange={routing.setCreditLimitEnabled}
+              aria-label="Enable the global credit limit"
+            />
+            <input
+              type="number"
+              aria-label="Credit limit per account"
+              min={0}
+              max={1000000000}
+              disabled={!routing.creditLimitEnabled}
+              value={routing.creditLimit}
+              onChange={(event) => {
+                const value = Number(event.target.value);
+                if (Number.isFinite(value))
+                  routing.setCreditLimit(Math.max(0, Math.min(1000000000, Math.round(value))));
+              }}
+              className="form-input"
+              style={{ width: "110px", padding: "6px 8px", textAlign: "right" }}
+            />
+          </Inline>
+        </div>
+      )}
     </div>
   );
 }

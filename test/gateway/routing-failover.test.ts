@@ -127,30 +127,38 @@ describe("RoutingEngine.plan cooldown classes", () => {
     ]);
   });
 });
-describe("EligibilityEvaluator credit floor", () => {
+describe("EligibilityEvaluator global credit limit", () => {
   const evaluator = new EligibilityEvaluator();
 
-  test("an account at or below its floor is excluded", () => {
+  test("an account at or below the global limit is excluded", () => {
     expect(
-      evaluator.evaluate(candidate({ min_credit_balance: 100, last_remaining_credit: 100 })),
+      evaluator.evaluate(candidate({ credit_limit: 100, last_remaining_credit: 100 })),
     ).toMatchObject({ eligible: false, reason: "credit_floor_reached" });
     expect(
-      evaluator.evaluate(candidate({ min_credit_balance: 100, last_remaining_credit: 99 })),
+      evaluator.evaluate(candidate({ credit_limit: 100, last_remaining_credit: 99 })),
     ).toMatchObject({ eligible: false, reason: "credit_floor_reached" });
   });
 
-  test("an account above its floor stays eligible", () => {
+  test("an account above the global limit stays eligible", () => {
     expect(
-      evaluator.evaluate(candidate({ min_credit_balance: 100, last_remaining_credit: 101 })),
+      evaluator.evaluate(candidate({ credit_limit: 100, last_remaining_credit: 101 })),
     ).toMatchObject({ eligible: true, reason: "healthy" });
   });
 
-  test("no floor, or never-fetched balance, stays eligible", () => {
+  test("a disabled global limit never excludes, whatever the balance", () => {
+    expect(
+      evaluator.evaluate(
+        candidate({ credit_limit_enabled: false, credit_limit: 100, last_remaining_credit: 0 }),
+      ),
+    ).toMatchObject({ eligible: true, reason: "healthy" });
+  });
+
+  test("no limit, or never-fetched balance, stays eligible", () => {
     expect(evaluator.evaluate(candidate({ last_remaining_credit: 0 }))).toMatchObject({
       eligible: true,
       reason: "healthy",
     });
-    expect(evaluator.evaluate(candidate({ min_credit_balance: 100 }))).toMatchObject({
+    expect(evaluator.evaluate(candidate({ credit_limit: 100 }))).toMatchObject({
       eligible: true,
       reason: "healthy",
     });
@@ -160,7 +168,7 @@ describe("EligibilityEvaluator credit floor", () => {
     const engine = new RoutingEngine();
     const depleted = candidate({
       provider_account_id: "depleted",
-      min_credit_balance: 100,
+      credit_limit: 100,
       last_remaining_credit: 80,
     });
     const healthy = candidate({ provider_account_id: "healthy" });
@@ -168,11 +176,11 @@ describe("EligibilityEvaluator credit floor", () => {
     expect(plan.candidates.map((c) => c.provider_account_id)).toEqual(["healthy"]);
   });
 
-  test("every account below its floor answers accounts_unavailable", async () => {
+  test("every account below the global limit answers accounts_unavailable", async () => {
     const engine = new RoutingEngine();
     const only = candidate({
       provider_account_id: "only",
-      min_credit_balance: 100,
+      credit_limit: 100,
       last_remaining_credit: 50,
     });
     await expect(engine.plan("p/m", snapshot([only]))).rejects.toMatchObject({

@@ -366,11 +366,6 @@ export interface CreateProviderAccountRequest {
    * dispatch with the secret alone.
    */
   authState?: Readonly<Record<string, unknown>>;
-  /**
-   * Minimum watched credit balance; routing excludes the account while the
-   * last fetched remaining credit is at or below it. `null`/absent = no floor.
-   */
-  minCreditBalance?: number | null;
 }
 /** Patch accepted when editing or revoking an existing account. */
 export interface UpdateProviderAccountRequest {
@@ -384,12 +379,6 @@ export interface UpdateProviderAccountRequest {
    * refresh sweep; `false` returns it to normal OAuth refresh handling.
    */
   staticToken?: boolean;
-  /**
-   * Minimum watched credit balance on this account; routing excludes the
-   * account while the last fetched remaining credit is at or below it.
-   * `null` clears the floor (the account may be spent down to zero).
-   */
-  minCreditBalance?: number | null;
 }
 export interface ProviderAccountTokenUsage {
   readonly requests: number;
@@ -435,8 +424,6 @@ export interface ProviderAccountResponse {
    * of treating the account as broken; the account stays dispatchable.
    */
   staticToken?: boolean;
-  /** Operator-set minimum watched credit balance; `null` = no floor. */
-  minCreditBalance: number | null;
   /** Last remaining credit the quota sweep fetched; `null` = never fetched. */
   lastRemainingCredit: number | null;
   /** Stable list position within this provider; the console's "Added" order. */
@@ -661,6 +648,10 @@ export interface ProviderRoutingResponse {
   readonly rotateCount: number;
   /** Per-account inflight ceiling; `null` = unlimited concurrency. */
   readonly maxInflight: number | null;
+  /** Global minimum credit protection for every account of this provider/tenant. */
+  readonly creditLimitEnabled: boolean;
+  /** Minimum remaining credits to keep globally; default 200. */
+  readonly creditLimit: number;
   readonly enabled: boolean;
   /** When true, this provider's requests always dial direct. When false,
    * dispatch automatically picks the least-loaded, non-cooldown pool among

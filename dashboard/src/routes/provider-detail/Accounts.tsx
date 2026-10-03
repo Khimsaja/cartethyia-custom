@@ -190,12 +190,20 @@ export function AccountStatusBadge({
   return <Badge tone="disabled">Disabled</Badge>;
 }
 
-/** Compact account-card detail: status is shown in the badge, not raw errors. */
+/**
+ * The credential line under an account's label.
+ *
+ * Status is shown in the badge, not as a raw error here.
+ *
+ * An API-key account is static by nature: a key is used exactly as issued and
+ * there is no refresh grant to run, so it says so rather than leaving the
+ * operator to wonder why it never appears in the refresh flow.
+ */
 function accountDetail(account: ProviderAccountResponse): string {
   return account.credentialKind === "oauth"
     ? "OAuth"
     : account.credentialKind === "api_key"
-      ? "API key"
+      ? "API key · static"
       : "No credential";
 }
 
@@ -387,45 +395,10 @@ function AccountRow({
               In flight: {inflight?.toLocaleString() ?? "—"}
             </span>
             {typeof account.lastRemainingCredit === "number" ? (
-              <span title="Last remaining credit the quota sweep fetched.">
+              <span title="Last remaining credit the quota sweep fetched. Routing skips this account while the balance is at or below the provider's global credit limit.">
                 Credits left: {account.lastRemainingCredit.toLocaleString()}
               </span>
             ) : null}
-            <label
-              style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}
-            >
-              <span title="Routing skips this account while its last fetched credit balance is at or below this floor. Blank = no floor.">
-                Min balance
-              </span>
-              <input
-                type="number"
-                aria-label={`Minimum credit balance for ${label}`}
-                min={0}
-                max={1000000000}
-                placeholder="None"
-                defaultValue={account.minCreditBalance ?? ""}
-                key={account.minCreditBalance ?? "none"}
-                onBlur={(event) => {
-                  const raw = event.target.value.trim();
-                  const parsed = raw === "" ? Number.NaN : Number(raw);
-                  const next =
-                    raw === ""
-                      ? null
-                      : Number.isFinite(parsed)
-                        ? Math.max(0, Math.min(1000000000, Math.round(parsed)))
-                        : null;
-                  if (raw !== "" && !Number.isFinite(parsed)) return;
-                  if (next !== account.minCreditBalance) {
-                    update.mutate({
-                      providerId,
-                      accountId: account.id,
-                      request: { minCreditBalance: next },
-                    });
-                  }
-                }}
-                style={{ width: "90px", padding: "3px 6px", fontSize: "12px" }}
-              />
-            </label>
           </div>
         </div>
 
