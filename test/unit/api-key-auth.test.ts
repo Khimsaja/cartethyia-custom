@@ -187,34 +187,24 @@ describe("modelRejectionReason", () => {
     expect(modelRejectionReason(snap, "mimo-chat", "xiaomi")).toBeNull();
   });
 
-  test("a qualified entry authorizes a bare target when no provider is supplied", () => {
-    // Was "a qualified target is refused when no provider is supplied", pinning the
-    // defect: without `targetProvider` the function could not build the qualified
-    // candidate name, so a qualified allowlist entry missed a bare target.
-    //
-    // That mattered because the preparer is the FIRST enforcement point and runs
-    // before routing, so it cannot supply `targetProvider` — the provider is not
-    // chosen yet. The miss was therefore final, and the dashboard's `ModelPicker`
-    // writes exactly the qualified form into `modelList`, so a client naming
-    // the bare model was refused a model the operator explicitly allowed.
-    //
-    // The same bare-form fallback is required after admission knows the
-    // provider; otherwise discovery and the lease check disagree.
+  test("a qualified entry does not authorize an unqualified target by bare name", () => {
     const snap = snapshot({ allow: ["xiaomi/mimo-chat"] });
-    expect(modelRejectionReason(snap, "mimo-chat", undefined)).toBeNull();
+    expect(modelRejectionReason(snap, "mimo-chat", undefined)).toBe("model-not-allowed");
     expect(modelRejectionReason(snap, "mimo-chat", "xiaomi")).toBeNull();
   });
 
-  test("a qualified alias entry authorizes its resolved provider target", () => {
+  test("an alias request authorizes only its resolved provider target", () => {
     const snap = snapshot({ allow: ["bansos/model-x"] });
-    expect(modelRejectionReason(snap, "model-x", "providerA")).toBeNull();
-    expect(modelRejectionReason(snap, "providerA/model-x", "providerA")).toBeNull();
+    expect(modelRejectionReason(snap, "model-x", "providerA")).toBe("model-not-allowed");
+    expect(modelRejectionReason(snap, "providerA/model-x", "providerA")).toBe("model-not-allowed");
+    expect(modelRejectionReason(snap, "model-x", "providerA", "bansos/model-x")).toBeNull();
+    expect(modelRejectionReason(snap, "providerA/model-x", "providerA", "bansos/model-x")).toBeNull();
   });
 
-  test("a qualified provider entry keeps its bare-form matching", () => {
+  test("a qualified provider entry only matches that provider", () => {
     const snap = snapshot({ allow: ["providerA/model-x"] });
     expect(modelRejectionReason(snap, "model-x", "providerA")).toBeNull();
-    expect(modelRejectionReason(snap, "model-x", "providerB")).toBeNull();
+    expect(modelRejectionReason(snap, "model-x", "providerB")).toBe("model-not-allowed");
   });
 
 

@@ -61,14 +61,11 @@ function bareModelId(targetModel: string): string {
  *    model (the deployment default).
  *  - `blacklist` — a listed name is refused; an empty list refuses nothing.
  *
- * Dual-form matching: a bare entry matches its provider-qualified use and vice
- * versa, so neither mode silently misses a qualified form. In whitelist mode a
- * QUALIFIED entry may authorize a bare request while the provider is still
- * unknown (the preparer runs before routing); once the provider is known the
- * comparison stays precise, so `providerA/model-x` never authorizes
- * `providerB/model-x`. In blacklist mode a qualified entry does not catch a
- * bare target whose provider is unknown — admission re-checks with the provider
- * supplied, where the qualified name is constructed and refused.
+ * Matching is exact for qualified names. A bare entry matches a qualified
+ * target only when the bare entry is itself the request's usable name; a
+ * qualified alias entry does not authorize unrelated provider routes that
+ * happen to share the same final path segment. When an alias request is
+ * present, it is checked explicitly through `requestedModel`.
  *
  * There is deliberately NO escape hatch for CLI remapping. A remapped request
  * is authorized only when the caller's own requested name (`requestedModel`) or
@@ -96,12 +93,6 @@ export function modelRejectionReason(
   }
   if (list == null || listSize(list) === 0) return null;
   if (names.some((name) => listIncludes(list, name))) return null;
-  // Alias/combo namespaces (for example `bansos/...`) are not upstream
-  // provider ids. Discovery exposes their bare target forms, so admission
-  // must apply the same bare-form decision after a provider is selected;
-  // otherwise `/v1/models` advertises an alias that the lease check rejects.
-  const bareCandidates = new Set(names.map((name) => bareModelId(name)));
-  if ([...list].some((entry) => bareCandidates.has(bareModelId(entry)))) return null;
   return "model-not-allowed";
 }
 
