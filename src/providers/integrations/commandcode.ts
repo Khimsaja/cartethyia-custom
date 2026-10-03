@@ -183,9 +183,36 @@ export function transformLine(line: string, state: StreamState, seqBase: number)
   }
   const type = readString(event, "type");
   if (!type) return [];
-  if (type === "text-delta" || type === "reasoning-delta") {
+  if (type === "reasoning-delta") {
     const text = readString(event, "text") || readString(event, "delta");
-    return text ? [{ type: "content_delta", sequence_number: seqBase, content: { kind: "text", text } } as CanonicalEvent] : [];
+    return text ? [{ type: "content_delta", sequence_number: seqBase, content: { kind: "reasoning", payload: null, summary: text } } as CanonicalEvent] : [];
+  }
+  if (type === "text-delta") {
+    const text = readString(event, "text") || readString(event, "delta");
+    if (!text) return [];
+    // Mimo/MiniMax/Kiro-style XML thinking: <think> or <thinking> inside text-delta.
+    // If thinking tags present, split into reasoning + text.
+    if (text.includes("<think")) {
+      const events: CanonicalEvent[] = [];
+      // naive split: extract <think>...</think> or <thinking>...</thinking>
+      const re = /<think(?:ing)?>([\s\S]*?)<\/think(?:ing)?>/g;
+      let last = 0;
+      let m: RegExpExecArray | null;
+      let hasThink = false;
+      while ((m = re.exec(text)) !== null) {
+        hasThink = true;
+        const before = text.slice(last, m.index);
+        if (before) events.push({ type: "content_delta", sequence_number: seqBase, content: { kind: "text", text: before } } as CanonicalEvent);
+        if (m[1]) events.push({ type: "content_delta", sequence_number: seqBase, content: { kind: "reasoning", payload: null, summary: m[1] } } as CanonicalEvent);
+        last = m.index + m[0].length;
+      }
+      if (hasThink) {
+        const after = text.slice(last);
+        if (after) events.push({ type: "content_delta", sequence_number: seqBase, content: { kind: "text", text: after } } as CanonicalEvent);
+        return events;
+      }
+    }
+    return [{ type: "content_delta", sequence_number: seqBase, content: { kind: "text", text } } as CanonicalEvent];
   }
   if (type === "tool-input-start") {
     const id = readString(event, "id") || readString(event, "toolCallId");
