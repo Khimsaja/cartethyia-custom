@@ -192,16 +192,22 @@ export function classifyAccountError(
     lower.includes("max-per-mtok") ||
     lower.includes("no provider's ask") ||
     (lower.includes("ask") && lower.includes("bid"));
-
+  // Deployment/proxy infrastructure errors (DEPLOYMENT_DISABLED, etc.) are
+  // transport-level proxy pool failures, not account quota exhaustion.
+  // Mutating the account parks it for an hour while the pool itself stays
+  // healthy — the next request picks the same dying pool and the same error
+  // repeats. These must not cooldown the account.
+  const deploymentInfraError =
+    lower.includes("deployment_disabled") ||
+    lower.includes("deployment disabled") ||
+    (lower.includes("sin1::") && lower.includes("deployment"));
+  if (deploymentInfraError) {
+    return result("server_error", "cooldown", 60_000, null, `Proxy deployment error: ${message.slice(0, 160)}`, false);
+  }
   // Quota-shaped provider codes/messages (e.g. xAI's
-  // `subscription:free-usage-exhausted`) must win over the 401/403 auth
-  // branch below: an exhausted free tier is quota exhaustion with a
-  // cooldown, never a dead credential. A bare 402 stays here: `Payment
-  // Required` conventionally means the account cannot pay, and a cooldown is
-  // recoverable and — since cooling accounts are deprioritized rather than
-  // excluded — no longer blocks the account from serving a request.
   const quotaSignal =
     !priceRefusal &&
+    !deploymentInfraError &&
     (statusCode === 402 ||
       providerCode === "insufficient_quota" ||
       providerCode === "quota_exceeded" ||

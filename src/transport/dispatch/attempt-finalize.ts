@@ -512,6 +512,13 @@ export async function completeAttempt(
   // advisory: a failed report must never re-enter the retry path (a retry
   // would see `completed` and skip completion entirely), so it is swallowed.
   if (completion.status !== "cancelled" && !disableProxy) {
+    // DEPLOYMENT_DISABLED and similar infra errors are proxy pool failures,
+    // not account quota. Classify with scope pool so account stays healthy.
+    const msg = completion.error instanceof Error ? completion.error.message.toLowerCase() : "";
+    const isProxyDeploymentError = msg.includes("deployment_disabled") || (msg.includes("sin1::") && msg.includes("deployment"));
+    const evidence = isProxyDeploymentError
+      ? { scope: "pool" as const, origin: "network" as const }
+      : { ...classifyUpstreamFailure(completion.error) };
     try {
       await reportAttemptOutcome(completion.db, {
         accountId: completion.accountId,
@@ -519,7 +526,7 @@ export async function completeAttempt(
         ...(completion.status === "failed"
           ? {
               error: completion.error,
-              evidence: { ...classifyUpstreamFailure(completion.error) },
+              evidence,
             }
           : {}),
         ...(completion.snapshotService ? { snapshotService: completion.snapshotService } : {}),

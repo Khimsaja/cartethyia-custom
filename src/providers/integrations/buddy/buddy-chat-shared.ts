@@ -190,7 +190,7 @@ function repackBuddyToolResultBlocks(messages: Array<Record<string, unknown>>): 
   let changed = false;
   let i = 0;
   while (i < messages.length) {
-    const m = messages[i];
+    const m = messages[i] as Record<string, unknown>;
     if (!m || m["role"] !== "assistant" || !Array.isArray(m["tool_calls"]) || (m["tool_calls"] as unknown[]).length === 0) {
       out.push(m);
       i += 1;
