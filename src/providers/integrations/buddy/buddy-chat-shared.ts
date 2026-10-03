@@ -127,6 +127,20 @@ export function buddyPrePayloadCommon(
   payload: Record<string, unknown>,
   request?: CanonicalRequest,
 ): void {
+  // Canonical upstream renames: max_completion_tokens is OpenAI compat alias, buddy only reads max_tokens
+  if (payload["max_tokens"] === undefined && payload["max_completion_tokens"] !== undefined) {
+    const v = payload["max_completion_tokens"];
+    if (typeof v === "number" && Number.isFinite(v) && v > 0) payload["max_tokens"] = v;
+    delete payload["max_completion_tokens"];
+  } else if (payload["max_completion_tokens"] !== undefined) {
+    delete payload["max_completion_tokens"];
+  }
+  // tool_choice: buddy Go struct is string — object form 400s (code 11101). Normalize to wire string.
+  normalizeBuddyToolChoice(payload);
+  // image_url string → object (OpenAI allows string, buddy requires {url})
+  normalizeBuddyImageUrl(payload);
+  // developer role → system (buddy whitelist rejects developer, 11128)
+  normalizeBuddyRoles(payload);
   applyOpenAIReasoning(payload, request);
   applyDeepSeekReasoning(payload);
   payload["stream"] = true;
@@ -141,10 +155,75 @@ export function buddyPrePayloadCommon(
   }
   backfillDeepSeekReasoningContent(payload);
   const messages = payload["messages"];
-  if (Array.isArray(messages)) coalesceConsecutiveAssistantMessages(messages);
+  if (Array.isArray(messages)) coalesceConsecutiveAssistantMessages(messages as Array<Record<string, unknown>>);
   delete payload["agent"];
   delete payload["agent_mode"];
   delete payload["agent_prompt"];
+}
+
+function normalizeBuddyToolChoice(payload: Record<string, unknown>): void {
+  if (!("tool_choice" in payload)) return;
+  const tc = payload["tool_choice"];
+  if (typeof tc === "string") {
+    if (tc.trim().toLowerCase() === "none") {
+      delete payload["tool_choice"];
+      delete payload["tools"];
+      delete (payload as Record<string, unknown>)["functions"];
+    }
+    return;
+  }
+  if (tc && typeof tc === "object" && !Array.isArray(tc)) {
+    const obj = tc as Record<string, unknown>;
+    const typ = typeof obj["type"] === "string" ? (obj["type"] as string).trim().toLowerCase() : "";
+    if (typ === "none") {
+      delete payload["tool_choice"];
+      delete payload["tools"];
+      delete (payload as Record<string, unknown>)["functions"];
+    } else if (typ === "auto" || typ === "required") {
+      payload["tool_choice"] = typ;
+    } else if (typ === "function") {
+      let name = "";
+      const fn = obj["function"];
+      if (fn && typeof fn === "object" && !Array.isArray(fn)) name = typeof (fn as Record<string, unknown>)["name"] === "string" ? ((fn as Record<string, unknown>)["name"] as string) : "";
+      if (!name && typeof obj["name"] === "string") name = obj["name"] as string;
+      name = name.trim();
+      payload["tool_choice"] = name.length > 0 ? name : "auto";
+    } else {
+      delete payload["tool_choice"];
+    }
+    return;
+  }
+  delete payload["tool_choice"];
+}
+
+function normalizeBuddyImageUrl(payload: Record<string, unknown>): void {
+  const messages = payload["messages"];
+  if (!Array.isArray(messages)) return;
+  for (const m of messages) {
+    if (!m || typeof m !== "object") continue;
+    const content = (m as Record<string, unknown>)["content"];
+    if (!Array.isArray(content)) continue;
+    for (const part of content) {
+      if (!part || typeof part !== "object") continue;
+      const p = part as Record<string, unknown>;
+      if (p["type"] !== "image_url") continue;
+      const v = p["image_url"];
+      if (typeof v === "string") {
+        if (v.length === 0) continue;
+        p["image_url"] = { url: v };
+      }
+    }
+  }
+}
+
+function normalizeBuddyRoles(payload: Record<string, unknown>): void {
+  const messages = payload["messages"];
+  if (!Array.isArray(messages)) return;
+  for (const m of messages) {
+    if (!m || typeof m !== "object") continue;
+    const rec = m as Record<string, unknown>;
+    if (rec["role"] === "developer") rec["role"] = "system";
+  }
 }
 
 /** Normalizes one message's content into a Chat-wire content-part array. */
