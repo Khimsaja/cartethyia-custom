@@ -607,7 +607,7 @@ export default function ProviderDetail(): ReactNode {
           open={true}
           onClose={() => setFlowPrompt(null)}
           title={flowPrompt === "browser" ? "Sign in with" : "Device sign-in details"}
-          width={420}
+          size="sm"
           footer={
             <>
               <Button variant="secondary" size="sm" onClick={() => setFlowPrompt(null)}>

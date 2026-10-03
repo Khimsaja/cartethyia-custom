@@ -330,15 +330,35 @@ export class EligibilityEvaluator {
   evaluate(candidate: RouteCandidate): EligibilityDecision {
     const state = candidate as RouteCandidate & {
       readonly health_status?: string;
+      readonly cooldown_kind?: "hard" | "soft";
       readonly account_locked?: boolean;
       readonly locked?: boolean;
+      readonly min_credit_balance?: number | null;
+      readonly last_remaining_credit?: number | null;
     };
     if (state.account_locked || state.locked)
       return { eligible: false, reason: "locked", candidate };
     if (state.health_status === "disabled")
       return { eligible: false, reason: "disabled", candidate };
+    // Credit floor: an account whose last fetched remaining credit is at or
+    // below its operator-set floor is excluded until the next quota sweep
+    // reports a healthier balance. Bypasses nothing — a stale balance is
+    // conservative, never permissive.
+    if (
+      state.min_credit_balance !== undefined &&
+      state.min_credit_balance !== null &&
+      state.last_remaining_credit !== undefined &&
+      state.last_remaining_credit !== null &&
+      Number.isFinite(state.last_remaining_credit) &&
+      state.last_remaining_credit <= state.min_credit_balance
+    )
+      return { eligible: false, reason: "credit_floor_reached", candidate };
     if (state.health_status === "model_cooldown")
       return { eligible: false, reason: "model_cooldown", candidate };
+    if (state.health_status === "credit_floor_reached")
+      return { eligible: false, reason: "credit_floor_reached", candidate };
+    if (state.health_status === "cooldown" && state.cooldown_kind === "hard")
+      return { eligible: false, reason: "cooldown_hard", candidate };
     if (state.health_status === "cooldown")
       return { eligible: true, reason: "cooldown", candidate };
     return { eligible: true, reason: "healthy", candidate };
@@ -569,6 +589,10 @@ export class RoutingEngine {
     const decisions = matching.map((candidate) => this.eligibility.evaluate(candidate));
     let eligible = decisions.filter((d) => d.eligible).map((d) => d.candidate);
     if (eligible.length === 0) {
+      const hardCooling = decisions.some((d) => d.reason === "cooldown_hard");
+      if (hardCooling) {
+        throw accountsRateLimitedError(requestedModel, resolved.model);
+      }
       throw accountsUnavailableError(
         requestedModel,
         decisions.map((d) => d.reason),

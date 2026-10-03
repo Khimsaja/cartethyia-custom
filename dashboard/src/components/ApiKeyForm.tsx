@@ -169,6 +169,7 @@ function RemoteRoutingRow({
     save.mutate(
       { toolId: tool.id, keyId, input: { enabled: next, mappings: mappings.data?.mappings ?? [] } },
       {
+        onSuccess: () => toast.success(`Saved remote routing for ${tool.name}.`),
         onError: (error) => toast.error(getErrorMessage(error, "Could not save remote routing.")),
       },
     );

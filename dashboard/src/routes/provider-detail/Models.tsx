@@ -253,7 +253,7 @@ export function AddModelModal({
   };
 
   return (
-    <Dialog open={true} onClose={onClose} title="Add Custom Model" width={440}>
+    <Dialog open={true} onClose={onClose} title="Add Custom Model" size="sm">
       <Stack gap="10px">
         <Inline gap="8px" align="flex-end">
           <Input

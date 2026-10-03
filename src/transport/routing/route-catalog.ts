@@ -70,8 +70,19 @@ export function cliMappingSourceKeys(toolId: string, sourceModel: string): reado
  */
 
 type RouteCandidateWithHealth = RouteCandidate & {
-  health_status?: "cooldown" | "model_cooldown" | "disabled";
+  health_status?: "cooldown" | "model_cooldown" | "credit_floor_reached" | "disabled";
+  cooldown_kind?: "hard" | "soft";
 };
+
+const HARD_COOLDOWN_CATEGORIES: Readonly<Record<string, true>> = {
+  quota_exhausted: true,
+  policy_blocked: true,
+  auth_invalidated: true,
+};
+
+function hardCooldownCategory(category: string | null): boolean {
+  return category !== null && HARD_COOLDOWN_CATEGORIES[category] === true;
+}
 
 /**
  * Projects one model row's metadata into the capability gates the router
@@ -219,6 +230,9 @@ const ACCOUNT_COLUMNS = {
   status: providerAccounts.status,
   cooldownUntil: providerAccounts.cooldownUntil,
   modelCooldowns: providerAccounts.modelCooldowns,
+  lastErrorCategory: providerAccounts.lastErrorCategory,
+  minCreditBalance: providerAccounts.minCreditBalance,
+  lastRemainingCredit: providerAccounts.lastRemainingCredit,
 } as const;
 
 const ALIAS_COLUMNS = {
@@ -240,7 +254,6 @@ const ROUTING_COLUMNS = {
   strategy: providerRoutingSettings.strategy,
   rotateCount: providerRoutingSettings.rotateCount,
   maxInflight: providerRoutingSettings.maxInflight,
-  creditFloor: providerRoutingSettings.creditFloor,
   enabled: providerRoutingSettings.enabled,
   bypassProxy: providerRoutingSettings.bypassProxy,
   userAgent: providerRoutingSettings.userAgent,
@@ -369,7 +382,6 @@ class RouteCatalogRepository {
         strategy: row.strategy as ProviderRoutingMap[string][string]["strategy"],
         rotateCount: row.rotateCount ?? 1,
         maxInflight: row.maxInflight,
-        creditFloor: row.creditFloor,
         enabled: row.enabled,
         bypassProxy: row.bypassProxy,
         userAgent: row.userAgent,
@@ -546,7 +558,12 @@ class RouteCatalogRepository {
           ...(routeUserAgent === undefined ? {} : { user_agent: routeUserAgent }),
           tenant_id: rowTenantId,
           provider_account_id: account.id,
-          ...(account.label ? { provider_account_label: account.label } : {}),
+          ...(account.minCreditBalance === null || account.minCreditBalance === undefined ? {} : { min_credit_balance: account.minCreditBalance }),
+          ...(typeof account.lastRemainingCredit === "string"
+            ? { last_remaining_credit: Number(account.lastRemainingCredit) }
+            : account.lastRemainingCredit === null || account.lastRemainingCredit === undefined
+              ? {}
+              : { last_remaining_credit: account.lastRemainingCredit }),
           // Provider-wide concurrency ceiling from Routing Strategy; legacy
           // account overrides are never read here.
           ...(() => {
@@ -569,6 +586,9 @@ class RouteCatalogRepository {
           // so the builder stays a pure read (no UPDATE racing the request).
           if (account.cooldownUntil && account.cooldownUntil.getTime() > Date.now()) {
             candidate.health_status = "cooldown";
+            candidate.cooldown_kind = hardCooldownCategory(account.lastErrorCategory)
+              ? "hard"
+              : "soft";
           }
         }
 
@@ -591,6 +611,21 @@ class RouteCatalogRepository {
         const modelCooldownUntil = modelCooldowns?.[model.modelId];
         if (modelCooldownUntil && new Date(modelCooldownUntil).getTime() > Date.now()) {
           candidate.health_status = "model_cooldown";
+        }
+        // Per-account credit floor: an account whose last fetched remaining
+        // credit is at or below its operator-set floor is a hard exclusion for
+        // every model, until the next successful quota read reports a balance
+        // above the floor. No sweep custody: the stamp lives on the row, not
+        // on a deadline.
+        if (
+          candidate.health_status === undefined &&
+          account.minCreditBalance !== null &&
+          account.minCreditBalance !== undefined &&
+          account.lastRemainingCredit !== null &&
+          account.lastRemainingCredit !== undefined &&
+          Number(account.lastRemainingCredit) <= account.minCreditBalance
+        ) {
+          candidate.health_status = "credit_floor_reached";
         }
         if (tenantId === undefined || candidate.tenant_id === null || candidate.tenant_id === tenantId) {
           candidates.push(candidate);

@@ -82,6 +82,8 @@ export interface TestRoute {
    * unexpired `model_cooldowns` entry into this marker.
    */
   readonly healthStatus?: "cooldown" | "model_cooldown" | "disabled";
+  /** Cooldown class the catalog projects when `healthStatus` is `cooldown`. */
+  readonly cooldownKind?: "hard" | "soft";
 }
 
 /**
@@ -469,6 +471,7 @@ export function buildSnapshot(routes: readonly TestRoute[]): RouteSnapshot {
     // The catalog attaches the health marker onto the candidate; the router's
     // `EligibilityEvaluator` reads it from there, so the fixture sets it there.
     ...(route.healthStatus === undefined ? {} : { health_status: route.healthStatus }),
+    ...(route.cooldownKind === undefined ? {} : { cooldown_kind: route.cooldownKind }),
     tenant_id: null,
   }));
   return {

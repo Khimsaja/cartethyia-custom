@@ -200,6 +200,21 @@ export const providerAccounts = pgTable("provider_accounts", {
    * failure, because there is no refresh to run.
    */
   staticToken: boolean("static_token").notNull().default(false),
+  /**
+   * Operator-set per-account credit floor: the minimum credits that must stay
+   * unused on this account. `null` = no reserve (the account may be spent down
+   * to zero). When the quota sweep's cached remaining credit drops to or below
+   * this floor, the routing catalog excludes the account until the next
+   * successful quota read. Only meaningful for credit-metered providers;
+   * ignored when no credit figure has ever been fetched.
+   */
+  minCreditBalance: integer("min_credit_balance"),
+  /**
+   * Last remaining credit fetched by the quota sweep, cached on the row so the
+   * request path can enforce `min_credit_balance` without a live provider
+   * round trip. `null` means no credit figure has ever been fetched.
+   */
+  lastRemainingCredit: numeric("last_remaining_credit", { precision: 16, scale: 4 }),
 
   },
   (table) => [
@@ -453,16 +468,6 @@ export const providerRoutingSettings = pgTable(
      * (the field sits next to the failover/round-robin strategy in the UI).
      * `null` = UNLIMITED concurrency per account. */
     maxInflight: integer("max_inflight"),
-    /**
-     * Credit reserve: the minimum credits that must stay unused on every
-     * account of this provider. `null` = no reserve (an account may be spent
-     * down to zero). When an account's remaining credit drops to or below this
-     * floor, the quota sweep parks it in a 24h cooldown so routing fails over to
-     * a sibling instead of draining the account to empty. Only meaningful for
-     * credit-metered providers; ignored for providers that report no credit
-     * window.
-     */
-    creditFloor: integer("credit_floor"),
     enabled: boolean("enabled").notNull().default(false),
     // Route-selected User-Agent for built-in API-key providers; OAuth and BYOK identities stay native.
     userAgent: text("user_agent").notNull().default("codex_cli_rs/0.156.1"),

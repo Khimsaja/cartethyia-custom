@@ -306,6 +306,10 @@ export function useRecoverAccount() {
         }),
         queryClient.invalidateQueries({ queryKey: queryKeys.providers.all }),
       ]);
+      toast.success("Account recovered");
+    },
+    onError: (error) => {
+      toast.error("Could not recover the account.", getErrorMessage(error));
     },
   });
 }

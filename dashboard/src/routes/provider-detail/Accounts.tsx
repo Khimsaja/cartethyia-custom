@@ -386,6 +386,46 @@ function AccountRow({
             <span title="Concurrency comes from this provider’s Routing Strategy; accounts no longer carry manual ceilings.">
               In flight: {inflight?.toLocaleString() ?? "—"}
             </span>
+            {typeof account.lastRemainingCredit === "number" ? (
+              <span title="Last remaining credit the quota sweep fetched.">
+                Credits left: {account.lastRemainingCredit.toLocaleString()}
+              </span>
+            ) : null}
+            <label
+              style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}
+            >
+              <span title="Routing skips this account while its last fetched credit balance is at or below this floor. Blank = no floor.">
+                Min balance
+              </span>
+              <input
+                type="number"
+                aria-label={`Minimum credit balance for ${label}`}
+                min={0}
+                max={1000000000}
+                placeholder="None"
+                defaultValue={account.minCreditBalance ?? ""}
+                key={account.minCreditBalance ?? "none"}
+                onBlur={(event) => {
+                  const raw = event.target.value.trim();
+                  const parsed = raw === "" ? Number.NaN : Number(raw);
+                  const next =
+                    raw === ""
+                      ? null
+                      : Number.isFinite(parsed)
+                        ? Math.max(0, Math.min(1000000000, Math.round(parsed)))
+                        : null;
+                  if (raw !== "" && !Number.isFinite(parsed)) return;
+                  if (next !== account.minCreditBalance) {
+                    update.mutate({
+                      providerId,
+                      accountId: account.id,
+                      request: { minCreditBalance: next },
+                    });
+                  }
+                }}
+                style={{ width: "90px", padding: "3px 6px", fontSize: "12px" }}
+              />
+            </label>
           </div>
         </div>
 

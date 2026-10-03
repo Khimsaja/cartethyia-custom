@@ -260,7 +260,7 @@ export function ApiKeysPanel(): ReactNode {
         onClose={() => setCreateOpen(false)}
         title="Create API Key"
         description="Create a tenant-scoped credential. Choose model access, permissions, limits, and optional blocked client routers."
-        width={880}
+        size="lg"
       >
         <ApiKeyForm
           mode="create"
@@ -272,6 +272,7 @@ export function ApiKeysPanel(): ReactNode {
               onSuccess: (res) => {
                 setCreateOpen(false);
                 setRevealedSecret(oneTimeSecretForMode(input.keyMode, res.secret));
+                toast.success("API key created");
               },
               onError: (error) => toast.error(getErrorMessage(error, "Could not create API key.")),
             });
@@ -284,7 +285,7 @@ export function ApiKeysPanel(): ReactNode {
         onClose={() => setEditTarget(null)}
         title="Edit API Key"
         description="Update the key's model access, permissions, limits, share notes, and optional public popup."
-        width={880}
+        size="lg"
       >
         <ApiKeyForm
           mode="edit"
@@ -299,6 +300,7 @@ export function ApiKeysPanel(): ReactNode {
                 onSuccess: (res) => {
                   setEditTarget(null);
                   setRevealedSecret(oneTimeSecretForMode(input.keyMode, res.secret));
+                  toast.success("API key updated");
                 },
                 onError: (error) => toast.error(getErrorMessage(error, "Could not update API key.")),
               },

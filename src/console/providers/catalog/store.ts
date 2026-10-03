@@ -899,6 +899,7 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
             ...(credentialFingerprint ? { credentialFingerprint } : {}),
             credentialKind: request.credentialKind,
             status: "active",
+            ...(request.minCreditBalance === undefined ? {} : { minCreditBalance: request.minCreditBalance }),
             ...(request.authState === undefined ? {} : { authState: request.authState }),
             // An OAuth account pasted without a refresh token is a *static*
             // token: the pasted value is a bearer token used exactly as issued
@@ -971,6 +972,7 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
         patch.secret.length === 0 ? null : hashSecret(patch.secret);
     }
     if (patch.status !== undefined) set.status = patch.status;
+    if (patch.minCreditBalance !== undefined) set.minCreditBalance = patch.minCreditBalance;
     // Toggling the static-token flag: turning it on declares the credential is
     // used as issued and never refreshed, so any stale re-auth flag is cleared —
     // the operator has said the account is fine, and the pill must stop reading
@@ -1055,6 +1057,11 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
       createdAt: row.createdAt.toISOString(),
       sortIndex: row.sortIndex,
       ...(row.staticToken ? { staticToken: true } : {}),
+      minCreditBalance: row.minCreditBalance ?? null,
+      lastRemainingCredit:
+        row.lastRemainingCredit === null || row.lastRemainingCredit === undefined
+          ? null
+          : Number(row.lastRemainingCredit),
     };
   }
 

@@ -45,7 +45,6 @@ import { quotaRefreshSweep } from "../workers/quota-refresh-worker";
 import { checkinEgressForPass } from "../workers/checkin-egress";
 import { createAccountSecretResolver } from "../providers/operations/provider-credential-service";
 import { quotaCacheSize } from "../console/quota/cache";
-import { createCreditFloorResolver } from "../console/quota/refresh";
 import { preferencesReaderFor } from "../transport/dispatch/attempt-finalize";
 import { sweepExpiredCooldowns } from "../providers/operations/account-health-service";
 import { DrizzleTelemetryStore } from "../persistence/telemetry-store";
@@ -334,12 +333,10 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
           redis,
           providerRegistry: registry,
           resolveCredential: quotaResolveCredential,
-          // The credit reserve (Routing Strategy "credit floor") is enforced on
-          // this sweep: it is the path that fetches live credit, so a funded
-          // account is parked in a 24h cooldown the moment its remaining credit
-          // reaches the operator's floor, and the route snapshot is invalidated
-          // so the next plan fails over instead of draining it.
-          resolveCreditFloor: createCreditFloorResolver(db),
+          // The sweep stamps the last fetched remaining credit onto the account
+          // row (`stampRemainingCredit`) and invalidates the route snapshot when
+          // it changes, so the next plan sees the fresh figure and the request
+          // path can enforce per-account floors from the last cached balance.
           snapshotInvalidator: snapshotService,
           // The check-in ride-along rotates egress per account: each account
           // gets the next active pool in its tenant's rotation so check-ins

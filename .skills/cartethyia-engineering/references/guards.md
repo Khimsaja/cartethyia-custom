@@ -16,7 +16,8 @@
 
 ## Naming and structure
 
-- Keep `scripts/` flat with `ops-`, `build-`, or `ci-` prefixes.
+- Keep `scripts/` grouped by purpose (`commands/`, `build/`, `dev/`, `generate/`,
+  `internal/`).
 - Avoid `index.ts` barrels; use role names such as `contracts.ts`, `routes.ts`,
   `store.ts`, `service.ts`, and `errors.ts`.
 - Exported APIs need explicit types; do not use `any` or suppressions.

@@ -103,7 +103,7 @@ function QuotaAccountResetModal({
     <Dialog
       open={true}
       onClose={onClose}
-      width={720}
+      size="lg"
       title={`Saved Rate-Limit Resets — ${account.name}`}
     >
       <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
