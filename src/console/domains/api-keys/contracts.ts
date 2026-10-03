@@ -244,7 +244,7 @@ export function validateApiKeyRequest(request: CreateApiKeyRequest): readonly Ac
   if (keyMode === "share" && request.key !== undefined) {
     throw new ConsoleDomainError("invalid_key_mode", 400, "Share templates cannot carry a personal key");
   }
-  const scopes = request.scopes ?? ["routing:invoke"];
+  const scopes = request.scopes ?? ["routing:invoke", "search:invoke"];
   for (const scope of scopes) {
     if (!isValidTenantKeyScope(scope as AccessScope)) {
       throw new ConsoleDomainError("invalid_scope", 400, `Scope is not allowed: ${scope}`);
