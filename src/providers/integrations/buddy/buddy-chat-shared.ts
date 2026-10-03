@@ -143,6 +143,8 @@ export function buddyPrePayloadCommon(
   normalizeBuddyRoles(payload);
   applyOpenAIReasoning(payload, request);
   applyDeepSeekReasoning(payload);
+  // sol family defaults to high reasoning like reference thinking.go defaultDeepSeekEffort — sol without effort gets 500/invoke error otherwise
+  injectSolReasoningDefault(payload);
   payload["stream"] = true;
   const effort = payload["reasoning_effort"];
   if (effort === "none" || effort === "off") {
@@ -155,11 +157,135 @@ export function buddyPrePayloadCommon(
   }
   backfillDeepSeekReasoningContent(payload);
   const messages = payload["messages"];
-  if (Array.isArray(messages)) coalesceConsecutiveAssistantMessages(messages as Array<Record<string, unknown>>);
+  if (Array.isArray(messages)) {
+    const arr = messages as Array<Record<string, unknown>>;
+    // Buddy wire: repack tool result blocks before cleanup (image_resize_notice splits tool results → 11148)
+    repackBuddyToolResultBlocks(arr);
+    cleanupBuddyOrphanToolPairs(arr);
+    coalesceConsecutiveAssistantMessages(arr);
+  }
   delete payload["agent"];
   delete payload["agent_mode"];
   delete payload["agent_prompt"];
 }
+
+function injectSolReasoningDefault(payload: Record<string, unknown>): void {
+  const model = typeof payload["model"] === "string" ? (payload["model"] as string) : "";
+  const isSol = model.toLowerCase().includes("sol");
+  if (!isSol) return;
+  if (payload["reasoning_effort"] !== undefined) return;
+  const thinking = payload["thinking"] as Record<string, unknown> | undefined;
+  if (thinking && typeof thinking["type"] === "string" && (thinking["type"] as string) !== "") return;
+  payload["reasoning_effort"] = "high";
+}
+
+/**
+ * Repack tool result blocks: move non-tool messages interleaved between
+ * assistant tool_calls and its tool results to after the block.
+ * Port of workbuddy2api repackToolResultBlocks — fixes 11148 tool_call_sequence_broken.
+ */
+function repackBuddyToolResultBlocks(messages: Array<Record<string, unknown>>): void {
+  if (messages.length < 3) return;
+  const out: Array<Record<string, unknown>> = [];
+  let changed = false;
+  let i = 0;
+  while (i < messages.length) {
+    const m = messages[i];
+    if (!m || m["role"] !== "assistant" || !Array.isArray(m["tool_calls"]) || (m["tool_calls"] as unknown[]).length === 0) {
+      out.push(m);
+      i += 1;
+      continue;
+    }
+    const want = new Set<string>();
+    for (const tc of m["tool_calls"] as unknown[]) {
+      const id = (tc as Record<string, unknown>)?.["id"];
+      if (typeof id === "string" && id.length > 0) want.add(id);
+    }
+    out.push(m);
+    i += 1;
+    const results: Array<Record<string, unknown>> = [];
+    const between: Array<Record<string, unknown>> = [];
+    let sawNonTool = false;
+    while (i < messages.length) {
+      const mm = messages[i] as Record<string, unknown>;
+      if (!mm || typeof mm !== "object") break;
+      const role = mm["role"];
+      if (role === "tool") {
+        const id = mm["tool_call_id"];
+        if (typeof id !== "string" || !want.has(id)) break;
+        results.push(mm);
+        if (sawNonTool) changed = true;
+        i += 1;
+        continue;
+      }
+      if (results.length === 0) break;
+      between.push(mm);
+      sawNonTool = true;
+      i += 1;
+    }
+    out.push(...results);
+    out.push(...between);
+    if (between.length > 0) changed = true;
+  }
+  if (!changed) return;
+  messages.length = 0;
+  messages.push(...out);
+}
+
+/**
+ * Remove orphan tool_calls / tool results that lack a pair — port of
+ * workbuddy2api cleanupOrphanToolCalls. Lets a broken history self-heal
+ * instead of 400ing every subsequent request.
+ */
+function cleanupBuddyOrphanToolPairs(messages: Array<Record<string, unknown>>): void {
+  const toolResultIds = new Set<string>();
+  const toolCallIds = new Set<string>();
+  for (const m of messages) {
+    if (m["role"] === "tool" && typeof m["tool_call_id"] === "string") toolResultIds.add(m["tool_call_id"] as string);
+    if (m["role"] === "assistant" && Array.isArray(m["tool_calls"])) {
+      for (const tc of m["tool_calls"] as unknown[]) {
+        const id = (tc as Record<string, unknown>)?.["id"];
+        if (typeof id === "string") toolCallIds.add(id);
+      }
+    }
+  }
+  if (toolResultIds.size === 0 && toolCallIds.size === 0) return;
+  const out: Array<Record<string, unknown>> = [];
+  let changed = false;
+  for (const m of messages) {
+    if (m["role"] === "assistant" && Array.isArray(m["tool_calls"])) {
+      const kept = (m["tool_calls"] as unknown[]).filter((tc) => {
+        const id = (tc as Record<string, unknown>)?.["id"];
+        return typeof id === "string" && toolResultIds.has(id);
+      });
+      if (kept.length === 0 && toolCallIds.size > 0 && (m["tool_calls"] as unknown[]).length > 0) {
+        // Drop empty tool_calls key — keep message without it
+        const { tool_calls: _drop, ...rest } = m as Record<string, unknown> & { tool_calls: unknown };
+        if (Object.keys(kept).length === 0) changed = true;
+        out.push(rest as Record<string, unknown>);
+        if (kept.length !== (m["tool_calls"] as unknown[]).length) changed = true;
+        continue;
+      }
+      if (kept.length !== (m["tool_calls"] as unknown[]).length) {
+        changed = true;
+        out.push({ ...m, tool_calls: kept });
+        continue;
+      }
+    }
+    if (m["role"] === "tool") {
+      const id = m["tool_call_id"];
+      if (typeof id === "string" && !toolCallIds.has(id as string)) {
+        changed = true;
+        continue;
+      }
+    }
+    out.push(m);
+  }
+  if (!changed) return;
+  messages.length = 0;
+  messages.push(...out);
+}
+
 
 function normalizeBuddyToolChoice(payload: Record<string, unknown>): void {
   if (!("tool_choice" in payload)) return;

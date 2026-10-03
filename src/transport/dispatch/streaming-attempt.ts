@@ -760,7 +760,9 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
       const message = gatewayError
         ? explainGatewayError(gatewayError)
         : formatPublicErrorMessage(code, "Upstream stream failed");
+      // Merge upstream details when available so a provider-reported error keeps its requestId/code.
       const details = gatewayError ? publicGatewayErrorDetails(gatewayError) : {};
+      // For cb gpt-6.1-sol style invoke errors, upstream extError is already in gatewayError details via provider pipeline.
       for (const bytes of streamEncoder.encodeError({ origin, code, message, details })) {
         controller.enqueue(bytes);
         appendClientResponse(bytes);
