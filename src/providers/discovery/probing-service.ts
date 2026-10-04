@@ -32,6 +32,7 @@ import {
   buildProbeCanonicalRequest,
   computeProbeVerdict,
   extractSample,
+  GROK_407_PROBE_PROMPT,
   grok407ProbeFailure,
   hasMeaningfulOutput,
   loadProbePreferences,
@@ -219,6 +220,8 @@ export class ProviderProbingService {
       providerId,
       requestedAccountId: request.accountId,
       requiresAccount,
+      allowCoolingAccount:
+        providerId === "grok" && request.prompt === GROK_407_PROBE_PROMPT,
     });
     if (!account.ok) {
       return { ok: false, latencyMs: Date.now() - startedAt, error: account.error };

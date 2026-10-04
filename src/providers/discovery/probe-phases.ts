@@ -338,8 +338,17 @@ export async function selectProbeAccount(args: {
   readonly providerId: string;
   readonly requestedAccountId: string | undefined;
   readonly requiresAccount: boolean;
+  /** Explicit Grok 407 feature tests may verify a cooling account to recover it. */
+  readonly allowCoolingAccount?: boolean;
 }): Promise<ProbeAccountSelection> {
-  const { db, tenantId, providerId, requestedAccountId, requiresAccount } = args;
+  const {
+    db,
+    tenantId,
+    providerId,
+    requestedAccountId,
+    requiresAccount,
+    allowCoolingAccount = false,
+  } = args;
   const accountRows = requiresAccount
     ? await db
         .select({
@@ -363,7 +372,7 @@ export async function selectProbeAccount(args: {
     .filter(
       (row) =>
         row.status !== "disabled" &&
-        (row.cooldownUntil === null || row.cooldownUntil.getTime() <= now),
+        (allowCoolingAccount || row.cooldownUntil === null || row.cooldownUntil.getTime() <= now),
     )
     .sort((left, right) => Number(right.tenantId !== null) - Number(left.tenantId !== null));
   const accountId = requestedAccountId ?? usableAccounts[0]?.id;
