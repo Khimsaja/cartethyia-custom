@@ -32,6 +32,7 @@ import {
   buildProbeCanonicalRequest,
   computeProbeVerdict,
   extractSample,
+  grok407ProbeFailure,
   hasMeaningfulOutput,
   loadProbePreferences,
   recordProbeHealth,
@@ -405,10 +406,21 @@ export class ProviderProbingService {
     } catch (error) {
       dispatchError = error;
     }
+    const featureFailure = grok407ProbeFailure({
+      providerId,
+      prompt: request.prompt,
+      events,
+      dispatchError,
+    });
+    if (featureFailure !== undefined) dispatchError = featureFailure;
 
     const upstreamStatusCode =
-      dispatchError instanceof GatewayError && typeof dispatchError.details.upstreamStatus === "number"
-        ? dispatchError.details.upstreamStatus
+      dispatchError instanceof GatewayError
+        ? typeof dispatchError.details.upstreamStatus === "number"
+          ? dispatchError.details.upstreamStatus
+          : typeof dispatchError.details.providerStatus === "number"
+            ? dispatchError.details.providerStatus
+            : undefined
         : undefined;
     await recordProbeHealth({
       db: this.db,

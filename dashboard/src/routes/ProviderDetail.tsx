@@ -259,10 +259,7 @@ export default function ProviderDetail(): ReactNode {
         providerId: id,
         request: {
           modelId: "grok-4.6",
-          wireFamily: "responses",
-          prompt: "Reply with exactly: 407",
-          reasoningEffort: "high",
-          maxOutputTokens: 1024,
+          prompt: "reply my message with exact number 407",
           stream: true,
         },
       },

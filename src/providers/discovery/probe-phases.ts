@@ -73,6 +73,50 @@ export function wireContextFrom(
   };
 }
 
+/** Grok's account feature probe intentionally uses the same Responses request as live traffic. */
+export const GROK_407_PROBE_PROMPT = "reply my message with exact number 407";
+
+/**
+ * Converts a failed/mismatched Grok feature probe into a quota-shaped upstream
+ * error. The account health machine supplies the 24-hour Grok fallback while
+ * retaining any reset duration already present in the provider detail.
+ */
+export function grok407ProbeFailure(args: {
+  readonly providerId: string;
+  readonly prompt: string | undefined;
+  readonly events: readonly CanonicalEvent[];
+  readonly dispatchError: unknown;
+}): GatewayError | undefined {
+  if (args.providerId !== "grok" || args.prompt !== GROK_407_PROBE_PROMPT) return undefined;
+  const sample = extractSample(args.events);
+  if (args.dispatchError === undefined && sample === "407") return undefined;
+  const priorDetails = args.dispatchError instanceof GatewayError ? args.dispatchError.details : {};
+  const providerStatus =
+    typeof priorDetails.providerStatus === "number" ? priorDetails.providerStatus : undefined;
+  const returned202 = sample === "202" || providerStatus === 202;
+  const detail =
+    returned202
+      ? "Grok 407 feature probe returned 202 instead of 407"
+      : args.dispatchError instanceof Error
+        ? `Grok 407 feature probe failed: ${args.dispatchError.message}`
+        : sample === undefined
+          ? "Grok 407 feature probe returned no exact 407 response"
+          : `Grok 407 feature probe returned ${sample}`;
+  return new GatewayError(
+    "quota_exceeded",
+    429,
+    detail,
+    {
+      ...priorDetails,
+      providerCode: "subscription:free-usage-exhausted",
+      ...(providerStatus === undefined && returned202
+        ? { providerStatus: 202, upstreamStatus: 202 }
+        : {}),
+    },
+    "upstream",
+  );
+}
+
 /** Best-effort visible text extracted from a probe's streamed content deltas, capped for display. */
 export function extractSample(events: readonly CanonicalEvent[]): string | undefined {
   let text = "";

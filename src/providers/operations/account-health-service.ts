@@ -339,11 +339,9 @@ export function classifyAccountError(
   }
 
   if (quotaSignal) {
-    // xAI Grok Build's free tier resets on a rolling 24-hour window. Its
-    // exhaustion is a full-day cooldown even when the provider states no
-    // duration (the live 429 carries only the provider code), so it must not
-    // fall back to the generic 1h default — a shorter park would let the
-    // account back into rotation inside the window.
+    // xAI Grok Build's free tier resets on a rolling window. Use a duration
+    // stated by the provider when present; otherwise park for the conservative
+    // 24-hour fallback.
     const grokFreeTier =
       providerCode === "subscription:free-usage-exhausted" ||
       providerCode.startsWith("subscription:") ||
@@ -354,7 +352,7 @@ export function classifyAccountError(
       lower.includes("rolling 24 hour");
     const statedCooldown = messageCooldown ?? headerCooldown;
     const cooldownMs = grokFreeTier
-      ? Math.max(statedCooldown ?? 0, GROK_QUOTA_COOLDOWN_MS)
+      ? (statedCooldown ?? GROK_QUOTA_COOLDOWN_MS)
       : (statedCooldown ?? DEFAULT_QUOTA_COOLDOWN_MS());
     // The caller records against the concrete account that just failed
     // upstream, so a provider-scoped quota error still cools THAT account

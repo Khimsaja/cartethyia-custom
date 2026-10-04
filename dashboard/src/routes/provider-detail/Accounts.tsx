@@ -781,7 +781,7 @@ export function AccountsList({
             icon={<FlaskConical size={12} className={grokProbePending ? "animate-spin" : ""} />}
             disabled={grokProbePending || accounts.length === 0}
             onClick={onGrokProbe}
-            title="Probe every Grok account with 4.6 high reasoning"
+            title="Probe every Grok account with the live 407 streaming request"
           >
             {grokProbePending ? "Testing…" : "Test 407"}
           </Button>
