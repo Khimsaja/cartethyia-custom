@@ -58,8 +58,8 @@ function parseExpiry(value: unknown): Date | undefined {
  * The console accepts either a bare access token or the JSON export a client
  * produces (`{accessToken, refreshToken, expiresAt, …}`, possibly nested under
  * `data`). A bare token has no refresh token — the account can be dispatched
- * with it but cannot be refreshed, which the caller records so the operator is
- * told to re-authenticate instead of discovering it at first expiry.
+ * with it but cannot be refreshed, so the caller stores it as a static
+ * API credential instead of sending the access token to a refresh endpoint.
  */
 export function parsePastedOAuthCredential(raw: string): {
   readonly accessToken: string;
@@ -831,20 +831,20 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
     providerId: string,
     request: CreateProviderAccountRequest,
   ): Promise<ProviderAccountResponse> {
-    const credentialFingerprint =
-      request.credentialKind === "none" || request.secret.length === 0
-        ? undefined
-        : hashSecret(request.secret);
     try {
       return await this.db.transaction(async (tx) => {
         let effectiveSecret = request.secret;
+        let effectiveCredentialKind = request.credentialKind;
         let oauthRefreshCiphertext: Buffer | undefined;
         let oauthExpiresAt: Date | undefined;
         let oauthHasRefreshToken = false;
 
-        if (request.credentialKind === "oauth" && request.secret.trim().length > 0) {
+        if (
+          (request.credentialKind === "oauth" || request.credentialKind === "api_key") &&
+          request.secret.trim().length > 0
+        ) {
           const trimmed = request.secret.trim();
-          if (providerId === "mimodesktop") {
+          if (request.credentialKind === "oauth" && providerId === "mimodesktop") {
             const { parseMimoCredential, encodeMimoCredential } = await import(
               "../../../providers/integrations/xiaomi-mimo/mimodesktop-oauth"
             );
@@ -853,7 +853,7 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
             oauthExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
             effectiveSecret = encodeMimoCredential(creds);
             oauthHasRefreshToken = true;
-          } else if (providerId === "mimostudio") {
+          } else if (request.credentialKind === "oauth" && providerId === "mimostudio") {
             const { parseMimoStudioCredential, encodeMimoStudioCredential } = await import(
               "../../../providers/integrations/xiaomi-mimo/mimostudio-auth"
             );
@@ -863,30 +863,26 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
             effectiveSecret = encodeMimoStudioCredential(creds);
             oauthHasRefreshToken = true;
           } else {
-            // A pasted OAuth credential is either an access token or a JSON
-            // export (`{accessToken, refreshToken, expiresAt, …}`). Split it so
-            // the refresh token is stored where the refresh service reads it
-            // (`provider_oauth_states.refresh_ciphertext`); without this split
-            // the whole blob sat in the access slot and the account had no
-            // refresh token at all, so it died silently at first expiry.
             const parts = parsePastedOAuthCredential(trimmed);
-            effectiveSecret = parts.accessToken;
-            // Only store a refresh token when the credential actually carried
-            // one. A bare access token parsed to itself as the "refresh" token,
-            // and storing that would make the refresh path POST an access token
-            // to the token endpoint — a guaranteed failure that looks like a
-            // revoked credential. Absent here, the account is flagged for
-            // re-auth instead.
-            if (parts.refreshToken !== parts.accessToken) {
-              oauthRefreshCiphertext = encryptCredential(parts.refreshToken);
-              oauthHasRefreshToken = true;
+            const hasRefreshToken = parts.refreshToken !== parts.accessToken;
+            if (request.credentialKind === "oauth" || hasRefreshToken) {
+              effectiveSecret = parts.accessToken;
+              effectiveCredentialKind = hasRefreshToken ? "oauth" : "api_key";
+              if (hasRefreshToken) {
+                oauthRefreshCiphertext = encryptCredential(parts.refreshToken);
+                oauthHasRefreshToken = true;
+              }
+              oauthExpiresAt = parts.expiresAt;
             }
-            oauthExpiresAt = parts.expiresAt;
           }
         }
 
         // Append to the end of this provider's list rather than relying on
         // creation time, so a new account never displaces existing positions.
+        const credentialFingerprint =
+          effectiveCredentialKind === "none" || effectiveSecret.length === 0
+            ? undefined
+            : hashSecret(effectiveSecret);
         const nextSortIndex = await this.nextAccountSortIndex(tx, providerId, tenantId);
         const rows = await tx
           .insert(providerAccounts)
@@ -897,7 +893,7 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
             label: request.label ?? `${providerId} account`,
             credentialCiphertext: encryptCredential(effectiveSecret),
             ...(credentialFingerprint ? { credentialFingerprint } : {}),
-            credentialKind: request.credentialKind,
+            credentialKind: effectiveCredentialKind,
             status: "active",
             ...(request.authState === undefined ? {} : { authState: request.authState }),
             // An OAuth account pasted without a refresh token is a *static*
@@ -907,7 +903,7 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
             // "re-login required" — the token is still valid and dispatchable —
             // and so the refresh sweep skips it instead of retrying a refresh
             // that can never succeed.
-            ...(request.credentialKind === "oauth" && !oauthHasRefreshToken
+            ...(effectiveCredentialKind === "oauth" && !oauthHasRefreshToken
               ? { staticToken: true }
               : {}),
           })
@@ -915,30 +911,24 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
         const row = rows[0];
         if (!row) throw new Error("failed to create provider account");
 
-        // An OAuth account always gets a state row — even with no refresh token
-        // — so the proactive refresh sweep can see it. Without the row the
-        // account is invisible to `loadDueOAuthAccounts` (an inner join) and its
-        // token dies with no operator signal. A null refresh token marks a
-        // static account the sweep skips (see `loadDueOAuthAccounts`); the row
-        // still carries any expiry so a future re-login can reuse it.
-        if (request.credentialKind === "oauth") {
+        if (effectiveCredentialKind === "oauth") {
           await tx.insert(providerOauthStates).values({
             providerAccountId: row.id,
             ...(oauthRefreshCiphertext ? { refreshCiphertext: oauthRefreshCiphertext } : {}),
             expiresAt: oauthExpiresAt ?? null,
           });
-          if (!oauthHasRefreshToken) {
-            pushStructuredConsoleLog(
-              "info",
-              "OAuth account created as a static token; it will not be refreshed",
-              {
-                event: "token_refresh",
-                providerId,
-                accountId: row.id,
-                errorCode: "static_token",
-              },
-            );
-          }
+        }
+        if (request.credentialKind === "oauth" && !oauthHasRefreshToken) {
+          pushStructuredConsoleLog(
+            "info",
+            "OAuth access token stored as a static API credential; it will not be refreshed",
+            {
+              event: "token_refresh",
+              providerId,
+              accountId: row.id,
+              errorCode: "static_token",
+            },
+          );
         }
 
         const [account] = await this.accountsWithUsage(tenantId, [row]);

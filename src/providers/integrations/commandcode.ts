@@ -13,7 +13,7 @@ import { isRecord, readNumber, readString } from "../../protocol/primitives";
 import { usageFromProvider } from "../usage";
 import { readCredentialSecret, type ProviderDispatchTarget, type ProviderAdapter, type ProviderDispatchContext } from "../provider-registry";
 import { providerBaseUrl } from "../provider-metadata";
-import { createUpstreamDeadlineLifecycle } from "../operations/upstream-deadline";
+import { abortGatewayError, createUpstreamDeadlineLifecycle } from "../operations/upstream-deadline";
 import { defineModel } from "../model-definition";
 import type { ModelDefinition } from "../provider-registry";
 import {
@@ -463,10 +463,8 @@ const upstreamModelId = candidate.model_id || request.model;
 
       yield* transformNdjson(response.body as ReadableStream<Uint8Array>, lifecycle.signal);
     } catch (err: unknown) {
-      if (err instanceof GatewayError) throw err;
-      if (lifecycle.signal.aborted || (err as Error).name === "AbortError") {
-        throw new GatewayError("transport_closed", 499, "request was cancelled");
-      }
+      const abortError = abortGatewayError(lifecycle, err, context.abort_signal);
+      if (abortError) throw abortError;
       throw err;
     } finally {
       lifecycle.release();

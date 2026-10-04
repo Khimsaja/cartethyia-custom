@@ -15,14 +15,11 @@ export interface CreditPoolTotals {
 }
 
 /**
- * Sums one provider's credit windows into a single pool.
+ * Sums one provider's absolute credit windows into a single pool.
  *
- * Only windows that report a positive `limit` can be summed: a window without
- * one is a rate limit or an unbounded bucket, and folding it in as zero would
- * quietly shrink the pool. `used` prefers the reported figure and falls back to
- * the percentage, so a provider that reports only one of the two still counts.
- * Returns null when nothing contributes, which is how a provider with no credit
- * system (RPM/TPM only) opts out of the card entirely.
+ * Only windows with a positive absolute `limit` and an absolute `used` or
+ * `remaining` value contribute. A percentage is utilization, not a credit
+ * balance, so percentage-only windows are left out of this card.
  */
 export function aggregateCreditPool(entries: readonly QuotaEntry[]): CreditPoolTotals | null {
   let used = 0;
@@ -39,13 +36,12 @@ export function aggregateCreditPool(entries: readonly QuotaEntry[]): CreditPoolT
       let windowUsed: number | null = null;
       if (typeof window.used === "number" && Number.isFinite(window.used)) {
         windowUsed = window.used;
-      } else if (typeof window.usedPercent === "number" && Number.isFinite(window.usedPercent)) {
-        windowUsed = (windowLimit * window.usedPercent) / 100;
       } else if (typeof window.remaining === "number" && Number.isFinite(window.remaining)) {
         windowUsed = windowLimit - window.remaining;
       }
+      if (windowUsed === null) continue;
       limit += windowLimit;
-      used += Math.min(windowLimit, Math.max(0, windowUsed ?? 0));
+      used += Math.min(windowLimit, Math.max(0, windowUsed));
       contributed = true;
     }
     if (contributed) contributors.add(entry.id);

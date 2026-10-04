@@ -6,7 +6,7 @@
 // global-admin refresh — so it lives here rather than inside the route module.
 // A drift between them would mean the page and the worker disagree about what
 // "refreshed" means.
-import { and, eq, isNull, ne, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import type { CartethyiaDatabase } from "../../persistence/postgres";
 import { providerAccounts } from "../../persistence/schema";
 import type { RedisClient } from "../../persistence/redis";
@@ -190,7 +190,11 @@ const TARGET_COLUMNS = {
 };
 
 /**
- * OAuth accounts eligible for the periodic quota sweep.
+ * Credential-bearing accounts eligible for the periodic quota sweep.
+ *
+ * OAuth accounts use the refresh-aware resolver; api_key accounts (including
+ * pasted JWTs) use the stored bearer exactly as issued. Both need quota refresh
+ * and Buddy daily check-in, while `none` has no credential to probe.
  *
  * An account already marked `auth_invalidated` is excluded: its credential was
  * rejected outright and does not repair itself, so every sweep is a guaranteed
@@ -198,12 +202,12 @@ const TARGET_COLUMNS = {
  * re-login, not another probe. It returns to the sweep once it is re-authed or
  * recovered, which is when its credential is expected to work again.
  *
- * Every other account is swept, `disabled` included. A disabled account is not
- * necessarily a revoked one — it may have been parked for a reason unrelated to
- * its credential — and skipping it would let a credential die silently while
- * the row still reads healthy. Sweeping is how that is detected.
+ * Every other credential-bearing account is swept, `disabled` included. A
+ * disabled account is not necessarily revoked — it may have been parked for a
+ * reason unrelated to its credential — and skipping it would let a credential
+ * die silently while the row still reads healthy.
  */
-export async function listOAuthQuotaRefreshTargets(
+export async function listQuotaRefreshTargets(
   db: CartethyiaDatabase,
 ): Promise<readonly QuotaRefreshTarget[]> {
   return db
@@ -211,7 +215,7 @@ export async function listOAuthQuotaRefreshTargets(
     .from(providerAccounts)
     .where(
       and(
-        eq(providerAccounts.credentialKind, "oauth"),
+        inArray(providerAccounts.credentialKind, ["oauth", "api_key"]),
         or(
           isNull(providerAccounts.lastErrorCategory),
           ne(providerAccounts.lastErrorCategory, "auth_invalidated"),

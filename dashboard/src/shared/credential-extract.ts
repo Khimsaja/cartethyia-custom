@@ -22,16 +22,12 @@ const CREDENTIAL_FIELD_PRIORITY = [
   "secret",
 ] as const;
 
-const OAUTH_SHAPE_FIELDS = [
-  "refresh",
-  "refreshToken",
-  "refresh_token",
-  "expires",
-  "expiresAt",
-  "expires_at",
-  "id_token",
-  "idToken",
-] as const;
+/**
+ * Refresh-token fields are the only reliable signal that a pasted credential
+ * can be renewed. Expiry/id-token fields also occur on access-only JWT exports,
+ * which must stay static and must not enter an OAuth refresh endpoint.
+ */
+const OAUTH_SHAPE_FIELDS = ["refresh", "refreshToken", "refresh_token"] as const;
 
 /**
  * Fields whose presence identifies one record as a Cartethyia account export
@@ -262,12 +258,20 @@ function entryFromObject(obj: Record<string, unknown>): ParsedCredentialEntry {
     typeof obj["accessToken"] === "string" &&
     EXPORT_ROW_FIELDS.every((field) => field in obj)
   ) {
-    const label = typeof obj["label"] === "string" && obj["label"].trim().length > 0
-      ? obj["label"].trim()
-      : undefined;
+    const label =
+      typeof obj["label"] === "string" && obj["label"].trim().length > 0
+        ? obj["label"].trim()
+        : undefined;
+    const accessToken = obj["accessToken"];
+    const refreshable =
+      exportKind === "oauth" &&
+      (oauthShapeFromObject(obj) ||
+        (typeof accessToken === "string" && detectCredentialKind(accessToken) === "oauth"));
     return {
-      value: obj["accessToken"],
-      kind: exportKind === "oauth" ? "oauth" : "api_key",
+      value: accessToken,
+      // An exported OAuth row without a refresh token is an access-only static
+      // credential, even if the old row was labelled `oauth`.
+      kind: refreshable ? "oauth" : "api_key",
       ...(label ? { identity: label } : {}),
     };
   }
