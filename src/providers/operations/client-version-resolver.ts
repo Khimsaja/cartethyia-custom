@@ -57,9 +57,16 @@ export interface ClientVersionResolverOptions {
   readonly ttlMs?: number;
 }
 
+export interface ClientVersionSnapshot {
+  readonly version: string;
+  readonly source: "latest" | "fallback";
+}
+
 export interface ClientVersionResolver {
   /** Current version: discovered → pinned fallback. Sync, never fetches. */
   get(): string;
+  /** Current version and whether discovery has replaced the fallback. */
+  snapshot(): ClientVersionSnapshot;
   /** Resolve from upstream (cached, deduped, never throws). */
   ensure(fetcher?: ClientVersionFetcher, signal?: AbortSignal): Promise<void>;
   /** Fire-and-forget refresh for sync call sites (header builders). */
@@ -170,6 +177,12 @@ export function createClientVersionResolver(
   return {
     get(): string {
       return discovered ?? options.fallback;
+    },
+    snapshot(): ClientVersionSnapshot {
+      return {
+        version: discovered ?? options.fallback,
+        source: discovered === null ? "fallback" : "latest",
+      };
     },
     ensure,
     refresh(fetcher: ClientVersionFetcher = globalThis.fetch): void {

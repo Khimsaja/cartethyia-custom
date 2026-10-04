@@ -55,15 +55,14 @@ function deriveAccountStableId(accountId: string, purpose: string): string {
  *
  * The international gateway gates chat on the desktop `User-Agent` (platform
  * brand `WorkBuddy AI`; the wrong brand trips 403 code 11140), plus the
- * `X-CodeBuddy-Request` risk gate and the account-scoped device headers. The
- * version is resolved from upstream so the UA stays current; the pinned
- * fallback only applies on a real network failure.
+ * `X-CodeBuddy-Request` risk gate and the account-scoped device headers.
+ * The background client-version monitor keeps this value fresh; dispatch only
+ * reads the cached value and never waits on a version endpoint.
  */
 export async function workbuddyHeaders(
   context?: ProviderDispatchContext,
   request?: CanonicalRequest,
 ): Promise<Record<string, string>> {
-  await resolveWorkBuddyVersion();
   const clientVersion = getWorkBuddyClientVersion();
   const headers: Record<string, string> = {
     accept: "application/json, text/event-stream",

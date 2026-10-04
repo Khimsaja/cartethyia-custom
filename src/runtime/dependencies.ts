@@ -68,7 +68,10 @@ import type { ReadinessCheckResult } from "../persistence/readiness";
 import { eq, sql } from "drizzle-orm";
 import { apiKeys } from "../persistence/schema";
 import { log } from "../observability/logger";
-import { refreshClineClientVersion } from "../providers/operations/client-versions";
+import {
+  refreshClineClientVersion,
+  refreshProviderClientVersions,
+} from "../providers/operations/client-versions";
 
 
 export interface ProductionDeps {
@@ -104,10 +107,15 @@ export interface ProductionDeps {
 
 /**
  * Pause between accounts in the OAuth refresh sweep. The token endpoints
- * rate-limit a burst of refreshes even at low concurrency, so the pass runs
- * sequentially with this gap rather than in waves.
+ * rate-limit a burst of refreshes even at low concurrency.
  */
 const OAUTH_REFRESH_INTER_ITEM_DELAY_MS = 1_500;
+
+/**
+ * Client identities are refreshed out of band so provider dispatch never waits
+ * on npm/provider version endpoints. Resolver TTLs deduplicate the sources.
+ */
+const CLIENT_VERSION_MONITOR_INTERVAL_MS = 15 * 60_000;
 
 export async function buildProductionDeps(): Promise<ProductionDeps> {
   const db = getDb();
@@ -306,6 +314,15 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
         },
       }),
   });
+
+  // Client versions are monitor-only metadata. The first refresh is best-effort
+  // at startup; the scheduled task keeps the same resolver cache warm later.
+  scheduledTasks.register({
+    name: "client-version-monitor",
+    intervalMs: CLIENT_VERSION_MONITOR_INTERVAL_MS,
+    run: refreshProviderClientVersions,
+  });
+  void refreshProviderClientVersions();
 
   // Keeps every account's cached quota warm so opening the Quota page is a
   // cache read. Without this the only refreshes are user-triggered, so the

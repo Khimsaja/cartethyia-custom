@@ -701,7 +701,6 @@ interface AccountStatusCounts {
   readonly active: number;
   readonly cooldown: number;
   readonly disabled: number;
-  readonly exhausted: number;
   readonly cooling: number;
 }
 
@@ -710,7 +709,6 @@ function summarizeAccounts(accounts: readonly ProviderAccountResponse[]): Accoun
     active: accounts.filter((account) => account.status === "active").length,
     cooldown: accounts.filter((account) => account.status === "cooldown").length,
     disabled: accounts.filter((account) => account.status === "disabled").length,
-    exhausted: accounts.filter((account) => account.lastErrorCategory === "quota_exhausted").length,
     cooling: modelCoolingCount(accounts),
   };
 }
@@ -726,7 +724,6 @@ function AccountStatusBadges({
     counts.active > 0 ||
     counts.cooldown > 0 ||
     counts.cooling > 0 ||
-    counts.exhausted > 0 ||
     counts.disabled > 0;
   if (!hasBadge) return <Badge tone="warn" dot>{total} Connected</Badge>;
   return (
@@ -734,7 +731,6 @@ function AccountStatusBadges({
       {counts.active > 0 ? <Badge tone="ok" dot>{counts.active} Healthy</Badge> : null}
       {counts.cooldown > 0 ? <Badge tone="warn" dot>{counts.cooldown} Cooldown</Badge> : null}
       {counts.cooling > 0 ? <Badge tone="warn" dot>{counts.cooling} Cooling</Badge> : null}
-      {counts.exhausted > 0 ? <Badge tone="warn" dot>{counts.exhausted} Exhausted</Badge> : null}
       {counts.disabled > 0 ? <Badge tone="warn" dot>{counts.disabled} Unhealthy</Badge> : null}
     </>
   );
@@ -875,6 +871,18 @@ const ProviderCard = memo(function ProviderCard({
             >
               {provider.providerId}/
             </span>
+            {provider.clientVersion ? (
+              <Badge
+                tone={provider.clientVersion.source === "latest" ? "teal" : "default"}
+                title={
+                  provider.clientVersion.source === "latest"
+                    ? "Latest discovered client version"
+                    : "Pinned fallback; background discovery has not succeeded yet"
+                }
+              >
+                v{provider.clientVersion.version} · {provider.clientVersion.source}
+              </Badge>
+            ) : null}
             {modelCount !== undefined && modelCount > 0 ? (
               <Badge tone="info">{modelCount} models</Badge>
             ) : null}

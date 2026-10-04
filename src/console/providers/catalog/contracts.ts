@@ -481,6 +481,11 @@ export interface ProviderLoginField {
   readonly defaultValue?: string;
 }
 
+export interface ProviderClientVersion {
+  readonly version: string;
+  readonly source: "latest" | "fallback";
+}
+
 export interface ProviderResponse {
   providerId: string;
   /** Canonical backend display name; custom providers fall back to providerId. */
@@ -504,7 +509,8 @@ export interface ProviderResponse {
   compatibilityProfile?: CompatibilityProfile;
   createdAt?: string;
   updatedAt?: string;
-  /** Populated from the registered OAuth login clients — undefined means no live OAuth client. */
+  /** Latest known client version; `fallback` means upstream discovery has not succeeded. */
+  clientVersion?: ProviderClientVersion;
   oauthFlows?: {
     readonly browser: boolean;
     readonly device: boolean;

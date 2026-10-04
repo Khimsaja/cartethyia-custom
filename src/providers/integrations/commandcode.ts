@@ -18,7 +18,6 @@ import { defineModel } from "../model-definition";
 import type { ModelDefinition } from "../provider-registry";
 import {
   getCommandCodeVersion,
-  resolveCommandCodeVersion,
 } from "../operations/client-versions";
 export const COMMANDCODE_MODELS: readonly ModelDefinition[] = [
   // Synced from https://commandcode.ai/models — deepseek keep only v4.1 flash/pro
@@ -154,9 +153,6 @@ export function buildRequest(
 }
 
 export async function headers(sessionId: string, token: string): Promise<Record<string, string>> {
-  // Await discovery so the true latest client version is stamped on every
-  // dispatch; the pinned fallback only applies on a real network failure.
-  await resolveCommandCodeVersion();
   return {
     "content-type": "application/json",
     accept: "text/event-stream",

@@ -11,13 +11,14 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
 
 
-/** Loads the tenant provider catalog. */
+/** Loads the tenant provider catalog and observes background metadata refreshes. */
 export function useProviders() {
   return useQuery({
     queryKey: queryKeys.providers.all,
     queryFn: (context) =>
       consoleRequest<unknown>("/providers", { signal: querySignal(context) }).then(assertProviders),
     ...DASHBOARD_QUERY_OPTIONS,
+    refetchInterval: 60_000,
   });
 }
 

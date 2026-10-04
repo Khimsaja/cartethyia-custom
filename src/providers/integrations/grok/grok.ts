@@ -25,7 +25,6 @@ import { resolveInboundSessionId, resolvePromptCacheKey } from "../../operations
 import {
   buildGrokUserAgent,
   getGrokVersion,
-  resolveGrokVersion,
 } from "../../operations/client-versions";
 import { resolveGrokTurnIndex } from "./grok-turn-index";
 import { getGrokInstallId } from "./grok-install-id";
@@ -294,9 +293,6 @@ async function grokHeaders(
     (typeof request?.conversation?.conversation_id === "string" && request.conversation.conversation_id.trim()
       ? request.conversation.conversation_id.trim()
       : undefined) ?? resolveInboundSessionId(context, request);
-  // Await discovery so the true latest client version is stamped on every
-  // dispatch; the pinned fallback only applies on a real network failure.
-  await resolveGrokVersion();
   const version = getGrokVersion();
   const agentId = await getGrokInstallId();
   const headers: Record<string, string> = {

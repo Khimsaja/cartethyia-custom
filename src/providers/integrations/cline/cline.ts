@@ -8,8 +8,6 @@ import { providerBaseUrl } from "../../provider-metadata";
 import { getCachedModelDiscovery } from "../../operations/model-discovery-cache";
 import { defineModel } from "../../model-definition";
 import {
-  resolveClineClientVersion,
-  resolveClineSdkVersion,
   getClineClientVersion,
   getClineSdkVersion,
 } from "../../operations/client-versions";
@@ -54,10 +52,6 @@ async function clineExtraHeaders(context: ProviderDispatchContext): Promise<Reco
       authOverride = { authorization: `Bearer ${token}` };
     }
   }
-  // Await discovery so the true latest client/SDK version is stamped on every
-  // dispatch; the pinned fallback only applies on a real network failure. The
-  // underlying fetch is deduped and TTL-cached (see provider-version-cache).
-  await Promise.all([resolveClineClientVersion(), resolveClineSdkVersion()]);
   const clientVersion = getClineClientVersion();
   const sdkVersion = getClineSdkVersion();
 

@@ -10,6 +10,7 @@ import {
   isSemverish,
   type ClientVersionFetcher,
   type ClientVersionResolver,
+  type ClientVersionSnapshot,
 } from "./client-version-resolver";
 
 async function qoderVersion(response: Response): Promise<string | null> {
@@ -242,6 +243,35 @@ const resolvers = {
   claudeSdk: createClientVersionResolver(VERSION_SOURCES.claudeSdk),
   kiro: createClientVersionResolver(VERSION_SOURCES.kiro),
 } satisfies Record<keyof typeof VERSION_SOURCES, ClientVersionResolver>;
+const PROVIDER_VERSION_RESOLVERS: Readonly<Record<string, ClientVersionResolver>> = {
+  grok: resolvers.grok,
+  opencode: resolvers.opencode,
+  opencodeft: resolvers.opencode,
+  opencodezen: resolvers.opencode,
+  opencodego: resolvers.opencode,
+  cline: resolvers.clineClient,
+  codex: resolvers.codex,
+  qoder: resolvers.qoder,
+  commandcode: resolvers.commandcode,
+  workbuddy: resolvers.workbuddyClient,
+  cb: resolvers.codebuddy,
+  cbcn: resolvers.codebuddy,
+  kimi: resolvers.kimiCli,
+  kiro: resolvers.kiro,
+  anthropic: resolvers.claudeCli,
+  claude: resolvers.claudeCli,
+};
+
+/** Returns the current client version without performing network I/O. */
+export function getProviderClientVersion(providerId: string): ClientVersionSnapshot | undefined {
+  return PROVIDER_VERSION_RESOLVERS[providerId.trim().toLowerCase()]?.snapshot();
+}
+
+/** Refreshes every provider version resolver in parallel; failures keep fallbacks. */
+export async function refreshProviderClientVersions(): Promise<void> {
+  const resolversToRefresh = [...new Set(Object.values(PROVIDER_VERSION_RESOLVERS))];
+  await Promise.allSettled(resolversToRefresh.map((resolver) => resolver.ensure()));
+}
 
 /**
  * The accessors every table entry needs, generated from its resolver.
