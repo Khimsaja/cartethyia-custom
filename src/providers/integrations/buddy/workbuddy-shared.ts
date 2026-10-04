@@ -11,7 +11,6 @@ import type {
 import { resolveInboundSessionId } from "../../operations/session-resolution";
 import {
   buildWorkBuddyUserAgent,
-  resolveWorkBuddyVersion,
   getWorkBuddyClientVersion,
   getWorkBuddyCliVersion,
 } from "../../operations/client-versions";
@@ -30,7 +29,6 @@ export {
   buildWorkBuddyUserAgent,
   getWorkBuddyClientVersion,
   getWorkBuddyCliVersion,
-  resolveWorkBuddyVersion,
 };
 
 /** WorkBuddy international gateway domain (Origin/Referer/X-Domain). */

@@ -58,6 +58,7 @@ export default function ProviderDetail(): ReactNode {
   const modelsQuery = useProviderModels(id);
   const accountsQuery = useProviderAccounts(id);
   const syncModels = useSyncProviderModels();
+  const autoSyncModels = useSyncProviderModels({ silent: true });
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const probeAllAccounts = useProbeAllProviderAccounts();
   const updateGlobalProvider = useUpdateGlobalProvider();
@@ -106,6 +107,7 @@ export default function ProviderDetail(): ReactNode {
   // Tracks the OAuth popup outside React state so it can be closed on
   // authorize error or component unmount even if the session never sets.
   const oauthPopupRef = useRef<Window | null>(null);
+  const autoModelSyncProviderRef = useRef<string | null>(null);
 
   useEffect(
     () => () => {
@@ -117,6 +119,19 @@ export default function ProviderDetail(): ReactNode {
   );
 
   const provider = (providersQuery.data ?? []).find((item) => item.providerId === id);
+  const autoModelSyncProvider = id === "opencodeft" || id === "cline";
+  useEffect(() => {
+    if (
+      !autoModelSyncProvider ||
+      provider === undefined ||
+      provider.supportsModelDiscovery === false ||
+      autoModelSyncProviderRef.current === id
+    ) {
+      return;
+    }
+    autoModelSyncProviderRef.current = id;
+    autoSyncModels.mutate(id);
+  }, [autoModelSyncProvider, autoSyncModels, id, provider?.supportsModelDiscovery]);
   const accounts = accountsQuery.data ?? [];
   const models = modelsQuery.data ?? [];
   // and sort alphabetically so enable/disable doesn't jump the layout.
@@ -445,12 +460,15 @@ export default function ProviderDetail(): ReactNode {
                   variant="secondary"
                   size="sm"
                   icon={
-                    <RefreshCw size={13} className={syncModels.isPending ? "animate-spin" : ""} />
+                    <RefreshCw
+                      size={13}
+                      className={syncModels.isPending || autoSyncModels.isPending ? "animate-spin" : ""}
+                    />
                   }
-                  disabled={syncModels.isPending}
+                  disabled={syncModels.isPending || autoSyncModels.isPending}
                   onClick={() => syncModels.mutate(id)}
                 >
-                  {syncModels.isPending ? "Fetching..." : "Fetch models"}
+                  {syncModels.isPending || autoSyncModels.isPending ? "Fetching..." : "Fetch models"}
                 </Button>
               ) : null}
               <Button
@@ -459,6 +477,7 @@ export default function ProviderDetail(): ReactNode {
                 icon={<Trash2 size={13} className={bulkDeleting ? "animate-spin" : ""} />}
                 disabled={
                   syncModels.isPending ||
+                  autoSyncModels.isPending ||
                   bulkDeleting ||
                   models.filter((m) => m.source !== "builtin" && m.source !== null).length === 0
                 }

@@ -259,7 +259,7 @@ export function AddModelModal({
           <Input
             label="Model ID"
             autoFocus
-            placeholder="e.g. gpt-4o, cline-free/deepseek-v4.1-flash"
+            placeholder="e.g. gpt-4o, free-model-id"
             value={modelId}
             onChange={(event) => {
               setModelId(event.target.value);

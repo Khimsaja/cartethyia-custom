@@ -8,14 +8,10 @@
  * failure path falls back to a pinned constant that keeps the provider
  * working offline and during an upstream outage.
  *
- * Resolution order per call: resolved-once discovered value → pinned
- * fallback. Discovery runs through the shared `getCachedVersion` TTL cache, so
- * concurrent dispatches dedupe onto one in-flight fetch and failures are
- * never cached.
+ * Discovery is owned by the background client-version monitor. Request paths
+ * only call the synchronous `get`/`snapshot` accessors and never fetch.
  */
 import { getCachedVersion, resetVersionCacheForTesting } from "./provider-version-cache";
-import { log } from "../../observability/logger";
-import { metrics } from "../../observability/metrics";
 
 /** Structural fetch contract for providers that inject lightweight transports. */
 export type ClientVersionFetcher = (
@@ -69,8 +65,6 @@ export interface ClientVersionResolver {
   snapshot(): ClientVersionSnapshot;
   /** Resolve from upstream (cached, deduped, never throws). */
   ensure(fetcher?: ClientVersionFetcher, signal?: AbortSignal): Promise<void>;
-  /** Fire-and-forget refresh for sync call sites (header builders). */
-  refresh(fetcher?: ClientVersionFetcher): void;
   /**
    * Test-only: seed a version and stop discovery entirely, or `null` to
    * restore normal discovery behaviour. Keeps suites deterministic without
@@ -110,9 +104,8 @@ async function defaultExtract(response: Response): Promise<string | null> {
 /**
  * Build a resolver for one provider's client version.
  *
- * `get()` is synchronous and network-free so header construction stays cheap
- * on the dispatch path; call `refresh()` (fire-and-forget) or `ensure()`
- * (awaited) to discover the current version from upstream.
+ * `get()` is synchronous and network-free for request paths; the background
+ * client-version monitor is the only caller that invokes `ensure()`.
  */
 /** Compares dotted numeric versions; returns <0, 0, or >0. */
 function compareVersions(left: string, right: string): number {
@@ -185,15 +178,6 @@ export function createClientVersionResolver(
       };
     },
     ensure,
-    refresh(fetcher: ClientVersionFetcher = globalThis.fetch): void {
-      void ensure(fetcher).catch((error: unknown) => {
-        metrics.version_discovery_failed.inc(1, { provider: options.key });
-        log.warn("client version discovery failed", {
-          provider: options.key,
-          error: String(error),
-        });
-      });
-    },
     reset(version: string | null = null): void {
       discovered = version;
       seeded = version !== null;

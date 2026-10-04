@@ -68,10 +68,7 @@ import type { ReadinessCheckResult } from "../persistence/readiness";
 import { eq, sql } from "drizzle-orm";
 import { apiKeys } from "../persistence/schema";
 import { log } from "../observability/logger";
-import {
-  refreshClineClientVersion,
-  refreshProviderClientVersions,
-} from "../providers/operations/client-versions";
+import { refreshProviderClientVersions } from "../providers/operations/client-versions";
 
 
 export interface ProductionDeps {
@@ -375,12 +372,6 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
   // listener is actually serving (`main.ts`). Starting them inside this builder
   // would let the first tick — the lease sweep, the health sweep — run against
   // a process that has not begun accepting traffic yet.
-  // Warm the Cline version cache *after* the listener can serve traffic. The
-  // resolvers are TTL-cached and each dispatch path awaits its own `ensure()`,
-  // so discovery here is a pure optimization: awaiting it during boot used to
-  // block the listener for up to the 4s fetch timeout on a blackholed network,
-  // while the pinned fallback was already serving requests correctly.
-  refreshClineClientVersion();
   return {
     db,
     redis,

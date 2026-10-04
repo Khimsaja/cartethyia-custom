@@ -50,7 +50,6 @@ import {
   buildKiroSsoUserAgent,
   buildKiroUserAgent,
   getKiroVersion,
-  resolveKiroVersion,
 } from "../../operations/client-versions";
 import { deriveApiKeyMachineId, deriveOAuthMachineId, normalizeMachineId } from "./kiro-machine-id";
 
@@ -826,7 +825,7 @@ export class KiroOAuthClient extends OAuthDeviceFlow {
     const trimmed = apiKey.trim();
     if (trimmed.length === 0) throw new Error("API key is required");
     const safeRegion = assertAwsRegion(normalizeRegion(region));
-    const version = await resolveKiroVersion(this.fetchFn);
+    const version = getKiroVersion();
     const machineId = deriveApiKeyMachineId(trimmed);
     const response = await this.fetchFn(
       `https://q.${safeRegion}.amazonaws.com/ListAvailableModels?origin=AI_EDITOR`,

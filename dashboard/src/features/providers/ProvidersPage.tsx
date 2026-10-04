@@ -353,9 +353,9 @@ function CustomProviderCard({ customProvider }: { customProvider: ProviderRespon
   // only shows when every account is active and healthy.
   return (
     <Card
+      className="provider-card provider-card-custom"
       style={{
         position: "relative",
-        overflow: "hidden",
         display: "flex",
         flexDirection: "column",
         border: "1px solid var(--inner-border)",
@@ -364,6 +364,7 @@ function CustomProviderCard({ customProvider }: { customProvider: ProviderRespon
           "transform var(--dur-micro) var(--ease-spring), border-color var(--dur-micro) var(--ease-spring), box-shadow var(--dur-micro) var(--ease-spring)",
       }}
     >
+      <ProviderVersionBadge clientVersion={customProvider.clientVersion} />
       <Link
         to={`/providers/${encodeURIComponent(customProvider.providerId)}`}
         style={{
@@ -657,9 +658,6 @@ function CustomProvidersSection({
 const FOUNDING_IDS = new Set(["inferhub"]);
 /** Free tiers with a small daily allowance rather than a standing free tier. */
 const FREE_LIMITED_IDS = new Set([
-  "cerebras",
-  "bai",
-  "tokenharbor",
   "grok",
   "opencodeft",
   "cline",
@@ -756,6 +754,27 @@ function SecondaryQueryBadge({
   return null;
 }
 
+function ProviderVersionBadge({
+  clientVersion,
+}: {
+  readonly clientVersion: ProviderResponse["clientVersion"];
+}): ReactNode {
+  if (!clientVersion) return null;
+  return (
+    <Badge
+      className="provider-version-badge"
+      tone={clientVersion.source === "latest" ? "teal" : "default"}
+      title={
+        clientVersion.source === "latest"
+          ? "Latest discovered client version"
+          : "Pinned fallback; background discovery has not succeeded yet"
+      }
+    >
+      v{clientVersion.version} · {clientVersion.source}
+    </Badge>
+  );
+}
+
 const ProviderCard = memo(function ProviderCard({
   provider,
 }: {
@@ -771,9 +790,9 @@ const ProviderCard = memo(function ProviderCard({
 
   return (
     <Card
+      className="provider-card"
       style={{
         position: "relative",
-        overflow: "hidden",
         display: "flex",
         flexDirection: "column",
         border: "1px solid var(--inner-border)",
@@ -781,6 +800,7 @@ const ProviderCard = memo(function ProviderCard({
         transition: "transform var(--dur-micro) var(--ease-spring), border-color var(--dur-micro) var(--ease-spring), box-shadow var(--dur-micro) var(--ease-spring)",
       }}
     >
+      <ProviderVersionBadge clientVersion={provider.clientVersion} />
       {isFounding ? (
         <div
           style={{
@@ -871,18 +891,6 @@ const ProviderCard = memo(function ProviderCard({
             >
               {provider.providerId}/
             </span>
-            {provider.clientVersion ? (
-              <Badge
-                tone={provider.clientVersion.source === "latest" ? "teal" : "default"}
-                title={
-                  provider.clientVersion.source === "latest"
-                    ? "Latest discovered client version"
-                    : "Pinned fallback; background discovery has not succeeded yet"
-                }
-              >
-                v{provider.clientVersion.version} · {provider.clientVersion.source}
-              </Badge>
-            ) : null}
             {modelCount !== undefined && modelCount > 0 ? (
               <Badge tone="info">{modelCount} models</Badge>
             ) : null}
@@ -935,7 +943,8 @@ const SECTIONS = [
     // `oauthFlows` is present on a provider response exactly when the registry
     // resolves a login client for it, so this section cannot drift from the
     // providers that really support a login flow.
-    filter: (p: ProviderResponse) => p.oauthFlows !== undefined,
+    filter: (p: ProviderResponse) =>
+      p.oauthFlows !== undefined && !FREE_LIMITED_IDS.has(p.providerId.toLowerCase()),
   },
   {
     title: "Free Available API Key Providers",
@@ -946,11 +955,11 @@ const SECTIONS = [
       p.oauthFlows === undefined,
   },
   {
-    title: "API Key Providers",
     filter: (p: ProviderResponse) =>
       p.isBuiltIn &&
       !FOUNDING_IDS.has(p.providerId.toLowerCase()) &&
       !FREE_AVAILABLE_IDS.has(p.providerId.toLowerCase()) &&
+      !FREE_LIMITED_IDS.has(p.providerId.toLowerCase()) &&
       p.oauthFlows === undefined,
   },
 ];
@@ -974,7 +983,6 @@ export default function Providers(): ReactNode {
     [builtInProviders],
   );
   const [tab, setTab] = useState<"all" | "llm" | "search">("all");
-  const [sortBy, setSortBy] = useState<"name" | "configured">("name");
   const [searchOrder, setSearchOrder] = useState<string[] | null>(null);
   useEffect(() => {
     // Seed from server preference; fallback to localStorage for immediate UX before first fetch
@@ -997,10 +1005,8 @@ export default function Providers(): ReactNode {
     return [...searchProviders].sort((a,b)=>(idx.get(a.providerId)??999)-(idx.get(b.providerId)??999));
   }, [searchProviders, searchOrder]);
   const sortFn = (a: ProviderResponse, b: ProviderResponse) => {
-    if (sortBy === "configured") {
-      const diff = Number(Boolean(b.configured)) - Number(Boolean(a.configured));
-      if (diff !== 0) return diff;
-    }
+    const configuredDiff = Number(Boolean(b.configured)) - Number(Boolean(a.configured));
+    if (configuredDiff !== 0) return configuredDiff;
     return (a.label || a.displayName).localeCompare(b.label || b.displayName);
   };
   const sections = useMemo(() => {
@@ -1018,7 +1024,7 @@ export default function Providers(): ReactNode {
       ...section,
       providers: source.filter(section.filter).sort(sortFn),
     })).filter((section) => section.providers.length > 0);
-  }, [builtInProviders, llmProviders, orderedSearch, tab, sortBy]);
+  }, [builtInProviders, llmProviders, orderedSearch, tab]);
 
   if (q.isPending && !q.data) return <LoadingState label="Loading providers..." />;
   if (q.isError)
@@ -1053,23 +1059,15 @@ export default function Providers(): ReactNode {
             </button>
           ))}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "6px", marginLeft: "auto" }}>
-          <span style={{ fontSize: "11px", color: "var(--text-tertiary)" }}>Sort</span>
-          <select
-            value={sortBy}
-            onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
-            style={{
-              fontSize: "12px",
-              padding: "4px 8px",
-              borderRadius: "6px",
-              border: "1px solid var(--inner-border)",
-              background: "var(--surface-1)",
-            }}
-          >
-            <option value="name">Name</option>
-            <option value="configured">Connected</option>
-          </select>
-        </div>
+        <span
+          style={{
+            marginLeft: "auto",
+            fontSize: "10.5px",
+            color: "var(--text-tertiary)",
+          }}
+        >
+          {tab === "search" ? "Drag to reorder" : "Connected pinned first · A–Z"}
+        </span>
       </div>
       
       <CustomProvidersSection customProviders={customProviders} />

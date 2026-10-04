@@ -244,7 +244,7 @@ function lastSegment(id: string): string {
  *
  * Both the row and the alias target are judged by their bare name as well as
  * their full id. A catalog row may nest its own path (`cline-free/gpt-5`), so
- * comparing only `row.modelId` let `cline-free/deepseek-v4.1-flash` survive
+ * comparing only `row.modelId` let a nested retired free-tier model survive
  * beside the allowlisted `deepseek-v4.1-flash` alias and reappear on whichever
  * provider happened to nest it — the exact leak this filter exists to stop.
  */

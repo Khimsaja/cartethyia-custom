@@ -10,7 +10,7 @@ import { decodeSseEvents } from "../../transport/streaming";
 import { usageFromProvider, readReasoningText } from "../usage";
 import { readCredentialSecret, type ProviderDispatchTarget, type ModelDefinition, type ProviderAdapter, type ProviderDispatchContext } from "../provider-registry";
 import { defineModel } from "../model-definition";
-import { getQoderVersion, resolveQoderVersion } from "../operations/client-versions";
+import { getQoderVersion } from "../operations/client-versions";
 import { abortGatewayError, createUpstreamDeadlineLifecycle } from "../operations/upstream-deadline";
 
 interface QoderModeProfile {
@@ -641,7 +641,7 @@ class QoderAdapter implements ProviderAdapter {
       outboundFetch(url, { ...init, signal: lifecycle.signal } as RequestInit) as Promise<Response>;
 
     try {
-      const version = await resolveQoderVersion(outboundFetch, lifecycle.signal);
+      const version = getQoderVersion();
       const auth = await exchangeQoderPat(pat, lifecycle.signal, fetcher, version);
       const qoderBody = buildQoderRequest(modelId, request, modelConfig, auth);
       const url =

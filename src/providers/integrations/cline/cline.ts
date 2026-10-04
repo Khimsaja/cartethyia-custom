@@ -11,13 +11,6 @@ import {
   getClineClientVersion,
   getClineSdkVersion,
 } from "../../operations/client-versions";
-export {
-  getClineClientVersion,
-  getClineSdkVersion,
-  refreshClineClientVersion,
-  resolveClineClientVersion,
-  resolveClineSdkVersion,
-} from "../../operations/client-versions";
 export const CLINE_BASE_URL = providerBaseUrl("cline");
 export const CLINE_PROVIDER_ID = "cline" as const;
 const CLINE_CHAT_PATH = "/chat/completions" as const;
@@ -411,16 +404,8 @@ export const CLINE_MODELS: readonly ModelDefinition[] = [
     vision: true,
     free: true,
   }),
-  // The `free` bucket's own ids, as `/ai/cline/recommended-models` publishes
-  // them. Two of the bucket's ids carry no `cline-free/` prefix — the bucket is
-  // the tier, the id prefix never was.
-  defineModel({
-    id: "stealth/pixel-canary",
-    ctx: 200_000,
-    out: 64_192,
-    reasoning: true,
-    free: true,
-  }),
+  // The `free` bucket's published ids are the tier; the upstream id prefixes
+  // are retained verbatim because they are part of Cline's model contract.
   defineModel({
     id: "stealth/space-bunny-alpha",
     ctx: 1_000_000,
@@ -431,14 +416,6 @@ export const CLINE_MODELS: readonly ModelDefinition[] = [
   }),
   defineModel({
     id: "cline-free/mimo-v2.6-flash",
-    ctx: 1_048_576,
-    out: 131_072,
-    reasoning: true,
-    vision: true,
-    free: true,
-  }),
-  defineModel({
-    id: "cline-free/deepseek-v4.1-flash",
     ctx: 1_048_576,
     out: 131_072,
     reasoning: true,

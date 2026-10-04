@@ -40,7 +40,6 @@ import {
 import {
   antigravityWireModelId,
   applySkipThoughtSignatureBypass,
-  ensureAntigravityVersion,
   getAntigravityModelWireProfile,
   getAntigravityUserAgent,
   loadAntigravityProject,
@@ -204,10 +203,6 @@ class AntigravityAdapter implements ProviderAdapter {
     const outboundFetch: typeof fetch =
       (context.outbound_fetch as unknown as typeof fetch) ?? this.fetchFn;
 
-    // Kick a background client-version discovery (best-effort; the pinned
-    // fallback ships in the user-agent immediately). Not awaited: the
-    // dispatch does not block on the update-manifest fetch.
-    void ensureAntigravityVersion(outboundFetch);
     // Best-effort project-id: CloudCode accepts requests without one for
     // free-tier accounts; enterprise/subscribed accounts need it. Cached
     // per access-token hash, so this is a single background call at first

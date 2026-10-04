@@ -640,6 +640,11 @@ function QuotaCard({
             const quotaFillPct = remaining !== null ? Math.max(0, Math.min(100, remaining)) : 0;
             const formatAmount = (value: number): string =>
               value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+            const formatPercent = (value: number): string => {
+              const rounded = Math.round(value * 10) / 10;
+              if (rounded > 0 && rounded < 0.1) return "<0.1";
+              return rounded.toLocaleString(undefined, { maximumFractionDigits: 1 });
+            };
             const label = formatQuotaWindowLabel(window.label);
             return (
               <div
@@ -661,7 +666,7 @@ function QuotaCard({
                   aria-valuemin={0}
                   aria-valuemax={100}
                   aria-valuenow={remaining === null ? undefined : quotaFillPct}
-                  aria-valuetext={remaining === null ? "Quota amount not reported" : `${remaining}% remaining`}
+                  aria-valuetext={remaining === null ? "Quota only" : `${formatPercent(remaining)}% remaining`}
                   style={{
                     height: "10px",
                     borderRadius: "4px",
@@ -689,7 +694,7 @@ function QuotaCard({
                     fontVariantNumeric: "tabular-nums",
                   }}
                 >
-                  {remaining === null ? "—" : `${formatAmount(remaining)}%`}
+                  {remaining === null ? "—" : `${formatPercent(remaining)}%`}
                 </span>
                 <div className="quota-window-details">
                   <span
@@ -697,8 +702,8 @@ function QuotaCard({
                     style={{ fontVariantNumeric: "tabular-nums" }}
                   >
                     {usedCredits !== null && limit !== null
-                      ? `${formatAmount(usedCredits)} / ${formatAmount(limit)} used`
-                      : "Percentage quota"}
+                      ? `${formatAmount(usedCredits)} / ${formatAmount(limit)} Credits`
+                      : "Quota only"}
                   </span>
                   {window.resetsAt && (
                     <span
