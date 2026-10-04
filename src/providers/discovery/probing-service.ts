@@ -70,6 +70,8 @@ import {
 
 /** Max models probed concurrently per batch (outside the sequential warm-up). */
 const PROBE_CONCURRENCY = 5;
+/** Max accounts probed concurrently; batches wait before starting the next ten. */
+const PROBE_ACCOUNT_CONCURRENCY = 10;
 
 export interface ProbeOutboundBinding {
   readonly fetch: ValidatedOutboundFetch;
@@ -936,19 +938,24 @@ export class ProviderProbingService {
           or(isNull(providerAccounts.tenantId), eq(providerAccounts.tenantId, tenantId)),
         ),
       );
-    const results = await Promise.all(
-      accounts.map(async (account) => {
-        const result = await this.probeModel(tenantId, providerId, {
-          ...request,
-          accountId: account.id,
-        });
-        // No health write here: this used to regex the model's own answer text
-        // for "202" and degrade the account on a match. A probe that genuinely
-        // fails already reports through `recordAccountFailure`, which classifies
-        // the real status; matching answer text is not a health signal.
-        return { ...result, accountId: account.id };
-      }),
-    );
+    const results: ProbeAllAccountsResult["results"][number][] = [];
+    for (let offset = 0; offset < accounts.length; offset += PROBE_ACCOUNT_CONCURRENCY) {
+      const batch = accounts.slice(offset, offset + PROBE_ACCOUNT_CONCURRENCY);
+      const batchResults = await Promise.all(
+        batch.map(async (account) => {
+          const result = await this.probeModel(tenantId, providerId, {
+            ...request,
+            accountId: account.id,
+          });
+          // No health write here: this used to regex the model's own answer text
+          // for "202" and degrade the account on a match. A probe that genuinely
+          // fails already reports through `recordAccountFailure`, which classifies
+          // the real status; matching answer text is not a health signal.
+          return { ...result, accountId: account.id };
+        }),
+      );
+      results.push(...batchResults);
+    }
     return { providerId, modelId: request.modelId, results };
   }
 }
