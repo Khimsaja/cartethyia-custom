@@ -19,13 +19,13 @@ function textEvent(text: string): readonly CanonicalEvent[] {
 }
 
 describe("Grok 407 feature probe", () => {
-  test("accepts the exact 407 response", () => {
+  test("accepts 407 with Grok confidence metadata and a terminal error", () => {
     expect(
       grok407ProbeFailure({
         providerId: "grok",
         prompt: GROK_407_PROBE_PROMPT,
-        events: textEvent("407"),
-        dispatchError: undefined,
+        events: textEvent("407 \\confidence{100}"),
+        dispatchError: new Error("terminal metadata after content"),
       }),
     ).toBeUndefined();
   });

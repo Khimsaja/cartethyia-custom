@@ -89,11 +89,14 @@ export function grok407ProbeFailure(args: {
 }): GatewayError | undefined {
   if (args.providerId !== "grok" || args.prompt !== GROK_407_PROBE_PROMPT) return undefined;
   const sample = extractSample(args.events);
-  if (args.dispatchError === undefined && sample === "407") return undefined;
+  const normalizedSample = sample?.replace(/\\confidence\{\d+\}\s*$/i, "").trim();
+  // A valid Grok answer may carry the provider's confidence annotation after
+  // the numeric result, and a terminal metadata error may arrive after text.
+  if (normalizedSample === "407") return undefined;
   const priorDetails = args.dispatchError instanceof GatewayError ? args.dispatchError.details : {};
   const providerStatus =
     typeof priorDetails.providerStatus === "number" ? priorDetails.providerStatus : undefined;
-  const returned202 = sample === "202" || providerStatus === 202;
+  const returned202 = normalizedSample === "202" || providerStatus === 202;
   const detail =
     returned202
       ? "Grok 407 feature probe returned 202 instead of 407"
