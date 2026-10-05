@@ -209,6 +209,52 @@ describe("EligibilityEvaluator global credit limit", () => {
       status: 503,
     });
   });
+
+  test("a combo routes its live member while the dead member is reported", async () => {
+    const engine = new RoutingEngine();
+    const live = candidate({ provider_id: "cline", model_id: "spark" });
+    const snap: RouteSnapshot = {
+      revision: 1,
+      candidates: [live],
+      aliases: {},
+      combos: {
+        t1: {
+          pool: {
+            members: ["cline/spark", "meta/ghost-model"],
+            strategy: "fallback",
+          },
+        },
+      },
+      created_at: Date.now(),
+    };
+    const plan = await engine.plan("pool", snap, "t1");
+    expect(plan.candidates.map((c) => c.provider_id)).toEqual(["cline"]);
+  });
+
+  test("a combo whose live member is unusable names the dead member", async () => {
+    const engine = new RoutingEngine();
+    const down = candidate({
+      provider_id: "cline",
+      model_id: "spark",
+      provider_account_id: "down",
+      health_status: "disabled",
+    });
+    const snap: RouteSnapshot = {
+      revision: 1,
+      candidates: [down],
+      aliases: {},
+      combos: {
+        t1: {
+          pool: {
+            members: ["cline/spark", "meta/ghost-model"],
+            strategy: "fallback",
+          },
+        },
+      },
+      created_at: Date.now(),
+    };
+    await expect(engine.plan("pool", snap, "t1")).rejects.toThrow(/meta\/ghost-model/);
+  });
 });
 
 dbDescribe("account failover", () => {

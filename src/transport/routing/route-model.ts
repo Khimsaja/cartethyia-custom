@@ -271,14 +271,27 @@ export function accountsUnavailableError(
   requested: string,
   reasons: readonly string[],
   routed: string = requested,
+  unmatchedMembers: readonly string[] = [],
 ): GatewayError {
   const distinct = [...new Set(reasons)].sort();
   const routeNote = routed === requested ? "" : ` routed to '${routed}'`;
+  const unmatchedNote =
+    unmatchedMembers.length === 0
+      ? ""
+      : ` — no routable candidate for combo member(s): ${[...new Set(unmatchedMembers)].sort().join(", ")}`;
   return new GatewayError(
     "accounts_unavailable",
     503,
-    `Model '${requested}'${routeNote} has no available account (${reasons.length} candidate(s) unusable: ${distinct.join(", ")})`,
-    { model: requested, routed_model: routed, reasons: distinct, candidate_count: reasons.length },
+    `Model '${requested}'${routeNote} has no available account (${reasons.length} candidate(s) unusable: ${distinct.join(", ")})${unmatchedNote}`,
+    {
+      model: requested,
+      routed_model: routed,
+      reasons: distinct,
+      candidate_count: reasons.length,
+      ...(unmatchedMembers.length === 0
+        ? {}
+        : { unmatched_members: [...new Set(unmatchedMembers)].sort() }),
+    },
   );
 }
 

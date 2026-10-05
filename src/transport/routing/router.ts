@@ -601,7 +601,7 @@ export class RoutingEngine {
     keyId?: string,
   ): Promise<RoutePlan> {
     const tid = tenantId ?? null;
-    const { resolved, matching, fusion } = this.resolveMatchingCandidates(
+    const { resolved, matching, unmatchedMembers, fusion } = this.resolveMatchingCandidates(
       requestedModel,
       snapshot,
       tid,
@@ -622,6 +622,7 @@ export class RoutingEngine {
         requestedModel,
         decisions.map((d) => d.reason),
         resolved.model,
+        unmatchedMembers,
       );
     }
     // Every eligible candidate is account-wide cooling: no healthy account is
@@ -714,6 +715,10 @@ export class RoutingEngine {
     resolved: ReturnType<typeof resolveAlias>;
     combo: ComboDefinition | undefined;
     matching: RouteCandidate[];
+    /** Combo members that matched zero candidates — misconfigured or
+     * connection-less members the operator should fix, surfaced on errors
+     * instead of failing opaquely on whichever member happened to route. */
+    unmatchedMembers: readonly string[];
     fusion?: { readonly panel: readonly string[]; readonly judge: string };
   } {
     const safeResolve = (name: string) => {
@@ -748,10 +753,14 @@ export class RoutingEngine {
         modelIds.some((id) => candidateMatches(candidate, id)) &&
         (candidate.tenant_id == null || candidate.tenant_id === tid),
     );
+    let unmatchedMembers: readonly string[] = [];
     if (combo) {
-      const groups = modelIds
-        .map((id) => matching.filter((c) => candidateMatches(c, id)))
-        .filter((g) => g.length > 0);
+      const perId = modelIds.map((id) => ({
+        id,
+        group: matching.filter((c) => candidateMatches(c, id)),
+      }));
+      unmatchedMembers = perId.filter((entry) => entry.group.length === 0).map((entry) => entry.id);
+      const groups = perId.map((entry) => entry.group).filter((g) => g.length > 0);
       if (combo.strategy === "round_robin" && groups.length > 1) {
         const heads = groups.map((g) => g[0] as RouteCandidate);
         const rr = this.getRoundRobin(`${tid}::${resolved.model}`);
@@ -776,7 +785,7 @@ export class RoutingEngine {
       combo?.strategy === "fusion" && modelIds.length > 1
         ? { panel: [...modelIds], judge: modelIds[0]! }
         : undefined;
-    return { resolved, combo, matching, ...(fusion === undefined ? {} : { fusion }) };
+    return { resolved, combo, matching, unmatchedMembers, ...(fusion === undefined ? {} : { fusion }) };
   }
 
   async reserve(plan: RoutePlan): Promise<Reservation> {
