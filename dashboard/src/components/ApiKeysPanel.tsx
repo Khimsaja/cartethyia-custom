@@ -13,6 +13,7 @@ import { Button } from "./ui/button";
 import { Card, CardBody, CardHeader } from "./ui/card";
 import { Dialog } from "./ui/dialog";
 import { EmptyState, ErrorState, LoadingState } from "./ui/state";
+import { Switch } from "./ui/switch";
 import { ApiKeyForm, oneTimeSecretForMode, type KeyFormInput } from "./ApiKeyForm";
 import { ApiKeySecretDialog } from "./ApiKeySecretDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -164,8 +165,8 @@ export function ApiKeysPanel(): ReactNode {
                     <strong style={{ fontSize: "13px" }}>
                       {key.label || "Unnamed credential"}
                     </strong>
-                    <Badge tone={key.revokedAt ? "err" : "ok"}>
-                      {key.revokedAt ? "revoked" : "active"}
+                    <Badge tone={key.revokedAt ? "err" : key.enabled ? "ok" : "warn"}>
+                      {key.revokedAt ? "revoked" : key.enabled ? "enabled" : "disabled"}
                     </Badge>
                     <Badge tone={key.keyMode === "share" ? "accent" : "default"}>
                       {key.keyMode === "share" ? "share template" : "personal"}
@@ -215,6 +216,28 @@ export function ApiKeysPanel(): ReactNode {
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: "6px", flexShrink: 0, flexWrap: "wrap" }}>
+                  {!key.revokedAt ? (
+                    <Switch
+                      checked={key.enabled}
+                      disabled={updateKey.isPending}
+                      id={`api-key-enabled-${key.id}`}
+                      label=""
+                      aria-label={`${key.enabled ? "Disable" : "Enable"} ${key.label || "API credential"}`}
+                      onChange={(enabled) =>
+                        updateKey.mutate(
+                          { keyId: key.id, request: { enabled } },
+                          {
+                            onSuccess: () =>
+                              toast.success(
+                                `${key.label || "API credential"} ${enabled ? "enabled" : "disabled"}`,
+                              ),
+                            onError: (error) =>
+                              toast.error(getErrorMessage(error, "Could not update credential state.")),
+                          },
+                        )
+                      }
+                    />
+                  ) : null}
                   <Button
                     variant="secondary"
                     size="sm"

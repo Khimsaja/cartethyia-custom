@@ -51,7 +51,7 @@ const DEFAULTS: CustomizationSettings = {
   backgroundOpacity: 21,
   backgroundBlur: 2,
   glassEnabled: false,
-  glassDepth: 1,
+  glassDepth: 2,
 };
 
 // Branding cache — populated by loadBranding() and updated on write.

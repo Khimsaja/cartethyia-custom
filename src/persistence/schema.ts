@@ -592,6 +592,7 @@ export const apiKeys = pgTable(
     clientRouterDenylist: jsonb("client_router_denylist").$type<readonly string[]>(),
     modelPrefix: text("model_prefix"),
     createdAt: createdAtColumn(),
+    enabled: boolean("enabled").notNull().default(true),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
   },
   (table) => [

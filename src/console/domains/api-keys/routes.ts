@@ -115,9 +115,10 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
       const record: ApiKeyRecord = {
         id: randomUUID(),
         tenantId: authorized.tenantId,
+        enabled: request.enabled ?? true,
+        label: request.label?.trim() || (keyMode === "share" ? "Share template" : "API key"),
         keyHash: generated?.hash ?? null,
         keyMode,
-        label: request.label?.trim() || (keyMode === "share" ? "Share template" : "API key"),
         scopes,
         keyPrefix: generated?.prefix ?? resolveKeyPrefix(request.keyPrefix),
         ...(generated ? { keyEncrypted: encryptCredential(generated.secret) } : {}),
@@ -224,9 +225,8 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
           ? undefined
           : parseSharePopupImage(patchRequest.sharePopupImage);
       const updated = await config.store.update(authorized.tenantId, keyId, {
+        ...(patchRequest.enabled === undefined ? {} : { enabled: patchRequest.enabled }),
         ...credentialPatch,
-        ...(patchRequest.keyMode === undefined ? {} : { keyMode: nextMode }),
-        ...(patchRequest.label === undefined ? {} : { label: patchRequest.label.trim() }),
         ...(scopes === undefined ? {} : { scopes }),
         ...(patchRequest.notesTitle === undefined
           ? {}
@@ -611,6 +611,7 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
 }
 
 const apiKeyBody = t.Object({
+  enabled: t.Optional(t.Boolean()),
   label: t.Optional(t.String()),
   keyMode: t.Optional(literalUnion(API_KEY_MODES)),
   scopes: t.Optional(t.Array(t.String())),

@@ -36,6 +36,7 @@ export type {
 } from "../../share/share-usage";
 /** Input accepted when creating or editing a key. Null limits mean unlimited. */
 export interface CreateApiKeyRequest {
+  enabled?: boolean;
   label?: string;
   keyMode?: ApiKeyMode;
   scopes?: readonly string[];
@@ -71,6 +72,7 @@ export interface CreateApiKeyRequest {
 export interface ApiKeyResponse {
   readonly id: string;
   readonly label: string;
+  readonly enabled: boolean;
   readonly keyMode: ApiKeyMode;
   readonly scopes: readonly AccessScope[];
   readonly keyPrefix?: string;
@@ -311,6 +313,7 @@ export function sanitizeApiKeyResponse(record: ApiKeyRecord): ApiKeyResponse {
   return {
     id: record.id,
     label: record.label,
+    enabled: record.enabled,
     keyMode: record.keyMode,
     scopes: record.scopes,
     ...(record.keyPrefix === undefined ? {} : { keyPrefix: record.keyPrefix }),

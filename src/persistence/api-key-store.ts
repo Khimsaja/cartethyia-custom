@@ -15,6 +15,7 @@ export interface ApiKeyRecord {
   readonly issuedClientIp?: string;
   readonly issuedClientIpKey?: string;
   readonly label: string;
+  readonly enabled: boolean;
   readonly scopes: readonly AccessScope[];
   /** Non-secret prefix configured on a key or used to identify a share child. */
   readonly keyPrefix?: string;
@@ -126,6 +127,7 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
         ? {}
         : { issuedClientIpKey: row.issuedClientIpKey }),
       label: row.label,
+      enabled: row.enabled,
       scopes: row.scopes as ApiKeyRecord["scopes"],
       ...(row.keyPrefix === null ? {} : { keyPrefix: row.keyPrefix }),
       ...(row.keyEncrypted === null ? {} : { keyEncrypted: row.keyEncrypted }),
@@ -225,6 +227,7 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
       issuedClientIpKey: record.issuedClientIpKey ?? null,
       label: record.label,
       scopes: record.scopes,
+      enabled: record.enabled,
       keyPrefix: record.keyPrefix ?? null,
       keyEncrypted: record.keyEncrypted ?? null,
       notesTitle: record.notesTitle ?? null,
@@ -282,6 +285,7 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
       const rows = await tx
         .update(apiKeys)
         .set({
+          ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
           ...(patch.label !== undefined ? { label: patch.label } : {}),
           ...(patch.scopes !== undefined ? { scopes: patch.scopes } : {}),
           ...(patch.keyHash !== undefined ? { keyHash: patch.keyHash } : {}),
@@ -359,7 +363,7 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
     const rows = await this.db
       .select()
       .from(apiKeys)
-      .where(and(eq(apiKeys.keyHash, hash), isNull(apiKeys.revokedAt)))
+      .where(and(eq(apiKeys.keyHash, hash), eq(apiKeys.enabled, true), isNull(apiKeys.revokedAt)))
       .limit(1);
     return rows[0];
   }
@@ -368,7 +372,7 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
     const rows = await this.db
       .select()
       .from(apiKeys)
-      .where(and(eq(apiKeys.id, keyId), isNull(apiKeys.revokedAt)))
+      .where(and(eq(apiKeys.id, keyId), eq(apiKeys.enabled, true), isNull(apiKeys.revokedAt)))
       .limit(1);
     return rows[0];
   }

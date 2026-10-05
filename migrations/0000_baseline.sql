@@ -211,6 +211,7 @@ CREATE TABLE "api_keys" (
   "client_router_denylist" jsonb,
   "model_prefix" text,
   "created_at" timestamptz DEFAULT now() NOT NULL,
+  "enabled" boolean DEFAULT true NOT NULL,
   "revoked_at" timestamptz,
   "key_prefix" text,
   "key_encrypted" bytea,

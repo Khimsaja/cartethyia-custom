@@ -251,6 +251,7 @@ export async function resolveApiKeyAuthorization(
   const parent =
     row.parentKeyId !== null ? await store.findActiveById(row.parentKeyId) : undefined;
   // Share children authenticate as themselves but inherit the template's live
+  if (row.parentKeyId !== null && parent === undefined) return undefined;
   // policy. Copy-on-issue alone went stale the moment an operator tightened a
   // limit or blocked a client router on the parent — existing recipients kept
   // the old row values forever. Reading the parent here makes denylist /

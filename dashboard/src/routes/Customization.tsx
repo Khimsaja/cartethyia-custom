@@ -36,6 +36,7 @@ import {
   useCustomizationSettings,
   readCustomizationSettings,
 } from "../shared/customization";
+import { ConsoleLogPanels } from "../features/logs/ConsoleLogPanels";
 
 const BRANDING_MIME_OK: Record<string, true> = { "image/png": true, "image/gif": true };
 
@@ -482,7 +483,7 @@ export default function Customization(): ReactNode {
               backgroundOpacity: 21,
               backgroundBlur: 2,
               glassEnabled: false,
-              glassDepth: 1,
+              glassDepth: 2,
             });
             setSettings({ ...readCustomizationSettings() });
           }}
@@ -633,6 +634,9 @@ export default function Customization(): ReactNode {
       <section aria-label="Branding and background" className="customization-section">
         <BrandingCard />
         <BackgroundControls />
+      </section>
+      <section aria-label="Console activity" className="customization-section">
+        <ConsoleLogPanels />
       </section>
       <p style={{ fontSize: "11px", color: "var(--text-tertiary)", textAlign: "center" }}>
         Background files are limited to {formatBytes(MAX_CUSTOM_ASSET_BYTES)}. Branding & background

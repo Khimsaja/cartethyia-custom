@@ -12,7 +12,6 @@ import {
   Network,
   Rocket,
   Search,
-  ScrollText,
   Server,
   Settings as SettingsIcon,
   ShieldAlert,
@@ -76,7 +75,6 @@ export const navigationGroups: readonly NavGroupDef[] = [
     label: "System",
     items: [
       { label: "Customization", path: "/customization", icon: Sparkles },
-      { label: "Console Log", path: "/console-log", icon: ScrollText },
       { label: "Settings", path: "/settings", icon: SettingsIcon },
     ],
   },
@@ -102,7 +100,6 @@ const titlesMap: Record<string, { title: string; sub: string }> = {
     title: "CLI Tools",
     sub: "Claude Code CLI, OpenCode, and local developer tool integrations",
   },
-  "/console-log": { title: "Console Log", sub: "Live server logs and audit trail" },
   "/settings": {
     title: "Settings",
     sub: "Account security, runtime preferences, and state recovery",
