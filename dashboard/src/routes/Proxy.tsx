@@ -1707,7 +1707,12 @@ export default function Proxy(): ReactNode {
       </Dialog>
 
 
-      <Card>
+      <Card
+        // Keep the card tall enough to reach the footer even with nothing in
+        // it, so the empty state is a full panel rather than a short strip
+        // floating under the summary tiles.
+        style={pools.length === 0 && !isPending && !isError ? { minHeight: "min(78dvh, calc(100dvh - 160px))", display: "flex", flexDirection: "column" } : undefined}
+      >
         <CardHeader
           title="Proxy Pool"
           subtitle="Outbound proxy servers — HTTP, HTTPS, and SOCKS5"
@@ -1733,7 +1738,9 @@ export default function Proxy(): ReactNode {
             </Inline>
           }
         />
-        <CardBody>
+        <CardBody
+          style={pools.length === 0 && !isPending && !isError ? { flex: 1, display: "flex", flexDirection: "column" } : undefined}
+        >
           <ProxySummaryTiles pools={pools} />
 
           {/* Selection & Batch Toolbar (Image 2 style) */}
@@ -1897,22 +1904,21 @@ export default function Proxy(): ReactNode {
           {isPending && <LoadingState />}
           {isError && <ErrorState title="Error" message="Failed to load network pools" />}
           {!isPending && !isError && pools.length === 0 && (
-            // The page header already exposes the same actions; the empty body
-            // only needs to explain why the tiles above are zero. A second row
-            // of buttons just crowds the card and competes for attention.
+            // Fill the card down to the footer as one full-width panel with the
+            // empty state centred inside it, rather than a narrow box hugging
+            // the text in the middle of an otherwise blank card.
             <div
               style={{
-                margin: "16px auto 0",
-                padding: "20px",
+                flex: 1,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                marginTop: "16px",
+                padding: "24px",
                 border: "1px dashed var(--inner-border)",
                 borderRadius: "12px",
                 background: "var(--surface-2)",
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                gap: "10px",
                 textAlign: "center",
-                maxWidth: "520px",
               }}
             >
               <EmptyState
