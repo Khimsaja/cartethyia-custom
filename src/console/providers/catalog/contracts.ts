@@ -496,6 +496,8 @@ export interface ProviderClientVersion {
 
 export interface ProviderResponse {
   providerId: string;
+  /** Executable service surfaces; missing legacy declarations mean LLM only. */
+  serviceKinds: readonly ServiceKind[];
   /** Canonical backend display name; custom providers fall back to providerId. */
   displayName: string;
   label?: string;

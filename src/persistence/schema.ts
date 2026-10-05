@@ -827,7 +827,6 @@ export interface ConsoleSettingsPreferences {
    */
   telemetryPayloadDepth?: "minimum" | "moderate" | "maximum";
   privacyMode?: "masked" | "full";
-  webSearchOrder?: readonly string[];
 }
 
 export const consoleSettings = pgTable("console_settings", {

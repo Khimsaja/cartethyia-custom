@@ -145,7 +145,6 @@ const runtimeUpdateBody = t.Object({
   telemetryPayloadDepth: t.Optional(literalUnion(TELEMETRY_PAYLOAD_DEPTHS)),
   privacyMode: t.Optional(literalUnion(PRIVACY_MODES)),
   tenantConcurrencyLimit: t.Optional(t.Union([t.Null(), t.Number()])),
-  webSearchOrder: t.Optional(t.Array(t.String())),
   thinkingNormalizationEnabled: t.Optional(t.Boolean()),
   rtkPruneEnabled: t.Optional(t.Boolean()),
   rtkPruneLevel: t.Optional(literalUnion(RTK_LEVELS)),

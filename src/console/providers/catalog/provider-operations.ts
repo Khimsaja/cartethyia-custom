@@ -25,6 +25,7 @@ import {
   providerCredentialUrl,
   providerDisplayName,
   providerHasAdapterUserAgent,
+  providerServiceKinds,
   type CompatibilityProfile,
 } from "../../../providers/provider-metadata";
 import type { AccountHealthEventRecord } from "../../../providers/operations/account-health-service";
@@ -65,8 +66,8 @@ export function sanitizeProviderResponse(
   const clientVersion = getProviderClientVersion(p.providerId);
   const response: ProviderResponse = {
     providerId: p.providerId,
+    serviceKinds: providerServiceKinds(p.providerId),
     displayName: providerDisplayName(p.providerId),
-    ...(typeof p.label === "string" && p.label.length > 0 ? { label: p.label } : {}),
     enabled: (p.enabled as boolean | undefined) ?? true,
     isBuiltIn: (p.isBuiltIn as boolean | undefined) ?? false,
     requiresAccount: (p.requiresAccount as boolean | undefined) ?? true,
@@ -252,11 +253,11 @@ export function createProviderCatalogOperations(config: ProviderCatalogConfig) {
         const record: ProviderRecord = {
           providerId: request.providerId,
           displayName: providerDisplayName(request.providerId),
+          serviceKinds: ["llm"],
           tenantId: a.tenantId,
           enabled: request.enabled ?? true,
           isBuiltIn: false,
           supportsModelDiscovery: true,
-          // BYOK providers always need an operator-configured credential; only
           // the two builtin credential-less routes get `false`, set at seed time.
           requiresAccount: true,
           ...(request.label === undefined ? {} : { label: request.label }),

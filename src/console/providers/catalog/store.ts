@@ -13,7 +13,7 @@ import type { TelemetryBatchBuffer } from "../../../observability/telemetry-buff
 import { gatewayErrorSql } from "../../../observability/telemetry-status";
 import type { BundledProviderCatalog } from "../../../providers/operations/provider-catalog-service";
 import type { AccountInflightReading, ByokConnectionTestRequest, ByokConnectionTestResult, CreateProviderAccountRequest, CredentialMode, ModelCatalogEntry, ProbeAllAccountsResult, ProbeAllModelsResult, ProbeModelRequest, ProbeModelResult, ProviderAccountResponse, ProviderAccountTokenUsage, ProviderCatalogStore, ProviderRecord, SetModelEnabledRequest, UpdateProviderAccountRequest } from "./contracts";
-import { validateCompatibilityProfile } from "./contracts";
+import { isServiceKind, validateCompatibilityProfile } from "./contracts";
 import { ProviderProbingService, type ProbeOutboundResolver } from "../../../providers/discovery/probing-service";
 import { resolveManualModelMetadata } from "../../../providers/model-definition";
 import { isUniqueViolation } from "../../../persistence/postgres";
@@ -528,8 +528,21 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
    */
   async probeAllModels(tenantId: string, providerId: string): Promise<ProbeAllModelsResult> {
     const entries = await this.listModels(tenantId, providerId);
-    const modelIds = [...new Set(entries.map((entry) => entry.modelId))];
-    return this.probing.probeAllModels(tenantId, providerId, modelIds);
+    const requests = entries.map((entry) => ({
+      modelId: entry.modelId,
+      route: entry.route,
+      serviceKind: isServiceKind(entry.serviceKind) ? entry.serviceKind : ("llm" as const),
+    }));
+    const uniqueRequests = requests.filter(
+      (request, index, all) =>
+        all.findIndex(
+          (candidate) =>
+            candidate.modelId === request.modelId &&
+            candidate.route === request.route &&
+            candidate.serviceKind === request.serviceKind,
+        ) === index,
+    );
+    return this.probing.probeAllModels(tenantId, providerId, uniqueRequests);
   }
   async probeAllAccounts(
     tenantId: string,

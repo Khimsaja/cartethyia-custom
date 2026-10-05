@@ -188,6 +188,7 @@ export async function resolveProbeTarget(args: {
 }): Promise<ProbeTarget> {
   const { db, bundledModelCatalog, defaultEndpoints, providerId, modelId, request, providerWireRow } =
     args;
+  const requestedServiceKind: ServiceKind = request.serviceKind ?? "llm";
   const declaredFamilies = supportedWireFamiliesForProvider(
     providerId,
     providerWireRow?.wireFamilyDefault,
@@ -215,7 +216,7 @@ export async function resolveProbeTarget(args: {
   // A native-service row (System One) probes through its native endpoint, not a
   // chat wire. Read from the same row the wire came from; an explicit
   // `request.wireFamily` never carries it (the operator is naming a chat wire).
-  let serviceKind: ServiceKind = "llm";
+  let serviceKind: ServiceKind = requestedServiceKind;
   // Capability columns for the row the probe lands on. Resolved alongside the
   // wire so the profile describes the same row the probe dispatches to.
   let capabilitySource: {
@@ -231,7 +232,10 @@ export async function resolveProbeTarget(args: {
     const staticDef = bundledModelCatalog
       .get(providerId)
       ?.find(
-        (def) => def.modelId === modelId && (!request.route || def.endpointPath === request.route),
+        (def) =>
+          def.modelId === modelId &&
+          (def.serviceKind ?? "llm") === requestedServiceKind &&
+          (!request.route || def.endpointPath === request.route),
       );
     if (staticDef) {
       wireFamily = staticDef.wireFamily;
@@ -260,9 +264,14 @@ export async function resolveProbeTarget(args: {
             ? and(
                 eq(models.providerId, providerId),
                 eq(models.modelId, modelId),
+                eq(models.serviceKind, requestedServiceKind),
                 eq(models.endpointPath, request.route),
               )
-            : and(eq(models.providerId, providerId), eq(models.modelId, modelId)),
+            : and(
+                eq(models.providerId, providerId),
+                eq(models.modelId, modelId),
+                eq(models.serviceKind, requestedServiceKind),
+              ),
         )
         .limit(1);
       if (existing[0]) {
@@ -276,6 +285,13 @@ export async function resolveProbeTarget(args: {
           webSearch: existing[0].webSearch,
         };
       } else {
+        if (requestedServiceKind !== "llm") {
+          throw new GatewayError(
+            "model_not_found",
+            404,
+            `No ${requestedServiceKind} model ${modelId} is registered for provider ${providerId}`,
+          );
+        }
         const ctx = wireContextFrom(providerWireRow);
         const resolved = resolveDiscoveredWire(
           modelId,

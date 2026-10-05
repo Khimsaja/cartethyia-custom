@@ -1,6 +1,6 @@
 // Provider contracts, registry, and credential resolution.
 
-import type { CanonicalEvent, CanonicalRequest, WireFamily } from "../transport/canonical-model";
+import type { CanonicalEvent, CanonicalRequest, ServiceKind, WireFamily } from "../transport/canonical-model";
 import { GatewayError } from "../transport/gateway-error";
 import type { BundledProviderId, CompatibilityProfile } from "./provider-metadata";
 import type { OAuthLoginClient } from "./authentication/oauth-flow-store";
@@ -19,6 +19,7 @@ export interface ProviderModule {
   readonly id: BundledProviderId;
   readonly displayName: string;
   readonly baseUrl: string;
+  readonly serviceKinds: readonly ServiceKind[];
   readonly upstreamHost: { readonly hostname: string; readonly port: number };
   readonly loadAuthentication?: () => Promise<ProviderAuthentication>;
   readonly loadQuotaCollector?: () => Promise<QuotaFetcher>;

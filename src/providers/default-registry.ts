@@ -119,7 +119,10 @@ export const PROVIDER_CAPABILITIES = {
   },
   codex: {
     loadAdapter: async () => (await import("./integrations/codex/codex")).createCodexAdapter({ provider_id: "codex" }),
-    loadModels: async () => (await import("./integrations/codex/codex")).CODEX_MODELS,
+    loadModels: async () => [
+      ...(await import("./integrations/codex/codex")).CODEX_MODELS,
+      ...(await import("./search/search-catalog")).CODEX_SEARCH_MODELS,
+    ],
     loadAuthentication: oauthCapability(() => import("./integrations/codex/codex-oauth"), "codexOAuthClient", { withRefresher: true }),
     loadQuotaCollector: quotaCapability(() => import("./integrations/codex/codex-quota"), "fetchCodexQuota"),
   },
@@ -278,7 +281,10 @@ export const PROVIDER_CAPABILITIES = {
   },
   gemini: {
     loadAdapter: async () => (await import("./integrations/gemini")).createGeminiAdapter(),
-    loadModels: async () => (await import("./integrations/gemini")).GEMINI_MODELS,
+    loadModels: async () => [
+      ...(await import("./integrations/gemini")).GEMINI_MODELS,
+      ...(await import("./search/search-catalog")).GEMINI_SEARCH_MODELS,
+    ],
     loadModelDiscovery: async () => async ({ credential }) => (await import("./integrations/gemini")).discoverGeminiModels({ credential }),
   },
   aihubmix: {
@@ -480,6 +486,7 @@ export const BUNDLED_PROVIDER_MODULES: readonly ProviderModule[] = BUNDLED_PROVI
     id: definition.id,
     displayName: definition.displayName,
     baseUrl: definition.baseUrl,
+    serviceKinds: definition.serviceKinds,
     defaultBypassProxy: definition.defaultBypassProxy,
     ...implementation,
     upstreamHost: providerUpstreamHost(definition.id),

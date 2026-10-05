@@ -77,6 +77,11 @@ did the provider return, and what did the client finally receive?**
 | `/v1/models` | List available models |
 | `/v1/search` | Web search |
 | `/v1/systemone` | System One decision requests |
+Web search uses a stable failover order — **Exa → Gemini → Codex** — for the
+providers that are enabled and have an eligible account. The dashboard's Search
+detail provides a model dropdown and direct search test; there is no drag-and-drop
+ordering preference stored in the database.
+
 
 The client protocol belongs to the connection, not to the route you configure. Once
 a request is normalized, the same routing, admission, retry, accounting, and telemetry

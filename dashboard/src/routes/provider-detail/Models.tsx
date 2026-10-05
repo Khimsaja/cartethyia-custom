@@ -216,7 +216,7 @@ export function AddModelModal({
     setTestState("testing");
     setTestError("");
     probe.mutate(
-      { providerId, request: { modelId: normalized, wireFamily, reasoningEffort: thinking } },
+      { providerId, request: { modelId: normalized, wireFamily, reasoningEffort: thinking, serviceKind: "llm" } },
       {
         onSuccess: (result) => {
           if (result.ok) {
@@ -386,15 +386,17 @@ export function AddModelModal({
 function ModelCard({
   providerId,
   model,
+  serviceKind,
   thinkingEffort,
   onDeleteRequest,
   deletePending,
 }: {
   readonly providerId: string;
   readonly model: ModelCatalogEntry;
+  readonly serviceKind: "llm" | "websearch";
   /** The section-wide reasoning effort, owned by the Models card header so one
-   * setting governs every test in the section instead of each card carrying its
-   * own — which is what made "set thinking, then test" need a per-card repeat. */
+   * setting governs every test in the section instead of each card carrying
+   * its own — which is what made "set thinking, then test" need a per-card repeat. */
   readonly thinkingEffort: ProbeReasoningEffort;
   readonly onDeleteRequest: (model: ModelCatalogEntry) => void;
   readonly deletePending: boolean;
@@ -410,18 +412,22 @@ function ModelCard({
   // the backend parses it back off the name — so the copy button hands the
   // operator exactly the id the probe just used. `auto` means "no reasoning
   // intent", which is the bare id, not a `(auto)` suffix.
-  const qualifiedId = formatThinkingSuffix(
-    model.modelId,
-    thinkingEffort === "auto" ? null : thinkingEffort,
-  );
+  const qualifiedId =
+    serviceKind === "llm"
+      ? formatThinkingSuffix(model.modelId, thinkingEffort === "auto" ? null : thinkingEffort)
+      : model.modelId;
   const copyId = `${providerId}/${qualifiedId}`;
-
-
+  const pendingLabel = serviceKind === "websearch" ? "Searching…" : "Thinking…";
   const runProbe = () => {
     probe.mutate(
       {
         providerId,
-        request: { modelId: model.modelId, route: model.route, reasoningEffort: thinkingEffort },
+        request: {
+          modelId: model.modelId,
+          route: model.route,
+          ...(serviceKind === "llm" ? { reasoningEffort: thinkingEffort } : {}),
+          serviceKind,
+        },
       },
       {
         onSuccess: (result) => {
@@ -677,7 +683,7 @@ function ModelCard({
             }
           >
             {probe.isPending
-              ? "Thinking…"
+              ? pendingLabel
               : probeResult?.ok
                 ? formatProbeDuration(probeResult.latencyMs)
                 : probeResult
@@ -745,10 +751,12 @@ export function ModelGrid({
   providerId,
   models,
   thinkingEffort,
+  serviceKind = "llm",
 }: {
   readonly providerId: string;
   readonly models: readonly ModelCatalogEntry[];
   readonly thinkingEffort: ProbeReasoningEffort;
+  readonly serviceKind?: "llm" | "websearch";
 }): ReactNode {
   const deleteModel = useDeleteProviderModel();
   const [deleteTarget, setDeleteTarget] = useState<ModelCatalogEntry | null>(null);
@@ -767,6 +775,7 @@ export function ModelGrid({
       key={`${model.modelId}::${model.route}`}
       providerId={providerId}
       model={model}
+      serviceKind={serviceKind}
       thinkingEffort={thinkingEffort}
       deletePending={deleteModel.isPending}
       onDeleteRequest={setDeleteTarget}

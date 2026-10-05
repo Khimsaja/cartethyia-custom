@@ -1,4 +1,4 @@
-import { ChevronDown, Eye, EyeOff, GripVertical, Plus, Trash2 } from "lucide-react";
+import { ChevronDown, Eye, EyeOff, Plus, Trash2 } from "lucide-react";
 import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import {
@@ -38,6 +38,15 @@ import { getErrorMessage } from "../../shared/helpers";
 
 const wireFamilies = ["chat", "responses", "messages"] as const;
 type WireFamily = (typeof wireFamilies)[number];
+type DashboardServiceKind = "llm" | "websearch";
+
+const SEARCH_PROVIDER_ORDER = ["exa", "gemini", "codex"] as const;
+
+function providerServiceKinds(provider: ProviderResponse): readonly string[] {
+  const kinds = provider.serviceKinds;
+  return Array.isArray(kinds) && kinds.length > 0 ? kinds : ["llm"];
+}
+
 
 // ── Custom Compatible Provider Modal ──────────────────────────────────────────
 
@@ -517,8 +526,10 @@ function CustomProviderCard({ customProvider }: { customProvider: ProviderRespon
 
 function CustomProvidersSection({
   customProviders,
+  showCards = true,
 }: {
   customProviders: ProviderResponse[];
+  showCards?: boolean;
 }): ReactNode {
   const [showAnthropic, setShowAnthropic] = useState(false);
   const [showOpenAI, setShowOpenAI] = useState(false);
@@ -612,7 +623,7 @@ function CustomProvidersSection({
         </Inline>
       </div>
 
-      {hidden ? null : customProviders.length === 0 ? (
+      {showCards && (hidden ? null : customProviders.length === 0 ? (
         <Card>
           <CardBody
             style={{
@@ -636,7 +647,7 @@ function CustomProvidersSection({
             <CustomProviderCard key={cp.providerId} customProvider={cp} />
           ))}
         </ProviderCardGrid>
-      )}
+      ))}
 
       <AddCompatibleModal
         variant="anthropic-compatible"
@@ -761,13 +772,20 @@ function ProviderVersionBadge({
 
 const ProviderCard = memo(function ProviderCard({
   provider,
+  serviceKind,
 }: {
   provider: ProviderResponse;
+  serviceKind?: DashboardServiceKind;
 }): ReactNode {
   const isFounding = FOUNDING_IDS.has(provider.providerId.toLowerCase());
   const displayName = provider.label || provider.displayName;
   const modelsQuery = useProviderModels(provider.providerId);
-  const modelCount = modelsQuery.data?.length;
+  const modelCount = modelsQuery.data?.filter(
+    (model) =>
+      serviceKind === undefined ||
+      model.serviceKind === serviceKind ||
+      (serviceKind === "llm" && model.serviceKind === undefined),
+  ).length;
   const accountsQuery = useProviderAccounts(provider.providerId);
   const accounts = accountsQuery.data;
   const counts = summarizeAccounts(accounts ?? []);
@@ -787,7 +805,9 @@ const ProviderCard = memo(function ProviderCard({
       <ProviderVersionBadge clientVersion={provider.clientVersion} />
 
       <Link
-        to={`/providers/${encodeURIComponent(provider.providerId)}`}
+        to={`/providers/${encodeURIComponent(provider.providerId)}${
+          serviceKind === undefined ? "" : `?service=${serviceKind}`
+        }`}
         style={{
           textDecoration: "none",
           color: "inherit",
@@ -920,6 +940,10 @@ const SECTIONS = [
       !FREE_LIMITED_IDS.has(p.providerId.toLowerCase()) &&
       p.oauthFlows === undefined,
   },
+  {
+    title: "Custom Providers",
+    filter: (p: ProviderResponse) => !p.isBuiltIn,
+  },
 ];
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
@@ -931,37 +955,25 @@ export default function Providers(): ReactNode {
     () => [...allProviders.filter((p) => !p.isBuiltIn)].sort(compareConfiguredProviders),
     [allProviders],
   );
-  const builtInProviders = useMemo(() => allProviders.filter((p) => p.isBuiltIn), [allProviders]);
   const searchProviders = useMemo(
-    () => builtInProviders.filter((p) => p.providerId === "exa" || p.providerId === "tavily" || p.providerId === "brave"),
-    [builtInProviders],
+    () => allProviders.filter((p) => providerServiceKinds(p).includes("websearch")),
+    [allProviders],
   );
   const llmProviders = useMemo(
-    () => builtInProviders.filter((p) => p.providerId !== "exa" && p.providerId !== "tavily" && p.providerId !== "brave"),
-    [builtInProviders],
+    () => allProviders.filter((p) => providerServiceKinds(p).includes("llm")),
+    [allProviders],
   );
-  const [tab, setTab] = useState<"all" | "llm" | "search">("all");
-  const [searchOrder, setSearchOrder] = useState<string[] | null>(null);
-  useEffect(() => {
-    // Seed from server preference; fallback to localStorage for immediate UX before first fetch
-    import("../../data/api").then(({ consoleRequest }) =>
-      consoleRequest<{ preferences: { webSearchOrder?: string[] } }>("/settings/runtime").then((r)=>{
-        const o=r.preferences?.webSearchOrder;
-        if(o?.length) setSearchOrder(o as string[]);
-        else { try{ const s=localStorage.getItem("cartethyia:search-order"); if(s) setSearchOrder(JSON.parse(s)); }catch{} }
-      }).catch(()=>{ try{ const s=localStorage.getItem("cartethyia:search-order"); if(s) setSearchOrder(JSON.parse(s)); }catch{} })
-    );
-  }, []);
-  const persistOrder = (ids: string[]) => {
-    setSearchOrder(ids);
-    try{ localStorage.setItem("cartethyia:search-order", JSON.stringify(ids)); }catch{}
-    import("../../data/api").then(({ consoleRequest }) => consoleRequest("/settings/runtime",{method:"PATCH", body: JSON.stringify({ webSearchOrder: ids })}).catch(()=>{}));
-  };
+  const [tab, setTab] = useState<"llm" | "search">("llm");
   const orderedSearch = useMemo(() => {
-    if (!searchOrder) return [...searchProviders].sort((a,b)=>(a.label||a.displayName).localeCompare(b.label||b.displayName));
-    const idx=new Map(searchOrder.map((id,i)=>[id,i] as const));
-    return [...searchProviders].sort((a,b)=>(idx.get(a.providerId)??999)-(idx.get(b.providerId)??999));
-  }, [searchProviders, searchOrder]);
+    const rank = new Map<string, number>(SEARCH_PROVIDER_ORDER.map((id, index) => [id, index]));
+    return [...searchProviders].sort((a, b) => {
+      const rankDiff =
+        (rank.get(a.providerId.toLowerCase()) ?? SEARCH_PROVIDER_ORDER.length) -
+        (rank.get(b.providerId.toLowerCase()) ?? SEARCH_PROVIDER_ORDER.length);
+      if (rankDiff !== 0) return rankDiff;
+      return (a.label || a.displayName).localeCompare(b.label || b.displayName);
+    });
+  }, [searchProviders]);
   const sortFn = (a: ProviderResponse, b: ProviderResponse) => {
     const configuredDiff = Number(Boolean(b.configured)) - Number(Boolean(a.configured));
     if (configuredDiff !== 0) return configuredDiff;
@@ -972,17 +984,17 @@ export default function Providers(): ReactNode {
       return [
         {
           title: "Search Providers",
-          subtitle: "Drag to reorder — top is tried first on POST /v1/search",
+          subtitle: "Automatic web search order: Exa → Gemini → Codex",
           providers: orderedSearch,
         },
       ].filter((s) => s.providers.length > 0);
     }
-    const source = tab === "llm" ? llmProviders : builtInProviders;
+    const source = llmProviders;
     return SECTIONS.map((section) => ({
       ...section,
       providers: source.filter(section.filter).sort(sortFn),
     })).filter((section) => section.providers.length > 0);
-  }, [builtInProviders, llmProviders, orderedSearch, tab]);
+  }, [llmProviders, orderedSearch, tab]);
 
   if (q.isPending && !q.data) return <LoadingState label="Loading providers..." />;
   if (q.isError)
@@ -997,7 +1009,7 @@ export default function Providers(): ReactNode {
     <Stack gap="24px">
       <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
         <div style={{ display: "flex", gap: "4px" }}>
-          {(["all", "llm", "search"] as const).map((t) => (
+          {(["llm", "search"] as const).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -1012,8 +1024,8 @@ export default function Providers(): ReactNode {
                 cursor: "pointer",
               }}
             >
-              {t === "all" ? "All" : t === "llm" ? "LLM" : "Search"}
-              {t === "search" ? ` (${searchProviders.length})` : t === "llm" ? ` (${llmProviders.length})` : ""}
+              {t === "llm" ? "LLM" : "Search"}
+              {t === "search" ? ` (${searchProviders.length})` : ` (${llmProviders.length})`}
             </button>
           ))}
         </div>
@@ -1024,11 +1036,13 @@ export default function Providers(): ReactNode {
             color: "var(--text-tertiary)",
           }}
         >
-          {tab === "search" ? "Drag to reorder" : "Connected pinned first · A–Z"}
+          {tab === "search" ? "Automatic order: Exa → Gemini → Codex" : "Connected pinned first · A–Z"}
         </span>
       </div>
       
-      <CustomProvidersSection customProviders={customProviders} />
+      {tab === "llm" ? (
+        <CustomProvidersSection customProviders={customProviders} showCards={false} />
+      ) : null}
 
       {sections.length === 0 ? (
         <Card>
@@ -1053,41 +1067,15 @@ export default function Providers(): ReactNode {
               ) : null}
             </Stack>
 
-            {tab === "search" ? (
-              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                {section.providers.map((p, idx) => (
-                  <div
-                    key={p.providerId}
-                    draggable
-                    onDragStart={(e) => { e.dataTransfer.setData("text/plain", p.providerId); e.dataTransfer.effectAllowed="move"; }}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      const from=e.dataTransfer.getData("text/plain");
-                      if(!from || from===p.providerId) return;
-                      const ids=orderedSearch.map(x=>x.providerId);
-                      const a=ids.indexOf(from), b=ids.indexOf(p.providerId);
-                      if(a<0||b<0) return;
-                      ids.splice(a,1); ids.splice(b,0,from);
-                      persistOrder(ids);
-                    }}
-                    style={{ display:"flex", alignItems:"stretch", gap:"6px" }}
-                  >
-                    <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:"2px", paddingTop:"8px" }}>
-                      <GripVertical size={14} style={{ color:"var(--text-tertiary)", cursor:"grab" }} />
-                      <span style={{ fontSize:"10px", color:"var(--text-tertiary)", fontWeight:700 }}>{idx+1}</span>
-                    </div>
-                    <div style={{ flex:1, minWidth:0 }}><ProviderCard provider={p} /></div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <ProviderCardGrid>
-                {section.providers.map((p) => (
-                  <ProviderCard key={p.providerId} provider={p} />
-                ))}
-              </ProviderCardGrid>
-            )}
+            <ProviderCardGrid>
+              {section.providers.map((p) => (
+                <ProviderCard
+                  key={p.providerId}
+                  provider={p}
+                  serviceKind={tab === "search" ? "websearch" : "llm"}
+                />
+              ))}
+            </ProviderCardGrid>
           </section>
         ))
       )}

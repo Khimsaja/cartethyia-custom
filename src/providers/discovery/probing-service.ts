@@ -292,8 +292,9 @@ export class ProviderProbingService {
               `Provider ${providerId} has no web search transport`,
             );
           }
+          const searchProbeQuery = request.prompt?.trim() || "Cartethyia gateway probe";
           const response = await adapter.websearch(
-            { model: modelId, query: "Cartethyia gateway probe", max_results: 2 },
+            { model: modelId, query: searchProbeQuery, max_results: 3 },
             candidate,
             {
               credential,
@@ -893,34 +894,35 @@ export class ProviderProbingService {
   }
 
   /**
-   * Batched provider-wide probe: `modelIds[0]` runs sequentially (it warms
+   * Batched provider-wide probe: the first request runs sequentially (it warms
    * OAuth token caches and connection pools for the provider), the rest run
-   * with `Promise.allSettled` bounded to `PROBE_CONCURRENCY`. Any per-model
-   * failure is captured in its own result entry; the batch never rejects.
+   * with `Promise.allSettled` bounded to `PROBE_CONCURRENCY`. Each request
+   * carries its model route and service kind so native services never fall
+   * through to an LLM probe.
    */
   async probeAllModels(
     tenantId: string,
     providerId: string,
-    modelIds: readonly string[],
+    requests: readonly ProbeModelRequest[],
   ): Promise<ProbeAllModelsResult> {
     const results: Array<ProbeAllModelsResult["results"][number]> = [];
-    const [firstModelId, ...restModelIds] = modelIds;
-    if (firstModelId === undefined) return { providerId, results };
+    const [firstRequest, ...restRequests] = requests;
+    if (firstRequest === undefined) return { providerId, results };
 
-    const runOne = async (modelId: string): Promise<void> => {
-      const outcome = await this.probeModel(tenantId, providerId, { modelId });
+    const runOne = async (probeRequest: ProbeModelRequest): Promise<void> => {
+      const outcome = await this.probeModel(tenantId, providerId, probeRequest);
       results.push({
-        modelId,
+        modelId: probeRequest.modelId,
         ok: outcome.ok,
         latencyMs: outcome.latencyMs,
         ...(outcome.error ? { error: outcome.error } : {}),
       });
     };
 
-    await runOne(firstModelId);
-    for (let offset = 0; offset < restModelIds.length; offset += PROBE_CONCURRENCY) {
-      const batch = restModelIds.slice(offset, offset + PROBE_CONCURRENCY);
-      await Promise.allSettled(batch.map((modelId) => runOne(modelId)));
+    await runOne(firstRequest);
+    for (let offset = 0; offset < restRequests.length; offset += PROBE_CONCURRENCY) {
+      const batch = restRequests.slice(offset, offset + PROBE_CONCURRENCY);
+      await Promise.allSettled(batch.map((request) => runOne(request)));
     }
     return { providerId, results };
   }
