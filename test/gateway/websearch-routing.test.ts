@@ -24,6 +24,11 @@ import { dbDescribe } from "../helpers/database";
 import { RoutingEngine } from "../../src/transport/routing/router";
 import { GatewayError } from "../../src/transport/gateway-error";
 import type { CanonicalEvent, CanonicalRequest } from "../../src/transport/canonical-model";
+import {
+  extractWebSearchInvocation,
+  isWebSearchTool,
+  isWebSearchToolName,
+} from "../../src/transport/translation/capabilities";
 import type { RouteCandidate, RouteSnapshot } from "../../src/transport/routing/route-model";
 
 /** A Messages request that declares Anthropic's hosted web-search tool. */
@@ -393,5 +398,122 @@ dbDescribe("web-search fallback dispatch", () => {
     // Native search worked: no fallback, no second dispatch.
     expect(attempts).toBe(1);
     expect(searchAdapter.searches).toEqual([]);
+  });
+});
+
+describe("search query extraction", () => {
+  test("strips injected system-reminder scaffolding from a derived query", () => {
+    // Reproduces a production failure: Claude Code appended its CLAUDE.md
+    // (about CodeGraph) to the operator's turn, the whole turn became the
+    // search query, and Exa returned pages about CodeGraph instead of the
+    // subject the operator actually asked about.
+    const request = {
+      model: "m",
+      source_surface: "messages",
+      generation_controls: {},
+      tools: [{ name: "web_search", native_type: "web_search_20250305" }],
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              kind: "text",
+              text:
+                "coba kau websearch siapa itu risuncode\n" +
+                "<system-reminder>\n" +
+                "As you answer, you must use the codegraph tool.\n" +
+                "# CLAUDE.md\n" +
+                "Contents of CLAUDE.md about CodeGraph and AGENTS.md.\n" +
+                "</system-reminder>",
+            },
+          ],
+        },
+      ],
+    } as unknown as CanonicalRequest;
+    const invocation = extractWebSearchInvocation(request);
+    expect(invocation?.query).toBe("coba kau websearch siapa itu risuncode");
+    // None of the injected prose survives into the query.
+    expect(invocation?.query ?? "").not.toContain("system-reminder");
+    expect(invocation?.query ?? "").not.toContain("CodeGraph");
+    expect(invocation?.query ?? "").not.toContain("CLAUDE.md");
+  });
+
+  test("leaves user-typed markup alone", () => {
+    // The reason this trims rather than strips: a blanket tag-strip would
+    // destroy a legitimate question about markup or config.
+    const request = {
+      model: "m",
+      source_surface: "messages",
+      generation_controls: {},
+      tools: [{ name: "web_search", native_type: "web_search_20250305" }],
+      messages: [
+        {
+          role: "user",
+          content: [{ kind: "text", text: "how do I center a <div> with flexbox in <main>" }],
+        },
+      ],
+    } as unknown as CanonicalRequest;
+    expect(extractWebSearchInvocation(request)?.query).toBe(
+      "how do I center a <div> with flexbox in <main>",
+    );
+  });
+
+  test("bounds an oversized query", () => {
+    const request = {
+      model: "m",
+      source_surface: "messages",
+      generation_controls: {},
+      tools: [{ name: "web_search", native_type: "web_search_20250305" }],
+      messages: [
+        {
+          role: "user",
+          content: [{ kind: "text", text: "who is risuncode " + "noise ".repeat(400) }],
+        },
+      ],
+    } as unknown as CanonicalRequest;
+    const query = extractWebSearchInvocation(request)?.query ?? "";
+    expect(query.length).toBeLessThanOrEqual(512);
+    expect(query.startsWith("who is risuncode")).toBe(true);
+  });
+
+  test("passes a model-authored tool query through untouched", () => {
+    const request = {
+      model: "m",
+      source_surface: "messages",
+      generation_controls: {},
+      tools: [{ name: "web_search", native_type: "web_search_20250305" }],
+      messages: [
+        { role: "user", content: [{ kind: "text", text: "anything" }] },
+        {
+          role: "assistant",
+          content: [
+            {
+              kind: "toolCall",
+              call_id: "c1",
+              name: "web_search",
+              arguments: { query: "risuncode github profile" },
+            },
+          ],
+        },
+      ],
+    } as unknown as CanonicalRequest;
+    expect(extractWebSearchInvocation(request)?.query).toBe("risuncode github profile");
+  });
+
+  test("keeps a client-side WebSearch tool instead of consuming it", () => {
+    // executes locally, with no hosted type marker. Treating it as hosted ran
+    // the fallback bridge and stripped the declaration, so the upstream model
+    // lost the tool and answered "I don't have a WebSearch tool".
+    const clientSide = { name: "WebSearch", description: "Search the web" };
+    const hosted = { name: "web_search", native_type: "web_search_20250305" };
+    const wireHosted = { name: "anything", tool_type: "web_search" };
+
+    expect(isWebSearchTool(clientSide as never)).toBe(false);
+    expect(isWebSearchTool(hosted as never)).toBe(true);
+    expect(isWebSearchTool(wireHosted as never)).toBe(true);
+
+    // A model invoking that client-side tool by name is still asking for
+    // search, so the invocation check stays name-based.
+    expect(isWebSearchToolName("WebSearch")).toBe(true);
   });
 });

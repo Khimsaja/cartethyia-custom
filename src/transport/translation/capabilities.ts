@@ -10,22 +10,49 @@ import {
   type WireFamily,
 } from "../canonical-model";
 
-/** Returns whether one declared tool is a native web-search request. */
+/**
+ * Returns whether one declared tool is a *hosted* web-search tool — one the
+ * provider executes, not one the client runs itself.
+ *
+ * Identified by its wire type marker and never by name alone. A coding client
+ * ships its own client-side `WebSearch` tool: a plain named tool the CLI
+ * executes locally. Matching that by name made the gateway treat it as
+ * provider-side, run the fallback bridge, and strip the declaration — so the
+ * upstream model genuinely lost its `WebSearch` tool and answered "I don't
+ * have a WebSearch tool", while the client's own search loop was disabled
+ * for the rest of the session.
+ *
+ * A hosted declaration always announces itself: Anthropic sends
+ * `type: "web_search_20250305"`, an [OI]-compatible wire sends
+ * `type: "web_search"` / `web_search_preview`. Both are explicit, and neither
+ * is a name.
+ */
 export function isWebSearchTool(
   tool: Pick<ToolDefinition, "name" | "native_type" | "tool_type">,
 ): boolean {
-  const normalizedName = tool.name.toLowerCase().replace(/[^a-z]/g, "");
+  // Anthropic's hosted search tool (`web_search_20250305`, …).
+  if (tool.native_type?.startsWith("web_search_") === true) return true;
+  // `classifyNativeToolType` maps `web_search` / `web_search_preview` and
+  // friends onto this tool_type on every wire.
+  return tool.tool_type === "web_search";
+}
+
+/**
+ * Name-based check for a search *invocation* — a model calling `web_search`
+ * by name, which has no type marker to read.
+ *
+ * Deliberately separate from {@link isWebSearchTool}: declarations decide
+ * whether to strip a tool, where acting on a name alone destroys client-side
+ */
+export function isWebSearchToolName(name: string): boolean {
+  const normalized = name.toLowerCase().replace(/[^a-z]/g, "");
   return (
-    tool.tool_type === "web_search" ||
-    normalizedName === "websearch" ||
-    normalizedName === "websearchpreview" ||
-    tool.native_type?.startsWith("web_search_") === true
+    normalized === "websearch" ||
+    normalized === "websearchpreview" ||
+    name.startsWith("web_search")
   );
 }
 
-function isWebSearchToolName(name: string): boolean {
-  return isWebSearchTool({ name });
-}
 
 function parseSearchArguments(value: unknown): Record<string, unknown> | undefined {
   if (typeof value === "string") {
@@ -67,7 +94,10 @@ export function extractWebSearchInvocation(
       const part = message.content[partIndex];
       if (part?.kind !== "toolCall" || !isWebSearchToolName(part.name)) continue;
       const args = parseSearchArguments(part.arguments);
-      const query = typeof args?.query === "string" ? args.query.trim() : "";
+      const rawQuery = typeof args?.query === "string" ? args.query.trim() : "";
+      // Model-authored: already the search intent itself, never scaffolding.
+      // Pass it through untouched — editing it here can only lose intent.
+      const query = rawQuery.length > MAX_SEARCH_QUERY_CHARS ? rawQuery.slice(0, MAX_SEARCH_QUERY_CHARS) : rawQuery;
       if (query.length === 0) continue;
       const rawMax = args?.max_results;
       const maxResults =
@@ -80,16 +110,70 @@ export function extractWebSearchInvocation(
   for (let messageIndex = request.messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
     const message = request.messages[messageIndex];
     if (message?.role !== "user") continue;
-    const query = message.content
-      .filter((part): part is Extract<typeof part, { kind: "text" }> => part.kind === "text")
-      .map((part) => part.text.trim())
-      .filter((text) => text.length > 0)
-      .join("\n")
-      .trim();
+    const query = sanitizeSearchQuery(
+      message.content
+        .filter((part): part is Extract<typeof part, { kind: "text" }> => part.kind === "text")
+        .map((part) => part.text)
+        .join("\n"),
+    );
     if (query.length > 0) return { query, maxResults: 10 };
   }
   return undefined;
 }
+
+/** Upper bound on a derived search query; real queries are far shorter. */
+const MAX_SEARCH_QUERY_CHARS = 512;
+
+/**
+ * Trims a user turn down to the operator's own words for use as a query.
+ *
+ * Deliberately does **not** rewrite the text. Rewriting a turn is how you
+ * lose the question: a blanket tag-strip would mangle a legitimate query
+ * about `<div>`, an XML config, or a markdown snippet, and a coding client's
+ * injected scaffolding is not the only XML a user ever types.
+ *
+ * Instead it cuts at the first injected block opener. A coding client
+ * (Claude Code) *appends* its `<system-reminder>` — CLAUDE.md, agent
+ * definitions, tool docs — to the end of the turn, so the operator's own
+ * sentence is always the prefix and survives intact. Everything from the
+ * opener on is dropped without being read or edited.
+ *
+ * What this fixes: sending the whole turn verbatim made the provider match
+ * on the injected prose and return pages *about those files*. A request for
+ * "risuncode" came back with CLAUDE.md, CodeGraph, and AGENTS.md pages.
+ *
+ * The result is a query only — it never reaches the model, and the model
+ * still receives the full, unmodified conversation.
+ */
+export function sanitizeSearchQuery(text: string): string {
+  let end = text.length;
+  for (const tag of INJECTED_QUERY_OPENERS) {
+    const match = new RegExp(`<${tag}\\b[^>]*>`, "i").exec(text);
+    if (match && match.index < end) end = match.index;
+  }
+  const head = text.slice(0, end).replace(/\s+/g, " ").trim();
+  if (head.length <= MAX_SEARCH_QUERY_CHARS) return head;
+  // Cut on a word boundary; a mid-word slice searches a fragment.
+  const sliced = head.slice(0, MAX_SEARCH_QUERY_CHARS);
+  const lastSpace = sliced.lastIndexOf(" ");
+  return (lastSpace > MAX_SEARCH_QUERY_CHARS / 2 ? sliced.slice(0, lastSpace) : sliced).trim();
+}
+
+/**
+ * Tags a client wraps its own injected context in. Only their *openers*
+ * matter — matching the opener alone is what keeps this from editing any
+ * user-typed content that happens to look like markup.
+ */
+const INJECTED_QUERY_OPENERS = [
+  "system-reminder",
+  "system-reminders",
+  "system_instruction",
+  "local-command-stdout",
+  "command-name",
+  "command-message",
+  "command-args",
+  "session-start-hook",
+] as const;
 
 /**
  * True when a completed response actually carries web-search evidence.
