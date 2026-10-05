@@ -84,7 +84,7 @@ export function filterLogLines(
 }
 
 
-export function ConsoleLogPanels(): ReactNode {
+export default function ConsoleLogPage(): ReactNode {
   const [tab, setTab] = useState<TabKey>("logs");
   const sessionQuery = useSessionUser();
   const isPlatformAdmin = sessionQuery.data?.isPlatformAdmin ?? false;
@@ -96,8 +96,8 @@ export function ConsoleLogPanels(): ReactNode {
         display: "flex",
         flexDirection: "column",
         gap: "12px",
-        height: "min(640px, calc(100vh - 260px))",
-        minHeight: "520px",
+        height: "calc(100vh - 160px)",
+        minHeight: "480px",
       }}
     >
       <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>

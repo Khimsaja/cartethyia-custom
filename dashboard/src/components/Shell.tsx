@@ -15,7 +15,7 @@ import {
   Server,
   Settings as SettingsIcon,
   ShieldAlert,
-  Sparkles,
+  ScrollText,
   Sun,
   Terminal,
   Timer,
@@ -34,9 +34,7 @@ import { prefetchRouteIntent } from "../data/route-prefetch";
 import { usePullToRefresh } from "../hooks/use-pull-to-refresh";
 import { useSystemHealth } from "../hooks/system";
 import { useProviders } from "../hooks/providers";
-import { Atmosphere } from "./Atmosphere";
 import { DASHBOARD_RELEASE_LABEL } from "../shared/version";
-import { useCustomizationAssetUrl, useCustomizationBranding } from "../shared/customization";
 import type { SessionUser } from "../data/contracts";
 import { formatUptime } from "../shared/format";
 
@@ -74,7 +72,7 @@ export const navigationGroups: readonly NavGroupDef[] = [
   {
     label: "System",
     items: [
-      { label: "Customization", path: "/customization", icon: Sparkles },
+      { label: "Console Log", path: "/console-log", icon: ScrollText },
       { label: "Settings", path: "/settings", icon: SettingsIcon },
     ],
   },
@@ -94,7 +92,7 @@ const titlesMap: Record<string, { title: string; sub: string }> = {
     title: "Proxy & Requests",
     sub: "Network pools, SOCKS5/HTTP egress, and dispatch",
   },
-  "/customization": { title: "Customization", sub: "Theme appearance, ambient mesh, and branding" },
+  "/console-log": { title: "Console Log", sub: "Live server logs and audit trail" },
   "/model-lab": { title: "Model Lab", sub: "Live model playground — chat, thinking, and image generation" },
   "/cli-tools": {
     title: "CLI Tools",
@@ -149,15 +147,11 @@ function ThemeToggle() {
   const [theme, setTheme] = useState(() => readConsoleTheme());
   const dark = isDarkEffective(theme);
 
-  // Stay in sync when the theme changes elsewhere (e.g. Customization page).
+  // Stay in sync with theme changes from another tab.
   useEffect(() => {
     const resync = () => setTheme(readConsoleTheme());
-    window.addEventListener("console-customization-change", resync);
     window.addEventListener("storage", resync);
-    return () => {
-      window.removeEventListener("console-customization-change", resync);
-      window.removeEventListener("storage", resync);
-    };
+    return () => window.removeEventListener("storage", resync);
   }, []);
 
   useEffect(() => {
@@ -748,14 +742,11 @@ export function DashboardShell({
   };
 
   const meta = resolveRouteMeta(location.pathname, providersQuery.data ?? []);
-  const [branding] = useCustomizationBranding();
-  const customBrandingUrl = useCustomizationAssetUrl(branding.asset);
   const defaultLogoUrl = `${import.meta.env.BASE_URL}favicon_love.webp`;
-  const logoUrl = customBrandingUrl ?? defaultLogoUrl;
+  const logoUrl = defaultLogoUrl;
   return (
     <>
       <div className="app-bg" aria-hidden="true" />
-      <Atmosphere />
       <div className="app-shell-root">
         {drawerPresence.mounted && (
           <button

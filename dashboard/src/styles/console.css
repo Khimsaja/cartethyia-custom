@@ -1866,7 +1866,6 @@
 }
 
 /* ===== layout ===== */
-/* Shared page layouts plus Settings, Customization, and Routing Strategy grids. */
 /* Layout Columns */
 .two-column-grid {
   display: grid;
@@ -1876,15 +1875,6 @@
   min-width: 0;
 }
 
-/* Customization uses a deliberate single-column composition instead of the shared
-   two-column page grid: settings read top to bottom, and the asset rows remain
-   wide enough for file metadata without competing for a narrow column. */
-.customization-section {
-  display: grid;
-  gap: 16px;
-  width: 100%;
-  min-width: 0;
-}
 
 /* Settings keeps related controls compact: security/privacy share the first
    row, while the wider backup surface spans the full grid below. */
