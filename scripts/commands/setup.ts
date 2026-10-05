@@ -1,3 +1,5 @@
+import { createInterface } from "node:readline/promises";
+import { stdin as input, stdout as output } from "node:process";
 import { existsSync, mkdirSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -13,8 +15,36 @@ import {
 } from "../internal/env";
 import type { ProbeResult } from "../internal/env";
 import { resolveDataDir, resolveDbMode } from "../../src/persistence/db-mode";
-
 const projectRoot = resolve(import.meta.dir, "..", "..");
+
+async function ask(question: string, defaultValue = ""): Promise<string> {
+  const rl = createInterface({ input, output });
+  try {
+    const suffix = defaultValue ? ` [${defaultValue}]` : "";
+    const answer = await rl.question(`${question}${suffix}: `);
+    return answer.trim() || defaultValue;
+  } finally {
+    await rl.close();
+  }
+}
+
+async function updateEnv(values: Readonly<Record<string, string>>): Promise<void> {
+  const envPath = resolve(projectRoot, ".env");
+  const lines = (await readFile(envPath, "utf8")).split(/\r?\n/);
+  const replaced = new Set<string>();
+  const output = lines.map((line) => {
+    const match = /^(\s*)([A-Z][A-Z0-9_]*)\s*=/.exec(line);
+    if (!match) return line;
+    const key = match[2];
+    if (!key || values[key] === undefined) return line;
+    replaced.add(key);
+    return `${match[1]}${key}=${values[key]}`;
+  });
+  for (const [key, value] of Object.entries(values)) {
+    if (!replaced.has(key)) output.push(`${key}=${value}`);
+  }
+  await writeFile(envPath, `${output.join("\n").replace(/\n+$/, "")}\n`, "utf8");
+}
 type SetupMode = "auto" | "native" | "docker";
 
 export function resolveSetupMode(): SetupMode {
@@ -122,10 +152,26 @@ async function setup(): Promise<void> {
     console.log("✓ .env file already exists\n");
   }
 
-  // Step 2: Load environment from .env.
+  // Step 2: Load environment and choose the database mode in the same command.
   const fileEnv = await readEnvFile(envPath);
   for (const [key, value] of Object.entries(fileEnv)) {
     if (!process.env[key]) process.env[key] = value;
+  }
+  if (
+    !process.env.CARTETHYIA_DB_MODE &&
+    process.stdin.isTTY &&
+    !process.argv.includes("--non-interactive")
+  ) {
+    const answer = (await ask(
+      "Database mode? lite (embedded) / full (external PostgreSQL)",
+      "lite",
+    )).toLowerCase();
+    if (answer !== "lite" && answer !== "full") {
+      throw new Error(`Database mode must be lite or full (got "${answer}")`);
+    }
+    await updateEnv({ CARTETHYIA_DB_MODE: answer });
+    process.env.CARTETHYIA_DB_MODE = answer;
+    console.log(`✓ Database mode selected: ${answer}\n`);
   }
   const config = loadConfig();
 
@@ -222,8 +268,8 @@ async function setup(): Promise<void> {
   console.log("✅ Setup complete!");
   console.log("");
   console.log("Next steps:");
-  console.log("  bun run doctor    - Check readiness");
-  console.log("  bun run dev       - Start development servers");
+  console.log("  bun doctor       - Check readiness");
+  console.log("  bun dev          - Start development servers");
 }
 
 if (import.meta.main) {

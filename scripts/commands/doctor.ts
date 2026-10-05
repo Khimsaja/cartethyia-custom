@@ -119,7 +119,7 @@ async function doctor(): Promise<void> {
   console.log("📋 Environment Configuration");
   if (!existsSync(config.envPath)) {
     console.log("  ✗ .env file not found");
-    console.log("  Run: bun run setup\n");
+    console.log("  Run: bun setup\n");
     process.exit(1);
   }
   console.log("  ✓ .env file exists");

@@ -77,9 +77,10 @@ From the repository root:
 bun install
 ```
 
-Cartethyia creates `.env` automatically on the next command. The installer
-(`bun run setup:interactive`) asks **Lite or Full** if `CARTETHYIA_DB_MODE` is
-unset. `bun run setup` is non-interactive and uses the `.env` choice. Both:
+Cartethyia creates `.env` automatically on the next command. Run `bun setup`;
+when attached to a terminal it asks **Lite or Full** if `CARTETHYIA_DB_MODE` is
+unset. Use `bun setup --non-interactive` in automation and let the `.env` value
+decide. The command:
 
 - detect whether `.env` exists — if not, create it from `.env.example` keeping
   **only mandatory rows** (`KEY=value` without `#`); commented options stay
