@@ -128,15 +128,11 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
   { id: "fireworks", displayName: "Fireworks AI", baseUrl: "https://api.fireworks.ai/inference/v1", credentialUrl: "https://fireworks.ai/account/api-keys" },
   { id: "nvidia", displayName: "NVIDIA NIM", baseUrl: "https://integrate.api.nvidia.com/v1", credentialUrl: "https://build.nvidia.com/settings/api-keys" },
   { id: "deepseek", displayName: "DeepSeek", baseUrl: "https://api.deepseek.com", credentialUrl: "https://platform.deepseek.com/api_keys" },
-  // The base URL carries `/v1`: the Hugging Face router serves `/v1/models` and
-  // `/v1/chat/completions`, and the bare host answers 404 on both.
-  { id: "huggingface", displayName: "Hugging Face", baseUrl: "https://router.huggingface.co/v1", credentialUrl: "https://huggingface.co/settings/tokens" },
   { id: "gmi", displayName: "GMI Cloud", baseUrl: "https://api.gmi-serving.com/v1", credentialUrl: "https://console.gmicloud.ai" },
-  { id: "zai", displayName: "Z.AI", baseUrl: "https://api.z.ai/api/paas/v4", credentialUrl: "https://z.ai/manage-apikey/apikey-list" },
   {
-    // The Z.AI Coding Plan subscription endpoint, distinct from the `zai`
-    // pay-as-you-go host above: different base path, a durable key minted by
-    // the sign-in flow, and a different catalog.
+    // The Z.AI Coding Plan subscription endpoint is a dedicated coding-plan
+    // surface: different base path, a durable key minted by the sign-in flow,
+    // and a different catalog.
     id: "zcode",
     displayName: "Z.AI Coding Plan",
     baseUrl: "https://api.z.ai/api/coding/paas/v4",

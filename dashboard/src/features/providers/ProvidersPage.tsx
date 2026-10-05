@@ -662,21 +662,6 @@ const FREE_LIMITED_IDS = new Set([
   "opencodeft",
   "cline",
 ]);
-const FREE_AVAILABLE_IDS = new Set([
-  "qoder",
-  "agentrouter",
-  "mistral",
-  "gemini",
-  "openrouter",
-  "cb",
-  "cbcn",
-  "nvidia",
-  "hermes",
-  "tokenharbor",
-  "bai",
-  "gmi",
-  "aihubmix",
-]);
 
 /**
  * Connection counts for one provider's card.
@@ -928,18 +913,11 @@ const SECTIONS = [
       p.oauthFlows !== undefined && !FREE_LIMITED_IDS.has(p.providerId.toLowerCase()),
   },
   {
-    title: "Free Available API Key Providers",
+    title: "API Key Providers",
     subtitle: "Free tier friendly — no credit card",
-    filter: (p: ProviderResponse) =>
-      FREE_AVAILABLE_IDS.has(p.providerId.toLowerCase()) &&
-      !FREE_LIMITED_IDS.has(p.providerId.toLowerCase()) &&
-      p.oauthFlows === undefined,
-  },
-  {
     filter: (p: ProviderResponse) =>
       p.isBuiltIn &&
       !FOUNDING_IDS.has(p.providerId.toLowerCase()) &&
-      !FREE_AVAILABLE_IDS.has(p.providerId.toLowerCase()) &&
       !FREE_LIMITED_IDS.has(p.providerId.toLowerCase()) &&
       p.oauthFlows === undefined,
   },
