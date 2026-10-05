@@ -1440,7 +1440,8 @@
 .provider-version-badge {
   position: absolute;
   top: -11px;
-  right: 10px;
+  left: 10px;
+  right: auto;
   z-index: 4;
   max-width: calc(100% - 20px);
   overflow: hidden;
@@ -1449,19 +1450,12 @@
   box-shadow: var(--shadow-card);
 }
 
-.provider-card-custom .provider-version-badge {
-  right: 34px;
-}
 
 @media (max-width: 640px) {
   .provider-version-badge {
-    right: 8px;
+    left: 8px;
+    right: auto;
     max-width: calc(100% - 16px);
-  }
-
-  .provider-card-custom .provider-version-badge {
-    right: 32px;
-    max-width: calc(100% - 40px);
   }
 }
 
