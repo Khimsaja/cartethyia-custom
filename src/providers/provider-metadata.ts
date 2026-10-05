@@ -194,8 +194,6 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
   // Native web-search providers expose only the search service. Their catalog
   // rows are served by `/v1/search`, never by the canonical chat pipeline.
   { id: "exa", displayName: "Exa", baseUrl: "https://api.exa.ai", serviceKinds: ["websearch"], credentialUrl: "https://dashboard.exa.ai/api-keys", credentialHint: "Create an API key in the Exa dashboard." },
-  { id: "tavily", displayName: "Tavily", baseUrl: "https://api.tavily.com", serviceKinds: ["websearch"], credentialUrl: "https://app.tavily.com/home", credentialHint: "Copy the API key from the Tavily dashboard." },
-  { id: "brave", displayName: "Brave Search", baseUrl: "https://api.search.brave.com", serviceKinds: ["websearch"], credentialUrl: "https://api-dashboard.search.brave.com/app/keys", credentialHint: "Subscribe to the Search API and copy the subscription token." },
 ] as const;
 
 /**
@@ -229,7 +227,7 @@ const WEB_SEARCH_CAPABLE_PROVIDER_IDS: ReadonlySet<string> = new Set([
  * True when this provider serves a provider-side web-search tool.
  *
  * A provider that is *only* a search provider (`serviceKinds: ["websearch"]`,
- * e.g. Exa/Tavily/Brave) answers `POST /v1/search` but never a chat turn, so
+ * e.g. Exa) answers `POST /v1/search` but never a chat turn, so
  * it is not a native chat search route — it is a fallback source instead.
  */
 export function providerSupportsWebSearch(providerId: string): boolean {

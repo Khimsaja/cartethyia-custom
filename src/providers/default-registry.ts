@@ -428,20 +428,6 @@ export const PROVIDER_CAPABILITIES = {
       ),
     loadModels: async () => (await import("./search/search-catalog")).EXA_SEARCH_MODELS,
   },
-  tavily: {
-    loadAdapter: async () =>
-      (await import("./search/search-provider")).createSearchAdapter(
-        (await import("./search/search-providers")).SEARCH_PROVIDER_SPECS.tavily,
-      ),
-    loadModels: async () => (await import("./search/search-catalog")).TAVILY_SEARCH_MODELS,
-  },
-  brave: {
-    loadAdapter: async () =>
-      (await import("./search/search-provider")).createSearchAdapter(
-        (await import("./search/search-providers")).SEARCH_PROVIDER_SPECS.brave,
-      ),
-    loadModels: async () => (await import("./search/search-catalog")).BRAVE_SEARCH_MODELS,
-  },
   "github": {
     // Chat only. Copilot also serves some SKUs on `/responses`, but those arrive
     // through discovery, which carries its own endpoint path with the wire

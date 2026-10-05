@@ -52,5 +52,3 @@ export const CODEX_SEARCH_MODELS: readonly ModelDefinition[] = [
 
 
 export const EXA_SEARCH_MODELS: readonly ModelDefinition[] = [searchModel("exa")];
-export const TAVILY_SEARCH_MODELS: readonly ModelDefinition[] = [searchModel("tavily")];
-export const BRAVE_SEARCH_MODELS: readonly ModelDefinition[] = [searchModel("brave")];

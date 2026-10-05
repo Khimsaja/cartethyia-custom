@@ -26,7 +26,7 @@ import {
   type RequiredCapability,
 } from "../translation/capabilities";
 
-const SEARCH_PROVIDER_ORDER = ["exa", "gemini", "codex", "tavily", "brave"] as const;
+const SEARCH_PROVIDER_ORDER = ["exa", "gemini", "codex"] as const;
 const SEARCH_PROVIDER_RANK = new Map<string, number>(
   SEARCH_PROVIDER_ORDER.map((provider, index) => [provider, index]),
 );
