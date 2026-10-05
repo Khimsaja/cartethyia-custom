@@ -685,6 +685,8 @@ const WELL_KNOWN_API_KEY_IDS = new Set([
   "openai",
   "gemini",
   "ollamacloud",
+  "opencodezen",
+  "opencodego",
   "mistral",
   "meta",
   "deepseek",

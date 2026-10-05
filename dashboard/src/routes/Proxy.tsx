@@ -1707,7 +1707,7 @@ export default function Proxy(): ReactNode {
       </Dialog>
 
 
-      <Card style={pools.length === 0 && !isPending && !isError ? { minHeight: "min(78dvh, calc(100dvh - 160px))", display: "flex", flexDirection: "column" } : undefined}>
+      <Card>
         <CardHeader
           title="Proxy Pool"
           subtitle="Outbound proxy servers — HTTP, HTTPS, and SOCKS5"
@@ -1733,7 +1733,7 @@ export default function Proxy(): ReactNode {
             </Inline>
           }
         />
-        <CardBody style={pools.length === 0 && !isPending && !isError ? { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", paddingBottom: "8px" } : undefined}>
+        <CardBody>
           <ProxySummaryTiles pools={pools} />
 
           {/* Selection & Batch Toolbar (Image 2 style) */}
@@ -1897,11 +1897,42 @@ export default function Proxy(): ReactNode {
           {isPending && <LoadingState />}
           {isError && <ErrorState title="Error" message="Failed to load network pools" />}
           {!isPending && !isError && pools.length === 0 && (
-            <div style={{ width: "100%", maxWidth: "480px", margin: "0 auto" }}>
+            <div
+              style={{
+                margin: "16px auto 0",
+                padding: "20px",
+                border: "1px dashed var(--inner-border)",
+                borderRadius: "12px",
+                background: "var(--surface-2)",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                gap: "10px",
+                textAlign: "center",
+                maxWidth: "520px",
+              }}
+            >
               <EmptyState
-                title="No network pools"
-                message="No network pools configured. Create one to route traffic through proxies."
+                title="No proxy pools configured"
+                message="The summary above is empty because nothing is routing yet. Add a proxy or deploy a relay to see traffic here."
               />
+              <Inline gap="8px" style={{ marginTop: "4px" }}>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  icon={<Plus size={13} />}
+                  onClick={() => setShowProxyForm(true)}
+                >
+                  Add proxies
+                </Button>
+                <Button
+                  size="sm"
+                  icon={<Cloud size={13} />}
+                  onClick={() => setShowRelayDeploy(true)}
+                >
+                  Deploy relay
+                </Button>
+              </Inline>
             </div>
           )}
           {!isPending && !isError && pools.length > 0 && (
