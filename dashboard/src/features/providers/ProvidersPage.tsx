@@ -672,6 +672,23 @@ const FREE_LIMITED_IDS = new Set([
   "opencodeft",
   "cline",
 ]);
+/**
+ * The providers an operator reaches for first: household names with a
+ * published API-key signup. Grouped so the long tail of compatible resellers
+ * below does not bury the ones everybody has already heard of. `ollama` is
+ * registered as `ollamacloud`.
+ */
+const WELL_KNOWN_API_KEY_IDS = new Set([
+  "commandcode",
+  "hermes",
+  "anthropic",
+  "openai",
+  "gemini",
+  "ollamacloud",
+  "mistral",
+  "meta",
+  "deepseek",
+]);
 
 /**
  * Connection counts for one provider's card.
@@ -969,10 +986,21 @@ const SECTIONS = [
       p.oauthFlows !== undefined && !FREE_LIMITED_IDS.has(p.providerId.toLowerCase()),
   },
   {
-    title: "API Key Providers",
+    title: "Well Known API Key Providers",
+    subtitle: "The household names — sign up with a key and go",
+    filter: (p: ProviderResponse) =>
+      p.isBuiltIn &&
+      WELL_KNOWN_API_KEY_IDS.has(p.providerId.toLowerCase()) &&
+      !FOUNDING_IDS.has(p.providerId.toLowerCase()) &&
+      !FREE_LIMITED_IDS.has(p.providerId.toLowerCase()) &&
+      p.oauthFlows === undefined,
+  },
+  {
+    title: "Other API Key Providers",
     subtitle: "Free tier friendly — no credit card",
     filter: (p: ProviderResponse) =>
       p.isBuiltIn &&
+      !WELL_KNOWN_API_KEY_IDS.has(p.providerId.toLowerCase()) &&
       !FOUNDING_IDS.has(p.providerId.toLowerCase()) &&
       !FREE_LIMITED_IDS.has(p.providerId.toLowerCase()) &&
       p.oauthFlows === undefined,
