@@ -1118,6 +1118,10 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
         row.lastRemainingCredit === null || row.lastRemainingCredit === undefined
           ? null
           : Number(row.lastRemainingCredit),
+      lastRemainingPercent:
+        row.lastRemainingPercent === null || row.lastRemainingPercent === undefined
+          ? null
+          : Number(row.lastRemainingPercent),
     };
   }
 

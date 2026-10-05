@@ -26,12 +26,15 @@ export interface RouteCandidate {
   readonly provider_account_id?: string;
   /** Cooldown class: `hard` = excluded until the deadline; `soft` = deprioritized. */
   readonly cooldown_kind?: "hard" | "soft";
-  /** Global credit protection toggle for this candidate's provider/tenant. */
+  /** Minimum-balance toggle for this candidate's provider/tenant. */
   readonly credit_limit_enabled?: boolean;
-  /** Global minimum remaining credits; candidate excluded when balance ≤ it. */
+  /** Minimum remaining balance; candidate excluded when balance ≤ it — credits
+   * for credit providers, percent for quota-percent providers. */
   readonly credit_limit?: number;
   /** Last remaining credit the quota sweep fetched; absent = never fetched. */
   readonly last_remaining_credit?: number | null;
+  /** Lowest remaining quota percent the sweep fetched; absent = never fetched. */
+  readonly last_remaining_percent?: number | null;
   /** Operator-facing label of `provider_account_id` (never the secret), for
    * the Console Log detail line — logs must show a name, not a bare id. */
   readonly provider_account_label?: string;
@@ -81,9 +84,9 @@ export interface ProviderRoutingSetting {
   /** Per-account inflight ceiling from the routing panel; `null` = unlimited
    * concurrency per account. */
   readonly maxInflight: number | null;
-  /** Global minimum credit protection for every account of this provider/tenant. */
+  /** Minimum-balance protection for every account of this provider/tenant. */
   readonly creditLimitEnabled?: boolean;
-  /** Minimum remaining credits to keep on every account of this provider/tenant. */
+  /** Minimum remaining balance to keep on every account; credits or percent. */
   readonly creditLimit?: number;
   readonly enabled: boolean;
   /** Built-in API-key User-Agent; OAuth and custom providers retain their identities. */

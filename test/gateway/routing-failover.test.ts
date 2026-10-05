@@ -151,17 +151,38 @@ describe("EligibilityEvaluator global credit limit", () => {
         candidate({ credit_limit_enabled: false, credit_limit: 100, last_remaining_credit: 0 }),
       ),
     ).toMatchObject({ eligible: true, reason: "healthy" });
+    expect(
+      evaluator.evaluate(
+        candidate({ credit_limit_enabled: false, credit_limit: 100, last_remaining_percent: 0 }),
+      ),
+    ).toMatchObject({ eligible: true, reason: "healthy" });
   });
 
-  test("no limit, or never-fetched balance, stays eligible", () => {
-    expect(evaluator.evaluate(candidate({ last_remaining_credit: 0 }))).toMatchObject({
-      eligible: true,
-      reason: "healthy",
-    });
-    expect(evaluator.evaluate(candidate({ credit_limit: 100 }))).toMatchObject({
-      eligible: true,
-      reason: "healthy",
-    });
+  test("a percent-quota account at or below the floor is excluded", () => {
+    expect(
+      evaluator.evaluate(candidate({ credit_limit: 60, last_remaining_percent: 60 })),
+    ).toMatchObject({ eligible: false, reason: "credit_floor_reached" });
+    expect(
+      evaluator.evaluate(candidate({ credit_limit: 60, last_remaining_percent: 12 })),
+    ).toMatchObject({ eligible: false, reason: "credit_floor_reached" });
+    expect(
+      evaluator.evaluate(candidate({ credit_limit: 60, last_remaining_percent: 61 })),
+    ).toMatchObject({ eligible: true, reason: "healthy" });
+  });
+
+  test("an absolute credit wins over percent on the same candidate", () => {
+    // An account reporting both compares in credits; the percent stamp is
+    // only the fallback for percent-only providers.
+    expect(
+      evaluator.evaluate(
+        candidate({ credit_limit: 100, last_remaining_credit: 500, last_remaining_percent: 5 }),
+      ),
+    ).toMatchObject({ eligible: true, reason: "healthy" });
+    expect(
+      evaluator.evaluate(
+        candidate({ credit_limit: 100, last_remaining_credit: 50, last_remaining_percent: 95 }),
+      ),
+    ).toMatchObject({ eligible: false, reason: "credit_floor_reached" });
   });
 
   test("a depleted account loses to a healthy sibling in plan()", async () => {

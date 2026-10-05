@@ -232,6 +232,7 @@ const ACCOUNT_COLUMNS = {
   modelCooldowns: providerAccounts.modelCooldowns,
   lastErrorCategory: providerAccounts.lastErrorCategory,
   lastRemainingCredit: providerAccounts.lastRemainingCredit,
+  lastRemainingPercent: providerAccounts.lastRemainingPercent,
 } as const;
 
 const ALIAS_COLUMNS = {
@@ -430,9 +431,10 @@ class RouteCatalogRepository {
     }
 
     /**
-     * Global credit protection for every account of this provider/tenant.
-     * Tenant setting wins over global; an unconfigured provider still gets the
-     * documented default (enabled, 200) so the feature is on out of the box.
+     * Minimum-balance protection for every account of this provider/tenant.
+     * Tenant setting wins over global; an unconfigured provider resolves to
+     * the documented default (disabled, 50) so the floor is opt-in and the
+     * value fits both units — 50 credits or 50%.
      */
     function resolveCreditProtection(
       providerId: string,
@@ -442,7 +444,7 @@ class RouteCatalogRepository {
       const globalSetting = providerRouting.__global__?.[providerId];
       const enabled = tenantSetting?.creditLimitEnabled ?? globalSetting?.creditLimitEnabled;
       const limit = tenantSetting?.creditLimit ?? globalSetting?.creditLimit;
-      return { enabled: enabled ?? true, limit: limit ?? 200 };
+      return { enabled: enabled ?? false, limit: limit ?? 50 };
     }
 
     /** Every active pool the account's tenant owns — dispatch picks the
@@ -589,6 +591,11 @@ class RouteCatalogRepository {
             : account.lastRemainingCredit === null || account.lastRemainingCredit === undefined
               ? {}
               : { last_remaining_credit: account.lastRemainingCredit }),
+          ...(typeof account.lastRemainingPercent === "string"
+            ? { last_remaining_percent: Number(account.lastRemainingPercent) }
+            : account.lastRemainingPercent === null || account.lastRemainingPercent === undefined
+              ? {}
+              : { last_remaining_percent: account.lastRemainingPercent }),
           // Provider-wide concurrency ceiling from Routing Strategy; legacy
           // account overrides are never read here.
           ...(() => {
