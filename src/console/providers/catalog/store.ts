@@ -19,6 +19,7 @@ import { resolveManualModelMetadata } from "../../../providers/model-definition"
 import { isUniqueViolation } from "../../../persistence/postgres";
 import { DEFAULT_ENDPOINT_BY_WIRE_FAMILY, endpointPathForProviderModel, mapProviderRow } from "./catalog-projections";
 import { pushStructuredConsoleLog } from "../../../observability/log-ring";
+import { decodeJwtPayload } from "../../../providers/authentication/oauth-flow-store";
 
 /** Real Drizzle-backed provider and model catalog repository. */
 
@@ -52,19 +53,10 @@ function parseExpiry(value: unknown): Date | undefined {
   return undefined;
 }
 function parseJwtCredential(raw: string): { readonly expiresAt?: Date } | undefined {
-  const segments = raw.trim().split(".");
-  if (segments.length !== 3) return undefined;
-  try {
-    const payload = JSON.parse(
-      Buffer.from(segments[1] as string, "base64url").toString("utf8"),
-    ) as unknown;
-    if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return undefined;
-    const exp = (payload as Record<string, unknown>)["exp"];
-    const expiresAt = parseExpiry(exp);
-    return expiresAt === undefined ? {} : { expiresAt };
-  } catch {
-    return undefined;
-  }
+  const payload = decodeJwtPayload(raw.trim());
+  if (payload === undefined) return undefined;
+  const expiresAt = parseExpiry(payload["exp"]);
+  return expiresAt === undefined ? {} : { expiresAt };
 }
 
 /**

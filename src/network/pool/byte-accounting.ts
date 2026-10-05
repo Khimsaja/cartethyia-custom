@@ -85,7 +85,13 @@ const flushed = new Map<string, { sent: number; received: number }>();
  */
 export function drainPoolByteDelta(poolId: string): PoolByteTotals {
   const current = totals.get(poolId);
-  if (!current) return { sent: 0, received: 0 };
+  if (!current) {
+    // The running entry is gone (never tracked, reset, or evicted under the
+    // entry bound): drop the flushed mark with it so this map cannot outgrow
+    // the totals it shadows.
+    flushed.delete(poolId);
+    return { sent: 0, received: 0 };
+  }
   const mark = flushed.get(poolId) ?? { sent: 0, received: 0 };
   const sent = current.sent - mark.sent;
   const received = current.received - mark.received;

@@ -310,29 +310,27 @@ export async function handleProviderProxyRequest(
           ? { outboundWebSocket: deps.networkBindingFactory.webSocket(networkPoolId, prepared.authorization.snapshot.tenant_id) }
           : {}),
       });
-      const dispatch = async (input: typeof canonicalRequest): Promise<CanonicalEvent[]> => {
+      // First-content timing is stamped during iteration: spreading a
+      // timestamp onto every event just to scan for it afterwards allocated
+      // one object per event for a single number. The streaming path keeps
+      // its own timing where the timestamps are actually consumed.
+      const dispatch = async (input: typeof canonicalRequest): Promise<{ events: CanonicalEvent[]; firstContentDeltaAtMs: number | undefined }> => {
         const events: CanonicalEvent[] = [];
+        let firstContentDeltaAtMs: number | undefined;
         for await (const event of adapter.dispatch(
           input,
           providerRouteCandidate as never,
           dispatchContextBase as never,
         )) {
-          // Add timestamp to event for profiling
-          const timestampedEvent = { ...event, timestamp: Date.now() };
-          events.push(timestampedEvent);
+          if (firstContentDeltaAtMs === undefined && event.type === "content_delta") {
+            firstContentDeltaAtMs = Date.now();
+          }
+          events.push(event);
         }
-        return events;
+        return { events, firstContentDeltaAtMs };
       };
       state.upstreamDispatchStartedAtMs = Date.now();
-      const events = await dispatch(dispatchRequest);
-      // Extract timing from events for non-streaming path
-      let firstContentDeltaAtMs: number | undefined;
-      for (const event of events) {
-        if (event.timestamp && event.type === "content_delta" && firstContentDeltaAtMs === undefined) {
-          firstContentDeltaAtMs = event.timestamp;
-        }
-      }
-      
+      const { events, firstContentDeltaAtMs } = await dispatch(dispatchRequest);
       const terminal = events.find((event) => event.type === "terminal");
       if (terminal === undefined) throw terminalFailure(undefined);
       const terminalError = terminalFailure(terminal);

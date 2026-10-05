@@ -92,7 +92,11 @@ export class InMemoryAdmissionController implements AdmissionController {
   async release(reservation: Reservation): Promise<void> {
     const key = admissionKey(reservation.candidate);
     const cur = this.inflight.get(key) ?? 1;
-    this.inflight.set(key, Math.max(0, cur - 1));
+    // Delete at zero rather than storing it: keys are per account/model and
+    // models churn, so retained zeroes would grow the map for the process
+    // lifetime. Absent reads as zero everywhere this map is consulted.
+    if (cur <= 1) this.inflight.delete(key);
+    else this.inflight.set(key, cur - 1);
   }
 }
 
@@ -516,8 +520,9 @@ export class RoutingEngine {
 
   /** Live admission counters by `provider:model[:account]` bucket. */
   async accountInflightSnapshot(): Promise<ReadonlyMap<string, number>> {
-    const snapshot = await this.admission.snapshotAccountInflight?.();
-    return snapshot ? new Map(snapshot) : new Map();
+    // Both controllers hand back a fresh map, so no defensive copy here —
+    // this feeds an admin read, not a mutation site.
+    return (await this.admission.snapshotAccountInflight?.()) ?? new Map();
   }
 
   private resolveProviderRouting(

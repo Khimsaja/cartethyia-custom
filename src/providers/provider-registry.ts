@@ -72,12 +72,6 @@ function normalizeProviderSlug(id: string): string {
   }
   return trimmed;
 }
-
-/** Validates a provider ID slug, without resolving it against the builtin set. */
-export function resolveProviderId(id: string): ProviderId {
-  return normalizeProviderSlug(id) as ProviderId;
-}
-
 /**
  * Every adapter must report the id it was registered under. A mismatch means
  * the registry would dispatch requests to an adapter that believes it serves a
@@ -414,20 +408,6 @@ export class ProviderRegistry {
     return replaced;
   }
 
-
-  /** Loads every registered provider adapter. */
-  async load(): Promise<ProviderRegistrySnapshot> {
-    const next = new Map<ProviderId, ProviderAdapter>();
-    for (const registration of this.#registrations.values()) {
-      const adapter = await registration.load();
-      assertAdapterIdentity(registration.provider_id, adapter);
-      next.set(registration.provider_id, adapter);
-    }
-    this.#loaded = next;
-    this.#revision += 1;
-    return this.snapshot();
-  }
-
   /** Loads one registered provider, or `undefined` when it is not registered. */
   async loadOne(providerId: string): Promise<ProviderAdapter | undefined> {
     const normalized = parseProviderId(providerId);
@@ -438,9 +418,9 @@ export class ProviderRegistry {
 
   /**
    * Resolves one adapter on demand, returning the cached instance when it has
-   * already loaded. Unlike `load()`, this never evaluates a provider's module
-   * graph until that provider is actually dispatched to, so heavy bespoke
-   * adapters (protobuf-based providers) stay out of the startup path.
+   * already loaded. This never evaluates a provider's module graph until that
+   * provider is actually dispatched to, so heavy bespoke adapters
+   * (protobuf-based providers) stay out of the startup path.
    */
   async resolve(providerId: string): Promise<ProviderAdapter | undefined> {
     const normalized = parseProviderId(providerId);
@@ -510,7 +490,7 @@ export class ProviderRegistry {
 
   /** Lazily resolves and caches one provider's model-discovery capability. */
   async resolveModelDiscovery(providerId: string): Promise<ProviderModelDiscovery | undefined> {
-    const normalized = resolveProviderId(providerId);
+    const normalized = parseProviderId(providerId);
     const cached = this.#modelDiscovery.get(normalized);
     if (cached !== undefined) return cached;
     const loader = this.#registrations.get(normalized)?.loadModelDiscovery;
