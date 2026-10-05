@@ -1457,7 +1457,7 @@
 
 .provider-version-badge {
   position: absolute;
-  top: -11px;
+  top: -9px;
   left: 10px;
   right: auto;
   z-index: 4;
@@ -1465,6 +1465,9 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  padding: 2px 6px;
+  font-size: 9px;
+  line-height: 1.15;
   box-shadow: var(--shadow-card);
 }
 

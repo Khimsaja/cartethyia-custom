@@ -412,38 +412,21 @@ export default function ProviderDetail(): ReactNode {
         }
 
       />
-      {serviceKinds.length > 1 ? (
+      {activeService ? (
         <Inline gap="6px" style={{ flexWrap: "wrap" }}>
-          {serviceKinds.map((kind) => (
-            <span
-              key={kind}
-              style={{
-                padding: "3px 8px",
-                borderRadius: "999px",
-                fontSize: "10px",
-                fontWeight: 700,
-                color: "var(--text-secondary)",
-                background: "var(--surface-2)",
-                border: "1px solid var(--inner-border)",
-              }}
-            >
-              {serviceLabel(kind)}
-            </span>
-          ))}
-          {supportedServiceKinds.length > 1 ? (
-            <Inline gap="4px">
-              {supportedServiceKinds.map((kind) => (
-                <Button
-                  key={kind}
-                  size="sm"
-                  variant={activeService === kind ? "primary" : "secondary"}
-                  onClick={() => setSelectedService(kind)}
-                >
-                  {serviceLabel(kind)}
-                </Button>
-              ))}
-            </Inline>
-          ) : null}
+          <span
+            style={{
+              padding: "3px 8px",
+              borderRadius: "999px",
+              fontSize: "10px",
+              fontWeight: 700,
+              color: "var(--text-secondary)",
+              background: "var(--surface-2)",
+              border: "1px solid var(--inner-border)",
+            }}
+          >
+            {serviceLabel(activeService)}
+          </span>
         </Inline>
       ) : null}
       {/* Where to obtain this provider's credential */}

@@ -803,6 +803,44 @@ const ProviderCard = memo(function ProviderCard({
       }}
     >
       <ProviderVersionBadge clientVersion={provider.clientVersion} />
+      {isFounding ? (
+        <span
+          aria-label="Friend sponsor"
+          title="Friend sponsor"
+          style={{
+            position: "absolute",
+            top: 0,
+            right: 0,
+            zIndex: 2,
+            width: "72px",
+            height: "72px",
+            overflow: "hidden",
+            pointerEvents: "none",
+          }}
+        >
+          <span
+            style={{
+              position: "absolute",
+              top: "18px",
+              right: "-22px",
+              width: "76px",
+              padding: "2px 0",
+              transform: "rotate(45deg)",
+              background: "var(--accent-soft)",
+              color: "var(--accent)",
+              fontSize: "9px",
+              fontWeight: 800,
+              letterSpacing: "0.04em",
+              lineHeight: 1.05,
+              textAlign: "center",
+              textTransform: "uppercase",
+              boxShadow: "0 1px 3px rgba(0, 0, 0, 0.12)",
+            }}
+          >
+            Friend
+          </span>
+        </span>
+      ) : null}
 
       <Link
         to={`/providers/${encodeURIComponent(provider.providerId)}${
@@ -862,7 +900,6 @@ const ProviderCard = memo(function ProviderCard({
               flexShrink: 0,
             }}
           >
-            {isFounding ? <Badge tone="accent">Friend</Badge> : null}
             <span
               style={{
                 fontFamily: "var(--font-mono)",
