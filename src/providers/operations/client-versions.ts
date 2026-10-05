@@ -71,6 +71,22 @@ async function antigravityVersion(response: Response): Promise<string | null> {
 }
 
 /**
+ * GitHub release tag (`v3.14.3` → `3.14.3`). Tags carry the leading `v`
+ * by convention while the gateway stamps bare versions, so the prefix is
+ * stripped rather than rejected by the semver check.
+ */
+async function githubReleaseVersion(response: Response): Promise<string | null> {
+  try {
+    const data = (await response.json()) as { tag_name?: unknown; name?: unknown };
+    const raw = data.tag_name ?? data.name;
+    const candidate = typeof raw === "string" && raw.startsWith("v") ? raw.slice(1) : raw;
+    return isSemverish(candidate) ? (candidate as string).trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Runtime SDK version stamped into the Kiro data-plane User-Agent.
  *
  * Pinned rather than discovered: the generation surface is served by the client
@@ -157,7 +173,7 @@ export const VERSION_SOURCES = {
   },
   grok: {
     key: "grok",
-    fallback: "1.0.44",
+    fallback: "1.0.46",
     sources: [
       { url: "https://storage.googleapis.com/grok-build-public-artifacts/cli/stable" },
       { url: "https://registry.npmjs.org/@xai-official/grok/latest" },
@@ -244,6 +260,50 @@ export const VERSION_SOURCES = {
     fallback: "0.127.0",
     sources: [],
   },
+  devin: {
+    key: "devin",
+    // Tracks the Devin VS Code extension line. The pinned floor is the
+    // in-repo extension version: discovery moves forward only, so an
+    // upstream feed lagging behind can never silently downgrade the badge.
+    fallback: "1.49.2",
+    minVersion: "1.49.2",
+    sources: [{ url: "https://open-vsx.org/api/Codeium/codeium" }],
+  },
+  github: {
+    key: "github-copilot-chat",
+    fallback: "0.43.0",
+    sources: [
+      {
+        url: "https://api.github.com/repos/microsoft/vscode-copilot-chat/releases/latest",
+        extract: githubReleaseVersion,
+      },
+    ],
+  },
+  kilo: {
+    key: "kilo-code",
+    fallback: "7.8.3",
+    sources: [{ url: "https://open-vsx.org/api/kilocode/kilo-code" }],
+  },
+  mimo: {
+    key: "mimo-cli",
+    fallback: "0.1.15",
+    sources: [{ url: "https://registry.npmjs.org/@mimo-ai/cli/latest" }],
+  },
+  muse: {
+    key: "muse-code",
+    fallback: "1.4.2-R4684.1",
+    sources: [{ url: "https://api.meta.ai/muse-code/channels/muse-stable" }],
+  },
+  zcode: {
+    key: "zcode",
+    fallback: "3.14.3",
+    sources: [
+      {
+        url: "https://api.github.com/repos/zai-org/ZCode/releases/latest",
+        extract: githubReleaseVersion,
+      },
+    ],
+  },
 } as const;
 
 const resolvers = {
@@ -262,10 +322,17 @@ const resolvers = {
   claudeCli: createClientVersionResolver(VERSION_SOURCES.claudeCli),
   claudeSdk: createClientVersionResolver(VERSION_SOURCES.claudeSdk),
   kiro: createClientVersionResolver(VERSION_SOURCES.kiro),
+  devin: createClientVersionResolver(VERSION_SOURCES.devin),
+  github: createClientVersionResolver(VERSION_SOURCES.github),
+  kilo: createClientVersionResolver(VERSION_SOURCES.kilo),
+  mimo: createClientVersionResolver(VERSION_SOURCES.mimo),
+  muse: createClientVersionResolver(VERSION_SOURCES.muse),
+  zcode: createClientVersionResolver(VERSION_SOURCES.zcode),
 } satisfies Record<keyof typeof VERSION_SOURCES, ClientVersionResolver>;
 const PROVIDER_VERSION_RESOLVERS: Readonly<Record<string, ClientVersionResolver>> = {
   antigravity: resolvers.antigravity,
   grok: resolvers.grok,
+  xai: resolvers.grok,
   opencode: resolvers.opencode,
   opencodeft: resolvers.opencode,
   opencodezen: resolvers.opencode,
@@ -281,6 +348,12 @@ const PROVIDER_VERSION_RESOLVERS: Readonly<Record<string, ClientVersionResolver>
   kiro: resolvers.kiro,
   anthropic: resolvers.claudeCli,
   claude: resolvers.claudeCli,
+  devin: resolvers.devin,
+  github: resolvers.github,
+  kilo: resolvers.kilo,
+  mimodesktop: resolvers.mimo,
+  muse: resolvers.muse,
+  zcode: resolvers.zcode,
 };
 
 /** Returns the current client version without performing network I/O. */
