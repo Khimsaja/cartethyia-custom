@@ -1897,6 +1897,9 @@ export default function Proxy(): ReactNode {
           {isPending && <LoadingState />}
           {isError && <ErrorState title="Error" message="Failed to load network pools" />}
           {!isPending && !isError && pools.length === 0 && (
+            // The page header already exposes the same actions; the empty body
+            // only needs to explain why the tiles above are zero. A second row
+            // of buttons just crowds the card and competes for attention.
             <div
               style={{
                 margin: "16px auto 0",
@@ -1914,25 +1917,8 @@ export default function Proxy(): ReactNode {
             >
               <EmptyState
                 title="No proxy pools configured"
-                message="The summary above is empty because nothing is routing yet. Add a proxy or deploy a relay to see traffic here."
+                message="The summary above is empty because nothing is routing yet. Use Add proxies or Deploy relay in the header to start one."
               />
-              <Inline gap="8px" style={{ marginTop: "4px" }}>
-                <Button
-                  variant="primary"
-                  size="sm"
-                  icon={<Plus size={13} />}
-                  onClick={() => setShowProxyForm(true)}
-                >
-                  Add proxies
-                </Button>
-                <Button
-                  size="sm"
-                  icon={<Cloud size={13} />}
-                  onClick={() => setShowRelayDeploy(true)}
-                >
-                  Deploy relay
-                </Button>
-              </Inline>
             </div>
           )}
           {!isPending && !isError && pools.length > 0 && (
