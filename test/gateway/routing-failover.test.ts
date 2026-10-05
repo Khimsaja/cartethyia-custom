@@ -210,7 +210,7 @@ describe("EligibilityEvaluator global credit limit", () => {
     });
   });
 
-  test("a combo routes its live member while the dead member is reported", async () => {
+  test("a combo routes its live member despite a dead member", async () => {
     const engine = new RoutingEngine();
     const live = candidate({ provider_id: "cline", model_id: "spark" });
     const snap: RouteSnapshot = {
@@ -231,7 +231,7 @@ describe("EligibilityEvaluator global credit limit", () => {
     expect(plan.candidates.map((c) => c.provider_id)).toEqual(["cline"]);
   });
 
-  test("a combo whose live member is unusable names the dead member", async () => {
+  test("a combo whose live member is unusable hides member detail from the client", async () => {
     const engine = new RoutingEngine();
     const down = candidate({
       provider_id: "cline",
@@ -253,7 +253,11 @@ describe("EligibilityEvaluator global credit limit", () => {
       },
       created_at: Date.now(),
     };
-    await expect(engine.plan("pool", snap, "t1")).rejects.toThrow(/meta\/ghost-model/);
+    // The public message names only the request and the usable candidates —
+    // dead member ids stay server-side (server logs), never the envelope.
+    await expect(engine.plan("pool", snap, "t1")).rejects.toThrow(
+      "Model 'pool' has no available account (1 candidate(s) unusable: disabled)",
+    );
   });
 });
 

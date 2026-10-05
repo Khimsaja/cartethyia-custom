@@ -266,32 +266,22 @@ export function capacityExhaustedError(): GatewayError {
  * unusable (disabled / locked). This is transient and
  * retry-able, so it must NOT surface as `model_not_found` — a 404 tells the
  * client to fix its request when the real fix is to wait or add capacity.
+ *
+ * The public message names only what the client asked and why it cannot be
+ * served. Combo/alias resolution detail (which member lacked candidates)
+ * stays server-side — the operator reads it in the server logs, never the
+ * client envelope.
  */
 export function accountsUnavailableError(
   requested: string,
   reasons: readonly string[],
-  routed: string = requested,
-  unmatchedMembers: readonly string[] = [],
 ): GatewayError {
   const distinct = [...new Set(reasons)].sort();
-  const routeNote = routed === requested ? "" : ` routed to '${routed}'`;
-  const unmatchedNote =
-    unmatchedMembers.length === 0
-      ? ""
-      : ` — no routable candidate for combo member(s): ${[...new Set(unmatchedMembers)].sort().join(", ")}`;
   return new GatewayError(
     "accounts_unavailable",
     503,
-    `Model '${requested}'${routeNote} has no available account (${reasons.length} candidate(s) unusable: ${distinct.join(", ")})${unmatchedNote}`,
-    {
-      model: requested,
-      routed_model: routed,
-      reasons: distinct,
-      candidate_count: reasons.length,
-      ...(unmatchedMembers.length === 0
-        ? {}
-        : { unmatched_members: [...new Set(unmatchedMembers)].sort() }),
-    },
+    `Model '${requested}' has no available account (${reasons.length} candidate(s) unusable: ${distinct.join(", ")})`,
+    { model: requested, reasons: distinct, candidate_count: reasons.length },
   );
 }
 

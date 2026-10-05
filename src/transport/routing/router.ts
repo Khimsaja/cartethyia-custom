@@ -1,7 +1,8 @@
 // Routing admission, reservations, and route planning.
-import { redisEvalNumber, type RedisClient } from "../../persistence/redis";
-import { resolveInflightTtlSeconds } from "../../config";
+import { log } from "../../observability/logger";
 import { metrics } from "../../observability/metrics";
+import { resolveInflightTtlSeconds } from "../../config";
+import { redisEvalNumber, type RedisClient } from "../../persistence/redis";
 import {
   accountsRateLimitedError,
   accountsUnavailableError,
@@ -618,11 +619,19 @@ export class RoutingEngine {
       if (hardCooling) {
         throw accountsRateLimitedError(requestedModel, resolved.model);
       }
+      // Combo members without any routable candidate never reach the client
+      // envelope — but the operator needs them to fix the combo, so they go
+      // to the server logs with the full resolution picture.
+      if (unmatchedMembers.length > 0) {
+        log.warn("[routing] combo members without routable candidates", {
+          requested: requestedModel,
+          routed: resolved.model,
+          unmatched: [...new Set(unmatchedMembers)].sort(),
+        });
+      }
       throw accountsUnavailableError(
         requestedModel,
         decisions.map((d) => d.reason),
-        resolved.model,
-        unmatchedMembers,
       );
     }
     // Every eligible candidate is account-wide cooling: no healthy account is
