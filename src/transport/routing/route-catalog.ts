@@ -29,7 +29,7 @@ import {
 } from "./route-model";
 import { DEFAULT_PROXY_BYPASS_PROVIDER_IDS, isBundledProviderId } from "../../providers/provider-registry";
 import type { ServiceKind, WireFamily } from "../canonical-model";
-import { providerHasAdapterUserAgent, providerUsesBespokeWire } from "../../providers/provider-metadata";
+import { providerHasAdapterUserAgent, providerSupportsWebSearch, providerUsesBespokeWire } from "../../providers/provider-metadata";
 
 const CLAUDE_MODEL_FAMILIES = new Set(["opus", "sonnet", "haiku", "fable", "mythos"]);
 
@@ -93,7 +93,6 @@ export function buildCapabilityProfile(row: {
   modalities: unknown;
   reasoning: boolean;
   toolCall: boolean;
-  webSearch: boolean;
   providerId: string;
 }): Record<string, boolean> {
   const mods =
@@ -132,7 +131,10 @@ export function buildCapabilityProfile(row: {
     parallelToolCalls: true,
     reasoning: true,
     reasoningEncryptedContent: true,
-    webSearch: row.webSearch,
+    // Search capability is the provider's, not the model row's: the adapter
+    // either frames a hosted search tool or it does not, and every model it
+    // serves inherits that. See `providerSupportsWebSearch`.
+    webSearch: providerSupportsWebSearch(row.providerId),
     responseJsonObject: true,
     responseJsonSchema: true,
     promptCaching: true,
@@ -159,7 +161,6 @@ interface MergedModelRow {
   modalities: unknown;
   reasoning: boolean;
   toolCall: boolean;
-  webSearch: boolean;
   enabled: boolean;
 }
 
@@ -181,7 +182,6 @@ function mergeModelCatalog(
       modalities: row.modalities,
       reasoning: row.reasoning,
       toolCall: row.toolCall,
-      webSearch: row.webSearch,
       enabled: row.enabled,
     }));
 }
@@ -218,7 +218,6 @@ const MODEL_COLUMNS = {
   modalities: models.modalities,
   reasoning: models.reasoning,
   toolCall: models.toolCall,
-  webSearch: models.webSearch,
   enabled: models.enabled,
 } as const;
 

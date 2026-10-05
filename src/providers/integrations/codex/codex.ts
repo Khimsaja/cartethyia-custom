@@ -79,7 +79,6 @@ function codexResponsesModel(
     vision: true,
     reasoning: true,
     toolCall: true,
-    webSearch: true,
   });
 }
 

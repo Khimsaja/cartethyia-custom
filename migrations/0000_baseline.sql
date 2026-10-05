@@ -88,7 +88,6 @@ CREATE TABLE "models" (
   "modalities" jsonb,
   "reasoning" boolean DEFAULT false NOT NULL,
   "tool_call" boolean DEFAULT false NOT NULL,
-  "web_search" boolean DEFAULT false NOT NULL,
   "cost" jsonb,
   "source" text,
   "source_updated_at" timestamptz,

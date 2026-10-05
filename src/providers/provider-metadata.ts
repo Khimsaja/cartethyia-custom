@@ -198,6 +198,48 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
   { id: "brave", displayName: "Brave Search", baseUrl: "https://api.search.brave.com", serviceKinds: ["websearch"], credentialUrl: "https://api-dashboard.search.brave.com/app/keys", credentialHint: "Subscribe to the Search API and copy the subscription token." },
 ] as const;
 
+/**
+ * Providers whose adapter drives a provider-side web-search tool itself.
+ *
+ * Search capability is a property of the *provider*, not of a model row: the
+ * adapter either frames a hosted `web_search` tool / grounding directive or it
+ * does not, and every model it serves inherits that. It used to live on the
+ * model row, where discovery wrote `false` for models it had no metadata for
+ * — so a perfectly capable route was filtered out of native search by a
+ * metadata gap.
+ *
+ * Membership here is what marks a route `search_route: "native"`; everything
+ * else runs the configured search fallback.
+ */
+const WEB_SEARCH_CAPABLE_PROVIDER_IDS: ReadonlySet<string> = new Set([
+  // Hosted Anthropic search tool on the Messages wire.
+  "claude",
+  "anthropic",
+  // Codex Responses hosted search.
+  "codex",
+  // Gemini grounding.
+  "gemini",
+  // Gemini wire with its own search plumbing.
+  "antigravity",
+  // Marketplace adapters that expose a search tool per upstream.
+  "devin",
+]);
+
+/**
+ * True when this provider serves a provider-side web-search tool.
+ *
+ * A provider that is *only* a search provider (`serviceKinds: ["websearch"]`,
+ * e.g. Exa/Tavily/Brave) answers `POST /v1/search` but never a chat turn, so
+ * it is not a native chat search route — it is a fallback source instead.
+ */
+export function providerSupportsWebSearch(providerId: string): boolean {
+  const id = providerId.toLowerCase();
+  if (WEB_SEARCH_CAPABLE_PROVIDER_IDS.has(id)) return true;
+  const kinds = providerServiceKinds(id);
+  // An adapter that also implements `websearch` speaks search on a chat wire.
+  return kinds.includes("websearch") && kinds.includes("llm");
+}
+
 export type BundledProviderId = (typeof RAW_BUNDLED_PROVIDER_METADATA)[number]["id"];
 
 /**

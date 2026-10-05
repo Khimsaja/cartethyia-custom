@@ -84,6 +84,12 @@ export interface ProbeModelResult {
   sample?: string;
   statusCode?: number;
   error?: string;
+  /** Normalized hits a `websearch` probe returned, so the console can show them. */
+  searchResults?: ReadonlyArray<{
+    readonly title: string;
+    readonly url: string;
+    readonly snippet: string;
+  }>;
 }
 
 /**

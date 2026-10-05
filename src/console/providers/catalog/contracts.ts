@@ -320,7 +320,6 @@ export interface ModelCatalogEntry {
   /** Accepts audio input parts. */
   audio: boolean;
   mediaGeneration: boolean;
-  webSearch: boolean;
   cost: {
     input: number | null;
     output: number | null;
@@ -510,6 +509,15 @@ export interface ProviderResponse {
   requiresAccount: boolean;
   /** Whether its built-in adapter constructs a User-Agent header itself. */
   hasAdapterUserAgent: boolean;
+  /**
+   * Whether this provider serves a hosted web-search tool on its chat wire.
+   *
+   * A provider-level fact, not a model-row fact: the adapter either frames a
+   * hosted search tool or it does not, and every model it serves inherits it.
+   * A pure search provider (`serviceKinds: ["websearch"]`) is `false` here —
+   * it answers `/v1/search` but never a chat turn.
+   */
+  supportsWebSearch: boolean;
   /** Where the operator obtains this provider's credential. Presentation-only. */
   credentialUrl?: string;
   /** One line of guidance beside {@link credentialUrl} when the flow is not a plain paste. */

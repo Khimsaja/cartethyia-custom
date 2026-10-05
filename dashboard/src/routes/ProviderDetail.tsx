@@ -88,7 +88,13 @@ export default function ProviderDetail(): ReactNode {
   const searchProbe = useProbeModel();
   const [searchQuery, setSearchQuery] = useState("");
   const [searchModelId, setSearchModelId] = useState("");
-  const [searchTestResult, setSearchTestResult] = useState<{ ok: boolean; error?: string } | null>(null);
+  const [searchTestResult, setSearchTestResult] = useState<{
+    ok: boolean;
+    error?: string;
+    latencyMs?: number;
+    count?: number;
+    results?: ReadonlyArray<{ title: string; url: string; snippet: string }>;
+  } | null>(null);
   // Section-wide reasoning effort for every test in the Models card. Defaults to
   // `auto` — the probe sends no reasoning intent, because whether the model
   // supports reasoning is often exactly what the test is trying to find out.
@@ -210,7 +216,15 @@ export default function ProviderDetail(): ReactNode {
         request: { modelId: activeSearchModel, serviceKind: "websearch", prompt: query },
       },
       {
-        onSuccess: (result) => setSearchTestResult({ ok: result.ok, ...(result.error ? { error: result.error } : {}) }),
+        onSuccess: (result) =>
+          setSearchTestResult({
+            ok: result.ok,
+            latencyMs: result.latencyMs,
+            ...(result.searchResults
+              ? { results: result.searchResults, count: result.searchResults.length }
+              : {}),
+            ...(result.error ? { error: result.error } : {}),
+          }),
         onError: (error) =>
           setSearchTestResult({
             ok: false,
@@ -631,7 +645,13 @@ export default function ProviderDetail(): ReactNode {
               message="No LLM models published by this provider yet. Sync or add a custom model above."
             />
           ) : (
-            <ModelGrid providerId={id} models={llmModels} serviceKind="llm" thinkingEffort={thinkingEffort} />
+            <ModelGrid
+              providerId={id}
+              models={llmModels}
+              serviceKind="llm"
+              thinkingEffort={thinkingEffort}
+              searchCapable={provider?.supportsWebSearch === true}
+            />
           )}
         </CardBody>
       </Card>
@@ -716,15 +736,49 @@ export default function ProviderDetail(): ReactNode {
                   </Button>
                   {searchTestResult ? (
                     <span style={{ fontSize: "11px", color: searchTestResult.ok ? "var(--green)" : "var(--red)" }}>
-                      {searchTestResult.ok ? "Search returned results." : searchTestResult.error ?? "Search failed."}
+                      {searchTestResult.ok
+                        ? `Search ok · ${searchTestResult.latencyMs}ms · ${searchTestResult.count ?? 0} result(s)`
+                        : searchTestResult.error ?? "Search failed."}
                     </span>
                   ) : null}
                 </Inline>
+                {searchTestResult && searchTestResult.results && searchTestResult.results.length > 0 ? (
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "8px",
+                      maxHeight: "220px",
+                      overflowY: "auto",
+                      border: "1px solid var(--inner-border)",
+                      borderRadius: "8px",
+                      padding: "8px",
+                      background: "var(--surface-1)",
+                    }}
+                  >
+                    {searchTestResult.results.map((hit, index) => (
+                      <div key={`${hit.url}:${index}`} style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                        <a
+                          href={hit.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          style={{ fontSize: "12px", color: "var(--text-primary)", fontWeight: 600 }}
+                        >
+                          {hit.title || hit.url}
+                        </a>
+                        <span style={{ fontSize: "11px", color: "var(--text-tertiary)", wordBreak: "break-all" }}>{hit.url}</span>
+                        {hit.snippet ? (
+                          <span style={{ fontSize: "11px", color: "var(--text-secondary)" }}>{hit.snippet}</span>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </>
             )}
           </CardBody>
         </Card>
-) : (
+      ) : (
         <Card>
           <CardBody>
             <EmptyState

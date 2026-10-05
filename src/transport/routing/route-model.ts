@@ -18,6 +18,11 @@ export interface RouteCandidate {
    * canonical request. Absent means `llm` — every pre-existing row.
    */
   readonly service_kind?: ServiceKind;
+  /**
+   * Internal web-search routing role. Search metadata is consumed only by the
+   * ordinary chat dispatcher; it never appears in a client response.
+   */
+  readonly search_route?: "native" | "fallback";
   readonly endpoint: string;
   readonly capability_profile: CapabilityProfile;
   /** Route-selected User-Agent fallback; provider-supplied identities remain authoritative. */

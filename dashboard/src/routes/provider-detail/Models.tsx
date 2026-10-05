@@ -34,6 +34,7 @@ import { useTrackedTimeout } from "../../hooks/use-timeout";
 import { PROBE_REASONING_EFFORTS, formatThinkingSuffix, type ModelCatalogEntry, type ProbeReasoningEffort } from "../../data/contracts";
 
 
+
 function formatProbeDuration(ms: number): string {
   if (ms < 1000) return `${Math.round(ms)}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
@@ -387,6 +388,7 @@ function ModelCard({
   providerId,
   model,
   serviceKind,
+  searchCapable,
   thinkingEffort,
   onDeleteRequest,
   deletePending,
@@ -394,6 +396,8 @@ function ModelCard({
   readonly providerId: string;
   readonly model: ModelCatalogEntry;
   readonly serviceKind: "llm" | "websearch";
+  /** Provider-level: the provider's adapter drives a hosted web-search tool. */
+  readonly searchCapable: boolean;
   /** The section-wide reasoning effort, owned by the Models card header so one
    * setting governs every test in the section instead of each card carrying
    * its own — which is what made "set thinking, then test" need a per-card repeat. */
@@ -621,7 +625,7 @@ function ModelCard({
                 <Wrench size={12} />
               </span>
             ) : null}
-            {model.webSearch ? (
+            {searchCapable ? (
               <span title="Web search" aria-label="Web search" style={{ display: "inline-flex", color: "var(--teal)" }}>
                 <Globe size={12} />
               </span>
@@ -752,11 +756,13 @@ export function ModelGrid({
   models,
   thinkingEffort,
   serviceKind = "llm",
+  searchCapable = false,
 }: {
   readonly providerId: string;
   readonly models: readonly ModelCatalogEntry[];
   readonly thinkingEffort: ProbeReasoningEffort;
   readonly serviceKind?: "llm" | "websearch";
+  readonly searchCapable?: boolean;
 }): ReactNode {
   const deleteModel = useDeleteProviderModel();
   const [deleteTarget, setDeleteTarget] = useState<ModelCatalogEntry | null>(null);
@@ -776,6 +782,7 @@ export function ModelGrid({
       providerId={providerId}
       model={model}
       serviceKind={serviceKind}
+      searchCapable={searchCapable}
       thinkingEffort={thinkingEffort}
       deletePending={deleteModel.isPending}
       onDeleteRequest={setDeleteTarget}

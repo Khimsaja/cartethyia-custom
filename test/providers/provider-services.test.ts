@@ -2,9 +2,9 @@ import { describe, expect, test } from "bun:test";
 import {
   BUNDLED_PROVIDER_METADATA,
   providerServiceKinds,
+  providerSupportsWebSearch,
 } from "../../src/providers/provider-metadata";
 import { sanitizeProviderResponse } from "../../src/console/providers/catalog/provider-operations";
-import { CLAUDE_MODELS } from "../../src/providers/integrations/claude/claude";
 describe("provider service taxonomy", () => {
   test("defaults providers to LLM and declares real search surfaces", () => {
     expect(providerServiceKinds("openai")).toEqual(["llm"]);
@@ -15,9 +15,16 @@ describe("provider service taxonomy", () => {
     for (const provider of BUNDLED_PROVIDER_METADATA)
       expect(provider.serviceKinds).not.toContain("all");
   });
-  test("Claude models advertise the native web-search capability", () => {
-    expect(CLAUDE_MODELS.length).toBeGreaterThan(0);
-    expect(CLAUDE_MODELS.every((model) => model.webSearch)).toBe(true);
+  // Web search is a provider capability, not a per-model flag: the adapter
+  // either frames a hosted search tool or it does not.
+  test("search-capable providers are declared at the provider level", () => {
+    expect(providerSupportsWebSearch("claude")).toBe(true);
+    expect(providerSupportsWebSearch("gemini")).toBe(true);
+    expect(providerSupportsWebSearch("codex")).toBe(true);
+    expect(providerSupportsWebSearch("antigravity")).toBe(true);
+    // A pure search provider answers `/v1/search`, never a chat turn.
+    expect(providerSupportsWebSearch("exa")).toBe(false);
+    expect(providerSupportsWebSearch("cb")).toBe(false);
   });
 
   test("sanitized custom provider responses never expose an all category", () => {

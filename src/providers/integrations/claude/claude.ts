@@ -62,7 +62,6 @@ const claudeMessagesModel = (
     vision: true,
     reasoning,
     toolCall: true,
-    webSearch: true,
   });
 
 export const CLAUDE_MODELS: readonly ModelDefinition[] = [

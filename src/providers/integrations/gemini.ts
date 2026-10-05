@@ -45,7 +45,6 @@ export const GEMINI_MODELS: readonly ModelDefinition[] = [
     out: 32768,
     vision: true,
     reasoning: true,
-    webSearch: true,
   }),
 );
 

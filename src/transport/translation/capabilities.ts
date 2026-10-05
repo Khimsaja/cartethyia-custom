@@ -1,7 +1,94 @@
 // Capability contracts, projection, assessment, and tool-loop safeguards.
 import { capabilityUnsupported, GatewayError } from "../gateway-error";
-import { summarizeParts, type CacheHint, type CanonicalRequest, type GenerationControls, type WireFamily } from "../canonical-model";
+import {
+  summarizeParts,
+  type CacheHint,
+  type CanonicalRequest,
+  type GenerationControls,
+  type ToolDefinition,
+  type WireFamily,
+} from "../canonical-model";
 
+/** Returns whether one declared tool is a native web-search request. */
+export function isWebSearchTool(
+  tool: Pick<ToolDefinition, "name" | "native_type" | "tool_type">,
+): boolean {
+  const normalizedName = tool.name.toLowerCase().replace(/[^a-z]/g, "");
+  return (
+    tool.tool_type === "web_search" ||
+    normalizedName === "websearch" ||
+    normalizedName === "websearchpreview" ||
+    tool.native_type?.startsWith("web_search_") === true
+  );
+}
+
+function isWebSearchToolName(name: string): boolean {
+  return isWebSearchTool({ name });
+}
+
+function parseSearchArguments(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value === "string") {
+    try {
+      return parseSearchArguments(JSON.parse(value) as unknown);
+    } catch {
+      return undefined;
+    }
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return value as Record<string, unknown>;
+}
+
+/** Search query and result-count request extracted from a canonical turn. */
+export interface WebSearchInvocation {
+  readonly query: string;
+  readonly maxResults: number;
+}
+
+/** Returns true when a canonical request declares or invokes web search. */
+export function requestUsesWebSearch(request: CanonicalRequest): boolean {
+  if (request.tools?.some(isWebSearchTool) === true) return true;
+  return request.messages.some((message) =>
+    message.content.some(
+      (part) => part.kind === "toolCall" && isWebSearchToolName(part.name),
+    ),
+  );
+}
+
+/** Extracts a bounded search invocation from tool arguments or the latest user text. */
+export function extractWebSearchInvocation(
+  request: CanonicalRequest,
+): WebSearchInvocation | undefined {
+  if (!requestUsesWebSearch(request)) return undefined;
+  for (let messageIndex = request.messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
+    const message = request.messages[messageIndex];
+    if (message === undefined) continue;
+    for (let partIndex = message.content.length - 1; partIndex >= 0; partIndex -= 1) {
+      const part = message.content[partIndex];
+      if (part?.kind !== "toolCall" || !isWebSearchToolName(part.name)) continue;
+      const args = parseSearchArguments(part.arguments);
+      const query = typeof args?.query === "string" ? args.query.trim() : "";
+      if (query.length === 0) continue;
+      const rawMax = args?.max_results;
+      const maxResults =
+        typeof rawMax === "number" && Number.isFinite(rawMax)
+          ? Math.min(Math.max(1, Math.floor(rawMax)), 50)
+          : 10;
+      return { query, maxResults };
+    }
+  }
+  for (let messageIndex = request.messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
+    const message = request.messages[messageIndex];
+    if (message?.role !== "user") continue;
+    const query = message.content
+      .filter((part): part is Extract<typeof part, { kind: "text" }> => part.kind === "text")
+      .map((part) => part.text.trim())
+      .filter((text) => text.length > 0)
+      .join("\n")
+      .trim();
+    if (query.length > 0) return { query, maxResults: 10 };
+  }
+  return undefined;
+}
 /** Capabilities declared by one resolved provider/model/route candidate. */
 export interface RouteCapabilities {
   readonly text: true;
@@ -85,16 +172,14 @@ const BESPOKE_GENERATION_CONTROLS: ReadonlySet<keyof GenerationControls> = new S
 /**
  * Per-wire-family support for content-part `extension` names. Unlike
  * generation-control extensions (passthrough hints), a content part carries
- * semantics the upstream must understand. `server_tool_use` and `search_result`
- * are Anthropic Messages blocks, so only the Messages wire re-encodes them
- * (`protocol/request/messages.ts`); Chat and Responses drop extension parts.
- * A bespoke adapter reads only what its own framing understands, so it
- * re-encodes nothing here either.
+ * semantics the upstream must understand. `server_tool_use`, `search_result`,
+ * and `web_search_tool_result` are Anthropic Messages blocks, so only the
+ * Messages wire re-encodes them (`protocol/request/messages.ts`).
  */
 export const EXTENSION_MATRIX: Readonly<Record<WireFamily, ReadonlySet<string>>> = {
   chat: new Set(),
   responses: new Set(),
-  messages: new Set(["server_tool_use", "search_result"]),
+  messages: new Set(["server_tool_use", "search_result", "web_search_tool_result"]),
 };
 
 /** No codec re-encodes extension parts, so a bespoke adapter's route carries none. */
@@ -171,17 +256,18 @@ export function routeCapabilitiesFor(candidate: CapabilityProfileHolder): RouteC
       profile.bespokeWire === true
         ? profile.audio === true
         : AUDIO_CAPABLE_WIRE_FAMILIES.has(candidate.wire_family),
-    webSearch: profile.webSearch === true,
     tools: profile.tools === true,
     parallelToolCalls: profile.parallelToolCalls === true,
     reasoning: profile.reasoning === true,
     reasoningEncryptedContent: profile.reasoningEncryptedContent === true,
     responseJsonObject: profile.responseJsonObject !== false,
     responseJsonSchema: profile.responseJsonSchema !== false,
+    // Search capability is the provider's (see `providerSupportsWebSearch`),
+    // carried on the snapshot profile the router sees.
+    webSearch: profile.webSearch === true,
     promptCaching: profile.promptCaching !== false,
     // A bespoke route has no codec, so no wire matrix applies: the adapter
     // reads the controls it understands directly. Otherwise the route's wire
-    // family decides, because that is the codec that will re-encode them.
     generationControls:
       profile.bespokeWire === true
         ? BESPOKE_GENERATION_CONTROLS

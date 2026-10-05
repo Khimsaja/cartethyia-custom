@@ -44,6 +44,7 @@ export interface ShareModelInfo {
   readonly capabilities: { readonly input?: string[]; readonly output?: string[] } | null;
   readonly reasoning: boolean;
   readonly toolCall: boolean;
+  /** Provider-level: the provider's adapter drives a hosted web-search tool. */
   readonly webSearch: boolean;
 }
 

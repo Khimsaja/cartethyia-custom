@@ -26,6 +26,7 @@ import {
   providerDisplayName,
   providerHasAdapterUserAgent,
   providerServiceKinds,
+  providerSupportsWebSearch,
   type CompatibilityProfile,
 } from "../../../providers/provider-metadata";
 import type { AccountHealthEventRecord } from "../../../providers/operations/account-health-service";
@@ -72,6 +73,7 @@ export function sanitizeProviderResponse(
     isBuiltIn: (p.isBuiltIn as boolean | undefined) ?? false,
     requiresAccount: (p.requiresAccount as boolean | undefined) ?? true,
     hasAdapterUserAgent: providerHasAdapterUserAgent(p.providerId),
+    supportsWebSearch: providerSupportsWebSearch(p.providerId),
     ...(credentialUrl === undefined ? {} : { credentialUrl }),
     ...(credentialHint === undefined ? {} : { credentialHint }),
     ...(clientVersion === undefined ? {} : { clientVersion }),
@@ -254,6 +256,7 @@ export function createProviderCatalogOperations(config: ProviderCatalogConfig) {
           providerId: request.providerId,
           displayName: providerDisplayName(request.providerId),
           serviceKinds: ["llm"],
+          supportsWebSearch: providerSupportsWebSearch(request.providerId),
           tenantId: a.tenantId,
           enabled: request.enabled ?? true,
           isBuiltIn: false,

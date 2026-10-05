@@ -9,7 +9,7 @@
  * segment. `mapProviderRow` is the single `providers` row projection.
  */
 import { isBundledProviderId, providerBaseUrl } from "../../../providers/provider-registry";
-import { providerDisplayName, providerServiceKinds } from "../../../providers/provider-metadata";
+import { providerDisplayName, providerServiceKinds, providerSupportsWebSearch } from "../../../providers/provider-metadata";
 import type { CompatibilityProfile } from "../../../providers/provider-metadata";
 import { supportedWireFamiliesForProvider } from "../../../providers/discovery/probe-wire";
 import { providers } from "../../../persistence/schema";
@@ -68,8 +68,8 @@ export function mapProviderRow(row: typeof providers.$inferSelect): ProviderReco
     configured: false,
     requiresAccount: row.requiresAccount,
     serviceKinds: providerServiceKinds(row.id),
+    supportsWebSearch: providerSupportsWebSearch(row.id),
     supportsModelDiscovery: !isBundledProviderId(row.id),
-    ...(row.wireFamilyDefault ? { wireFamilyDefault: row.wireFamilyDefault } : {}),
     ...(supportedWireFamilies ? { supportedWireFamilies } : {}),
     ...(row.capabilityProfile
       ? { capabilityProfile: row.capabilityProfile as Record<string, unknown> }

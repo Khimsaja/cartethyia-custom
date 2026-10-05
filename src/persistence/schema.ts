@@ -293,7 +293,6 @@ export const models = pgTable(
     modalities: jsonb("modalities"),
     reasoning: boolean("reasoning").notNull().default(false),
     toolCall: boolean("tool_call").notNull().default(false),
-    webSearch: boolean("web_search").notNull().default(false),
     cost: jsonb("cost"),
     source: text("source"),
     sourceUpdatedAt: timestamp("source_updated_at", { withTimezone: true }),

@@ -219,12 +219,11 @@ export async function resolveProbeTarget(args: {
   let serviceKind: ServiceKind = requestedServiceKind;
   // Capability columns for the row the probe lands on. Resolved alongside the
   // wire so the profile describes the same row the probe dispatches to.
-  let capabilitySource: {
-    modalities: unknown;
-    reasoning: boolean;
-    toolCall: boolean;
-    webSearch: boolean;
-  } = { modalities: null, reasoning: false, toolCall: false, webSearch: false };
+  let capabilitySource: { modalities: unknown; reasoning: boolean; toolCall: boolean } = {
+    modalities: null,
+    reasoning: false,
+    toolCall: false,
+  };
   if (request.wireFamily) {
     wireFamily = request.wireFamily as WireFamily;
     endpointPath = endpointForFamily(wireFamily);
@@ -245,7 +244,6 @@ export async function resolveProbeTarget(args: {
         modalities: staticDef.modalities,
         reasoning: staticDef.reasoning,
         toolCall: staticDef.toolCall,
-        webSearch: staticDef.webSearch,
       };
     } else {
       const existing = await db
@@ -256,7 +254,6 @@ export async function resolveProbeTarget(args: {
           modalities: models.modalities,
           reasoning: models.reasoning,
           toolCall: models.toolCall,
-          webSearch: models.webSearch,
         })
         .from(models)
         .where(
@@ -282,7 +279,6 @@ export async function resolveProbeTarget(args: {
           modalities: existing[0].modalities,
           reasoning: existing[0].reasoning,
           toolCall: existing[0].toolCall,
-          webSearch: existing[0].webSearch,
         };
       } else {
         if (requestedServiceKind !== "llm") {
@@ -332,7 +328,6 @@ export async function resolveProbeTarget(args: {
     modalities: capabilitySource.modalities,
     reasoning: capabilitySource.reasoning,
     toolCall: capabilitySource.toolCall,
-    webSearch: capabilitySource.webSearch,
     providerId,
   });
   return { wireFamily, serviceKind, endpointPath, sourceSurface, capabilityProfile };

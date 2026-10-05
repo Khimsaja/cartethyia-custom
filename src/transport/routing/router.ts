@@ -21,7 +21,15 @@ import {
   type RouteSnapshot,
   type RoutingRevision,
 } from "./route-model";
-import { candidateSupportsRequest, type RequiredCapability } from "../translation/capabilities";
+import {
+  candidateSupportsRequest,
+  type RequiredCapability,
+} from "../translation/capabilities";
+
+const SEARCH_PROVIDER_ORDER = ["exa", "gemini", "codex", "tavily", "brave"] as const;
+const SEARCH_PROVIDER_RANK = new Map<string, number>(
+  SEARCH_PROVIDER_ORDER.map((provider, index) => [provider, index]),
+);
 
 
 /**
@@ -592,6 +600,37 @@ export class RoutingEngine {
     }
     return result;
   }
+  private searchFallbackCandidates(
+    snapshot: RouteSnapshot,
+    tenantId: string | null,
+  ): RouteCandidate[] {
+    const ranked = snapshot.candidates
+      .filter(
+        (candidate) =>
+          candidate.service_kind === "websearch" &&
+          (candidate.tenant_id == null || candidate.tenant_id === tenantId),
+      )
+      .sort((left, right) => {
+        const leftRank =
+          SEARCH_PROVIDER_RANK.get(left.provider_id.toLowerCase()) ?? SEARCH_PROVIDER_ORDER.length;
+        const rightRank =
+          SEARCH_PROVIDER_RANK.get(right.provider_id.toLowerCase()) ?? SEARCH_PROVIDER_ORDER.length;
+        return leftRank - rightRank;
+      });
+    const decisions = ranked
+      .map((candidate) => this.eligibility.evaluate(candidate))
+      .filter((decision) => decision.eligible);
+    const ordered = this.applyProviderRouting(
+      [
+        ...decisions.filter((decision) => decision.reason !== "cooldown").map((decision) => decision.candidate),
+        ...decisions.filter((decision) => decision.reason === "cooldown").map((decision) => decision.candidate),
+      ],
+      snapshot,
+      tenantId,
+    );
+    return ordered.map((candidate) => ({ ...candidate, search_route: "fallback" as const }));
+  }
+
 
   async plan(
     requestedModel: string,
@@ -600,6 +639,7 @@ export class RoutingEngine {
     requiredCapabilities?: readonly RequiredCapability[],
     allowCliMappings = false,
     keyId?: string,
+    webSearch = false,
   ): Promise<RoutePlan> {
     const tid = tenantId ?? null;
     const { resolved, matching, unmatchedMembers, fusion } = this.resolveMatchingCandidates(
@@ -691,6 +731,18 @@ export class RoutingEngine {
       eligible = [
         ...eligible.filter((candidate) => !cooling.has(candidate)),
         ...eligible.filter((candidate) => cooling.has(candidate)),
+      ];
+    }
+    if (webSearch) {
+      const searchCandidates = eligible.map((candidate) =>
+        (candidate.service_kind ?? "llm") === "llm" &&
+        candidate.capability_profile.webSearch === true
+          ? { ...candidate, search_route: "native" as const }
+          : candidate,
+      );
+      eligible = [
+        ...searchCandidates,
+        ...this.searchFallbackCandidates(snapshot, tid),
       ];
     }
     const chosen = eligible[0]!;

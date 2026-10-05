@@ -20,7 +20,6 @@ function searchModel(providerId: SearchProviderId): ModelDefinition {
     ctx: null,
     out: null,
     toolCall: false,
-    webSearch: true,
   });
 }
 
@@ -35,7 +34,6 @@ export const GEMINI_SEARCH_MODELS: readonly ModelDefinition[] = [
     ctx: null,
     out: null,
     toolCall: false,
-    webSearch: true,
   }),
 ];
 /** Codex hosted web search is exposed through its Responses adapter. */
@@ -49,7 +47,6 @@ export const CODEX_SEARCH_MODELS: readonly ModelDefinition[] = [
     ctx: null,
     out: null,
     toolCall: false,
-    webSearch: true,
   }),
 ];
 
