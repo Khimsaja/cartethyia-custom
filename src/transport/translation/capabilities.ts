@@ -3,6 +3,7 @@ import { capabilityUnsupported, GatewayError } from "../gateway-error";
 import {
   summarizeParts,
   type CacheHint,
+  type CanonicalEvent,
   type CanonicalRequest,
   type GenerationControls,
   type ToolDefinition,
@@ -89,6 +90,45 @@ export function extractWebSearchInvocation(
   }
   return undefined;
 }
+
+/**
+ * True when a completed response actually carries web-search evidence.
+ *
+ * A route marked `search_route: "native"` is trusted to run the hosted search
+ * itself, but "trusted" is only a capability declaration: the upstream may
+ * answer from its own weights without ever calling the tool — which a client
+ * sees as a confident answer with no sources, or (worse) as "Did 0 searches".
+ * This checks what the response actually contains rather than what the route
+ * claimed: an Anthropic `server_tool_use`/`web_search_tool_result` round, a
+ * `search_result` block, a search citation extension, or an inline URL.
+ *
+ * Ported from oh-my-pi's grounding rejection, which refuses a Codex/OpenAI
+ * completion with no `web_search_call` rather than presenting it as searched.
+ */
+export function responseShowsWebSearch(events: readonly CanonicalEvent[]): boolean {
+  for (const event of events) {
+    if (event.type !== "content_delta") continue;
+    const part = event.content;
+    if (part.kind === "extension") {
+      if (SEARCH_EVIDENCE_EXTENSIONS.has(part.name)) return true;
+      continue;
+    }
+    if (part.kind !== "text") continue;
+    // A model that really searched cites where it got the answer. Markdown
+    // links and bare URLs both count; a prose answer with no source at all
+    // is what we are trying to detect and reject.
+    if (/https?:\/\/\S+/i.test(part.text)) return true;
+  }
+  return false;
+}
+
+/** Extension parts that only a provider-side search round can produce. */
+const SEARCH_EVIDENCE_EXTENSIONS = new Set([
+  "server_tool_use",
+  "search_result",
+  "web_search_tool_result",
+  "web_search_citations",
+]);
 /** Capabilities declared by one resolved provider/model/route candidate. */
 export interface RouteCapabilities {
   readonly text: true;

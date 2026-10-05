@@ -291,4 +291,107 @@ dbDescribe("web-search fallback dispatch", () => {
     const body = (await response.json()) as { content: { type: string; text?: string }[] };
     expect(body.content.some((block) => block.text?.includes("no search needed"))).toBe(true);
   });
+
+  test("a native route that answers without searching is re-dispatched with the fallback results", async () => {
+    gateway.setRoutes([
+      {
+        providerId: world.providerId,
+        modelId: world.modelId,
+        accountId: world.accountId,
+        capabilities: { tools: true, webSearch: true },
+      },
+      {
+        providerId: "exa",
+        modelId: "exa-search",
+        accountId: world.accountId,
+        serviceKind: "websearch",
+        capabilities: { webSearch: true },
+      },
+    ]);
+    // The route is marked native, so it is trusted first — and answers from its
+    // own weights with no source at all. That is exactly what a client reports
+    // as "Did 0 searches".
+    let attempts = 0;
+    const seen: CanonicalRequest[] = [];
+    gateway.adapter(world.providerId, {
+      onDispatch: (record) => {
+        seen.push(record.request);
+      },
+      events: (request): readonly CanonicalEvent[] => {
+        attempts += 1;
+        return [
+          { type: "message_start", sequence_number: 0, model: request.model },
+          {
+            type: "content_delta",
+            sequence_number: 1,
+            content: { kind: "text", text: attempts === 1 ? "I have no browsing ability" : "risuncode is a developer" },
+          },
+          { type: "terminal", sequence_number: 2, state: "complete", stop_reason: "stop" },
+        ];
+      },
+    });
+    const searchAdapter = gateway.adapter("exa", {
+      searchResults: [{ title: "risuncode", url: "https://github.com/risunCode", snippet: "Profile" }],
+    });
+    const response = await gateway.json(
+      "/v1/messages",
+      messagesSearchRequest(world.qualifiedModel),
+      { token: world.token },
+    );
+    expect(response.status).toBe(200);
+    // The fallback ran, and the route was dispatched again with the hits.
+    expect(searchAdapter.searches).toEqual(["Coba cari siapa itu risuncode"]);
+    expect(attempts).toBe(2);
+    // The second dispatch carries the results; the first did not.
+    expect(JSON.stringify(seen[0]?.messages ?? [])).not.toContain("github.com/risunCode");
+    expect(JSON.stringify(seen[1]?.messages ?? [])).toContain("github.com/risunCode");
+    const body = (await response.json()) as { content: { type: string; text?: string }[] };
+    expect(body.content.some((block) => block.text?.includes("risuncode is a developer"))).toBe(true);
+  });
+
+  test("a native route that really searched is not re-dispatched", async () => {
+    gateway.setRoutes([
+      {
+        providerId: world.providerId,
+        modelId: world.modelId,
+        accountId: world.accountId,
+        capabilities: { tools: true, webSearch: true },
+      },
+      {
+        providerId: "exa",
+        modelId: "exa-search",
+        accountId: world.accountId,
+        serviceKind: "websearch",
+        capabilities: { webSearch: true },
+      },
+    ]);
+    let attempts = 0;
+    gateway.adapter(world.providerId, {
+      events: (request): readonly CanonicalEvent[] => {
+        attempts += 1;
+        return [
+          { type: "message_start", sequence_number: 0, model: request.model },
+          // An inline citation is search evidence: the upstream really looked.
+          {
+            type: "content_delta",
+            sequence_number: 1,
+            content: { kind: "text", text: "risuncode is at https://github.com/risunCode" },
+          },
+          { type: "terminal", sequence_number: 2, state: "complete", stop_reason: "stop" },
+        ];
+      },
+    });
+    const searchAdapter = gateway.adapter("exa", {
+      searchResults: [{ title: "risuncode", url: "https://github.com/risunCode", snippet: "Profile" }],
+    });
+    const response = await gateway.json(
+      "/v1/messages",
+      messagesSearchRequest(world.qualifiedModel),
+      { token: world.token },
+    );
+    expect(response.status).toBe(200);
+    // Native search worked: no fallback, no second dispatch.
+    expect(attempts).toBe(1);
+    expect(searchAdapter.searches).toEqual([]);
+  });
 });
