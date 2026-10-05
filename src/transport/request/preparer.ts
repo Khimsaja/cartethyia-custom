@@ -14,6 +14,7 @@ import { isModelAllowed, type ResolvedApiKey } from "../../security/api-key-auth
 import { allowsCliToolMappings } from "../../security/cli-client-fingerprint";
 import { dropIncompleteToolRounds, repairRequestToolCalls } from "../translation/tool-repair";
 import { sanitizeRequestToolIds } from "../translation/tool-id";
+import { dropCorruptAttachments } from "../translation/attachment-integrity";
 import { parseThinkingSuffix, withThinkingSuffixIntent } from "../translation/thinking";
 import { nativeServicePathFor } from "../dispatch/native-services";
 import { log } from "../../observability/logger";
@@ -490,18 +491,26 @@ export class ProxyRequestPreparer {
         model: request.model,
       });
     }
+    // An inline image that cannot survive the upstream is dropped here rather
+    // than dispatched: a provider rejects the whole request for one corrupt
+    // attachment, and the buddy family reports it with no field named, so the
+    // caller gets a 400 it cannot act on. Running this before capability
+    // derivation also means a request whose only image was defective no longer
+    // requires the `image` capability — it plans like the text request it has
+    // become, instead of being routed to a vision route for nothing.
+    const requestWithAttachments = dropCorruptAttachments(request).request;
     // Capability-aware routing: derive requirements BEFORE planning so the
     // router filters candidates against snapshot profiles. When nothing
     // supports the full request, degrade (same greedy order) and re-plan
     // each variant against the same snapshot; the first non-empty plan wins.
     let plan: RoutePlan | undefined;
-    let variantRequest = request;
+    let variantRequest = requestWithAttachments;
     let degraded: readonly RequiredCapability[] = [];
     // Explicit caller opt-out wins over capability routing: dropping encrypted
     // reasoning is a lossy request the caller asked for, so it applies before
     // planning rather than as a fallback when no route supports the artifacts.
-    if (request.generation_controls["extension:omit_encrypted_reasoning"] === true) {
-      const stripped = degradeEncryptedReasoning(request);
+    if (requestWithAttachments.generation_controls["extension:omit_encrypted_reasoning"] === true) {
+      const stripped = degradeEncryptedReasoning(requestWithAttachments);
       if (stripped) {
         variantRequest = stripped;
         degraded = ["reasoning.encrypted_content"];
