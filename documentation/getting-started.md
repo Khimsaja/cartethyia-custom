@@ -1,235 +1,247 @@
 # Getting started
 
-This is the source of truth for installing, running, and checking Cartethyia.
+This guide is the source of truth for installing, configuring, running, and
+checking Cartethyia.
 
-## Requirements
+## 1. Requirements
 
-- Bun 1.4.2 or newer.
-- PostgreSQL is required only in **Full** mode; **Lite** embeds PostgreSQL with PGlite.
-- A terminal and a Node-compatible environment for tooling.
-- Redis is optional in both modes. Set `REDIS_URL` to use shared coordination;
-  leave it unset for the in-memory backend (single-process deployments).
+All local installs require:
 
-## Choose a database mode
+- Bun 1.4.2 or newer;
+- a terminal;
+- a writable data directory.
 
-Cartethyia has the same features in both modes; only the database infrastructure
-changes. `.env.example` defaults to Lite for a fresh local install. The Docker
-Compose deployment defaults to Full and bundles Redis; override either using its
-environment variables.
+The database requirement depends on the selected mode:
+
+| Mode | Required database infrastructure |
+|---|---|
+| **Lite** | None. Cartethyia runs embedded PGlite locally. |
+| **Full** | A reachable PostgreSQL database configured with `DATABASE_URL`. |
+
+Redis is optional in both modes. Set `REDIS_URL` when coordination must be
+shared between processes or instances. If it is unset, Cartethyia uses the
+in-memory coordination backend.
+
+## 2. Choose a database mode
+
+Cartethyia exposes the same application features in both modes. Only the
+persistence backend and deployment profile change.
 
 | | Lite | Full |
 |---|---|---|
-| Database | Embedded PGlite; no database server to install | External PostgreSQL set by `DATABASE_URL` |
-| Default audience | Casual/local, single-process use | VPS, high workload, sharing or selling |
-| Extra services | None; Redis is optional | PostgreSQL required; Redis optional, bundled by Compose |
-| Data location | `CARTETHYIA_DATA_DIR/pglite` (per-OS default; see below) | Managed by the PostgreSQL server |
-| Strengths | Fastest setup, self-contained, low operational overhead | Independent DB service, designed for higher workloads and multi-instance deployments |
-| Trade-offs | Single-process; embedded DB is a poor fit for heavy concurrent workloads | Requires operating/reaching a PostgreSQL service |
+| Database | Embedded PGlite | External PostgreSQL |
+| Best for | Personal use, local development, one casual process | VPS, sharing, selling, sustained or high workload |
+| Extra services | No database service; Redis optional | PostgreSQL required; Redis optional |
+| Trade-off | Single-process and lower concurrency ceiling | Requires operating or reaching PostgreSQL |
 
-PGlite is real embedded PostgreSQL, not a different storage format. Move Lite
-data to Full by exporting a Cartethyia JSON backup, configuring the Full
-instance, then importing that backup in its console. The backup/restore format
-is the migration path between modes.
+### Lite
 
-### Lite (recommended for local installs)
+Lite is the default in `.env.example` and is the recommended starting point for
+personal or local use. It does not require PostgreSQL or Redis.
 
-Set `CARTETHYIA_DB_MODE=lite` (the `.env.example` default). Do not set
-`DATABASE_URL`. Cartethyia stores the embedded database under
-`CARTETHYIA_DATA_DIR/pglite`; if `CARTETHYIA_DATA_DIR` is unset, the default is
-`%APPDATA%\\Cartethyia` on Windows, `~/Library/Application Support/Cartethyia`
-on macOS, and `$XDG_DATA_HOME/Cartethyia` or `~/.local/share/Cartethyia` on Linux.
-Set `REDIS_URL` only if shared Redis coordination is wanted.
+PGlite stores the database under:
 
-### Full (recommended for VPS / higher workloads)
+```text
+<CARTETHYIA_DATA_DIR>/pglite
+```
 
-Set `CARTETHYIA_DB_MODE=full` and point `DATABASE_URL` at a reachable PostgreSQL
-database. Redis remains optional for one process; set `REDIS_URL` for shared
-coordination or multiple app instances. Credentials belong in environment
-variables, never in the image or checked-in files.
+When `CARTETHYIA_DATA_DIR` is unset, the default is:
 
-## Choose a setup
+| Operating system | Default data directory |
+|---|---|
+| Windows | `%APPDATA%\Cartethyia` |
+| macOS | `~/Library/Application Support/Cartethyia` |
+| Linux | `$XDG_DATA_HOME/Cartethyia`, or `~/.local/share/Cartethyia` |
 
-### Local setup
+### Full
 
-The interactive installer asks for Lite or Full. Lite needs no database service.
-For Full, use a PostgreSQL server on your computer. On Windows, Laragon is a
-simple option; on macOS, Homebrew; on Linux, your distribution's PostgreSQL
-package. The installer probes PostgreSQL only when Full is selected.
+Full is recommended for VPS deployments, sharing, selling, and higher workloads.
+Set:
 
-### Remote or cloud setup
+```dotenv
+CARTETHYIA_DB_MODE=full
+DATABASE_URL=postgres://user:password@host:5432/cartethyia
+```
 
-Use Full for VPS/high-workload deployments: set `DATABASE_URL` to a managed or
-self-hosted PostgreSQL URL reachable from the Cartethyia service. Use a private
-`REDIS_URL` when deploying multiple app instances. Docker Compose defaults to
-Full and supplies its Redis URL; PostgreSQL stays external.
-## Install the requirements
+The PostgreSQL server must be reachable from the Cartethyia process. Redis is
+still optional for a single process; set `REDIS_URL` for shared coordination or
+multiple app instances.
 
-No PostgreSQL or Redis installation is needed for Lite. For Full, install or
-provision PostgreSQL and set `DATABASE_URL`; Redis is optional and is selected
-by setting `REDIS_URL`. The installer probes only services required by the
-selected mode.
+Lite is not a reduced feature edition. To move to Full later, export a JSON
+backup from Lite and import it into the Full instance. The configuration does
+not need to be rebuilt manually.
 
-## Configure the environment
+## 3. Install dependencies
 
-From the repository root:
+From the repository root, install the Bun dependencies:
 
 ```bash
 bun install
 ```
 
-Cartethyia creates `.env` automatically on the next command. Run `bun setup`;
-when attached to a terminal it asks **Lite or Full** if `CARTETHYIA_DB_MODE` is
-unset. Use `bun setup --non-interactive` in automation and let the `.env` value
-decide. The command:
+`bun install` installs packages only. It does not create the database, generate
+`.env`, or start Cartethyia.
 
-- detect whether `.env` exists — if not, create it from `.env.example` keeping
-  **only mandatory rows** (`KEY=value` without `#`); commented options stay
-  commented,
-- auto-generate `CARTETHYIA_ENCRYPTION_KEY` when it is missing or still the
-  placeholder in an existing `.env` — no other value is ever overwritten,
-- create `.env.test` from `.env.test.example` when the test-database URL is
-  missing (so `bun run test:backend` has an isolated database).
+## 4. Configure and validate the installation
 
-For Lite, keep the default `CARTETHYIA_DB_MODE=lite`; no `DATABASE_URL` is
-needed. For Full, set `CARTETHYIA_DB_MODE=full` and configure a reachable
-`DATABASE_URL`. Redis is optional: set `REDIS_URL` for shared coordination or
-leave it unset for the in-memory backend.
-
-Check the relevant entries:
+Run the unified setup command:
 
 ```bash
-cat .env  # CARTETHYIA_DB_MODE, DATABASE_URL (Full only), CARTETHYIA_ENCRYPTION_KEY
+bun setup
 ```
 
-### CARTETHYIA_ENCRYPTION_KEY
+`bun setup` does the following:
 
-Required 256-bit secret. It encrypts every stored provider credential and API
-key at rest — treat it like a password.
+1. creates `.env` from `.env.example` when it does not exist;
+2. generates `CARTETHYIA_ENCRYPTION_KEY` when it is missing or still a placeholder;
+3. creates `.env.test` from `.env.test.example` when needed;
+4. prepares the Lite data directory, or checks PostgreSQL in Full mode;
+5. checks Redis only when `REDIS_URL` is configured;
+6. checks Docker Compose when `CARTETHYIA_SETUP_MODE=docker` is selected.
 
-Generation (choose ONE; 32 bytes = 256 bits, either encoding is accepted):
+The generated local `.env` defaults to Lite. To use Full, edit `.env` and set
+`CARTETHYIA_DB_MODE=full` together with a reachable `DATABASE_URL`, then run:
 
 ```bash
-# macOS / Linux:
+bun setup --non-interactive
+```
+
+For automation, always use:
+
+```bash
+bun setup --non-interactive
+```
+
+That mode never prompts. It reads the selected mode and connection values from
+`.env` and fails when the required Full-mode configuration is missing.
+
+Check the resulting configuration with:
+
+```bash
+bun doctor
+```
+
+`bun doctor` checks `.env`, the selected database backend, the Lite data
+ directory or PostgreSQL reachability, optional Redis, and application readiness.
+
+## 5. Configure encryption
+
+`CARTETHYIA_ENCRYPTION_KEY` is a required 256-bit secret. It encrypts stored
+provider credentials and API keys. Treat it like a password and keep it outside
+version control.
+
+The setup command generates it automatically. Manual generation is only needed
+when rotating the key or preparing an environment yourself.
+
+```bash
+# macOS / Linux
 openssl rand -hex 32
 
-# Windows (PowerShell):
+# Windows PowerShell
 [Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }))
 
-# Bun / Node (any platform):
+# Bun / Node on any platform
 bun -e "import { randomBytes } from 'node:crypto'; console.log(randomBytes(32).toString('base64'))"
 ```
 
-Paste the output as `CARTETHYIA_ENCRYPTION_KEY` in `.env`. Either 64-char hex
-or base64 that decodes to 32 bytes is valid; the helpers (`scripts/internal/env.ts`,
-`src/config.ts:decodeEncryptionKey`) validate the length on load. The setup/
-install helpers generate one automatically — manual generation is only needed
-when you want to rotate the key (use a backup/restore cycle when you do).
+Either a 64-character hexadecimal value or Base64 encoding of 32 bytes is
+accepted.
 
-`DATABASE_URL` and `CARTETHYIA_PUBLIC_ORIGIN` contain example values — replace
-them when your PostgreSQL host/port/database differs; `CARTETHYIA_PUBLIC_ORIGIN`
-should be the externally reachable URL for OAuth callbacks/links. `REDIS_URL`
-(and the other tunable counters/ceilings) stay commented until you need them;
-defaults are commented defaults — deleting the comment would clobber the real
-default with an example literal.
+## 6. Start Cartethyia
 
-## Run the installer
-
-## Start Cartethyia
-After the installer completes:
+After setup succeeds, start the development stack:
 
 ```bash
-bun run dev
+bun dev
 ```
 
-For auto-restart on migrations or dependency changes, run `bun run dev:watch`
-instead: source edits still hot-reload, and the supervisor reinstalls deps
-(`bun install --frozen-lockfile`) and restarts in place when `migrations/*.sql`,
-`package.json`, or `bun.lock` change, so it never needs to be re-run.
+Open the dashboard at:
 
-Open `http://localhost:12800/console`. Useful endpoints:
+```text
+http://localhost:12800/console
+```
 
-| Endpoint | Purpose |
-|---|---|
-| `/health` | Process liveness |
-| `/health/ready` | Database, migration, and readiness status |
-| `/metrics` | Prometheus metrics |
-| `/v1/*` | Gateway API routes |
-| `/console` | Dashboard |
-| `/share/:token` | Public child-key enrollment |
-
-Run the halves separately when needed:
+For backend and dashboard processes separately:
 
 ```bash
 bun run dev:backend
 bun run dashboard:dev
 ```
 
-## Docker
+For automatic restart when source, migration, or dependency files change:
+
+```bash
+bun run dev:watch
+```
+
+Useful endpoints:
+
+| Endpoint | Purpose |
+|---|---|
+| `/health` | Process liveness |
+| `/health/ready` | Database, migration, and dependency readiness |
+| `/metrics` | Prometheus metrics |
+| `/v1/*` | Gateway API routes |
+| `/console` | Dashboard |
+| `/share/:token` | Public child-key enrollment |
+
+## 7. Docker
+
+Docker Compose defaults to Full mode and bundled Redis coordination:
 
 ```bash
 docker compose up --build -d
 docker compose logs -f app
+```
+
+Stop the stack with:
+
+```bash
 docker compose down
 ```
 
-Compose defaults to **Full** (`CARTETHYIA_DB_MODE=full`) and points `REDIS_URL`
-at its bundled Redis service. Set these in `.env` to choose otherwise:
+Full mode requires an external PostgreSQL reachable through `DATABASE_URL`; the
+Compose file does not bundle PostgreSQL. To run the app container with Lite:
 
 ```dotenv
 CARTETHYIA_DB_MODE=lite
-# DATABASE_URL is needed only for Full mode.
-# REDIS_URL=redis://redis:6379  # omit/empty uses the in-memory backend
+# DATABASE_URL is not needed in Lite mode.
+# REDIS_URL=redis://redis:6379  # omit or leave empty for in-memory coordination
 ```
 
-Full mode still requires an external PostgreSQL reachable through `DATABASE_URL`;
-Compose does not bundle PostgreSQL. `/app/data` is a persistent named volume for
-the Lite database, install id, and telemetry payloads. Redis starts in either
-mode but is idle if `REDIS_URL` is empty.
+The Compose app stores gateway state and telemetry payloads in the persistent
+`/app/data` volume. Redis starts as a helper container in either mode, but the
+application uses the in-memory backend when `REDIS_URL` is empty.
 
-## Commands
+## 8. Migrations and backups
 
-```bash
-bun run doctor
-bun run typecheck
-bun run dashboard:typecheck
-bun run dashboard:build
-bun run build
-bun run start
-bun run restart
-```
+Numbered migrations under `migrations/` run automatically at boot and are
+recorded in `cartethyia_schema_migrations`.
 
-`bun run build` builds the dashboard, prepares the backend with the AOT pass, and
-creates `dist/cartethyia`. Docker and the restart command handle graceful shutdown
-automatically so active requests get a chance to finish.
+To move an installation from Lite to Full:
 
-## Migrations and backups
+1. open the Lite dashboard;
+2. export a backup from **Settings → Backup**;
+3. configure and start the Full instance with an empty or new database;
+4. wait for `/health/ready` to return HTTP `200`;
+5. import the backup in the Full dashboard.
 
-Numbered migrations under `migrations/` run automatically at boot and are recorded
-in `cartethyia_schema_migrations`.
+Backups may contain provider credentials and API-key data. Treat them like
+passwords and store them securely.
 
-To move a deployment:
+## 9. Test database
 
-1. Export a backup from **Settings → Backup**.
-2. Start the new instance with an empty database.
-3. Wait for `/health/ready` to return `200`.
-4. Import the backup.
+Database-backed tests use the isolated URL in `CARTETHYIA_TEST_DATABASE_URL`,
+not the development `DATABASE_URL`. The setup command creates `.env.test` from
+`.env.test.example` when it is missing.
 
-Backups can contain provider credentials and API-key data. Treat them like passwords.
-
-## Test database
-
-PostgreSQL is also the required database for integration and contract checks. Keep it
-separate from your development database. The installer creates `.env.test` from
-`.env.test.example` when it is missing, so most local setups never have to touch
-it. If it already exists it is kept as-is. The suite never falls back to
-`DATABASE_URL` — `TEST_DATABASE_URL` is the only URL it reads.
+Check the test database:
 
 ```bash
 bun run test-db:check
 ```
 
-If local PostgreSQL is not available, use the disposable Compose database only as an
-optional fallback:
+If local PostgreSQL is unavailable, use the disposable test database in Compose:
 
 ```bash
 cp .env.test.example .env.test
@@ -238,21 +250,21 @@ bun run test-db:check
 bun run test-db:down
 ```
 
-The repository carries an active test suite (`test/`, `dashboard/test/`, run via
-`scripts/ci-run-tests.ts` against the isolated `.env.test` database). Apply
-migrations before database-backed checks. Never use production data for tests.
+Never use production data for tests.
 
-## Verification
+## 10. Verification commands
 
-Run the relevant gates:
+Run the gates relevant to the change:
 
 ```bash
 bun run typecheck
-bun run dashboard:typecheck  # when dashboard/ changes
-bun run build                # when build or entry contracts change
-bun run test:backend         # or: bun run test / dashboard:test / test:watch
+bun run dashboard:typecheck
+bun run dashboard:build
+bun run test:backend
+bun run dashboard:test
+bun run build
 ```
 
-For behavior changes, exercise the real boundary too: a gateway request, browser
-surface, provider flow, or isolated database migration. Typecheck alone does not
-prove runtime behavior.
+Typechecking is not runtime proof. For behavior changes, also exercise the real
+boundary: a gateway request, a browser surface, a provider flow, or an isolated
+database migration.
