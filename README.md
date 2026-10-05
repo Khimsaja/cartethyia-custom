@@ -14,7 +14,7 @@ optional proxy pools. Your client sends a request in the format it already knows
 Cartethyia picks a usable account, translates the request when needed, and sends the
 response back in the format your client expects.
 
-Built with Bun, TypeScript, Elysia, PostgreSQL, and optional Redis coordination.
+Built with Bun, TypeScript, Elysia, embedded PGlite or external PostgreSQL, and optional Redis coordination.
 
 ## Supported client routes
 
@@ -59,13 +59,19 @@ A simple router can handle fallback. Cartethyia gives you control over the entir
 
 > **One endpoint. Any client. Any provider. Full control.**
 
-## Getting started
+## Installation modes
 
-Want to run Cartethyia locally? See the [Getting started guide](documentation/getting-started.md)
-for requirements, PostgreSQL setup, local in-memory Redis mode, Docker, commands,
-and verification steps.
+| | Lite | Full |
+|---|---|---|
+| Database | Embedded PGlite; no DB server to install | External PostgreSQL |
+| Best for | Casual/local, single process | VPS, high workloads, sharing/selling |
+| Trade-off | One process; lower concurrency ceiling | Requires operating/reaching PostgreSQL |
 
-For contribution rules and repository workflow, see `CONTRIBUTING.md`.
+Same features either way. Back up as JSON in Lite, then restore into Full to move
+to a VPS. `.env.example` defaults to Lite; Docker Compose defaults to Full.
+See the [Getting started guide](documentation/getting-started.md#choose-a-database-mode)
+for requirements, install steps, per-OS data location, Docker configuration, and
+the PGlite vs PostgreSQL details.
 
 ## License
 

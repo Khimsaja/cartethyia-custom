@@ -5,47 +5,69 @@ This is the source of truth for installing, running, and checking Cartethyia.
 ## Requirements
 
 - Bun 1.4.2 or newer.
-- **PostgreSQL is required in every setup.** It stores provider accounts, routes,
-  usage, health, and configuration. Redis does not replace it.
+- PostgreSQL is required only in **Full** mode; **Lite** embeds PostgreSQL with PGlite.
 - A terminal and a Node-compatible environment for tooling.
-- Redis is optional for one local gateway with `REDIS_MODE=single_instance_local`.
-- Redis is required for `REDIS_MODE=normal` and multi-instance deployments.
+- Redis is optional in both modes. Set `REDIS_URL` to use shared coordination;
+  leave it unset for the in-memory backend (single-process deployments).
+
+## Choose a database mode
+
+Cartethyia has the same features in both modes; only the database infrastructure
+changes. `.env.example` defaults to Lite for a fresh local install. The Docker
+Compose deployment defaults to Full and bundles Redis; override either using its
+environment variables.
+
+| | Lite | Full |
+|---|---|---|
+| Database | Embedded PGlite; no database server to install | External PostgreSQL set by `DATABASE_URL` |
+| Default audience | Casual/local, single-process use | VPS, high workload, sharing or selling |
+| Extra services | None; Redis is optional | PostgreSQL required; Redis optional, bundled by Compose |
+| Data location | `CARTETHYIA_DATA_DIR/pglite` (per-OS default; see below) | Managed by the PostgreSQL server |
+| Strengths | Fastest setup, self-contained, low operational overhead | Independent DB service, designed for higher workloads and multi-instance deployments |
+| Trade-offs | Single-process; embedded DB is a poor fit for heavy concurrent workloads | Requires operating/reaching a PostgreSQL service |
+
+PGlite is real embedded PostgreSQL, not a different storage format. Move Lite
+data to Full by exporting a Cartethyia JSON backup, configuring the Full
+instance, then importing that backup in its console. The backup/restore format
+is the migration path between modes.
+
+### Lite (recommended for local installs)
+
+Set `CARTETHYIA_DB_MODE=lite` (the `.env.example` default). Do not set
+`DATABASE_URL`. Cartethyia stores the embedded database under
+`CARTETHYIA_DATA_DIR/pglite`; if `CARTETHYIA_DATA_DIR` is unset, the default is
+`%APPDATA%\\Cartethyia` on Windows, `~/Library/Application Support/Cartethyia`
+on macOS, and `$XDG_DATA_HOME/Cartethyia` or `~/.local/share/Cartethyia` on Linux.
+Set `REDIS_URL` only if shared Redis coordination is wanted.
+
+### Full (recommended for VPS / higher workloads)
+
+Set `CARTETHYIA_DB_MODE=full` and point `DATABASE_URL` at a reachable PostgreSQL
+database. Redis remains optional for one process; set `REDIS_URL` for shared
+coordination or multiple app instances. Credentials belong in environment
+variables, never in the image or checked-in files.
 
 ## Choose a setup
 
 ### Local setup
 
-Use a PostgreSQL server running on your own computer. On Windows, Laragon is the
-simplest option: install it, start PostgreSQL with **Start All**, and use the host
-and port shown by Laragon (usually `localhost:5432`). On macOS, Homebrew is a
-simple option:
-
-```bash
-brew install postgresql@16
-brew services start postgresql@16
-```
-
-On Linux, install PostgreSQL with your distribution package manager and start its
-service. For one local gateway, set `REDIS_MODE=single_instance_local` and no Redis
-installation is needed.
+The interactive installer asks for Lite or Full. Lite needs no database service.
+For Full, use a PostgreSQL server on your computer. On Windows, Laragon is a
+simple option; on macOS, Homebrew; on Linux, your distribution's PostgreSQL
+package. The installer probes PostgreSQL only when Full is selected.
 
 ### Remote or cloud setup
 
-Use a PostgreSQL connection URL supplied by your cloud provider or managed database.
-Set that URL as `DATABASE_URL`; it must be reachable from the Cartethyia service.
-For `REDIS_MODE=normal` or multiple gateway instances, also set the private Redis
-service URL as `REDIS_URL`. Cloud platforms usually inject these values as service
-variables, so do not replace them with `localhost`.
-
+Use Full for VPS/high-workload deployments: set `DATABASE_URL` to a managed or
+self-hosted PostgreSQL URL reachable from the Cartethyia service. Use a private
+`REDIS_URL` when deploying multiple app instances. Docker Compose defaults to
+Full and supplies its Redis URL; PostgreSQL stays external.
 ## Install the requirements
 
-The installer detects whether the configured PostgreSQL and Redis endpoints are
-reachable. If a required service is missing, it stops and shows the next action for
-the selected platform or deployment. It never silently installs services or uses a
-local fallback for a remote deployment.
-
-For local setup, fix the service first. For remote setup, fix the cloud service
-variable or network access first.
+No PostgreSQL or Redis installation is needed for Lite. For Full, install or
+provision PostgreSQL and set `DATABASE_URL`; Redis is optional and is selected
+by setting `REDIS_URL`. The installer probes only services required by the
+selected mode.
 
 ## Configure the environment
 
@@ -55,21 +77,27 @@ From the repository root:
 bun install
 ```
 
-Cartethyia creates `.env` automatically on the next command. `bun run setup`
-(non-interactive) and `bun run setup:interactive` both:
+Cartethyia creates `.env` automatically on the next command. The installer
+(`bun run setup:interactive`) asks **Lite or Full** if `CARTETHYIA_DB_MODE` is
+unset. `bun run setup` is non-interactive and uses the `.env` choice. Both:
 
 - detect whether `.env` exists — if not, create it from `.env.example` keeping
-  **only mandatory rows** (`KEY=value` without `#`); commented hashtag defaults
-  stay commented because the config layer already applies them,
+  **only mandatory rows** (`KEY=value` without `#`); commented options stay
+  commented,
 - auto-generate `CARTETHYIA_ENCRYPTION_KEY` when it is missing or still the
   placeholder in an existing `.env` — no other value is ever overwritten,
-- create `.env.test` from `.env.test.example` when the test-database url is
+- create `.env.test` from `.env.test.example` when the test-database URL is
   missing (so `bun run test:backend` has an isolated database).
 
-Check or edit the few mandatory entries:
+For Lite, keep the default `CARTETHYIA_DB_MODE=lite`; no `DATABASE_URL` is
+needed. For Full, set `CARTETHYIA_DB_MODE=full` and configure a reachable
+`DATABASE_URL`. Redis is optional: set `REDIS_URL` for shared coordination or
+leave it unset for the in-memory backend.
+
+Check the relevant entries:
 
 ```bash
-cat .env  # contains PORT, DATABASE_URL, CARTETHYIA_ENCRYPTION_KEY, CARTETHYIA_PUBLIC_ORIGIN
+cat .env  # CARTETHYIA_DB_MODE, DATABASE_URL (Full only), CARTETHYIA_ENCRYPTION_KEY
 ```
 
 ### CARTETHYIA_ENCRYPTION_KEY
@@ -143,8 +171,19 @@ docker compose logs -f app
 docker compose down
 ```
 
-PostgreSQL must still be reachable through `DATABASE_URL`. Redis is managed by
-Compose when the selected Redis mode requires it.
+Compose defaults to **Full** (`CARTETHYIA_DB_MODE=full`) and points `REDIS_URL`
+at its bundled Redis service. Set these in `.env` to choose otherwise:
+
+```dotenv
+CARTETHYIA_DB_MODE=lite
+# DATABASE_URL is needed only for Full mode.
+# REDIS_URL=redis://redis:6379  # omit/empty uses the in-memory backend
+```
+
+Full mode still requires an external PostgreSQL reachable through `DATABASE_URL`;
+Compose does not bundle PostgreSQL. `/app/data` is a persistent named volume for
+the Lite database, install id, and telemetry payloads. Redis starts in either
+mode but is idle if `REDIS_URL` is empty.
 
 ## Commands
 
