@@ -15,7 +15,7 @@ export interface RuntimeSettingsResponse {
   readonly thinkingNormalizationEnabled: boolean;
   readonly responsesReasoningSummary: ResponsesReasoningSummary;
   readonly telemetryPayloads: TelemetryPayloadMode;
-  /** Capture depth for `full` mode; `medium` when unset. */
+  /** Capture depth for `full` mode; `minimum` when unset. */
   readonly telemetryPayloadDepth: TelemetryPayloadDepth;
   readonly privacyMode: PrivacyMode;
   /** Compacts bulky tool-result text before dispatch (RTK prune). Default false. */
@@ -59,7 +59,7 @@ export type ResponsesReasoningSummary = (typeof RESPONSES_REASONING_SUMMARIES)[n
 export const TELEMETRY_PAYLOAD_MODES = ["full", "metadata", "none"] as const;
 /** Telemetry payload capture mode accepted by the runtime-settings PATCH. */
 export type TelemetryPayloadMode = (typeof TELEMETRY_PAYLOAD_MODES)[number];
-export const TELEMETRY_PAYLOAD_DEPTHS = ["medium", "high", "full"] as const;
+export const TELEMETRY_PAYLOAD_DEPTHS = ["minimum", "moderate", "maximum"] as const;
 /** Capture depth for `full` mode accepted by the runtime-settings PATCH. */
 export type TelemetryPayloadDepth = (typeof TELEMETRY_PAYLOAD_DEPTHS)[number];
 export const PRIVACY_MODES = ["masked", "full"] as const;

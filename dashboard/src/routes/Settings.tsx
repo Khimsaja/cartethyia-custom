@@ -78,7 +78,7 @@ function PrivacyPanel(): ReactNode {
                       mutation.mutate(
                         {
                           telemetryPayloadDepth:
-                            value === "high" || value === "full" ? value : "medium",
+                            value === "moderate" || value === "maximum" ? value : "minimum",
                         },
                         {
                           onSuccess: () => toast.success("Capture depth updated"),
@@ -89,22 +89,23 @@ function PrivacyPanel(): ReactNode {
                     }
                     options={[
                       {
-                        value: "medium",
-                        label: "Medium — request pair only, 256 KiB cap (default)",
+                        value: "minimum",
+                        label: "Minimum — all four panels, 1 MiB cap (default)",
                       },
                       {
-                        value: "high",
-                        label: "High — all bodies up to the configured capture limit",
+                        value: "moderate",
+                        label: "Moderate — all four panels, 16 MiB cap",
                       },
                       {
-                        value: "full",
-                        label: "Full — all bodies up to 4× the limit, heavy RAM use",
+                        value: "maximum",
+                        label: "Maximum — all four panels, 32 MiB cap",
                       },
                     ]}
                   />
                 </div>
               ) : null}
-              {settings.telemetryPayloads === "full" ? (
+              {settings.telemetryPayloads === "full" &&
+              settings.telemetryPayloadDepth !== "minimum" ? (
                 <div
                   role="note"
                   style={{
@@ -118,11 +119,9 @@ function PrivacyPanel(): ReactNode {
                   }}
                 >
                   <strong style={{ color: "var(--amber)" }}>
-                    {settings.telemetryPayloadDepth === "full"
-                      ? "Full depth keeps whole bodies and eats serious RAM."
-                      : "Body capture may reduce performance."}
+                    High CPU and memory spike while active.
                   </strong>{" "}
-                  Use it only while debugging, then switch back to Metadata.
+                  Use it only while debugging, then switch back to Metadata or Minimum.
                 </div>
               ) : null}
               <p style={{ fontSize: "11px", color: "var(--text-tertiary)", marginTop: "4px" }}>

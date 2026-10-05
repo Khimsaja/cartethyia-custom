@@ -819,14 +819,13 @@ export interface ConsoleSettingsPreferences {
    */
   telemetryPayloads?: "full" | "metadata" | "none";
   /**
-   * Capture depth for `full` mode (default `medium` when unset). Each debug
-   * needs different bodies, and the heaviest tier eats serious RAM — so the
-   * depth is a separate opt-in below the mode:
-   * - `medium` — request + translated provider request only, 256 KiB cap
-   * - `high` — all five bodies up to the configured capture limit
-   * - `full` — all five bodies up to 4× the configured capture limit
+   * Capture depth for `full` mode (default `minimum` when unset). Fixed size
+   * tiers so every debug sees all four drawer panels — only the cap changes:
+   * - `minimum` — 1 MiB combined cap, light enough to leave on
+   * - `moderate` — 16 MiB combined cap, expect CPU/memory spikes while active
+   * - `maximum` — 32 MiB combined cap, expect CPU/memory spikes while active
    */
-  telemetryPayloadDepth?: "medium" | "high" | "full";
+  telemetryPayloadDepth?: "minimum" | "moderate" | "maximum";
   privacyMode?: "masked" | "full";
   webSearchOrder?: readonly string[];
 }

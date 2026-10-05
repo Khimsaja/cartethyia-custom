@@ -1,4 +1,4 @@
-import { GatewayError } from "../gateway-error";
+import { GatewayError, explainGatewayError, publicGatewayErrorDetails } from "../gateway-error";
 // Attempt completion bookkeeping: one home for everything every dispatch attempt ends with.
 import type { ValidatedOutboundFetch } from "../../providers/provider-registry";
 import { reportAttemptOutcome } from "../../providers/operations/account-health-service";
@@ -7,7 +7,6 @@ import { classifyUpstreamFailure } from "../failure-policy";
 import type { AdmissionLease } from "../../security/admission/contracts";
 import type { CartethyiaDatabase } from "../../persistence/postgres";
 import { TelemetryPayloadCapture } from "../../observability/payload-capture";
-import { resolveTelemetryPayloadMaxBytes } from "../../config";
 import type { TelemetryBatchBuffer } from "../../observability/telemetry-buffer";
 import { CachedPreferencesReader, DrizzlePreferencesReader } from "../../persistence/tenant-preferences";
 import type { TelemetryPayloadDepth, TelemetryPayloadMode } from "../../console/settings/contracts";
@@ -47,32 +46,66 @@ async function resolvePayloadCapture(
   db: CartethyiaDatabase,
   tenantId: string | null,
 ): Promise<{ mode: TelemetryPayloadMode; depth: TelemetryPayloadDepth }> {
-  if (!tenantId) return { mode: "none", depth: "medium" };
+  if (!tenantId) return { mode: "none", depth: "minimum" };
   try {
     const prefs = await preferencesReaderFor(db).readPreferences(tenantId);
     const mode = prefs?.telemetryPayloads;
     const depth = prefs?.telemetryPayloadDepth;
     return {
       mode: mode === "full" || mode === "metadata" || mode === "none" ? mode : "metadata",
-      depth: depth === "medium" || depth === "high" || depth === "full" ? depth : "medium",
+      depth:
+        depth === "minimum" || depth === "moderate" || depth === "maximum"
+          ? depth
+          : depth === "medium"
+            ? "minimum"
+            : depth === "high"
+              ? "moderate"
+              : depth === "full"
+                ? "maximum"
+                : "minimum",
     };
   } catch {
     // Preference read failure must not invent body capture; metadata is the
     // safe default that still matches Settings → Privacy.
-    return { mode: "metadata", depth: "medium" };
+    return { mode: "metadata", depth: "minimum" };
   }
 }
 
 /**
- * Combined body cap for one capture depth. Medium stays tiny (request pair
- * only, see below); high uses the configured limit; full quadruples it for
- * deep debug sessions that need whole bodies. Full is never the silent
- * default — it eats serious RAM per request.
+ * Combined body cap for one capture depth. Fixed size tiers: every depth
+ * stores all four drawer panels (client request, translated provider
+ * request, raw provider response, final client response) — only the cap
+ * changes, so raising the depth never changes *what* is visible, only how
+ * much of large bodies survives. Moderate and maximum spike CPU/memory while
+ * active; minimum is light enough to leave on.
  */
-function captureDepthMaxBytes(depth: TelemetryPayloadDepth, configured: number): number {
-  if (depth === "medium") return 256 * 1024;
-  if (depth === "high") return configured;
-  return configured * 4;
+function captureDepthMaxBytes(depth: TelemetryPayloadDepth): number {
+  if (depth === "moderate") return 16 * 1024 * 1024;
+  if (depth === "maximum") return 32 * 1024 * 1024;
+  return 1 * 1024 * 1024;
+}
+
+/**
+ * What the client received for a failed terminal attempt, in the same public
+ * envelope the error middleware sends on the wire (`{ error: { origin, code,
+ * message, details } }`). Stored so Request Detail's "Client Response"
+ * panel can trace an error exactly as the client saw it — failures used to
+ * leave that panel empty.
+ */
+export function errorClientResponseBody(error: unknown): string {
+  if (error instanceof GatewayError) {
+    return JSON.stringify({
+      error: {
+        origin: error.origin,
+        code: error.code,
+        message: explainGatewayError(error),
+        details: publicGatewayErrorDetails(error),
+      },
+    });
+  }
+  return JSON.stringify({
+    error: { origin: "cartethyia", code: "internal_error", message: "Internal server error" },
+  });
 }
 
 export function parseCapturedBody(value: unknown): unknown {
@@ -261,24 +294,8 @@ async function captureTerminalPayload(
       });
       return;
     }
-    const maxBytes = captureDepthMaxBytes(depth, resolveTelemetryPayloadMaxBytes());
+    const maxBytes = captureDepthMaxBytes(depth);
     const providerRequest = providerCapture?.request ?? null;
-    if (depth === "medium") {
-      // Request pair only: enough to debug routing and translation ("salah
-      // alamat") without retaining response bulk. Small fixed cap.
-      if (providerRequest === null) return;
-      await new TelemetryPayloadCapture(db).capture({
-        tenantId,
-        requestId,
-        requestBody: requestBody ?? null,
-        responseBody: null,
-        providerRequestBody: providerRequest,
-        maxBytes,
-        scope: "tenant",
-        tenantOptIn: true,
-      });
-      return;
-    }
     const providerResponse = await resolvedProviderResponse(providerCapture);
     await new TelemetryPayloadCapture(db).capture({
       tenantId,

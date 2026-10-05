@@ -134,9 +134,10 @@ export function buildPayloadRecord(
   let storedProviderRequestBody: unknown = providerRequestBody;
   let storedProviderResponseBody: unknown = providerResponseBody;
   if (approxSize > maxBytes) {
-    const truncated = (): { _truncated: true; _original_bytes: number } => ({
+    const truncated = (): { _truncated: true; _original_bytes: number; _hint: string } => ({
       _truncated: true,
       _original_bytes: approxSize,
+      _hint: "Truncated by the capture cap — raise Settings → Telemetry payloads → Capture depth to keep more.",
     });
     storedRequestBody = truncated();
     storedResponseBody = truncated();

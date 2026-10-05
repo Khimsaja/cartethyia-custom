@@ -58,9 +58,12 @@ function normalizeTelemetryPayloadDepth(value: unknown): TelemetryPayloadDepth {
   ) {
     return value as TelemetryPayloadDepth;
   }
-  // Unset depth defaults to medium: request bodies only, small cap. Full
-  // depth is never the silent default — it eats serious RAM per request.
-  return "medium";
+  // Legacy tier names from the short-lived medium/high/full scheme map onto
+  // the size tiers; anything else defaults to minimum (1 MiB, light).
+  if (value === "medium") return "minimum";
+  if (value === "high") return "moderate";
+  if (value === "full") return "maximum";
+  return "minimum";
 }
 
 function mapRuntimeSettingsRow(row: typeof consoleSettings.$inferSelect | undefined): RuntimeSettingsResponse {

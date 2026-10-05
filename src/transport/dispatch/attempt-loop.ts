@@ -26,7 +26,7 @@ import type { NetworkPoolSelector } from "../../network/pool/selector";
 import type { ProxyRequestState } from "../request/state";
 import type { TelemetryBatchBuffer } from "../../observability/telemetry-buffer";
 import { flagPoolCooldown } from "../../network/pool-health";
-import { completeAttempt, estimatedUsage, type ProviderExchangeCapture } from "./attempt-finalize";
+import { completeAttempt, errorClientResponseBody, estimatedUsage, type ProviderExchangeCapture } from "./attempt-finalize";
 import { repriceUsage } from "../../providers/usage";
 import { shouldCooldownPool, isOAuthCredentialInvalidated } from "./retry-policy";
 import { drainAbortReason } from "../shutdown-notice";
@@ -209,6 +209,13 @@ export async function runAttemptLoop<TResult, TAdapter>(
         tenantId: input.tenantId,
         ingressBody: state.ingressBody,
         responseBody: null,
+        // The client still receives the public error envelope on the wire —
+        // store it so Request Detail's Client Response panel traces failures
+        // exactly as the client saw them. Cancelled requests have no client
+        // response (the caller is gone).
+        ...(terminalAttempt && !cancelled
+          ? { clientResponseText: errorClientResponseBody(error) }
+          : {}),
         providerCapture: terminalCapture,
         db: deps.db,
         ...(deps.telemetryBuffer ? { telemetryBuffer: deps.telemetryBuffer } : {}),

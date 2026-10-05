@@ -51,10 +51,12 @@ describe("payload capture", () => {
     expect(truncated.request_body).toEqual({
       _truncated: true,
       _original_bytes: expect.any(Number),
+      _hint: expect.stringContaining("Capture depth"),
     });
     expect(truncated.response_body).toEqual({
       _truncated: true,
       _original_bytes: expect.any(Number),
-    });
+      _hint: expect.stringContaining("Capture depth"),
     });
   });
+});
