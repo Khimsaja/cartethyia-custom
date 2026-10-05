@@ -134,12 +134,13 @@ async function requirePostgres(env: Readonly<Record<string, string>>): Promise<v
 }
 
 async function requireRedis(env: Readonly<Record<string, string>>): Promise<void> {
-  const mode = env.REDIS_MODE?.trim() || "normal";
-  if (mode === "single_instance_local") {
-    console.log("✓ Redis skipped: single-instance local mode is enabled");
+  // Redis is never required: a configured URL is probed, unset means the
+  // in-memory backend.
+  const redisUrl = env.REDIS_URL?.trim();
+  if (!redisUrl) {
+    console.log("✓ Redis skipped: no REDIS_URL, the in-memory backend is used");
     return;
   }
-  const redisUrl = requireValue(env, "REDIS_URL");
   const service = parseServiceUrl(redisUrl);
   if (!service) throw new Error("REDIS_URL must include a valid host and port");
   const result = await probeTcpService(service.host, service.port, 3_000);
@@ -147,9 +148,9 @@ async function requireRedis(env: Readonly<Record<string, string>>): Promise<void
     console.log("✓ Redis is reachable");
     return;
   }
-  console.error("✗ Redis is required for REDIS_MODE=normal");
+  console.error("✗ Configured Redis is not reachable");
   for (const hint of getOsHints("redis")) console.error(`  ${hint}`);
-  throw new Error("Redis is required unless REDIS_MODE=single_instance_local");
+  throw new Error("Configured Redis is not reachable (or unset REDIS_URL for in-memory)");
 }
 
 /**
@@ -209,26 +210,15 @@ export async function install(): Promise<void> {
     if (msg.includes("PostgreSQL")) console.error(`  Hint: ${pgHint}`);
     throw error;
   }
-  if ((env.REDIS_MODE?.trim() || "normal") === "normal" && !env.REDIS_URL) {
-    const useLocal = await ask("Use in-memory Redis mode for this single local instance? (y/N)", "n");
-    if (useLocal.toLowerCase() === "y" || useLocal.toLowerCase() === "yes") {
-      await updateEnv({ REDIS_MODE: "single_instance_local" });
-      env = await loadEnvironment();
-    }
-  }
+  // No Redis question anymore: unset REDIS_URL already means in-memory.
   await requireRedis(env);
 
   const redisHint =
     platform === "windows"
-      ? "Windows: start Redis via WSL, a native Redis-compatible service, or an external REDIS_URL. Or set REDIS_MODE=single_instance_local."
+      ? "Windows: start Redis via WSL, a native Redis-compatible service, or an external REDIS_URL — or leave REDIS_URL unset for in-memory."
       : platform === "macos"
-        ? "macOS: brew services start redis — or set REDIS_MODE=single_instance_local."
-        : "Linux: sudo systemctl start redis-server — or set REDIS_MODE=single_instance_local.";
-
-  // The Redis failure path already prints service hints; keep a summary too.
-  if (platform === "windows" || platform === "macos" || platform === "linux") {
-    // Visible on next run; not a hard throw here.
-  }
+        ? "macOS: brew services start redis — or leave REDIS_URL unset for in-memory."
+        : "Linux: sudo systemctl start redis-server — or leave REDIS_URL unset for in-memory.";
 
   console.log("✓ Requirements satisfied");
   console.log(`  ${redisHint}`);

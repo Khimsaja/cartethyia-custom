@@ -1,6 +1,6 @@
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import {
   generateCartethyiaEncryptionKey,
   getLocalPlatform,
@@ -12,7 +12,7 @@ import {
   readEnvFile,
 } from "../internal/env";
 import type { ProbeResult } from "../internal/env";
-import { resolveRedisMode } from "../../src/persistence/readiness";
+import { resolveDataDir, resolveDbMode } from "../../src/persistence/db-mode";
 
 const projectRoot = resolve(import.meta.dir, "..", "..");
 type SetupMode = "auto" | "native" | "docker";
@@ -144,66 +144,79 @@ async function setup(): Promise<void> {
       );
     }
     console.log("✓ Docker Compose is available");
-    console.log("📦 Starting Docker Compose Redis service...");
-    const proc = Bun.spawn(["docker", "compose", "up", "-d", "redis"], {
-      cwd: projectRoot,
-      stdio: ["inherit", "inherit", "inherit"],
-      timeout: 30_000,
-    });
-    const exitCode = await proc.exited;
-    if (exitCode !== 0) throw new Error(`Docker Compose failed with exit code ${exitCode}`);
-    console.log("✓ Docker Compose Redis started; PostgreSQL remains external\n");
+    // Redis is optional: only start the compose service when a URL is set.
+    if (config.redisUrl.trim() !== "") {
+      console.log("📦 Starting Docker Compose Redis service...");
+      const proc = Bun.spawn(["docker", "compose", "up", "-d", "redis"], {
+        cwd: projectRoot,
+        stdio: ["inherit", "inherit", "inherit"],
+        timeout: 30_000,
+      });
+      const exitCode = await proc.exited;
+      if (exitCode !== 0) throw new Error(`Docker Compose failed with exit code ${exitCode}`);
+      console.log("✓ Docker Compose Redis started; PostgreSQL remains external\n");
+    } else {
+      console.log("ℹ️  REDIS_URL unset — skipping Compose Redis (in-memory backend)\n");
+    }
   } else {
     console.log("🌱 Native-first mode; using configured local or external services\n");
   }
 
-  // Step 4: Probe Postgres
-  console.log("🐘 Probing PostgreSQL...");
-  const parsed = parseServiceUrl(config.dbUrl);
-  if (!parsed) {
-    throw new Error("Invalid DATABASE_URL");
-  }
-
-  const dbResult = await probeTcpService(parsed.host, parsed.port, config.probeTimeoutMs);
-
-  if (dbResult.success) {
-    console.log("✓ PostgreSQL is reachable\n");
+  // Step 4: Probe Postgres in full mode; lite verifies the data dir instead.
+  const dbMode = resolveDbMode();
+  if (dbMode === "lite") {
+    console.log("🗂️  Lite mode: PostgreSQL is not needed");
+    const pgliteDir = join(resolveDataDir(), "pglite");
+    mkdirSync(pgliteDir, { recursive: true });
+    console.log(`✓ Data dir ready at ${pgliteDir}\n`);
   } else {
-    console.log("✗ Configured PostgreSQL is not reachable");
-    console.log(
-      "  Start the local service (Laragon/Homebrew/systemd) or verify the external DATABASE_URL\n",
-    );
-
-    for (const hint of getOsHints("postgres")) {
-      console.log("  " + hint);
+    console.log("🐘 Probing PostgreSQL...");
+    const parsed = parseServiceUrl(config.dbUrl);
+    if (!parsed) {
+      throw new Error("Invalid DATABASE_URL");
     }
-    console.log();
 
-    throw new Error("Configured PostgreSQL is not reachable");
+    const dbResult = await probeTcpService(parsed.host, parsed.port, config.probeTimeoutMs);
+
+    if (dbResult.success) {
+      console.log("✓ PostgreSQL is reachable\n");
+    } else {
+      console.log("✗ Configured PostgreSQL is not reachable");
+      console.log(
+        "  Start the local service (Laragon/Homebrew/systemd) or verify the external DATABASE_URL\n",
+      );
+
+      for (const hint of getOsHints("postgres")) {
+        console.log("  " + hint);
+      }
+      console.log();
+
+      throw new Error("Configured PostgreSQL is not reachable");
+    }
   }
 
-  // Step 5: Probe Redis when distributed coordination is enabled.
+  // Step 5: Probe Redis when a URL is configured; otherwise the in-memory
+  // backend applies and there is nothing to check.
   console.log("🔴 Probing Redis...");
-  const redisParsed = parseServiceUrl(config.redisUrl);
-  let redisReachable = false;
-  if (redisParsed) {
+  if (config.redisUrl.trim() === "") {
+    console.warn("⚠️  REDIS_URL unset — the in-memory backend is used\n");
+  } else {
+    const redisParsed = parseServiceUrl(config.redisUrl);
+    if (!redisParsed) {
+      throw new Error("Invalid REDIS_URL");
+    }
     const redisResult = await probeTcpService(
       redisParsed.host,
       redisParsed.port,
       config.probeTimeoutMs,
     );
-    redisReachable = redisResult.success;
-  }
-
-  const localModeEnabled = resolveRedisMode() === "single_instance_local";
-  if (redisReachable) {
-    console.log("✓ Redis is reachable\n");
-  } else if (localModeEnabled) {
-    console.warn("⚠️  Redis is not reachable; single-instance local mode is enabled\n");
-  } else {
-    console.log("✗ Redis is not reachable");
-    for (const hint of getOsHints("redis")) console.log(`  ${hint}`);
-    throw new Error("Redis is required unless REDIS_MODE=single_instance_local");
+    if (redisResult.success) {
+      console.log("✓ Redis is reachable\n");
+    } else {
+      console.log("✗ Configured Redis is not reachable");
+      for (const hint of getOsHints("redis")) console.log(`  ${hint}`);
+      throw new Error("Configured Redis is not reachable (or unset REDIS_URL for in-memory)");
+    }
   }
 
   console.log("✅ Setup complete!");

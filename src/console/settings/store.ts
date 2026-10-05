@@ -2,7 +2,7 @@
 import { eq, sql } from "drizzle-orm";
 import type { CartethyiaDatabase } from "../../persistence/postgres";
 import { consoleSettings, type ConsoleSettingsPreferences } from "../../persistence/schema";
-import { resolveRedisMode } from "../../persistence/readiness";
+import type { RedisBackend } from "../../persistence/redis";
 import { bumpSettingsRevision } from "../../persistence/tenant-preferences";
 import {
   PONYTAIL_LEVELS,
@@ -66,11 +66,14 @@ function normalizeTelemetryPayloadDepth(value: unknown): TelemetryPayloadDepth {
   return "minimum";
 }
 
-function mapRuntimeSettingsRow(row: typeof consoleSettings.$inferSelect | undefined): RuntimeSettingsResponse {
+function mapRuntimeSettingsRow(
+  row: typeof consoleSettings.$inferSelect | undefined,
+  redisBackend: RedisBackend,
+): RuntimeSettingsResponse {
   const updatedAt = row?.updatedAt.toISOString() ?? new Date(0).toISOString();
   const prefs = row?.preferences ?? {};
   return {
-    redisModeActual: resolveRedisMode(),
+    redisBackendActual: redisBackend,
     tenantConcurrencyLimit: prefs.tenantConcurrencyLimit ?? null,
     thinkingNormalizationEnabled: prefs.thinkingNormalizationEnabled === true,
     responsesReasoningSummary: isResponsesReasoningSummary(prefs.responsesReasoningSummary)
@@ -95,7 +98,10 @@ function mapRuntimeSettingsRow(row: typeof consoleSettings.$inferSelect | undefi
 }
 
 export class DrizzleRuntimeSettingsStore implements RuntimeSettingsStore {
-  constructor(private readonly db: CartethyiaDatabase) {}
+  constructor(
+    private readonly db: CartethyiaDatabase,
+    private readonly redisBackend: RedisBackend,
+  ) {}
 
   async get(tenantId: string): Promise<RuntimeSettingsResponse> {
     const rows = await this.db
@@ -103,7 +109,7 @@ export class DrizzleRuntimeSettingsStore implements RuntimeSettingsStore {
       .from(consoleSettings)
       .where(eq(consoleSettings.tenantId, tenantId))
       .limit(1);
-    return mapRuntimeSettingsRow(rows[0]);
+    return mapRuntimeSettingsRow(rows[0], this.redisBackend);
   }
 
   async update(
@@ -139,6 +145,6 @@ export class DrizzleRuntimeSettingsStore implements RuntimeSettingsStore {
       })
       .returning();
     bumpSettingsRevision();
-    return mapRuntimeSettingsRow(rows[0]);
+    return mapRuntimeSettingsRow(rows[0], this.redisBackend);
   }
 }

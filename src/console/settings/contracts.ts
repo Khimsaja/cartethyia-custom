@@ -5,11 +5,11 @@ import { ConsoleDomainError, errorResponse, requireTenantScope } from "../shared
 import { literalUnion } from "../shared/elysia-schema";
 import { Elysia, t } from "elysia";
 import type { AccessDecision } from "../../security/access-control";
-import type { RedisMode } from "../../persistence/readiness";
+import type { RedisBackend } from "../../persistence/redis";
 import type { ConsoleSettingsPreferences } from "../../persistence/schema";
 
 export interface RuntimeSettingsResponse {
-  readonly redisModeActual: RedisMode;
+  readonly redisBackendActual: RedisBackend;
 
   readonly tenantConcurrencyLimit: number | null;
   readonly thinkingNormalizationEnabled: boolean;

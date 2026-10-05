@@ -32,7 +32,7 @@ export const QUOTA_REFRESH_TIMEOUT_MS = 15_000;
 
 export interface QuotaRefreshDeps {
   readonly db: CartethyiaDatabase;
-  readonly redis: RedisClient;
+  readonly redis: RedisClient | undefined;
   readonly providerRegistry: ProviderRegistry;
   /**
    * Resolves a stored credential through the refresh-aware path (OAuth tokens
