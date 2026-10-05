@@ -187,12 +187,18 @@ export function withServedWebSearch(
     isWebSearchTool({ name: request.tool_choice.name })
       ? "auto"
       : request.tool_choice;
-  // The results land as ordinary user context, not as a synthetic
-  // assistant tool-call + tool-result round. Replaying a `web_search`
-  // call in the transcript taught the model that "search" is something it
-  // should keep emitting: DeepSeek-class models answered with raw DSML
-  // `web_search` invocations instead of prose, even with the tool removed.
-  // A plain turn that already carries the facts has no such pattern to copy.
+  // Replayed as a completed assistant tool-call + tool-result round, which is
+  // what the client's own transcript expects: Claude Code counts a search by
+  // the `web_search_tool_result` block in the response, so injecting the hits
+  // as plain user text reported "Did 0 searches" next to a correctly sourced
+  // answer.
+  //
+  // That plain-text shape was tried first to stop DeepSeek-class models from
+  // replying in raw DSML tool-call syntax — but the real cause was the tool
+  // declaration still reaching the upstream, which is fixed at the source.
+  // With the declaration gone, a finished round leaves no pattern to imitate.
+  const callId = `srvtoolu_${result.providerId}_${Date.now().toString(36)}`;
+  const searchToolName = declaredTools?.find(isWebSearchTool)?.name ?? "web_search";
   return {
     ...rest,
     ...(remainingTools !== undefined && remainingTools.length > 0
@@ -201,7 +207,23 @@ export function withServedWebSearch(
     ...(toolChoice === undefined ? {} : { tool_choice: toolChoice }),
     messages: [
       ...request.messages,
-      { role: "user", content: [{ kind: "text", text: formatSearchResults(result) }] },
+      {
+        role: "assistant",
+        content: [
+          {
+            kind: "toolCall",
+            call_id: callId,
+            name: searchToolName,
+            arguments: { query: result.query },
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          { kind: "toolResult", call_id: callId, content: [{ kind: "text", text: formatSearchResults(result) }] },
+        ],
+      },
     ],
   };
 }

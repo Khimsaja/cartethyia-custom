@@ -193,24 +193,27 @@ dbDescribe("web-search fallback dispatch", () => {
     // The search ran on the configured provider, with the caller's query.
     expect(searchAdapter.searches).toEqual(["Coba cari siapa itu risuncode"]);
     // The selected route still answers, now with the results in context. They
-    // arrive as a plain user turn, not a replayed tool round: replaying a
-    // `web_search` call taught the model to answer with raw tool-call syntax
-    // instead of prose.
+    // arrive as a completed tool-call + tool-result round: Claude Code counts
+    // a search by the `web_search_tool_result` block in the response, so
+    // plain user text reported "Did 0 searches" beside a correct answer.
     expect(seen?.model).toBe(world.modelId);
     expect(seen?.tools === undefined || seen.tools.length === 0).toBe(true);
-    const injectedTurn = seen?.messages.at(-1);
-    expect(injectedTurn?.role).toBe("user");
-    const injectedText = injectedTurn?.content.find((part) => part.kind === "text");
-    expect(injectedText !== undefined).toBe(true);
-    if (injectedText?.kind === "text") {
-      expect(injectedText.text).toContain("https://example.com/risuncode");
+    // The round the client sees: an assistant search call answered by its result.
+    const callTurn = seen?.messages.at(-2);
+    const resultTurn = seen?.messages.at(-1);
+    expect(callTurn?.role).toBe("assistant");
+    const call = callTurn?.content.find((part) => part.kind === "toolCall");
+    expect(call !== undefined).toBe(true);
+    expect(resultTurn?.role).toBe("user");
+    const toolResult = resultTurn?.content.find((part) => part.kind === "toolResult");
+    expect(toolResult !== undefined).toBe(true);
+    if (toolResult?.kind === "toolResult") {
+      expect(JSON.stringify(toolResult.content)).toContain("https://example.com/risuncode");
     }
-    // No synthetic assistant tool call is left in the transcript.
-    expect(
-      seen?.messages.some((message) =>
-        message.content.some((part) => part.kind === "toolCall" || part.kind === "toolResult"),
-      ),
-    ).toBe(false);
+    // The round closes on itself: one call, one result, matching ids.
+    if (call?.kind === "toolCall" && toolResult?.kind === "toolResult") {
+      expect(toolResult.call_id).toBe(call.call_id);
+    }
     const body = (await response.json()) as { content: { type: string; text?: string }[] };
     expect(body.content.some((block) => block.text?.includes("risuncode is a developer"))).toBe(true);
   });
