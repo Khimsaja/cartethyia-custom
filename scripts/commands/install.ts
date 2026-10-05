@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, mkdirSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 
@@ -16,6 +16,7 @@ import {
   PROJECT_ROOT,
   readEnvFile,
 } from "../internal/env";
+import { resolveDataDir } from "../../src/persistence/db-mode";
 
 const MIN_BUN_VERSION = "1.4.2";
 
@@ -193,7 +194,22 @@ export async function install(): Promise<void> {
     await updateEnv({ CARTETHYIA_ENCRYPTION_KEY: key });
     env = await loadEnvironment();
   }
-
+  // Database mode first: it decides whether PostgreSQL is needed at all.
+  if (!env.CARTETHYIA_DB_MODE?.trim()) {
+    const answer = await ask("Database mode? lite (embedded, no server) / full (external PostgreSQL) [lite]", "lite");
+    const mode = answer.trim().toLowerCase();
+    if (mode !== "" && mode !== "lite" && mode !== "full") {
+      throw new Error(`Database mode must be lite or full (got "${answer}")`);
+    }
+    await updateEnv({ CARTETHYIA_DB_MODE: mode === "" || mode === "lite" ? "lite" : "full" });
+    env = await loadEnvironment();
+  }
+  const dbMode = env.CARTETHYIA_DB_MODE?.trim() === "full" ? "full" : "lite";
+  if (dbMode === "lite") {
+    const pgliteDir = join(resolveDataDir({ ...process.env, ...env }), "pglite");
+    mkdirSync(pgliteDir, { recursive: true });
+    console.log(`✓ Lite mode: embedded database, no PostgreSQL needed (${pgliteDir})`);
+  }
   // Cross-platform install hints: which local service to start by platform.
   const pgHint =
     platform === "windows"
@@ -203,12 +219,14 @@ export async function install(): Promise<void> {
         : "sudo systemctl start postgresql (or the installed PostgreSQL service)";
 
   // Probe services; surface the hint alongside the connection result.
-  try {
-    await requirePostgres(env);
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    if (msg.includes("PostgreSQL")) console.error(`  Hint: ${pgHint}`);
-    throw error;
+  if (dbMode === "full") {
+    try {
+      await requirePostgres(env);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      if (msg.includes("PostgreSQL")) console.error(`  Hint: ${pgHint}`);
+      throw error;
+    }
   }
   // No Redis question anymore: unset REDIS_URL already means in-memory.
   await requireRedis(env);
