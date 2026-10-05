@@ -52,6 +52,17 @@ async function workbuddyDesktopVersion(response: Response): Promise<string | nul
   }
 }
 
+async function codeBuddyCnVersion(response: Response): Promise<string | null> {
+  try {
+    const data = (await response.json()) as { version?: unknown };
+    if (typeof data.version !== "string") return null;
+    const match = /^\d+\.\d+\.\d+\.\d+/.exec(data.version.trim());
+    return match?.[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function kiroVersion(response: Response): Promise<string | null> {
   const body = await response.text();
   const version =
@@ -59,6 +70,7 @@ async function kiroVersion(response: Response): Promise<string | null> {
     /\bIDE\s+([\d.]+)[^<]*Latest/.exec(body)?.[1];
   return isSemverish(version) ? version : null;
 }
+
 async function antigravityVersion(response: Response): Promise<string | null> {
   const body = await response.text();
   for (const line of body.split(/\r?\n/)) {
@@ -69,7 +81,6 @@ async function antigravityVersion(response: Response): Promise<string | null> {
   }
   return null;
 }
-
 /**
  * GitHub release tag (`v3.14.3` → `3.14.3`). Tags carry the leading `v`
  * by convention while the gateway stamps bare versions, so the prefix is
@@ -143,7 +154,7 @@ const KIRO_NODE_VERSION = "24.18.0";
 export const VERSION_SOURCES = {
   antigravity: {
     key: "antigravity",
-    fallback: "2.17.0",
+    fallback: "2.19.1",
     sources: [
       {
         url: "https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml",
@@ -163,12 +174,12 @@ export const VERSION_SOURCES = {
   },
   opencode: {
     key: "opencode",
-    fallback: "1.18.33",
+    fallback: "1.18.34",
     sources: [{ url: "https://registry.npmjs.org/opencode-ai/latest" }],
   },
   commandcode: {
     key: "commandcode",
-    fallback: "1.73.0",
+    fallback: "1.74.1",
     sources: [{ url: "https://registry.npmjs.org/command-code/latest" }],
   },
   grok: {
@@ -192,12 +203,12 @@ export const VERSION_SOURCES = {
   },
   clineSdk: {
     key: "cline-sdk",
-    fallback: "0.0.88",
+    fallback: "0.0.90",
     sources: [{ url: "https://registry.npmjs.org/@cline/sdk/latest", extract: clineSdkVersion }],
   },
   codex: {
     key: "codex",
-    fallback: "0.159.2",
+    fallback: "0.160.0",
     sources: [{ url: "https://registry.npmjs.org/@openai/codex/latest" }],
   },
   workbuddyClient: {
@@ -216,7 +227,7 @@ export const VERSION_SOURCES = {
   },
   workbuddyCli: {
     key: "workbuddy",
-    fallback: "2.161.0",
+    fallback: "2.161.2",
     sources: [
       { url: "https://registry.npmjs.org/@tencent-ai/codebuddy-code/latest" },
       { url: "https://registry.npmmirror.com/@tencent-ai/codebuddy-code/latest" },
@@ -234,10 +245,22 @@ export const VERSION_SOURCES = {
   },
   codebuddy: {
     key: "codebuddy",
-    fallback: "2.161.0",
+    fallback: "2.161.2",
     sources: [
       { url: "https://registry.npmjs.org/@tencent-ai/codebuddy-code/latest" },
       { url: "https://registry.npmmirror.com/@tencent-ai/codebuddy-code/latest" },
+    ],
+  },
+  codebuddyCn: {
+    key: "codebuddy-cn",
+    fallback: "4.12.1.39217423",
+    sources: [
+      {
+        // Official CN builds are listed by Homebrew's maintained cask feed;
+        // its version points at the current Tencent CN desktop artifact.
+        url: "https://formulae.brew.sh/api/cask/codebuddy-cn.json",
+        extract: codeBuddyCnVersion,
+      },
     ],
   },
   claudeCli: {
@@ -245,7 +268,7 @@ export const VERSION_SOURCES = {
     // Current `@anthropic-ai/claude-code` release, so the billing
     // `cc_version=` suffix and the `claude-cli/` User-Agent stay on what
     // upstream ships.
-    fallback: "2.1.286",
+    fallback: "2.1.289",
     sources: [{ url: "https://registry.npmjs.org/@anthropic-ai/claude-code/latest" }],
   },
   claudeSdk: {
@@ -319,6 +342,7 @@ const resolvers = {
   workbuddyCli: createClientVersionResolver(VERSION_SOURCES.workbuddyCli),
   kimiCli: createClientVersionResolver(VERSION_SOURCES.kimiCli),
   codebuddy: createClientVersionResolver(VERSION_SOURCES.codebuddy),
+  codebuddyCn: createClientVersionResolver(VERSION_SOURCES.codebuddyCn),
   claudeCli: createClientVersionResolver(VERSION_SOURCES.claudeCli),
   claudeSdk: createClientVersionResolver(VERSION_SOURCES.claudeSdk),
   kiro: createClientVersionResolver(VERSION_SOURCES.kiro),
@@ -343,7 +367,7 @@ const PROVIDER_VERSION_RESOLVERS: Readonly<Record<string, ClientVersionResolver>
   commandcode: resolvers.commandcode,
   workbuddy: resolvers.workbuddyClient,
   cb: resolvers.codebuddy,
-  cbcn: resolvers.codebuddy,
+  cbcn: resolvers.codebuddyCn,
   kimi: resolvers.kimiCli,
   kiro: resolvers.kiro,
   anthropic: resolvers.claudeCli,
@@ -434,14 +458,16 @@ export const getKimiCliVersion = accessor("kimiCli").get;
 export const _resetKimiCliVersion = accessor("kimiCli").reset;
 
 export const getCodeBuddyVersion = accessor("codebuddy").get;
+export const getCodeBuddyCnVersion = accessor("codebuddyCn").get;
 export function buildCodeBuddyUserAgent(
   identity: "IDE" | "CLI",
-  version = getCodeBuddyVersion(),
+  version = identity === "CLI" ? getCodeBuddyCnVersion() : getCodeBuddyVersion(),
 ): string {
   return `${identity}/${version} CodeBuddy/${version}`;
 }
 
 export const _resetCodeBuddyVersionCache = accessor("codebuddy").reset;
+export const _resetCodeBuddyCnVersionCache = accessor("codebuddyCn").reset;
 
 export const getClaudeCliVersion = accessor("claudeCli").get;
 export const getClaudeSdkVersion = accessor("claudeSdk").get;

@@ -7,7 +7,7 @@ checking Cartethyia.
 
 All local installs require:
 
-- Bun 1.4.2 or newer;
+- Bun 1.4.0 or newer;
 - a terminal;
 - a writable data directory.
 
