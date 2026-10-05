@@ -5,9 +5,10 @@
  */
 import { GatewayError } from "../transport/gateway-error";
 import { log } from "../observability/logger";
+import { join } from "node:path";
 import { fullSchema } from "./db-handle";
 import type { CartethyiaDatabase, DatabaseHandle } from "./db-handle";
-import { resolveDbMode } from "./db-mode";
+import { resolveDataDir, resolveDbMode } from "./db-mode";
 import {
   applySqlMigrations,
   createPgHandle,
@@ -17,6 +18,11 @@ import {
   requireDatabaseUrl,
   setPoolForTesting,
 } from "./db-pg";
+import {
+  applyPgliteMigrations,
+  buildPgliteHandle,
+  createPgliteClient,
+} from "./db-pglite";
 import {
   MIGRATION_LEDGER_TABLE,
   readMigrationLedgerStatus,
@@ -66,11 +72,24 @@ declare global {
  * Builds the active backend handle once. Async because the embedded backend
  * opens its data dir asynchronously; the pg path builds synchronously inside.
  * Safe to call repeatedly — the first handle wins for the process lifetime.
+ *
+ * Lite boots (open, migrate, handle) in one step: the ledger makes repeat
+ * boots cheap, and a handle without migrated tables behind it is never valid.
  */
 export async function bootDatabase(): Promise<DatabaseHandle> {
   if (globalThis.__cartethyiaHandle) return globalThis.__cartethyiaHandle;
   if (resolveDbMode() === "lite") {
-    throw new Error("CARTETHYIA_DB_MODE=lite is wired up by the PGlite driver");
+    const client = await createPgliteClient(join(resolveDataDir(), "pglite"));
+    try {
+      await applyPgliteMigrations(client);
+    } catch (error) {
+      await client.close();
+      throw error;
+    }
+    const handle = buildPgliteHandle(client);
+    globalThis.__cartethyiaHandle = handle;
+    log.warn("[db] lite mode: embedded PGlite, single process only");
+    return handle;
   }
   const handle = createPgHandle();
   globalThis.__cartethyiaHandle = handle;
@@ -95,10 +114,10 @@ export function getDb(): CartethyiaDatabase {
 export async function ensureMigrated(): Promise<void> {
   if (globalThis.__cartethyiaMigrated) return;
   const handle = await bootDatabase();
-  if (!isPgHandle(handle)) {
-    throw new Error("CARTETHYIA_DB_MODE=lite migrations land with the PGlite driver");
+  // Lite migrates during boot; pg migrates here under its advisory lock.
+  if (isPgHandle(handle)) {
+    await applySqlMigrations(handle.pool);
   }
-  await applySqlMigrations(handle.pool);
   globalThis.__cartethyiaMigrated = true;
 }
 
