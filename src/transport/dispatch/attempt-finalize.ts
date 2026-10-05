@@ -1,4 +1,4 @@
-import { GatewayError, explainGatewayError, publicGatewayErrorDetails } from "../gateway-error";
+import { GatewayError, publicGatewayErrorBody } from "../gateway-error";
 // Attempt completion bookkeeping: one home for everything every dispatch attempt ends with.
 import type { ValidatedOutboundFetch } from "../../providers/provider-registry";
 import { reportAttemptOutcome } from "../../providers/operations/account-health-service";
@@ -94,14 +94,9 @@ function captureDepthMaxBytes(depth: TelemetryPayloadDepth): number {
  */
 export function errorClientResponseBody(error: unknown): string {
   if (error instanceof GatewayError) {
-    return JSON.stringify({
-      error: {
-        origin: error.origin,
-        code: error.code,
-        message: explainGatewayError(error),
-        details: publicGatewayErrorDetails(error),
-      },
-    });
+    // Same serializer the error middleware sends on the wire, so the stored
+    // copy cannot drift from what the client received.
+    return JSON.stringify(publicGatewayErrorBody(error));
   }
   return JSON.stringify({
     error: { origin: "cartethyia", code: "internal_error", message: "Internal server error" },
