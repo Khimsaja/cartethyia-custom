@@ -38,7 +38,15 @@ export const GEMINI_MODELS: readonly ModelDefinition[] = [
   "gemini-2.5-flash",
   "gemini-2.0-flash",
 ].map((id) =>
-  defineModel({ id, endpoint: "/v1beta/models", ctx: 1_000_000, out: 32768, vision: true, reasoning: true }),
+  defineModel({
+    id,
+    endpoint: "/v1beta/models",
+    ctx: 1_000_000,
+    out: 32768,
+    vision: true,
+    reasoning: true,
+    webSearch: true,
+  }),
 );
 
 import type { DiscoveryInput } from "../discovery/discovery-types";
@@ -118,7 +126,23 @@ class GeminiAdapter implements ProviderAdapter {
     const url = geminiModelUrl(this.baseUrl, model, action);
 
     const payload = buildGeminiPayload(request);
-    const outboundFetch: typeof fetch = (context.outbound_fetch as unknown as typeof fetch) ?? this.fetchFn;
+    if (
+      request.tools?.some(
+        (tool) =>
+          tool.name === "web_search" ||
+          tool.name === "web_search_preview",
+      )
+    ) {
+      const tools = Array.isArray(payload.tools)
+        ? [...(payload.tools as Record<string, unknown>[])]
+        : [];
+      if (!tools.some((tool) => isRecord(tool) && isRecord(tool.google_search))) {
+        tools.push({ google_search: {} });
+      }
+      payload.tools = tools;
+    }
+    const outboundFetch: typeof fetch =
+      (context.outbound_fetch as unknown as typeof fetch) ?? this.fetchFn;
 
     const lifecycle = createUpstreamDeadlineLifecycle(context);
 

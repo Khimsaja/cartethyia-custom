@@ -78,7 +78,9 @@ function codexResponsesModel(
     out: outputLimit,
     vision: true,
     reasoning: true,
-    toolCall: true,});
+    toolCall: true,
+    webSearch: true,
+  });
 }
 
 export const CODEX_MODELS: readonly ModelDefinition[] = [
