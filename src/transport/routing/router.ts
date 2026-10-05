@@ -703,12 +703,21 @@ export class RoutingEngine {
     const resolved = safeResolve(requestedModel);
     const comboMap = tid ? snapshot.combos[tid] : undefined;
     const combo = comboMap?.[resolved.model];
+    // Combo members may themselves be aliases or combos (an alias may target
+    // a combo, and a combo may nest another combo). Resolve recursively with
+    // the same depth bound as the alias walk so a member that names a combo
+    // expands to its models instead of matching no candidate and reading as
+    // "model not found" for a route the operator actually defined.
+    const expandMember = (name: string, seen: ReadonlySet<string>): readonly string[] => {
+      if (seen.has(name) || seen.size >= 16) return [];
+      const next = new Set(seen).add(name);
+      const alias = safeResolve(name);
+      const nested = comboMap?.[alias.model];
+      if (!nested) return [alias.model];
+      return nested.members.flatMap((member) => expandMember(member, next));
+    };
     const rawModelIds = combo
-      ? combo.members.flatMap((name) => {
-          const alias = safeResolve(name);
-          const nested = comboMap?.[alias.model];
-          return nested ? nested.members : [alias.model];
-        })
+      ? combo.members.flatMap((name) => expandMember(name, new Set([resolved.model])))
       : [resolved.model];
     const modelIds = [...new Set(rawModelIds)];
     let matching = snapshot.candidates.filter(

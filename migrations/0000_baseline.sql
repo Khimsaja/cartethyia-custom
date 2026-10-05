@@ -127,6 +127,13 @@ CREATE TABLE "network_pools" (
   "last_health_check_at" timestamptz,
   "egress_ip" text,
   "quota_bytes" bigint,
+  "last_speedtest_bytes" integer,
+  "last_speedtest_duration_ms" integer,
+  "last_speedtest_status" text,
+  "last_speedtest_error" text,
+  "last_speedtest_at" timestamptz,
+  "bytes_sent_total" bigint DEFAULT 0 NOT NULL,
+  "bytes_received_total" bigint DEFAULT 0 NOT NULL,
   CONSTRAINT "network_pools_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE cascade
 );
 --> statement-breakpoint

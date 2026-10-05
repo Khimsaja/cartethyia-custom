@@ -356,6 +356,21 @@ export const networkPools = pgTable("network_pools", {
   egressIp: text("egress_ip"),
   /** Operator-set egress allowance in bytes; null means unmetered. */
   quotaBytes: bigint("quota_bytes", { mode: "number" }),
+  /** Last speed-test payload actually transferred, in bytes; null until measured. */
+  lastSpeedtestBytes: integer("last_speedtest_bytes"),
+  /** Wall-clock duration of the last speed-test transfer, in milliseconds. */
+  lastSpeedtestDurationMs: integer("last_speedtest_duration_ms"),
+  /** "ok" | "failed" for the last speed-test; null until measured. */
+  lastSpeedtestStatus: text("last_speedtest_status"),
+  /** Failure message of the last speed-test; null on success or unmeasured. */
+  lastSpeedtestError: text("last_speedtest_error"),
+  /** When the last speed-test ran. */
+  lastSpeedtestAt: timestamp("last_speedtest_at", { withTimezone: true }),
+  /** Metered egress totals, flushed from the in-memory socket counters on
+   * every pool-touching write so the quota bar survives a restart. */
+  bytesSentTotal: bigint("bytes_sent_total", { mode: "number" }).notNull().default(0),
+  /** Metered ingress totals; see `bytesSentTotal`. */
+  bytesReceivedTotal: bigint("bytes_received_total", { mode: "number" }).notNull().default(0),
   },
   (table) => [
     index("network_pools_tenant_id_idx").on(table.tenantId),

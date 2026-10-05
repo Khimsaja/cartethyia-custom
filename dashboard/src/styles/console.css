@@ -1371,6 +1371,23 @@
   container-type: inline-size;
   container-name: rule-row;
 }
+/* Mobile proxy cards: the table's columns (address, load, actions) cannot fit
+ * a phone viewport, so the same pools render as stacked cards instead. The
+ * table stays the desktop surface; both read the same derived view, so they
+ * cannot disagree. */
+.proxy-cards {
+  display: none;
+}
+@media (max-width: 720px) {
+  .proxy-table-scroll {
+    display: none;
+  }
+  .proxy-cards {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+}
 
 .stat-card-detail {
   /* Details can name a pool; a long label must not stretch the card or wrap
