@@ -32,9 +32,9 @@ function hasTransaction(client: unknown): client is PgliteWithTransaction {
   );
 }
 
-/** Opens (creating) the embedded database at `dataDir`. The caller owns `close()`. */
+/** Opens the embedded database at `dataDir`. Filesystem paths are created; URI backends (`memory://`) are used as-is. The caller owns `close()`. */
 export async function createPgliteClient(dataDir: string): Promise<PGlite> {
-  mkdirSync(dataDir, { recursive: true });
+  if (!dataDir.includes("://")) mkdirSync(dataDir, { recursive: true });
   return PGlite.create({ dataDir });
 }
 
