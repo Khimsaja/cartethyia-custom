@@ -63,11 +63,47 @@ function PrivacyPanel(): ReactNode {
                   },
                   {
                     value: "full",
-                    label: "Full — redacted bodies up to 32 MiB, pruned after 15 minutes",
+                    label: "Full — redacted bodies at the depth below, pruned after 15 minutes",
                   },
                   { value: "none", label: "Off — no payload capture" },
                 ]}
               />
+              {settings.telemetryPayloads === "full" ? (
+                <div style={{ marginTop: "8px" }}>
+                  <Select
+                    label="Capture depth"
+                    id="privacy-payload-depth"
+                    value={settings.telemetryPayloadDepth}
+                    onValueChange={(value) =>
+                      mutation.mutate(
+                        {
+                          telemetryPayloadDepth:
+                            value === "high" || value === "full" ? value : "medium",
+                        },
+                        {
+                          onSuccess: () => toast.success("Capture depth updated"),
+                          onError: (error) =>
+                            toast.error(getErrorMessage(error, "Could not update capture depth.")),
+                        },
+                      )
+                    }
+                    options={[
+                      {
+                        value: "medium",
+                        label: "Medium — request pair only, 256 KiB cap (default)",
+                      },
+                      {
+                        value: "high",
+                        label: "High — all bodies up to the configured capture limit",
+                      },
+                      {
+                        value: "full",
+                        label: "Full — all bodies up to 4× the limit, heavy RAM use",
+                      },
+                    ]}
+                  />
+                </div>
+              ) : null}
               {settings.telemetryPayloads === "full" ? (
                 <div
                   role="note"
@@ -81,7 +117,11 @@ function PrivacyPanel(): ReactNode {
                     fontSize: "11px",
                   }}
                 >
-                  <strong style={{ color: "var(--amber)" }}>Full capture may reduce performance.</strong>{" "}
+                  <strong style={{ color: "var(--amber)" }}>
+                    {settings.telemetryPayloadDepth === "full"
+                      ? "Full depth keeps whole bodies and eats serious RAM."
+                      : "Body capture may reduce performance."}
+                  </strong>{" "}
                   Use it only while debugging, then switch back to Metadata.
                 </div>
               ) : null}

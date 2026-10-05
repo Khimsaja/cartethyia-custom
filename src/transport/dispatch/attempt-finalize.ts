@@ -7,9 +7,10 @@ import { classifyUpstreamFailure } from "../failure-policy";
 import type { AdmissionLease } from "../../security/admission/contracts";
 import type { CartethyiaDatabase } from "../../persistence/postgres";
 import { TelemetryPayloadCapture } from "../../observability/payload-capture";
+import { resolveTelemetryPayloadMaxBytes } from "../../config";
 import type { TelemetryBatchBuffer } from "../../observability/telemetry-buffer";
 import { CachedPreferencesReader, DrizzlePreferencesReader } from "../../persistence/tenant-preferences";
-import type { TelemetryPayloadMode } from "../../console/settings/contracts";
+import type { TelemetryPayloadDepth, TelemetryPayloadMode } from "../../console/settings/contracts";
 import type { ProxyRequestOutcome, ProxyRequestState } from "../request/state";
 import { finalizeRequestTelemetry } from "../middleware/error-lifecycle";
 import { log } from "../../observability/logger";
@@ -37,27 +38,41 @@ export function clearConsoleSettingsCacheForTests(): void {
 }
 
 /**
- * Settings-gated payload capture mode. Request-event metadata is always
- * retained; tenants opt into drawer capture through Settings → Privacy:
- * `metadata` keeps only the Proxy→Provider request line, `full` keeps
- * redacted bodies up to the configured capture limit. Fail-closed on error.
+ * Settings-gated payload capture. Request-event metadata is always retained;
+ * tenants opt into drawer capture through Settings → Privacy: `metadata`
+ * keeps only the Proxy→Provider request line, `full` keeps redacted bodies
+ * at the tenant's chosen depth. Fail-closed on error.
  */
-async function resolvePayloadCaptureMode(
+async function resolvePayloadCapture(
   db: CartethyiaDatabase,
   tenantId: string | null,
-): Promise<TelemetryPayloadMode> {
-  if (!tenantId) return "none";
+): Promise<{ mode: TelemetryPayloadMode; depth: TelemetryPayloadDepth }> {
+  if (!tenantId) return { mode: "none", depth: "medium" };
   try {
     const prefs = await preferencesReaderFor(db).readPreferences(tenantId);
     const mode = prefs?.telemetryPayloads;
-    if (mode === "full" || mode === "metadata" || mode === "none") return mode;
-    // Unset preferences default to metadata (Proxy→Provider request line).
-    return "metadata";
+    const depth = prefs?.telemetryPayloadDepth;
+    return {
+      mode: mode === "full" || mode === "metadata" || mode === "none" ? mode : "metadata",
+      depth: depth === "medium" || depth === "high" || depth === "full" ? depth : "medium",
+    };
   } catch {
     // Preference read failure must not invent body capture; metadata is the
     // safe default that still matches Settings → Privacy.
-    return "metadata";
+    return { mode: "metadata", depth: "medium" };
   }
+}
+
+/**
+ * Combined body cap for one capture depth. Medium stays tiny (request pair
+ * only, see below); high uses the configured limit; full quadruples it for
+ * deep debug sessions that need whole bodies. Full is never the silent
+ * default — it eats serious RAM per request.
+ */
+function captureDepthMaxBytes(depth: TelemetryPayloadDepth, configured: number): number {
+  if (depth === "medium") return 256 * 1024;
+  if (depth === "high") return configured;
+  return configured * 4;
 }
 
 export function parseCapturedBody(value: unknown): unknown {
@@ -230,7 +245,7 @@ async function captureTerminalPayload(
 ): Promise<void> {
   if (!tenantId) return;
   try {
-    const mode = await resolvePayloadCaptureMode(db, tenantId);
+    const { mode, depth } = await resolvePayloadCapture(db, tenantId);
     if (mode === "none") return;
     if (mode === "metadata") {
       const providerRequest = providerRequestMetadataOnly(providerCapture?.request ?? null);
@@ -246,7 +261,24 @@ async function captureTerminalPayload(
       });
       return;
     }
+    const maxBytes = captureDepthMaxBytes(depth, resolveTelemetryPayloadMaxBytes());
     const providerRequest = providerCapture?.request ?? null;
+    if (depth === "medium") {
+      // Request pair only: enough to debug routing and translation ("salah
+      // alamat") without retaining response bulk. Small fixed cap.
+      if (providerRequest === null) return;
+      await new TelemetryPayloadCapture(db).capture({
+        tenantId,
+        requestId,
+        requestBody: requestBody ?? null,
+        responseBody: null,
+        providerRequestBody: providerRequest,
+        maxBytes,
+        scope: "tenant",
+        tenantOptIn: true,
+      });
+      return;
+    }
     const providerResponse = await resolvedProviderResponse(providerCapture);
     await new TelemetryPayloadCapture(db).capture({
       tenantId,
@@ -256,6 +288,7 @@ async function captureTerminalPayload(
       ...(clientResponseBody === undefined ? {} : { clientResponseBody: clientResponseBody ?? null }),
       ...(providerRequest === null ? {} : { providerRequestBody: providerRequest }),
       ...(providerResponse === null ? {} : { providerResponseBody: providerResponse }),
+      maxBytes,
       scope: "tenant",
       tenantOptIn: true,
     });

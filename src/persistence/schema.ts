@@ -818,6 +818,15 @@ export interface ConsoleSettingsPreferences {
    * - `none` — no drawer capture (request metadata events still retained)
    */
   telemetryPayloads?: "full" | "metadata" | "none";
+  /**
+   * Capture depth for `full` mode (default `medium` when unset). Each debug
+   * needs different bodies, and the heaviest tier eats serious RAM — so the
+   * depth is a separate opt-in below the mode:
+   * - `medium` — request + translated provider request only, 256 KiB cap
+   * - `high` — all five bodies up to the configured capture limit
+   * - `full` — all five bodies up to 4× the configured capture limit
+   */
+  telemetryPayloadDepth?: "medium" | "high" | "full";
   privacyMode?: "masked" | "full";
   webSearchOrder?: readonly string[];
 }

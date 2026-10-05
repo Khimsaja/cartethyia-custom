@@ -8,12 +8,14 @@ import {
   PONYTAIL_LEVELS,
   RESPONSES_REASONING_SUMMARIES,
   RTK_LEVELS,
+  TELEMETRY_PAYLOAD_DEPTHS,
   TELEMETRY_PAYLOAD_MODES,
   type PonyTailLevel,
   type ResponsesReasoningSummary,
   type RtkLevel,
   type RuntimeSettingsResponse,
   type RuntimeSettingsStore,
+  type TelemetryPayloadDepth,
   type TelemetryPayloadMode,
   type UpdateRuntimeSettingsRequest,
 } from "./contracts";
@@ -49,6 +51,18 @@ function normalizeTelemetryPayloadMode(value: unknown): TelemetryPayloadMode {
   return "metadata";
 }
 
+function normalizeTelemetryPayloadDepth(value: unknown): TelemetryPayloadDepth {
+  if (
+    typeof value === "string" &&
+    (TELEMETRY_PAYLOAD_DEPTHS as readonly string[]).includes(value)
+  ) {
+    return value as TelemetryPayloadDepth;
+  }
+  // Unset depth defaults to medium: request bodies only, small cap. Full
+  // depth is never the silent default — it eats serious RAM per request.
+  return "medium";
+}
+
 function mapRuntimeSettingsRow(row: typeof consoleSettings.$inferSelect | undefined): RuntimeSettingsResponse {
   const updatedAt = row?.updatedAt.toISOString() ?? new Date(0).toISOString();
   const prefs = row?.preferences ?? {};
@@ -60,6 +74,7 @@ function mapRuntimeSettingsRow(row: typeof consoleSettings.$inferSelect | undefi
       ? prefs.responsesReasoningSummary
       : "detailed",
     telemetryPayloads: normalizeTelemetryPayloadMode(prefs.telemetryPayloads),
+    telemetryPayloadDepth: normalizeTelemetryPayloadDepth(prefs.telemetryPayloadDepth),
     privacyMode: prefs.privacyMode === "full" ? "full" : "masked",
     rtkPruneEnabled: prefs.rtkPruneEnabled === true,
     rtkPruneLevel: normalizeRtkLevel(prefs.rtkPruneLevel),
@@ -101,6 +116,7 @@ export class DrizzleRuntimeSettingsStore implements RuntimeSettingsStore {
     if (patch.responsesReasoningSummary !== undefined)
       patchPrefs.responsesReasoningSummary = patch.responsesReasoningSummary;
     if (patch.telemetryPayloads !== undefined) patchPrefs.telemetryPayloads = patch.telemetryPayloads;
+    if (patch.telemetryPayloadDepth !== undefined) patchPrefs.telemetryPayloadDepth = patch.telemetryPayloadDepth;
     if (patch.privacyMode !== undefined) patchPrefs.privacyMode = patch.privacyMode;
     if (patch.rtkPruneEnabled !== undefined) patchPrefs.rtkPruneEnabled = patch.rtkPruneEnabled;
     if (patch.rtkPruneLevel !== undefined) patchPrefs.rtkPruneLevel = patch.rtkPruneLevel;

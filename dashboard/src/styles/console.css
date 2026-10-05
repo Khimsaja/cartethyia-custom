@@ -1889,11 +1889,12 @@
 
 
 /* Settings keeps related controls compact: security/privacy share the first
-   row, while the wider backup surface spans the full grid below. */
+   row at equal height, while the wider backup surface spans the full grid
+   below. */
 .settings-column {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  align-items: start;
+  align-items: stretch;
   gap: 16px;
   width: 100%;
   min-width: 0;
