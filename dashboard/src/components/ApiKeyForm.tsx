@@ -1017,7 +1017,7 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose }: KeyFormProps
         <Button variant="secondary" size="sm" onClick={onClose} disabled={busy}>
           Cancel
         </Button>
-        <Button size="sm" disabled={busy || (mode === "create" && !label.trim())} onClick={submit}>
+        <Button variant="primary" size="sm" disabled={busy || (mode === "create" && !label.trim())} onClick={submit}>
           {busy ? "Saving…" : mode === "create" ? "Create API key" : "Save changes"}
         </Button>
       </div>

@@ -1384,7 +1384,8 @@
   }
   .proxy-cards {
     display: grid;
-    grid-template-columns: minmax(0, 1fr);
+    /* Phones stack one card per row; wider tablets fit two side by side. */
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
     gap: 12px;
   }
 }

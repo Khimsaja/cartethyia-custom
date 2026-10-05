@@ -497,8 +497,7 @@ function CustomProviderCard({ customProvider }: { customProvider: ProviderRespon
               Cancel
             </Button>
             <Button
-              variant="primary"
-              style={{ background: "var(--red)", borderColor: "var(--red)" }}
+              variant="danger"
               onClick={() => {
                 deleteMutation.mutate(customProvider.providerId, {
                   onSuccess: () => setDeleteOpen(false),

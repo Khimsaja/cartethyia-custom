@@ -305,8 +305,7 @@ function AliasesSection(): ReactNode {
               Cancel
             </Button>
             <Button
-              variant="primary"
-              style={{ background: "var(--red)", borderColor: "var(--red)" }}
+              variant="danger"
               onClick={() => {
                 if (deleteConfirm) {
                   deleteMutation.mutate(deleteConfirm.id, {
@@ -755,8 +754,7 @@ function CombosSection(): ReactNode {
               Cancel
             </Button>
             <Button
-              variant="primary"
-              style={{ background: "var(--red)", borderColor: "var(--red)" }}
+              variant="danger"
               onClick={() => {
                 if (deleteConfirm) {
                   deleteMutation.mutate(deleteConfirm.id, {

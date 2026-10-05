@@ -617,7 +617,10 @@ function ProxySummaryTiles({ pools }: { readonly pools: readonly NetworkPoolResp
     return { used, allowance };
   }, [pools, byId, live]);
   return (
-    <div className="metric-grid" style={{ marginBottom: "14px" }}>
+    <div
+      className="metric-grid"
+      style={{ marginBottom: "14px", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))" }}
+    >
       <StatCard
         label="Enabled pool"
         value={String(summary.active)}
@@ -1861,27 +1864,20 @@ export default function Proxy(): ReactNode {
                   Export
                 </Button>
                 <Button
+                  variant="secondary"
                   size="sm"
                   disabled={selectedIds.size === 0 || updatePool.isPending}
                   icon={<Power size={12} />}
                   onClick={() => void enableSelected()}
-                  style={{
-                    background: "var(--green-soft)",
-                    color: "var(--green)",
-                    border: "1px solid color-mix(in srgb, var(--green) 35%, transparent)",
-                  }}
                 >
                   Enable selected
                 </Button>
                 <Button
+                  variant="secondary"
                   size="sm"
                   disabled={selectedIds.size === 0 || updatePool.isPending}
                   icon={<PowerOff size={12} />}
                   onClick={() => void disableSelected()}
-                  style={{
-                    color: "var(--orange)",
-                    border: "1px solid color-mix(in srgb, var(--orange) 35%, transparent)",
-                  }}
                 >
                   Disable selected
                 </Button>
