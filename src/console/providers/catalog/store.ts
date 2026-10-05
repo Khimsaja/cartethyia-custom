@@ -12,7 +12,8 @@ import { encryptCredential, hashSecret } from "../../../security/crypto";
 import type { TelemetryBatchBuffer } from "../../../observability/telemetry-buffer";
 import { gatewayErrorSql } from "../../../observability/telemetry-status";
 import type { BundledProviderCatalog } from "../../../providers/operations/provider-catalog-service";
-import { validateCompatibilityProfile, type AccountInflightReading, type ByokConnectionTestRequest, type ByokConnectionTestResult, type CreateProviderAccountRequest, type ModelCatalogEntry, type ProbeAllAccountsResult, type ProbeAllModelsResult, type ProbeModelRequest, type ProbeModelResult, type ProviderAccountResponse, type ProviderAccountTokenUsage, type ProviderCatalogStore, type ProviderRecord, type SetModelEnabledRequest, type UpdateProviderAccountRequest } from "./contracts";
+import type { AccountInflightReading, ByokConnectionTestRequest, ByokConnectionTestResult, CreateProviderAccountRequest, CredentialMode, ModelCatalogEntry, ProbeAllAccountsResult, ProbeAllModelsResult, ProbeModelRequest, ProbeModelResult, ProviderAccountResponse, ProviderAccountTokenUsage, ProviderCatalogStore, ProviderRecord, SetModelEnabledRequest, UpdateProviderAccountRequest } from "./contracts";
+import { validateCompatibilityProfile } from "./contracts";
 import { ProviderProbingService, type ProbeOutboundResolver } from "../../../providers/discovery/probing-service";
 import { resolveManualModelMetadata } from "../../../providers/model-definition";
 import { isUniqueViolation } from "../../../persistence/postgres";
@@ -50,6 +51,21 @@ function parseExpiry(value: unknown): Date | undefined {
   }
   return undefined;
 }
+function parseJwtCredential(raw: string): { readonly expiresAt?: Date } | undefined {
+  const segments = raw.trim().split(".");
+  if (segments.length !== 3) return undefined;
+  try {
+    const payload = JSON.parse(
+      Buffer.from(segments[1] as string, "base64url").toString("utf8"),
+    ) as unknown;
+    if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+    const exp = (payload as Record<string, unknown>)["exp"];
+    const expiresAt = parseExpiry(exp);
+    return expiresAt === undefined ? {} : { expiresAt };
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Splits a pasted OAuth credential into its access token, refresh token, and
@@ -77,7 +93,12 @@ export function parsePastedOAuthCredential(raw: string): {
   }
   if (record === undefined) {
     // Bare token: it is the access token, and there is no refresh token.
-    return { accessToken: raw, refreshToken: raw, expiresAt: undefined };
+    const jwt = parseJwtCredential(raw);
+    return {
+      accessToken: raw,
+      refreshToken: raw,
+      expiresAt: jwt?.expiresAt,
+    };
   }
   // A nested `data` object is unwrapped the same way the dashboard's parser does.
   const nested =
@@ -92,13 +113,14 @@ export function parsePastedOAuthCredential(raw: string): {
     firstString(record, OAUTH_REFRESH_FIELDS) ??
     (nested ? firstString(nested, OAUTH_REFRESH_FIELDS) : undefined) ??
     accessToken;
-  const expiresAt = parseExpiry(
-    record["expiresAt"] ??
-      record["expires_at"] ??
-      (nested ? (nested["expiresAt"] ?? nested["expires_at"]) : undefined) ??
-      record["expires"] ??
-      (nested ? nested["expires"] : undefined),
-  );
+  const expiresAt =
+    parseExpiry(
+      record["expiresAt"] ??
+        record["expires_at"] ??
+        (nested ? (nested["expiresAt"] ?? nested["expires_at"]) : undefined) ??
+        record["expires"] ??
+        (nested ? nested["expires"] : undefined),
+    ) ?? parseJwtCredential(accessToken)?.expiresAt;
   return { accessToken, refreshToken, expiresAt };
 }
 
@@ -835,6 +857,9 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
       return await this.db.transaction(async (tx) => {
         let effectiveSecret = request.secret;
         let effectiveCredentialKind = request.credentialKind;
+        const requestedCredentialMode: CredentialMode = request.credentialMode ?? "auto";
+        let effectiveCredentialMode: CredentialMode = requestedCredentialMode;
+        let tokenExpiresAt: Date | undefined;
         let oauthRefreshCiphertext: Buffer | undefined;
         let oauthExpiresAt: Date | undefined;
         let oauthHasRefreshToken = false;
@@ -865,14 +890,40 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
           } else {
             const parts = parsePastedOAuthCredential(trimmed);
             const hasRefreshToken = parts.refreshToken !== parts.accessToken;
-            if (request.credentialKind === "oauth" || hasRefreshToken) {
+            const parsedJwt =
+              requestedCredentialMode === "api_key"
+                ? undefined
+                : parseJwtCredential(parts.accessToken);
+            if (requestedCredentialMode === "jwt" && parsedJwt === undefined) {
+              throw new ConsoleDomainError(
+                "invalid_request",
+                400,
+                "credentialMode jwt requires a valid three-part JWT",
+              );
+            }
+            if (requestedCredentialMode === "api_key") {
+              effectiveSecret = parts.accessToken;
+              effectiveCredentialKind = "api_key";
+              effectiveCredentialMode = "api_key";
+            } else if (
+              parsedJwt !== undefined &&
+              (requestedCredentialMode === "jwt" || !hasRefreshToken)
+            ) {
+              effectiveSecret = parts.accessToken;
+              effectiveCredentialKind = "api_key";
+              effectiveCredentialMode = "jwt";
+              tokenExpiresAt = parsedJwt.expiresAt;
+            } else if (request.credentialKind === "oauth" || hasRefreshToken) {
               effectiveSecret = parts.accessToken;
               effectiveCredentialKind = hasRefreshToken ? "oauth" : "api_key";
+              effectiveCredentialMode = hasRefreshToken ? "auto" : "api_key";
               if (hasRefreshToken) {
                 oauthRefreshCiphertext = encryptCredential(parts.refreshToken);
                 oauthHasRefreshToken = true;
               }
               oauthExpiresAt = parts.expiresAt;
+            } else {
+              effectiveCredentialMode = "api_key";
             }
           }
         }
@@ -883,6 +934,11 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
           effectiveCredentialKind === "none" || effectiveSecret.length === 0
             ? undefined
             : hashSecret(effectiveSecret);
+        const accountAuthState = {
+          ...(request.authState ?? {}),
+          credentialMode: effectiveCredentialMode,
+          ...(tokenExpiresAt === undefined ? {} : { tokenExpiresAt: tokenExpiresAt.toISOString() }),
+        };
         const nextSortIndex = await this.nextAccountSortIndex(tx, providerId, tenantId);
         const rows = await tx
           .insert(providerAccounts)
@@ -895,7 +951,7 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
             ...(credentialFingerprint ? { credentialFingerprint } : {}),
             credentialKind: effectiveCredentialKind,
             status: "active",
-            ...(request.authState === undefined ? {} : { authState: request.authState }),
+            authState: accountAuthState,
             // An OAuth account pasted without a refresh token is a *static*
             // token: the pasted value is a bearer token used exactly as issued
             // and there is no refresh grant to run. Flag it as static so the
@@ -903,7 +959,7 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
             // "re-login required" — the token is still valid and dispatchable —
             // and so the refresh sweep skips it instead of retrying a refresh
             // that can never succeed.
-            ...(effectiveCredentialKind === "oauth" && !oauthHasRefreshToken
+            ...(effectiveCredentialKind === "oauth" && !oauthHasRefreshToken || effectiveCredentialMode === "jwt"
               ? { staticToken: true }
               : {}),
           })
@@ -1024,12 +1080,25 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
       readonly inflight?: number | undefined;
     },
   ): ProviderAccountResponse {
+    const authState =
+      row.authState !== null && typeof row.authState === "object" && !Array.isArray(row.authState)
+        ? (row.authState as Record<string, unknown>)
+        : undefined;
+    const rawCredentialMode = authState?.["credentialMode"];
+    const credentialMode: CredentialMode | undefined =
+      rawCredentialMode === "auto" || rawCredentialMode === "jwt" || rawCredentialMode === "api_key"
+        ? rawCredentialMode
+        : undefined;
+    const tokenExpiresAt =
+      typeof authState?.["tokenExpiresAt"] === "string" ? authState["tokenExpiresAt"] : undefined;
     return {
       id: row.id,
       providerId: row.providerId,
       tenantId: row.tenantId,
       label: row.label,
       credentialKind: row.credentialKind,
+      ...(credentialMode === undefined ? {} : { credentialMode }),
+      ...(tokenExpiresAt === undefined ? {} : { tokenExpiresAt }),
       status: row.status,
       ...(usage.inflight === undefined ? {} : { inflight: usage.inflight }),
       usageToday: usage.today,

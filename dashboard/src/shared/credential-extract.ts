@@ -1,5 +1,5 @@
 /**
- * Auto-detects credential kind (api_key vs oauth), extracts the actual
+ * Auto-detects credential kind (api_key, JWT, or OAuth), extracts the actual
  * secret value, and — for multi-credential pastes — splits a batch paste
  * (JSON array, newline-delimited JSON exports, or newline-delimited plain
  * tokens) into individually named entries. Mirrors the paste-detection and
@@ -121,6 +121,26 @@ function oauthShapeFromObject(obj: Record<string, unknown>): boolean {
   const nested = nestedRecord(obj);
   return nested ? hasShape(nested) : false;
 }
+function decodeJwtPayload(raw: string): Record<string, unknown> | undefined {
+  const segments = raw.trim().split(".");
+  if (segments.length !== 3) return undefined;
+  try {
+    const encoded = (segments[1] as string).replaceAll("-", "+").replaceAll("_", "/");
+    const padded = encoded.padEnd(encoded.length + ((4 - (encoded.length % 4)) % 4), "=");
+    const parsed: unknown = JSON.parse(atob(padded));
+    return asRecord(parsed);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Returns the JWT `exp` claim as an ISO timestamp for account-card display. */
+export function jwtExpiresAt(raw: string): string | undefined {
+  const exp = decodeJwtPayload(raw)?.["exp"];
+  if (typeof exp !== "number" || !Number.isFinite(exp)) return undefined;
+  const date = new Date(exp * 1000);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : undefined;
+}
 
 function parseKeyValueLines(text: string): Record<string, unknown> | undefined {
   const result: Record<string, unknown> = {};
@@ -158,18 +178,18 @@ export function extractCredentialFromPaste(raw: string): ExtractedCredential {
   return extracted ?? { value: trimmed, extracted: false };
 }
 
-export type DetectedCredentialKind = "api_key" | "oauth";
+export type DetectedCredentialKind = "api_key" | "oauth" | "jwt";
 
 /**
- * Auto-detects whether pasted text is an OAuth export (JSON containing
- * refresh/expiry-shaped fields) or a plain API key. Defaults to "api_key"
- * for anything that isn't a recognizable OAuth JSON shape.
+ * Auto-detects OAuth exports, JWTs, or opaque API keys. Refresh-token fields
+ * win over JWT detection because a refreshable export is an OAuth credential.
  */
 export function detectCredentialKind(raw: string): DetectedCredentialKind {
   const trimmed = raw.trim();
   const json = asRecord(parsedJson(trimmed)) ?? parseKeyValueLines(trimmed);
-  if (!json) return "api_key";
-  return oauthShapeFromObject(json) ? "oauth" : "api_key";
+  if (json && oauthShapeFromObject(json)) return "oauth";
+  const extracted = json ? extractFromObject(json)?.value : undefined;
+  return decodeJwtPayload(extracted ?? trimmed) === undefined ? "api_key" : "jwt";
 }
 
 export interface ParsedCredentialEntry {
@@ -269,15 +289,18 @@ function entryFromObject(obj: Record<string, unknown>): ParsedCredentialEntry {
         (typeof accessToken === "string" && detectCredentialKind(accessToken) === "oauth"));
     return {
       value: accessToken,
-      // An exported OAuth row without a refresh token is an access-only static
-      // credential, even if the old row was labelled `oauth`.
+      // An exported row's persisted credential kind is authoritative. An
+      // `api_key` export stays an API key even when its string happens to look
+      // like a refresh-shaped JSON wrapper.
       kind: refreshable ? "oauth" : "api_key",
       ...(label ? { identity: label } : {}),
     };
   }
-  const kind: DetectedCredentialKind = oauthShapeFromObject(obj) ? "oauth" : "api_key";
-  const value =
-    kind === "oauth" ? JSON.stringify(obj) : (extractFromObject(obj)?.value ?? JSON.stringify(obj));
+  const extracted = extractFromObject(obj);
+  const kind: DetectedCredentialKind = oauthShapeFromObject(obj)
+    ? "oauth"
+    : detectCredentialKind(extracted?.value ?? JSON.stringify(obj));
+  const value = kind === "oauth" ? JSON.stringify(obj) : (extracted?.value ?? JSON.stringify(obj));
   const identity = identityFromObject(obj);
   return identity ? { value, kind, identity } : { value, kind };
 }

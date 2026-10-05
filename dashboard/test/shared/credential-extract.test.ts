@@ -26,6 +26,7 @@ import {
   assignAccountNames,
   detectCredentialKind,
   extractCredentialFromPaste,
+  jwtExpiresAt,
   parseCredentialBatch,
 } from "../../src/shared/credential-extract";
 
@@ -158,10 +159,15 @@ describe("extractCredentialFromPaste", () => {
 
 describe("detectCredentialKind", () => {
   test("a plain API key is detected as api_key", () => {
-    // The default for anything that is not a recognisable OAuth shape.
     expect(detectCredentialKind("sk-ant-EXAMPLE")).toBe("api_key");
     expect(detectCredentialKind("")).toBe("api_key");
     expect(detectCredentialKind("eyJhbGciOiJIUzI1NiJ9.payload.sig")).toBe("api_key");
+  });
+
+  test("a decodable JWT is detected separately and exposes exp", () => {
+    const jwt = "eyJhbGciOiJIUzUxMiJ9.eyJleHAiOjE4MjIyMzEwMzZ9.signature";
+    expect(detectCredentialKind(jwt)).toBe("jwt");
+    expect(jwtExpiresAt(jwt)).toBe("2027-09-29T15:17:16.000Z");
   });
 
   test("an OAuth shape is detected from a refresh field", () => {

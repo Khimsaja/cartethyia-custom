@@ -28,7 +28,7 @@ import {
   type CompatibilityProfile,
 } from "../../../providers/provider-metadata";
 import type { AccountHealthEventRecord } from "../../../providers/operations/account-health-service";
-import { PROVIDER_READ_SCOPES, PROVIDER_WRITE_SCOPES } from "./contracts";
+import { CREDENTIAL_MODES, PROVIDER_READ_SCOPES, PROVIDER_WRITE_SCOPES } from "./contracts";
 import {
   isWireFamily,
   validateCompatibilityProfile,
@@ -400,6 +400,16 @@ export function createProviderCatalogOperations(config: ProviderCatalogConfig) {
             "invalid_request",
             400,
             "credentialKind must be api_key, oauth, or none",
+          );
+        }
+        if (
+          request.credentialMode !== undefined &&
+          !(CREDENTIAL_MODES as readonly string[]).includes(request.credentialMode)
+        ) {
+          throw new ConsoleDomainError(
+            "invalid_request",
+            400,
+            "credentialMode must be auto, jwt, or api_key",
           );
         }
         const created = await config.store.createAccount(

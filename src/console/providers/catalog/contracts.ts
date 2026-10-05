@@ -26,6 +26,9 @@ export const CREDENTIAL_KINDS = ["api_key", "oauth", "none"] as const;
 
 /** One credential kind. */
 export type CredentialKind = (typeof CREDENTIAL_KINDS)[number];
+/** Operator-facing credential detection override. */
+export const CREDENTIAL_MODES = ["auto", "jwt", "api_key"] as const;
+export type CredentialMode = (typeof CREDENTIAL_MODES)[number];
 export const PROVIDER_ROUTING_MAX_INFLIGHT_BOUNDS = { min: 1, max: 10_000 } as const;
 
 /**
@@ -359,6 +362,7 @@ export interface SetModelEnabledRequest {
 export interface CreateProviderAccountRequest {
   label?: string;
   credentialKind: CredentialKind;
+  credentialMode?: CredentialMode;
   secret: string;
   /**
    * Non-secret upstream auth configuration for this account — auth method,
@@ -403,6 +407,8 @@ export interface ProviderAccountResponse {
   tenantId: string | null;
   label: string;
   credentialKind: CredentialKind;
+  credentialMode?: CredentialMode;
+  tokenExpiresAt?: string;
   status: string;
   /** Live routing admission count for this request path; absent when unavailable. */
   inflight?: number;
