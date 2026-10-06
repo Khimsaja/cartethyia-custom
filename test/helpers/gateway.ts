@@ -21,6 +21,7 @@
  */
 import { createGatewayApp } from "../../src/app";
 import type { App } from "../../src/app";
+import { createDefaultProviderRegistry } from "../../src/providers/default-registry";
 import type { CartethyiaDatabase } from "../../src/persistence/postgres";
 import { getDb } from "../../src/persistence/postgres";
 import type { ReadinessCheckResult } from "../../src/persistence/readiness";
@@ -414,6 +415,23 @@ export async function createTestGateway(
     oauthRefreshService: {} as never,
     shutdownCoordinator,
     resolvePeerAddress: () => TEST_PEER_ADDRESS,
+    ...(options.console === false
+      ? {}
+      : {
+          consoleApi: {
+            db,
+            accessResolver: () => undefined,
+            routeSnapshotService: snapshotService,
+            poolSelector: new NetworkPoolSelector(undefined),
+            telemetryBuffer,
+            providerRegistry: createDefaultProviderRegistry(),
+            bundledModelCatalog: { modelsByProvider: new Map() },
+            networkBindingFactory,
+            redis: undefined,
+            oauthRefreshService: {} as never,
+            admissionService,
+          },
+        }),
     ...(options.maxBodyBytes === undefined ? {} : { maxBodyBytes: options.maxBodyBytes }),
     ...(options.requestDeadlineMs === undefined
       ? {}

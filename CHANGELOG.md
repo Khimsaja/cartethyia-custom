@@ -1,5 +1,15 @@
 ## Unreleased
 
+- `search:invoke` is now revocable. Unchecking it on an API key used to be
+  undone on the next read: `createAccessDecision` re-granted the scope to any
+  key holding `routing:invoke`, so no key could ever hold routing without
+  search. Migration `0040` writes the grant onto the rows that were receiving
+  it implicitly, and the implicit grant is removed.
+- A tenant API key can read its own request telemetry for remote debugging: a
+  key holding `dashboard:read` reaches `GET /console/api/system/usage/requests`
+  and `GET /console/api/telemetry/events` with `Authorization: Bearer <key>`.
+  This worked before but was untested, so a change to console auth could have
+  removed it silently; it is now pinned by regression tests.
 - Web-search requests from chat clients (Claude Code, Codex CLI) now route
   through the selected model first: a route whose *provider* serves hosted
   search keeps its native tool, and a route that cannot serve it runs the
