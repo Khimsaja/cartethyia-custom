@@ -1,4 +1,3 @@
-import { redactTelemetryValue } from "./redaction";
 import type { CartethyiaDatabase } from "../persistence/postgres";
 import { DrizzleTelemetryStore } from "../persistence/telemetry-store";
 import { prunePayloadFrames, writePayloadFrame } from "./payload-store";
@@ -115,14 +114,11 @@ export function buildPayloadRecord(
   maxBytes = resolveTelemetryPayloadMaxBytes(),
 ): Omit<StoredPayload, "id"> {
   const expiresAt = new Date(now.getTime() + payloadRetentionMs());
-  const requestBody = redactTelemetryValue(input.requestBody);
-  const responseBody = redactTelemetryValue(input.responseBody);
-  const clientResponseBody =
-    input.clientResponseBody === undefined ? undefined : redactTelemetryValue(input.clientResponseBody);
-  const providerRequestBody =
-    input.providerRequestBody === undefined ? undefined : redactTelemetryValue(input.providerRequestBody);
-  const providerResponseBody =
-    input.providerResponseBody === undefined ? undefined : redactTelemetryValue(input.providerResponseBody);
+  const requestBody = input.requestBody;
+  const responseBody = input.responseBody;
+  const clientResponseBody = input.clientResponseBody;
+  const providerRequestBody = input.providerRequestBody;
+  const providerResponseBody = input.providerResponseBody;
   // Serialize each body exactly once: the text is both measured and stored,
   // so the hot path pays one JSON.stringify per body instead of five.
   const bodies = [requestBody, responseBody, clientResponseBody, providerRequestBody, providerResponseBody];
