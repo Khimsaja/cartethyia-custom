@@ -71,40 +71,6 @@ function safeHeaderValue(value: string | undefined): string | undefined {
   return value;
 }
 
-/** Maps Node's platform identifier to the Stainless wire value. */
-export function mapStainlessOs(platform: string): string {
-  switch (platform.toLowerCase()) {
-    case "darwin":
-      return "MacOS";
-    case "windows":
-    case "win32":
-      return "Windows";
-    case "linux":
-      return "Linux";
-    case "freebsd":
-      return "FreeBSD";
-    default:
-      return `Other::${platform.toLowerCase()}`;
-  }
-}
-
-/** Maps Node's architecture identifier to the Stainless wire value. */
-export function mapStainlessArch(arch: string): string {
-  switch (arch.toLowerCase()) {
-    case "amd64":
-    case "x64":
-      return "x64";
-    case "arm64":
-    case "aarch64":
-      return "arm64";
-    case "386":
-    case "x86":
-    case "ia32":
-      return "x86";
-    default:
-      return `other::${arch.toLowerCase()}`;
-  }
-}
 
 const OAUTH_AUTH_BETA = "oauth-2025-04-20";
 const INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14";
