@@ -11,6 +11,10 @@ import {
   type ClientVersionResolver,
   type ClientVersionSnapshot,
 } from "./client-version-resolver";
+import {
+  buildGrokAuthUserAgent as buildGrokAuthUserAgentString,
+  buildGrokShellUserAgent,
+} from "./cli-platform";
 
 async function qoderVersion(response: Response): Promise<string | null> {
   try {
@@ -426,11 +430,11 @@ export const getGrokVersion = accessor("grok").get;
 export const _resetGrokVersionCache = accessor("grok").reset;
 
 export function buildGrokUserAgent(version = getGrokVersion()): string {
-  return `grok-shell/${version} (linux; x86_64)`;
+  return buildGrokShellUserAgent(version);
 }
 
 export function buildGrokAuthUserAgent(version = getGrokVersion()): string {
-  return `grok-pager/${version} grok-shell/${version} (linux; x86_64)`;
+  return buildGrokAuthUserAgentString(version);
 }
 
 
