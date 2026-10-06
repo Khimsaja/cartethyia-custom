@@ -74,8 +74,14 @@ function AliasesSection(): ReactNode {
     if (!aliasName.trim() || !targetModel.trim()) return;
 
     if (editingAlias) {
+      // Both fields are editable now: the alias name rides along with the
+      // target, and the backend cascades a rename through alias chains and
+      // combo members that referenced the old name.
       updateMutation.mutate(
-        { id: editingAlias.id, request: { targetModel: targetModel.trim() } },
+        {
+          id: editingAlias.id,
+          request: { alias: aliasName.trim(), targetModel: targetModel.trim() },
+        },
         {
           onSuccess: () => {
             setDialogOpen(false);
@@ -238,7 +244,6 @@ function AliasesSection(): ReactNode {
             value={aliasName}
             onChange={(e) => setAliasName(e.target.value)}
             placeholder="e.g. fast, sonnet, smart"
-            disabled={Boolean(editingAlias)}
             required
           />
           <Inline gap="8px" align="flex-end">
