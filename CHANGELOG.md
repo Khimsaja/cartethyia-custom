@@ -1,5 +1,13 @@
 ## Unreleased
 
+- A buddy-family channel rejection (`400 · 11128`, "Illegal API invocation
+  from an unapproved channel") now parks the account for 6 h instead of
+  leaving it in rotation. It is account-wide and repeats on every invocation,
+  but it used to classify as `unknown` with `mutates=false`, so the account
+  kept failing and — every account failing the same way — the whole pool
+  looked dead with nothing ever parked, so routing never moved to the next
+  account. A suspended account ("Request illegal: Account Suspended.") is
+  matched the same way.
 - Reverted: the buddy family keeps its variant's fixed leading system prompt.
   Replacing it with the caller's system text made CodeBuddy (`cb`) reject every
   request with `400 · 11128 — Illegal API invocation from an unapproved
