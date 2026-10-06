@@ -4,6 +4,7 @@ import { HEADER_CONTROL as CONTROL_CHARACTERS } from "../../../security/outbound
 import { filterClaudeCustomHeaders } from "../claude-messages";
 import { CLAUDE_CODE_SDK_VERSION, CLAUDE_CODE_VERSION } from "./claude-fingerprint";
 import { assertAnthropicBetaNegotiation, negotiateAnthropicBetas, parseAnthropicBeta, type AnthropicBetaInput, type AnthropicBetaNegotiation, type AnthropicBetaUnsupportedPolicy } from "./claude-betas";
+import { stainlessArch, stainlessOs } from "../../operations/cli-platform";
 
 function invalidHeader(
   message: string,
@@ -228,9 +229,9 @@ function standardClaudeHeaders(
     ...(inboundSessionId === undefined
       ? {}
       : { "X-Claude-Code-Session-Id": inboundSessionId }),
-    "X-Stainless-Arch": mapStainlessArch(process.arch),
+    "X-Stainless-Arch": stainlessArch(),
     "X-Stainless-Lang": "js",
-    "X-Stainless-OS": mapStainlessOs(process.platform),
+    "X-Stainless-OS": stainlessOs(),
     "X-Stainless-Package-Version": options.sdk_version ?? CLAUDE_CODE_SDK_VERSION,
     "X-Stainless-Runtime": "node",
     "X-Stainless-Runtime-Version": "v26.3.0",

@@ -13,6 +13,7 @@ import { parseQoderOAuthState } from "./qoder-oauth";
 import { defineModel } from "../model-definition";
 import { getQoderVersion } from "../operations/client-versions";
 import { abortGatewayError, createUpstreamDeadlineLifecycle } from "../operations/upstream-deadline";
+import { qoderMachineOs } from "../operations/cli-platform";
 
 interface QoderModeProfile {
   readonly chatUrl: string;
@@ -232,7 +233,7 @@ function qoderBuildCosyHeaders(
     authorization: `Bearer COSY.${payload}.${signature}`,
     "cosy-data-policy": "agree",
     "cosy-machinetype": "5",
-    "cosy-machineos": "x86_64_windows",
+    "cosy-machineos": qoderMachineOs(),
     "cosy-clienttype": "5",
     "cosy-date": date,
     "cosy-user": auth.userId,

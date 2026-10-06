@@ -120,3 +120,91 @@ export function buildGrokAuthUserAgent(version: string, platform = cliPlatform()
   const suffix = buildGrokShellUserAgent(version, platform);
   return `grok-pager/${version} ${suffix}`;
 }
+
+/**
+ * Anthropic Stainless OS value — the vocabulary `X-Stainless-OS` uses.
+ * `MacOS` here, not `Mac OS`: Stainless spells it without the space.
+ */
+const STAINLESS_OS: Record<CliPlatformName, string> = {
+  macos: "MacOS",
+  linux: "Linux",
+  windows: "Windows",
+};
+
+/** Anthropic Stainless architecture value (`X-Stainless-Arch`). */
+const STAINLESS_ARCH: Record<CliPlatformName, string> = {
+  macos: "arm64",
+  linux: "x64",
+  windows: "x64",
+};
+
+/**
+ * Kimi's `X-Msh-Device-Model`: a "<OS> <release> <arch>" triple built from
+ * whatever the host reports. Real Kimi CLI traffic on a Mac reads
+ * `macOS <darwin version> arm64`, so the release is rendered per platform
+ * rather than read off the host.
+ */
+const KIMI_DEVICE_MODEL: Record<CliPlatformName, { readonly os: string; readonly release: string; readonly arch: string }> = {
+  macos: { os: "macOS", release: "24.6.0", arch: "arm64" },
+  linux: { os: "Linux", release: "6.8.0", arch: "x64" },
+  windows: { os: "Windows", release: "10.0.22631", arch: "x64" },
+};
+
+/** Kimi's `X-Msh-Os-Version`: the human-facing OS version string. */
+const KIMI_OS_VERSION: Record<CliPlatformName, string> = {
+  macos: "macOS 15.6",
+  linux: "Linux 6.8.0",
+  windows: "Windows 10.0.22631",
+};
+
+/**
+ * Kimi's `X-Msh-Device-Name`, i.e. the hostname.
+ *
+ * Spoofed along with everything else: a gateway's hostname is assigned by the
+ * VPS provider and routinely reads `vps-a1b2c3` or `srv-04`, which identifies
+ * the deployment far more sharply than an OS string does. Per-account
+ * distinction is `X-Msh-Device-Id`'s job, not the hostname's.
+ */
+const KIMI_DEVICE_NAME: Record<CliPlatformName, string> = {
+  macos: "MacBook-Pro.local",
+  linux: "localhost",
+  windows: "DESKTOP-9QF2KA1",
+};
+
+/** Qoder's `cosy-machineos`: "<arch>_<os>". */
+const QODER_MACHINE_OS: Record<CliPlatformName, string> = {
+  macos: "aarch64_macos",
+  linux: "x86_64_linux",
+  windows: "x86_64_windows",
+};
+
+/** The Anthropic Stainless OS value for the presented platform. */
+export function stainlessOs(platform: CliPlatformName = cliPlatform()): string {
+  return STAINLESS_OS[platform];
+}
+
+/** The Anthropic Stainless architecture value for the presented platform. */
+export function stainlessArch(platform: CliPlatformName = cliPlatform()): string {
+  return STAINLESS_ARCH[platform];
+}
+
+/** Kimi's device-model triple for the presented platform. */
+export function kimiDeviceModel(platform: CliPlatformName = cliPlatform()): string {
+  const model = KIMI_DEVICE_MODEL[platform];
+  return [model.os, model.release, model.arch].join(" ");
+}
+
+/** Kimi's OS-version string for the presented platform. */
+export function kimiOsVersion(platform: CliPlatformName = cliPlatform()): string {
+  return KIMI_OS_VERSION[platform];
+}
+
+/** Kimi's device name (hostname) for the presented platform. */
+export function kimiDeviceName(platform: CliPlatformName = cliPlatform()): string {
+  return KIMI_DEVICE_NAME[platform];
+}
+
+/** Qoder's machineos value for the presented platform. */
+export function qoderMachineOs(platform: CliPlatformName = cliPlatform()): string {
+  return QODER_MACHINE_OS[platform];
+}
