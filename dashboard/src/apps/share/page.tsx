@@ -425,7 +425,7 @@ export function SharePage(): ReactElement {
           <Card className="share-hud-card">
             <CardBody>
               <ErrorState
-                title="Link not available"
+                title={state.code === "link_disabled" ? "Key paused" : "Link not available"}
                 message={state.error}
                 onRetry={() => window.location.reload()}
               />
