@@ -526,10 +526,8 @@ function CustomProviderCard({ customProvider }: { customProvider: ProviderRespon
 
 function CustomProvidersSection({
   customProviders,
-  showCards = true,
 }: {
   customProviders: ProviderResponse[];
-  showCards?: boolean;
 }): ReactNode {
   const [showAnthropic, setShowAnthropic] = useState(false);
   const [showOpenAI, setShowOpenAI] = useState(false);
@@ -623,7 +621,7 @@ function CustomProvidersSection({
         </Inline>
       </div>
 
-      {showCards && (hidden ? null : customProviders.length === 0 ? (
+      {hidden ? null : customProviders.length === 0 ? (
         <Card>
           <CardBody
             style={{
@@ -647,7 +645,7 @@ function CustomProvidersSection({
             <CustomProviderCard key={cp.providerId} customProvider={cp} />
           ))}
         </ProviderCardGrid>
-      ))}
+      )}
 
       <AddCompatibleModal
         variant="anthropic-compatible"
@@ -1007,10 +1005,6 @@ const SECTIONS = [
       !FREE_LIMITED_IDS.has(p.providerId.toLowerCase()) &&
       p.oauthFlows === undefined,
   },
-  {
-    title: "Custom Providers",
-    filter: (p: ProviderResponse) => !p.isBuiltIn,
-  },
 ];
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
@@ -1108,7 +1102,7 @@ export default function Providers(): ReactNode {
       </div>
       
       {tab === "llm" ? (
-        <CustomProvidersSection customProviders={customProviders} showCards={false} />
+        <CustomProvidersSection customProviders={customProviders} />
       ) : null}
 
       {sections.length === 0 ? (

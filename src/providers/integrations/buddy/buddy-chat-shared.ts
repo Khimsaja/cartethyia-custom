@@ -499,15 +499,16 @@ export function finalizeBuddyMessages(
 }
 
 /**
- * Applies the buddy-family message envelope in place: drop caller
- * `system`/`developer` turns, install the variant's fixed leading system
- * prompt, rebuild bare string user content as a typed text block, then
+ * Applies the buddy-family message envelope in place: collapse caller
+ * `system`/`developer` turns into the single leading `system` turn the
+ * upstream requires (falling back to the variant's prompt when the caller sent
+ * none), rebuild bare string user content as a typed text block, then
  * coalesce consecutive user turns.
  *
- * The upstream gateway expects that fixed leading prompt and rejects bare
- * string user content, so every variant that has one applies the same
- * transformation — only the prompt text differs, which is why the caller
- * passes it in. Variants without a fixed prompt (CodeBuddy CN replaces caller
+ * The upstream gateway rejects a leading turn that is not `system` and rejects
+ * bare string user content, so every variant that has a fixed prompt applies
+ * the same transformation — only the prompt text differs, which is why the
+ * caller passes it in. Variants without a fixed prompt (CodeBuddy CN replaces
  * system text with a neutralizer instead) keep their own path and share only
  * `coalesceConsecutiveUserMessages`.
  *
@@ -519,11 +520,32 @@ export function applyBuddySystemPrompt(
   messages: Array<Record<string, unknown>>,
   systemPrompt: string,
 ): void {
+  // The variant's fixed prompt is a *fallback*, not an override: when the
+  // caller sent system/developer text, that text replaces it outright. It used
+  // to be the other way round — the variant prompt was installed and the
+  // caller's turn dropped — so a client's own instructions never reached the
+  // model. Appending the two was not the fix either: two `system` turns makes
+  // the model read two competing sets of instructions.
+  //
+  // The fallback still exists because a first turn that is not `system` is
+  // rejected outright (400, code 11128) — verified against the live endpoint,
+  // along with `developer`, which the buddy upstream also refuses. So the
+  // opening turn stays `system` whoever wrote the text.
+  const callerSystem = messages
+    .filter(
+      (message) =>
+        (message["role"] === "system" || message["role"] === "developer") &&
+        typeof message["content"] === "string" &&
+        (message["content"] as string).trim().length > 0,
+    )
+    .map((message) => (message["content"] as string).trim());
+  const leadingPrompt =
+    callerSystem.length > 0 ? callerSystem.join("\n\n") : systemPrompt;
   const source = messages.filter(
     (message) => message["role"] !== "system" && message["role"] !== "developer",
   );
   messages.length = 0;
-  messages.push({ role: "system", content: systemPrompt });
+  messages.push({ role: "system", content: leadingPrompt });
   for (const message of source) {
     if (message["role"] === "user" && typeof message["content"] === "string") {
       messages.push({

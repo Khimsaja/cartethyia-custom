@@ -1,5 +1,19 @@
 ## Unreleased
 
+- The buddy family (WorkBuddy / CodeBuddy) keeps the caller's system
+  instructions instead of discarding them. The variant's fixed prompt was
+  installed as the leading `system` turn and any caller `system`/`developer`
+  turn dropped, so a client's own instructions never reached the model. The
+  fixed prompt is now a fallback used only when the caller sent none. A
+  `developer` turn is still not forwarded as such — the upstream rejects that
+  role (400, code 11128) — but its text is carried on the leading `system`
+  turn rather than thrown away.
+- Custom providers render in their own section again. The service-aware
+  provider tabs (`01cfbeb4`) left a "Custom Providers" entry in the built-in
+  section list while the dedicated section above it had its cards suppressed,
+  so a custom provider only appeared once, in the last section at the bottom.
+  The duplicate list entry is removed and the dedicated section renders its
+  cards again.
 - `search:invoke` is now revocable. Unchecking it on an API key used to be
   undone on the next read: `createAccessDecision` re-granted the scope to any
   key holding `routing:invoke`, so no key could ever hold routing without
