@@ -1,13 +1,12 @@
 ## Unreleased
 
-- The buddy family (WorkBuddy / CodeBuddy) keeps the caller's system
-  instructions instead of discarding them. The variant's fixed prompt was
-  installed as the leading `system` turn and any caller `system`/`developer`
-  turn dropped, so a client's own instructions never reached the model. The
-  fixed prompt is now a fallback used only when the caller sent none. A
-  `developer` turn is still not forwarded as such — the upstream rejects that
-  role (400, code 11128) — but its text is carried on the leading `system`
-  turn rather than thrown away.
+- Reverted: the buddy family keeps its variant's fixed leading system prompt.
+  Replacing it with the caller's system text made CodeBuddy (`cb`) reject every
+  request with `400 · 11128 — Illegal API invocation from an unapproved
+  channel`: the upstream validates the leading system prompt as the calling
+  channel, so a foreign prompt reads as an unapproved client. Because every
+  account failed, the whole pool was marked unhealthy. The fixed prompt is
+  sent again and caller `system`/`developer` turns are dropped as before.
 - Custom providers render in their own section again. The service-aware
   provider tabs (`01cfbeb4`) left a "Custom Providers" entry in the built-in
   section list while the dedicated section above it had its cards suppressed,
