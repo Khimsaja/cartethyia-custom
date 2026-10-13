@@ -4,6 +4,18 @@
 **Date:** 2026-10-13 (UTC+7)
 **Source checkout:** `preview-main`, `50b57c04478d4dbcf255c3ff80f7405794cbd450`
 
+> [!WARNING]
+> **Superseded (2026-10-14).** The gateway now sends a different fingerprint:
+> `x-opencode-client: desktop` (not `cli`), a fresh `x-opencode-request`
+> `msg_` id per dispatch (previously absent), and a stable `ses_` session whose
+> hex decodes to a plausible inverted-millisecond timestamp (previously
+> hash-derived hex — now refused by the gate with 403). Free-model dispatches
+> also force `stream: true` and backfill the agent-tool quartet. The parity
+> and identity observations below describe the 2026-10-13 state and are kept
+> as history; the current contract lives in
+> `src/providers/integrations/opencode/fingerprint.ts` and
+> `documentation/reference/providers.md`.
+
 ## Summary
 
 Repeated no-credential requests to OpenCode Free returned measurable prompt-cache

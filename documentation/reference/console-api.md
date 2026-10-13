@@ -128,9 +128,10 @@ into the next.
 | `backup/` | `/console/api/backup/*` | Export, import, delete-all. Recognized legacy exports are converted without guessing provider ids |
 | `studio/` | `/console/api/studio/*` | Model lab sessions, bounded to 50 per tenant with oldest-first eviction |
 | `quota/` | `/console/api/quota/*`, `/console/api/accounts/*`, `/console/api/global/accounts/*` | Quota windows and refresh; cached readings also feed the per-account [Usage floor](../features/usage-floor.md) routing policy |
-| `observability/` | `/console/api/system/*` (including `/system/performance`), `/telemetry/*`, `/logs/*`, `/live/*` | File-log reads, log ring SSE, live in-flight gauge, pool health streams |
+| `observability/` | `/console/api/system/*` (including `/system/performance`), `/system/usage/requests/:id/download` (JSON attachment of the full detail incl. payloads), `/telemetry/*`, `/logs/*`, `/live/*` | File-log reads, log ring SSE, live in-flight gauge, pool health streams |
 | `audit/` | `/console/api/audit` | Cursor-paginated `admin_audit_log` read, `platform:admin` only |
-| `admin/model-abuse` | `/console/api/model-bans` | Lift a model-abuse ban early; mounted only when `ctx.modelStrikes` exists (`domain-registration.ts`) |
+| `admin/model-abuse` | `/console/api/model-bans` | List (`GET`), instant-ban one address for the full TTL (`POST`, `{ip}`), lift early (`DELETE`, `{identity}`); mounted only when `ctx.modelStrikes` exists (`domain-registration.ts`) |
+| `updates/` | `/console/api/updates/release` | Current release channel read |
 
 That table is the index. Four areas carry their own feature page — data,
 ownership, the routes behind the row, and where to change what:

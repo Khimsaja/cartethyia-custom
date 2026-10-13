@@ -295,7 +295,8 @@ application uses the in-memory backend when `CARTETHYIA_REDIS_URL` is empty.
 
 ## 8. Migrations and backups
 
-Numbered migrations under `migrations/` run automatically at boot and are
+Numbered migrations under `migrations/full-postgres/` (Full) and
+`migrations/lite-sqlite3/` (Lite) run automatically at boot and are
 recorded in `cartethyia_schema_migrations`.
 
 To move an installation from Lite to Full:

@@ -3,8 +3,11 @@
 Both backends run the same Drizzle schema (`src/persistence/schema.ts`, written
 with `pg-core`) and the same stores. SQL expressions that differ are meant to
 live in `src/persistence/dialect.ts`. The SQLite baseline is generated from the
-PostgreSQL baseline by `scripts/generate/sqlite-ddl.ts`. Each backend ships only
-`0000_baseline.sql`; `test/persistence/sqlite-baseline.test.ts` checks that
+PostgreSQL baseline by `scripts/generate/sqlite-ddl.ts`; on top of
+`0000_baseline.sql` both backends carry the same numbered forward migrations
+under `migrations/full-postgres/` and `migrations/lite-sqlite3/`
+(e.g. `0001_allow_multiple_shared_keys_per_ip.sql`), and
+`test/persistence/sqlite-baseline.test.ts` checks that
 inventory, generated output, and runtime constraints. Existing databases with
 retired migration history are recreated and restored from backup, not upgraded
 in place. What follows is what that arrangement actually does, measured against
@@ -47,7 +50,7 @@ from the statement entirely, which is the path the raw migration SQL uses.
 
 `src/persistence/dialect.ts` branches the expressions that have no shared
 spelling: `mergeJson`, `pruneExpiredCooldowns`, `caseInsensitiveLike`,
-`byteLength`, `laterOf`, `currentTimestamp`, `differsFrom`, and the first-boot
+`laterOf`, `currentTimestamp`, `differsFrom`, and the first-boot
 lock. `db-sqlite.ts` rewrites `gen_random_uuid()` and `now()` per statement,
 converts `Date` bindings to ISO strings, maps boolean and timestamp
 columns back to the types the schema declares (`installSqliteColumnMapping`),

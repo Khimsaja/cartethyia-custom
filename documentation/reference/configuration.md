@@ -10,8 +10,9 @@ throws at the boundary instead of being coerced. Adding a knob means adding
 a row there plus a `.env.example` line.
 
 Variables read outside the spec are therefore **not** listed below:
-`CARTETHYIA_DB_MODE`, `DATABASE_URL`, `REDIS_URL`, and the Compose-only
-`CARTETHYIA_REDIS_URL`. See `documentation/getting-started.md`.
+`CARTETHYIA_DB_MODE`, `DATABASE_URL`, `REDIS_URL`, the Compose-only
+`CARTETHYIA_REDIS_URL`, and `CARTETHYIA_PACKAGE_ROOT`
+(`src/config/package-paths.ts`). See `documentation/getting-started.md`.
 
 ## HTTP listener and dashboard runtime
 

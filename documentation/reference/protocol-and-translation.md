@@ -22,7 +22,7 @@ provider wire family like the other surfaces.
 
 Each adapter implements `SurfaceAdapter` (`src/transport/surface/adapters.ts:51`):
 `matchesBodyShape` for detection, `parse` for inbound, and `encode`/`encodeOutput`
-for outbound. The registry is built once in `src/boot/app.ts:174`.
+for outbound. The registry is built once in `src/boot/app.ts:185`.
 
 Detection is once-only with fixed precedence — explicit `x-cartethyia-surface`
 header, then endpoint path, then an unambiguous body shape, then chat as the
@@ -176,7 +176,7 @@ record is committed, then the wire converters (`usageToChatWire` :357,
 A provider failure becomes a client-visible error at one of two boundaries, and
 both produce the same `GatewayError` so the classification cannot disagree.
 
-`mapUpstreamHttpError` (`src/transport/failure-policy.ts:718`) turns a failed
+`mapUpstreamHttpError` (`src/transport/failure-policy.ts:785`) turns a failed
 HTTP response into a typed error, reading a machine-readable identifier via
 `upstreamErrorIdentifier` (:586) before falling back to status alone through
 `classifyUpstreamError` (:622). Prose is only consulted to recognize an overflow
@@ -220,7 +220,7 @@ lifecycle violations.
 | Tool-call ids or indexes disagree across frames | `protocol/tool-identity.ts`, then `transport/translation/tool-repair.ts` |
 | Upstream error lands with the wrong code | `transport/failure-policy.ts` (`classifyUpstreamError`), plus `protocol/stream-error-frames.ts` for in-stream cases |
 | Public error envelope shape | `protocol/gateway-error.ts`, then `transport/guards/error-lifecycle.ts` |
-| Usage or cost is wrong | decoders → `UsageRecord`; pricing is `repriceUsage` in `providers/usage.ts` |
+| Usage or cost is wrong | decoders → `UsageRecord`; pricing is `repriceUsage` in `providers/provider-usage.ts` |
 | Streaming frames or `[DONE]` | `dispatch/stream-bridge.ts`, then the surface encoder |
 | Surface detected as the wrong family | `transport/surface/adapters.ts` (`SURFACE_DESCRIPTORS`, `detectOnce`) and the adapter's `matchesBodyShape` |
 

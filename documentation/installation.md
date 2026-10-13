@@ -158,7 +158,7 @@ User=root
 WorkingDirectory=/opt/cartethyia/repo
 EnvironmentFile=/opt/cartethyia/repo/.env
 Environment=PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/root/.bun/bin/bun run /opt/cartethyia/repo/dist/main.js
+ExecStart=/opt/cartethyia/repo/dist/cartethyia
 Restart=always
 RestartSec=5
 StandardOutput=journal

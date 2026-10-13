@@ -34,9 +34,11 @@ implementation and correct the owning documentation page.
   optional and enables shared coordination/cache where supported. The selected
   database mode is explicit; setup details are in
   [getting started](getting-started.md).
-- The PostgreSQL baseline is canonical. SQLite DDL is generated from it. This
-  repository does not use numbered forward migrations; older installations are
-  recovered through backup/restore.
+- The PostgreSQL baseline is canonical. SQLite DDL is generated from it, and
+  both backends carry the same numbered forward migrations under
+  `migrations/full-postgres/` and `migrations/lite-sqlite3/`; older
+  installations with retired migration history are recovered through
+  backup/restore.
 
 ## Confirmed behavior worth knowing
 
