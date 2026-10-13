@@ -35,11 +35,18 @@ export function generateOpenCodeSessionId(now = Date.now()): string {
  * jittered deterministically within the last 48 hours of the affinity key —
  * stable per conversation, plausible per the gate — and only the base62
  * suffix comes from the hash.
+ *
+ * The jitter derives from 6-hour time buckets, not raw `Date.now()`: two
+ * dispatches of one conversation that land in the same bucket (or adjacent
+ * ones before the bucket rolls) produce the identical session id, so prompt
+ * cache affinity survives the millisecond a request happens to cross.
  */
 function stableOpenCodeSessionId(affinity: string): string {
   const digest = createHash("sha256").update(`opencode-session:${affinity}`).digest();
-  const jitterMs = Number(digest.readUint32BE(0) % (48 * 3_600_000));
-  const timestamp = Date.now() - jitterMs;
+  const bucketMs = 6 * 3_600_000;
+  const bucket = Math.floor(Date.now() / bucketMs);
+  const jitterBuckets = digest.readUint32BE(0) % 8; // 0..7 buckets = up to 42h back
+  const timestamp = (bucket - jitterBuckets) * bucketMs;
   const num = BigInt(timestamp) * 0x1000n + 1n;
   const inverted = ~num;
   const hex = Array.from({ length: 6 }, (_, i) =>

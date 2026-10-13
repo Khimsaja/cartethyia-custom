@@ -22,7 +22,7 @@ describe("OpenCode request fingerprint", () => {
     const first = await buildHeaders(context);
     const second = await buildHeaders(context);
 
-    expect(first["x-opencode-client"]).toBe("cli");
+    expect(first["x-opencode-client"]).toBe("desktop");
     expect(first["x-opencode-session"]).toMatch(/^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
     expect(second["x-opencode-session"]).toBe(first["x-opencode-session"]);
     expect(first["x-opencode-session-id"]).toBe(first["x-opencode-session"]);
@@ -37,7 +37,24 @@ describe("OpenCode request fingerprint", () => {
     expect(b3).toMatch(/^[0-9a-f]{32}-[0-9a-f]{16}-1-[0-9a-f]{16}$/);
     const [, traceId, spanId] = traceparent.split("-");
     expect(b3).toStartWith(`${traceId}-${spanId}-1-`);
-    expect(first["x-opencode-request"]).toBeUndefined();
+    // The request id is required by the free-tier gate (2026-10-14) and is
+    // fresh per dispatch; the session id stays stable per conversation.
+    expect(first["x-opencode-request"]).toMatch(/^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
+    expect(first["x-opencode-request"]).not.toBe(second["x-opencode-request"]);
+    // The session hex must decode to a plausible inverted-millisecond
+    // timestamp: the gate rejects arbitrary hash hex. The production jitter
+    // buckets to 6-hour boundaries up to 42h back, so decode and check the
+    // decoded instant lands within the last 48 hours.
+    const sessionHex = String(first["x-opencode-session"]).slice(4, 16);
+    // The hex window carries only the low 48 bits of the inverted value: the
+    // raw decode is the timestamp mod 2^36. Snap to the multiple of 2^36
+    // nearest to now — the 48h production jitter is far smaller than the
+    // ~2.2-year window, so the snap is exact.
+    const low36 = Number((0xffffffffffffn - BigInt(`0x${sessionHex}`) - 1n) >> 12n);
+    const periodMs = 2 ** 36;
+    const snapped = low36 + Math.round((Date.now() - low36) / periodMs) * periodMs;
+    expect(Date.now() - snapped).toBeGreaterThan(0);
+    expect(Date.now() - snapped).toBeLessThan(49 * 3_600_000);
     expect(traceparent).not.toBe(second["traceparent"]);
   });
 
