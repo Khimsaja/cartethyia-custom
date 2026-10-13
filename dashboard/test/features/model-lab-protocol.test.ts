@@ -135,6 +135,7 @@ describe("buildLabRequest", () => {
         {
           role: "assistant",
           text: "",
+          reasoning: "I should search for current information first.",
           toolCalls: [{ id: "call-search", name: "web_search", arguments: "{\"query\":\"recent news\"}" }],
         },
         { role: "tool", text: "{\"results\":[]}", toolCallId: "call-search" },
@@ -162,6 +163,7 @@ describe("buildLabRequest", () => {
       {
         role: "assistant",
         content: null,
+        reasoning_content: "I should search for current information first.",
         tool_calls: [{
           id: "call-search",
           type: "function",
@@ -287,6 +289,38 @@ describe("buildLabRequest", () => {
     expect(markup).toContain("Calling generate_image…");
     expect(markup).toContain("generate_image");
     expect(markup).not.toContain("Thinking…");
+  });
+
+  test("an approved media tool shows its generating placeholder without approval actions", () => {
+    const markup = renderToStaticMarkup(createElement(ChatBubble, {
+      message: {
+        id: "image-generating",
+        role: "assistant",
+        text: "",
+        status: "Generating image…",
+        mediaPending: "image",
+        mediaStage: "generating",
+      },
+      onToolApproval: () => {},
+    }));
+    expect(markup).toContain('aria-label="Generating image"');
+    expect(markup).toContain("Generating image…");
+    expect(markup).not.toContain("Allow these actions?");
+    expect(markup).not.toContain("Allow and run");
+  });
+
+  test("approved non-media tools show a running status without the approval prompt", () => {
+    const markup = renderToStaticMarkup(createElement(ChatBubble, {
+      message: {
+        id: "search-running",
+        role: "assistant",
+        text: "",
+        status: "Running approved tools…",
+      },
+    }));
+    expect(markup).toContain('role="status"');
+    expect(markup).toContain("Running approved tools…");
+    expect(markup).not.toContain("Allow these actions?");
   });
 
   test("answered planner questions start collapsed but keep an accessible disclosure control", () => {
@@ -504,6 +538,7 @@ describe("buildLabRequest", () => {
           toolCalls: [{ id: "question-1", name: "ask_user_question", arguments: "{}" }],
           toolRounds: [{
             text: "",
+            reasoning: "I should search for current information first.",
             toolCalls: [{ id: "question-1", name: "ask_user_question", arguments: "{}" }],
             toolResults: [{ toolCallId: "question-1", text: "{\"selected\":{\"id\":\"minimal\"}}" }],
           }],
@@ -526,6 +561,7 @@ describe("buildLabRequest", () => {
           videos: [{ name: "clip.mp4", src: "https://cdn.example/clip.mp4" }],
           workerModels: ["workbuddy/seedance-2.5"],
           toolRounds: [{
+            reasoning: "I should search for current information first.",
             toolResults: [{ toolCallId: "question-1", text: "{\"selected\":{\"id\":\"minimal\"}}" }],
           }],
           question: { question: "Which style?", options: expect.any(Array) },
@@ -620,7 +656,7 @@ describe("stream text", () => {
     const response = new Response(new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"web_search","arguments":"{\\"query\\":"}}]}}]}\n\n'));
-        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"latest news\\"}"}}]}}]}\n\n'));
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"web_search","arguments":"\\"latest news\\"}"}}]}}]}\n\n'));
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
         controller.close();
       },

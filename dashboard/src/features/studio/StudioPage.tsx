@@ -8,7 +8,7 @@ import { useAllModelsCatalog, type FlatModelEntry } from "../../components/Model
 import { useApiKeys, useRevealApiKey } from "../../hooks/api-keys";
 import { ChatBubble } from "./ChatBubble";
 import { Composer } from "./Composer";
-import { buildLabRequest, errorMessage, MODEL_LAB_PRESETS, parseUserQuestion, type LabEffort, type LabImage, type LabToolCall, type LabToolRound, type LabTurn, type LabUserQuestion } from "./protocol";
+import { buildLabRequest, errorMessage, MODEL_LAB_PRESETS, parseUserQuestion, type LabImage, type LabToolCall, type LabToolRound, type LabTurn, type LabUserQuestion } from "./protocol";
 import { detectMediaIntent, parseImageGenerationResponse, parseVideoGenerationResponse, preferredImageWorker, shouldFallbackToMediaWorker, type GeneratedMedia, type LabMediaIntent, type LabVideo } from "./media";
 import { EMPTY_DRAFT, deleteLabSession, listLabSessions, newLabSession, nextMessageId, readActiveSessionId, readLabDraft, readLabSession, writeActiveSessionId, writeLabSession, type LabDraft, type LabMessage, type LabSession, type LabSessionSummary } from "./session";
 import { SettingsDrawer } from "./SettingsDrawer";
@@ -429,7 +429,12 @@ export function StudioPage(): ReactNode {
       const turns: LabTurn[] = history.flatMap((message): LabTurn[] => {
         if (message.toolRounds !== undefined) {
             return message.toolRounds.flatMap((toolRound) => [
-              { role: "assistant" as const, text: toolRound.text, toolCalls: toolRound.toolCalls },
+              {
+                role: "assistant" as const,
+                text: toolRound.text,
+                ...(toolRound.reasoning === undefined ? {} : { reasoning: toolRound.reasoning }),
+                toolCalls: toolRound.toolCalls,
+              },
               ...toolRound.toolResults.map((result) => ({
                 role: "tool" as const,
                 text: result.text,
@@ -438,11 +443,19 @@ export function StudioPage(): ReactNode {
             ]);
         }
         if (message.toolCalls !== undefined) {
-            return [{ role: "assistant" as const, text: message.text, toolCalls: message.toolCalls }];
+            return [{
+              role: "assistant" as const,
+              text: message.text,
+              ...(message.reasoning === undefined ? {} : { reasoning: message.reasoning }),
+              toolCalls: message.toolCalls,
+            }];
         }
         return [{
             role: message.role,
             text: message.text,
+            ...(message.role === "assistant" && message.reasoning !== undefined
+              ? { reasoning: message.reasoning }
+              : {}),
             ...(message.images === undefined ? {} : { images: message.images }),
         }];
       });
@@ -498,6 +511,7 @@ export function StudioPage(): ReactNode {
       };
       for (;;) {
       let calls: readonly LabToolCall[];
+      let roundReasoning = "";
       try {
       const built = buildLabRequest(turns, {
         ...requestSettings,
@@ -525,6 +539,7 @@ export function StudioPage(): ReactNode {
         },
         (thought) => {
           markFirstToken();
+          roundReasoning += thought;
           reasoning += thought;
           schedulePaint({ text: accumulated, reasoning, status, pending: true, usage });
         },
@@ -565,7 +580,12 @@ export function StudioPage(): ReactNode {
         }
         const actionCalls = calls.filter((call) => call.name !== "ask_user_question");
         for (const call of calls) tools.add(call.name);
-        toolRounds.push({ text: accumulated, toolCalls: calls, toolResults: [] });
+        toolRounds.push({
+          text: accumulated,
+          ...(roundReasoning.length > 0 ? { reasoning: roundReasoning } : {}),
+          toolCalls: calls,
+          toolResults: [],
+        });
         flushPaint();
         paint({
           text: accumulated,
@@ -579,7 +599,12 @@ export function StudioPage(): ReactNode {
         });
         return;
       }
-      turns.push({ role: "assistant", text: "", toolCalls: calls });
+      turns.push({
+        role: "assistant",
+        text: "",
+        ...(roundReasoning.length > 0 ? { reasoning: roundReasoning } : {}),
+        toolCalls: calls,
+      });
       const toolResults: LabToolRound["toolResults"][number][] = [];
       for (const call of calls) {
         if (call.name === "ask_user_question") {
@@ -631,7 +656,12 @@ export function StudioPage(): ReactNode {
           workerModels: [...workerModels],
         });
       }
-      toolRounds.push({ text: accumulated, toolCalls: calls, toolResults });
+      toolRounds.push({
+        text: accumulated,
+        ...(roundReasoning.length > 0 ? { reasoning: roundReasoning } : {}),
+        toolCalls: calls,
+        toolResults,
+      });
       if (waitingQuestion !== undefined) {
         flushPaint();
         paint({
@@ -760,6 +790,12 @@ export function StudioPage(): ReactNode {
       message.pendingToolCalls.length === 0
     ) return;
     const pendingCalls = message.pendingToolCalls;
+    const pendingMediaCall = approved
+      ? pendingCalls.find((call) => call.name === "generate_image" || call.name === "generate_video")
+      : undefined;
+    let pendingMediaIntent: LabMediaIntent | undefined;
+    if (pendingMediaCall?.name === "generate_image") pendingMediaIntent = "image";
+    else if (pendingMediaCall?.name === "generate_video") pendingMediaIntent = "video";
     const roundIndex = message.toolRounds?.findIndex((round) =>
       pendingCalls.some((call) => round.toolCalls.some((roundCall) => roundCall.id === call.id)),
     ) ?? -1;
@@ -787,9 +823,18 @@ export function StudioPage(): ReactNode {
     const controller = new AbortController();
     abortRef.current = controller;
     setSending(true);
+    let runningStatus = "Skipping tools…";
+    if (approved) {
+      runningStatus = pendingMediaIntent === undefined
+        ? "Running approved tools…"
+        : `Generating ${pendingMediaIntent}…`;
+    }
     replaceMessage(message.id, {
       ...message,
-      status: approved ? "Running approved tools…" : "Skipping tools…",
+      status: runningStatus,
+      pendingToolCalls: undefined,
+      mediaPending: pendingMediaIntent,
+      mediaStage: pendingMediaIntent === undefined ? undefined : "generating",
       toolApprovalError: undefined,
     });
 
@@ -808,6 +853,8 @@ export function StudioPage(): ReactNode {
           : "Approval failed",
         ...(remaining.length === 0 ? { pendingToolCalls: undefined } : { pendingToolCalls: remaining }),
         ...(error === undefined ? { toolApprovalError: undefined } : { toolApprovalError: error }),
+        mediaPending: undefined,
+        mediaStage: undefined,
         ...(question === undefined || remaining.length > 0 ? {} : { question, status: "Waiting for your answer" }),
         ...(remaining.length === 0 && question === undefined ? { status: "Waiting for model…" } : {}),
         ...(generatedImages.length > 0 ? { images: generatedImages } : {}),
@@ -879,6 +926,8 @@ export function StudioPage(): ReactNode {
             ...item,
             toolRounds: nextRounds,
             ...(remaining.length === 0 ? { pendingToolCalls: undefined } : { pendingToolCalls: remaining }),
+            mediaPending: undefined,
+            mediaStage: undefined,
             ...(question === undefined || remaining.length > 0 ? {} : { question, status: "Waiting for your answer" }),
             ...(remaining.length === 0 && question === undefined ? { status: "Waiting for model…" } : {}),
             ...(generatedImages.length > 0 ? { images: generatedImages } : {}),
@@ -1018,9 +1067,6 @@ export function StudioPage(): ReactNode {
             onChange={setInput}
             images={images}
             onImages={setImages}
-            effort={draft.effort}
-            onEffort={(effort: LabEffort) => patch({ effort })}
-            effortDisabled={!hydrated}
             sending={sending}
             canSend={canSend}
             onSend={() => void send()}
@@ -1036,6 +1082,7 @@ export function StudioPage(): ReactNode {
           onChange={patch}
           chatModel={draft.model}
           catalog={modelCatalog.items}
+          effortDisabled={!hydrated}
         />
               </div>
       </CardBody>

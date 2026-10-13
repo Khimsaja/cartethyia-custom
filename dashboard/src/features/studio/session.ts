@@ -281,7 +281,12 @@ function readToolRounds(value: unknown): readonly LabToolRound[] | undefined {
           return [{ toolCallId: entry.toolCallId, text: entry.text }];
         })
       : [];
-    return [{ text: record.text, toolCalls, toolResults }];
+    return [{
+      text: record.text,
+      ...(typeof record.reasoning === "string" ? { reasoning: record.reasoning } : {}),
+      toolCalls,
+      toolResults,
+    }];
   });
   return rounds.length > 0 ? rounds : undefined;
 }

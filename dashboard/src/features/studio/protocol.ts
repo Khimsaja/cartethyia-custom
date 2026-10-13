@@ -57,6 +57,7 @@ export interface LabImage {
 export interface LabTurn {
   readonly role: "user" | "assistant" | "tool";
   readonly text: string;
+  readonly reasoning?: string;
   readonly images?: readonly LabImage[];
   readonly toolCalls?: readonly LabToolCall[];
   readonly toolCallId?: string;
@@ -76,6 +77,7 @@ export interface LabToolResult {
 
 export interface LabToolRound {
   readonly text: string;
+  readonly reasoning?: string;
   readonly toolCalls: readonly LabToolCall[];
   readonly toolResults: readonly LabToolResult[];
 }
@@ -289,6 +291,7 @@ function chatTurn(turn: LabTurn): Record<string, unknown> {
     return {
       role: "assistant",
       content: turn.text.length > 0 ? turn.text : null,
+      ...(turn.reasoning === undefined ? {} : { reasoning_content: turn.reasoning }),
       tool_calls: turn.toolCalls.map((call) => ({
         id: call.id,
         type: "function",
@@ -302,6 +305,9 @@ function chatTurn(turn: LabTurn): Record<string, unknown> {
   return {
     role: turn.role,
     content: userContent("chat", turn),
+    ...(turn.role === "assistant" && turn.reasoning !== undefined
+      ? { reasoning_content: turn.reasoning }
+      : {}),
   };
 }
 

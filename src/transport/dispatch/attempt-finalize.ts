@@ -149,6 +149,11 @@ export interface ProviderExchangeCapture {
  * provider bug reproducible after the fact.
  */
 const CAPTURED_REQUEST_HEADERS = [
+  "x-opencode-client",
+  "x-opencode-session",
+  "x-opencode-request",
+  "x-opencode-project",
+  "x-session-affinity",
   "x-grok-session-id",
   "x-grok-conv-id",
   "x-grok-turn-idx",

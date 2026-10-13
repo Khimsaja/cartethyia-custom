@@ -383,12 +383,16 @@ export function ChatBubble({
               <div className="min-w-0 font-sans text-body-lg leading-normal [&_p]:m-0 [&_p]:mb-4 [&_ul]:m-0 [&_ul]:mb-4 [&_ol]:m-0 [&_ol]:mb-4 [&_pre]:m-0 [&_pre]:mb-4 [&_p:last-child]:mb-0 [&_ul:last-child]:mb-0 [&_ol:last-child]:mb-0 [&_pre:last-child]:mb-0 [&_pre]:overflow-x-auto [&_pre]:px-6 [&_pre]:py-5 [&_pre]:rounded-control [&_pre]:bg-surface-muted [&_pre]:font-mono [&_pre]:text-caption [&_code]:font-mono [&_svg]:flex-none [&_svg]:mt-1.5">
                 {message.error === true ? <AlertCircle size={14} aria-hidden="true" /> : null}
                 <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ pre: MarkdownPre }}>{message.text}</ReactMarkdown>
-                {live ? <span className="ml-1 text-accent animate-pulse motion-reduce:animate-none" aria-hidden="true">▋</span> : null}
+                {live ? <span className="ml-1 inline-block text-accent mlab-stream-caret" aria-hidden="true">▋</span> : null}
               </div>
             ) : null}
           </>
         )}
       </div>
+      {message.pendingToolCalls === undefined &&
+      (message.status === "Running approved tools…" || message.status === "Skipping tools…") ? (
+        <p role="status" className="m-0 text-caption text-text-tertiary">{message.status}</p>
+      ) : null}
       {message.pendingToolCalls !== undefined ? (
         <section className="flex w-full max-w-280 flex-col gap-3 rounded-control border border-inner-border bg-surface-2 p-5" aria-label="Tool approval">
           <h3 className="m-0 text-body-lg font-semibold text-text-primary">Allow these actions?</h3>

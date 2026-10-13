@@ -91,12 +91,21 @@ function appendChatToolCalls(
       const fn = record.function;
       if (fn !== null && typeof fn === "object") {
         const fields = fn as Record<string, unknown>;
-        if (typeof fields.name === "string") call.name += fields.name;
+        if (typeof fields.name === "string") call.name = appendDelta(call.name, fields.name);
         if (typeof fields.arguments === "string") call.arguments += fields.arguments;
       }
       calls.set(index, call);
     }
   }
+}
+
+function appendDelta(previous: string, delta: string): string {
+  if (delta.length === 0 || previous.endsWith(delta)) return previous;
+  if (delta.startsWith(previous)) return delta;
+  if (previous.startsWith(delta)) return previous;
+  let overlap = Math.min(previous.length, delta.length);
+  while (overlap > 0 && !previous.endsWith(delta.slice(0, overlap))) overlap -= 1;
+  return `${previous}${delta.slice(overlap)}`;
 }
 
 function collectedToolCalls(

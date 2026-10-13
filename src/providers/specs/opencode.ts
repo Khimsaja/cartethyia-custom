@@ -2,6 +2,7 @@ import { completeRequiredSchema } from "../../protocol/codecs";
 import type { ModelDefinition } from "../model-definition";
 import type { CanonicalRequest, ToolDefinition } from "../../protocol/canonical-model";
 import { isRecord } from "../../protocol/codecs";
+import type { ProviderDispatchContext } from "../contracts";
 import { PROVIDER_COMPATIBILITY_PROFILES } from "../metadata";
 import { defineModel } from "../model-definition";
 import type { ApiKeyProviderSpec } from "../integrations/shared/configured-provider";
@@ -87,8 +88,8 @@ export function isFreeTierZenModel(modelId: string): boolean {
   return modelId.endsWith("-free") || KNOWN_FREE_ZEN_IDS.includes(modelId);
 }
 
-async function opencodeDesktopHeaders(): Promise<Record<string, string>> {
-  return buildOpenCodeHeaders();
+function opencodeDesktopHeaders(context: ProviderDispatchContext): Record<string, string> {
+  return buildOpenCodeHeaders(undefined, context.conversation_affinity);
 }
 /** Canonical agent-tool fingerprint OpenCode Free requires on every dispatch.
  * Upstream rejects tool-less or non-agent requests with `FreeTierError`
@@ -321,4 +322,3 @@ export const OPENCODE_GO_MODELS: readonly ModelDefinition[] = [
   defineModel({ id: "deepseek-v4-flash", providerId: "opencode-go", wireFamily: "chat", endpoint: `${GO_PATH_PREFIX}/chat/completions`, reasoning: true }),
   defineModel({ id: "hy3", providerId: "opencode-go", wireFamily: "chat", endpoint: `${GO_PATH_PREFIX}/chat/completions`, reasoning: true }),
 ];
-

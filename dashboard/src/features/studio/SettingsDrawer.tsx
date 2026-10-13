@@ -6,6 +6,35 @@ import { Input, Textarea } from "../../components/ui/input";
 import { Select } from "../../components/ui/select";
 import type { LabDraft } from "./session";
 
+const EFFORT_OPTIONS = [
+  { value: "auto", label: "Auto" },
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+  { value: "max", label: "Max" },
+] as const;
+
+const IMAGE_SIZE_OPTIONS = [
+  { value: "512x512", label: "512 × 512" },
+  { value: "1024x1024", label: "1024 × 1024" },
+  { value: "1536x1024", label: "1536 × 1024" },
+  { value: "1024x1536", label: "1024 × 1536" },
+] as const;
+
+const VIDEO_SIZE_OPTIONS = [
+  { value: "480p", label: "480p" },
+  { value: "720p", label: "720p" },
+  { value: "1080p", label: "1080p" },
+] as const;
+
+const COUNT_OPTIONS = Array.from({ length: 10 }, (_, index) => {
+  const value = String(index + 1);
+  return { value, label: value };
+});
+
+const CUSTOM_SIZE = "__custom_size__";
+const PROVIDER_DEFAULT = "__provider_default__";
+
 const PERSONAS = [
   { value: "cartethyia", label: "Cartethyia" },
   { value: "unset", label: "None" },
@@ -29,6 +58,7 @@ export function SettingsDrawer({
   onChange,
   chatModel,
   catalog,
+  effortDisabled,
 }: {
   readonly open: boolean;
   readonly onClose: () => void;
@@ -36,6 +66,7 @@ export function SettingsDrawer({
   readonly onChange: (patch: Partial<LabDraft>) => void;
   readonly chatModel: string;
   readonly catalog: readonly FlatModelEntry[];
+  readonly effortDisabled?: boolean;
 }): ReactNode {
   const [isMobile, setIsMobile] = useState(false);
 
@@ -60,6 +91,14 @@ export function SettingsDrawer({
             The chat model plans and responds. Image and video workers are selected independently below.
           </p>
         </div>
+        <Select
+          label="Reasoning effort"
+          aria-label="Reasoning effort"
+          value={draft.effort}
+          options={EFFORT_OPTIONS}
+          disabled={effortDisabled}
+          onValueChange={(effort) => onChange({ effort: effort as LabDraft["effort"] })}
+        />
         <WorkerModelPicker
           label="Image generation model"
           description="Generates images requested in chat; it does not replace the planner."
@@ -68,23 +107,18 @@ export function SettingsDrawer({
           catalog={catalog}
           onChange={(imageWorkerModel) => onChange({ imageWorkerModel })}
         />
-        <div className="grid grid-cols-2 gap-4">
-          <Input
-            label="Image size"
+        <div className="grid grid-cols-2 gap-4 max-small:grid-cols-1">
+          <MediaSizeSelect
+            kind="image"
             value={draft.imageSize}
-            placeholder="1024x1024"
-            maxLength={32}
-            onChange={(event) => onChange({ imageSize: event.target.value })}
+            onChange={(imageSize) => onChange({ imageSize })}
           />
-          <Input
+          <Select
             label="Image count"
-            type="number"
-            inputMode="numeric"
-            min={1}
-            max={10}
-            step={1}
+            aria-label="Image count"
             value={draft.imageCount}
-            onChange={(event) => onChange({ imageCount: event.target.value })}
+            options={COUNT_OPTIONS}
+            onValueChange={(imageCount) => onChange({ imageCount })}
           />
         </div>
         <WorkerModelPicker
@@ -95,23 +129,18 @@ export function SettingsDrawer({
           catalog={catalog}
           onChange={(videoWorkerModel) => onChange({ videoWorkerModel })}
         />
-        <div className="grid grid-cols-2 gap-4">
-          <Input
-            label="Video size"
+        <div className="grid grid-cols-2 gap-4 max-small:grid-cols-1">
+          <MediaSizeSelect
+            kind="video"
             value={draft.videoSize}
-            placeholder="Provider default"
-            maxLength={32}
-            onChange={(event) => onChange({ videoSize: event.target.value })}
+            onChange={(videoSize) => onChange({ videoSize })}
           />
-          <Input
+          <Select
             label="Video count"
-            type="number"
-            inputMode="numeric"
-            min={1}
-            max={10}
-            step={1}
+            aria-label="Video count"
             value={draft.videoCount}
-            onChange={(event) => onChange({ videoCount: event.target.value })}
+            options={COUNT_OPTIONS}
+            onValueChange={(videoCount) => onChange({ videoCount })}
           />
         </div>
         <p className="m-0 text-text-tertiary text-caption leading-normal">
@@ -176,6 +205,79 @@ export function SettingsDrawer({
       </aside>
       <Drawer open={open && isMobile} onClose={onClose} title="Chat settings">{controls}</Drawer>
     </>
+  );
+}
+
+function MediaSizeSelect({
+  kind,
+  value,
+  onChange,
+}: {
+  readonly kind: "image" | "video";
+  readonly value: string;
+  readonly onChange: (value: string) => void;
+}): ReactNode {
+  const presets = kind === "image" ? IMAGE_SIZE_OPTIONS : VIDEO_SIZE_OPTIONS;
+  const isStandard = (size: string) =>
+    (kind === "video" && size === "") || presets.some((option) => option.value === size);
+  const [customSelected, setCustomSelected] = useState(() => !isStandard(value));
+  const [customValue, setCustomValue] = useState(() => isStandard(value) ? "" : value);
+
+  useEffect(() => {
+    if (isStandard(value)) {
+      setCustomSelected(false);
+      return;
+    }
+    setCustomSelected(true);
+    setCustomValue(value);
+  }, [kind, value]);
+
+  const options = [
+    ...(kind === "video" ? [{ value: PROVIDER_DEFAULT, label: "Provider default" }] : []),
+    ...presets,
+    { value: CUSTOM_SIZE, label: "Custom" },
+  ];
+  const selectValue = customSelected
+    ? CUSTOM_SIZE
+    : kind === "video" && value === ""
+      ? PROVIDER_DEFAULT
+      : value;
+  const label = kind === "image" ? "Image size" : "Video size";
+  const customLabel = kind === "image" ? "Custom image size" : "Custom video size";
+
+  return (
+    <div className="flex flex-col gap-3">
+      <Select
+        label={label}
+        aria-label={label}
+        value={selectValue}
+        options={options}
+        onValueChange={(nextValue) => {
+          if (nextValue === CUSTOM_SIZE) {
+            setCustomSelected(true);
+            if (customValue.length > 0 && customValue !== value) onChange(customValue);
+          } else if (nextValue === PROVIDER_DEFAULT) {
+            setCustomSelected(false);
+            onChange("");
+          } else {
+            setCustomSelected(false);
+            onChange(nextValue);
+          }
+        }}
+      />
+      {customSelected ? (
+        <Input
+          label={customLabel}
+          value={customValue}
+          placeholder={kind === "video" ? "e.g. 720p or 1280x720" : "e.g. 1024x1024"}
+          maxLength={32}
+          onChange={(event) => {
+            setCustomValue(event.target.value);
+            onChange(event.target.value);
+          }}
+        />
+      ) : null}
+    </div>
   );
 }
 

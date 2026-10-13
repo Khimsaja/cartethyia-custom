@@ -3,6 +3,7 @@ import { and, desc, eq, inArray, isNotNull, lte, or, sql } from "drizzle-orm";
 import { affectedRows, pruneExpiredCooldowns } from "../../persistence/dialect";
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import { isRecord } from "../../protocol/codecs";
+import { GatewayError } from "../../protocol/gateway-error";
 import { BUDDY_PROVIDER_IDS } from "../metadata";
 import { healthEvents, providerAccounts } from "../../persistence/schema";
 
@@ -289,6 +290,12 @@ export function classifyAccountError(
   // Whether the provider itself named a window. Decided once, from the
   // evidence, so every branch of this classification agrees about it.
   const providerStated = headerCooldown !== null || messageCooldown !== null;
+  const rawUpstreamResponse =
+    origin === "upstream" &&
+    error instanceof GatewayError &&
+    typeof error.details.raw === "string"
+      ? error.details.raw
+      : undefined;
   const reason = (prefix: string): string => `${prefix}: ${message.slice(0, 160)}`;
   const result = (
     category: AccountErrorCategory,
@@ -301,7 +308,7 @@ export function classifyAccountError(
     category,
     status,
     cooldownMs,
-    reason: explanation,
+    reason: origin === "upstream" ? rawUpstreamResponse ?? message.slice(0, 160) : explanation,
     retryAt,
     mutatesAccount,
     providerStated,

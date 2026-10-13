@@ -850,7 +850,7 @@ const ProviderCard = memo(function ProviderCard({
         className={CARD_LINK}
       >
         <Inline gap="10px">
-          <ProviderIcon icon={provider.providerId} name={displayName} size={48} imageSize={40} />
+          <ProviderIcon icon={provider.providerId} name={displayName} size={32} imageSize={24} />
           <div className="min-w-0 flex-1">
             <div
               className={CARD_NAME}

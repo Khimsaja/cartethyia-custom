@@ -307,6 +307,41 @@ dbDescribe("web-search fallback dispatch", () => {
     expect(text).toContain("risuncode — https://example.com/risuncode");
   });
 
+  test("a declared but unused search tool does not buffer the streamed answer", async () => {
+    routesWithSearchProvider();
+    let upstreamFinished = false;
+    gateway.adapter(world.providerId, {
+      streamEvents: async function* (request) {
+        yield { type: "message_start", sequence_number: 0, model: request.model };
+        await Bun.sleep(40);
+        yield {
+          type: "content_delta",
+          sequence_number: 1,
+          content: { kind: "text", text: "first streamed token" },
+        };
+        await Bun.sleep(40);
+        yield { type: "terminal", sequence_number: 2, state: "complete", stop_reason: "stop" };
+        upstreamFinished = true;
+      },
+    });
+    gateway.adapter("exa", {
+      searchResults: [
+        { title: "risuncode", url: "https://example.com/risuncode", snippet: "Profile" },
+      ],
+    });
+
+    const response = await gateway.json(
+      "/v1/messages",
+      messagesFunctionSearchRequest(world.qualifiedModel, true),
+      { token: world.token },
+    );
+    expect(response.status).toBe(200);
+    expect(upstreamFinished).toBe(false);
+    const text = await response.text();
+    expect(text).toContain("first streamed token");
+    expect(upstreamFinished).toBe(true);
+  });
+
   test("a search function call emitted by the model uses its own query", async () => {
     routesWithSearchProvider();
     gateway.adapter(world.providerId, {

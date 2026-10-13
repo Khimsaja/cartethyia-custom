@@ -2,8 +2,7 @@ import { Paperclip, Send, SlidersHorizontal, Square, X } from "lucide-react";
 import { useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { ModelPickerModal } from "../../components/ModelPicker";
 import { Button } from "../../components/ui/button";
-import { EffortPicker } from "./EffortPicker";
-import type { LabEffort, LabImage } from "./protocol";
+import type { LabImage } from "./protocol";
 
 const MAX_IMAGES = 4;
 
@@ -26,8 +25,8 @@ function readImage(file: File): Promise<LabImage> {
 
 /**
  * The docked composer. The model is picked here, once, through the same
- * catalog modal the rest of the console uses. Effort stays on the tool row
- * because it changes per turn; mode and worker selection live in settings.
+ * catalog modal the rest of the console uses. Request tuning and worker
+ * selection live in chat settings.
  */
 export function Composer({
   model,
@@ -38,9 +37,6 @@ export function Composer({
   onChange,
   images,
   onImages,
-  effort,
-  onEffort,
-  effortDisabled,
   sending,
   canSend,
   onSend,
@@ -55,9 +51,6 @@ export function Composer({
   readonly onChange: (value: string) => void;
   readonly images: readonly LabImage[];
   readonly onImages: (images: readonly LabImage[]) => void;
-  readonly effort: LabEffort;
-  readonly onEffort: (value: LabEffort) => void;
-  readonly effortDisabled?: boolean;
   readonly sending: boolean;
   readonly canSend: boolean;
   readonly onSend: () => void;
@@ -172,12 +165,6 @@ export function Composer({
             {model.length > 0 ? modelName(model) : "Pick model"}
           </Button>
 
-
-          <EffortPicker
-            value={effort}
-            onChange={onEffort}
-            disabled={effortDisabled}
-          />
         </div>
         <div className="flex items-center gap-3 min-w-0 max-small:w-auto max-small:justify-end max-small:justify-self-end max-small:gap-2">
           <Button

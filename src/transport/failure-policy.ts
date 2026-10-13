@@ -777,7 +777,7 @@ export async function mapUpstreamHttpError(response: Response, providerId: strin
     providerStatus: response.status,
     ...(reportedProviderCode ? { providerCode: reportedProviderCode } : {}),
     ...(requestId ? { upstreamRequestId: requestId } : {}),
-    raw: text.slice(0, MAX_UPSTREAM_ERROR_BYTES).replace(/[\r\n]+/g, " "),
+    raw: text.slice(0, MAX_UPSTREAM_ERROR_BYTES),
     ...(retryAfterMs === null || retryAfterMs === undefined ? {} : { retryAfterMs }),
     ...(classification.rateLimitScope
       ? { rateLimitScope: classification.rateLimitScope }

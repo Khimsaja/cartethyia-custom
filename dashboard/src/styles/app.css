@@ -1272,6 +1272,13 @@ html[data-app="landing"] .landing-story-visual {
   from { opacity: 0; }
   to { opacity: 1; }
 }
+@keyframes mlab-stream-caret {
+  0%, 100% { opacity: 0.4; transform: translateY(0); }
+  50% { opacity: 1; transform: translateY(-1px); }
+}
+.mlab-stream-caret {
+  animation: mlab-stream-caret 1.2s ease-in-out infinite;
+}
 @keyframes typing-bounce {
   0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
   30% { transform: translateY(-3px); opacity: 1; }

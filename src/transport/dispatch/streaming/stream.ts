@@ -46,6 +46,7 @@ import type { ProviderExchangeCapture } from "../attempt-finalize";
 import { captureProviderExchange } from "../attempt-finalize";
 import { proxySuccessHeaders, buildUpstreamDispatchContext } from "../upstream";
 import { resolveStreamFirstChunkTimeoutMs, resolveStreamStallTimeoutMs, resolveUpstreamTimeoutMs } from "../../../config/timeouts";
+import { isWebSearchToolName } from "../../translation/search";
 import type { ProxyRequestState } from "../../request/state";
 import type { PreparedProxyRequest } from "../../request/preparer";
 import { drainAbortReason } from "../../shutdown-notice";
@@ -215,29 +216,6 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
       ? event
       : { ...event, sequence_number: sequenceNumber };
   };
-  // Function-tool search loop: collect the first attempt, and when it ends
-  // in a `web_search` call, run the configured search and dispatch again.
-  // This runs before any client byte is sent, so the stream still shows a
-  // single coherent answer; it only delays the first byte when the model
-  // actually asked for search.
-  let searchLoopEvents: CanonicalEvent[] | undefined;
-  if (searchLoop !== undefined && !first.done) {
-    let collected: CanonicalEvent[] = [first.value];
-    for (;;) {
-      const result = await nextWithAbort(iterator, state.abortController.signal);
-      if (result.done) break;
-      collected.push(result.value);
-    }
-    for (let round = 0; round < 4; round += 1) {
-      const looped = await searchLoop.run(dispatchRequest, collected);
-      if (!looped.served) break;
-      collected = [...looped.events];
-    }
-    searchLoopEvents = collected;
-    // The final loop pass is fully buffered; the stream just replays it.
-    first = { done: true, value: undefined };
-  }
-
   const candidateIdentity: StreamCandidateIdentity = {
     providerId: candidate.provider_id,
     modelId: candidate.model_id,
@@ -339,6 +317,33 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
     }
   };
 
+  const deferredToolEvents: CanonicalEvent[] = [];
+  const searchToolEvents: CanonicalEvent[] = [];
+  let bufferingSearchTool = false;
+  let clientStreamStarted = false;
+  let searchLoopReplay: readonly CanonicalEvent[] | undefined;
+  let searchLoopReplayIndex = 0;
+  const enqueueClientEvent = (
+    event: CanonicalEvent,
+    controller: ReadableStreamDefaultController<Uint8Array>,
+  ): boolean => {
+    if (event.type === "message_start" || event.type === "response_start") {
+      clientStreamStarted = true;
+    }
+    return pipeline.enqueueEvent(sequenceAfterSearch(event), controller);
+  };
+  const flushDeferredToolEvents = (
+    controller: ReadableStreamDefaultController<Uint8Array>,
+  ): boolean => {
+    let enqueued = false;
+    for (const event of deferredToolEvents.splice(0)) {
+      enqueued = enqueueClientEvent(event, controller) || enqueued;
+    }
+    bufferingSearchTool = false;
+    searchToolEvents.length = 0;
+    return enqueued;
+  };
+
   // The client may already be gone before the stream is even constructed.
   if (state.abortController.signal.aborted) finalizer.onStreamAbort();
 
@@ -347,17 +352,8 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
       finalizer.attachController(controller);
       if (state.abortController.signal.aborted) return;
       finalizer.startClientKeepalive(controller, CLIENT_SSE_KEEPALIVE_INTERVAL_MS);
-      for (const event of servedSearch ?? []) pipeline.enqueueEvent(event, controller);
-      if (searchLoopEvents !== undefined) {
-        for (const event of searchLoopEvents) pipeline.enqueueEvent(event, controller);
-        // The loop already buffered the full answer, so this stream is done
-        // after replay. Await it here: `pull` never runs for a stream whose
-        // `start` closes it, and awaiting keeps completion bookkeeping out of
-        // a fire-and-forget race with the reader.
-        await finalizer.finalizeStream(controller);
-        return;
-      }
-      if (!first.done) pipeline.enqueueEvent(sequenceAfterSearch(first.value), controller);
+      for (const event of servedSearch ?? []) enqueueClientEvent(event, controller);
+      if (!first.done) enqueueClientEvent(first.value, controller);
     },
     async pull(controller) {
       finalizer.pullActive = true;
@@ -375,6 +371,14 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
           // forever, which is why real clients previously saw one
           // assistant header and then a 60s socket reset.
           for (;;) {
+            if (searchLoopReplay !== undefined) {
+              while (searchLoopReplayIndex < searchLoopReplay.length) {
+                const event = searchLoopReplay[searchLoopReplayIndex++];
+                if (event !== undefined && enqueueClientEvent(event, controller)) return;
+              }
+              await finalizer.finalizeStream(controller);
+              return;
+            }
             // Re-arm on every upstream read: the watchdog fires only
             // when the provider stays silent longer than the bound.
             finalizer.armStallWatchdog(sawUpstreamActivity);
@@ -397,7 +401,38 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
               return;
             }
             sawUpstreamActivity = true;
-            if (pipeline.enqueueEvent(sequenceAfterSearch(result.value), controller)) return;
+            const event = result.value;
+            if (event.type === "tool_call_delta") {
+              deferredToolEvents.push(event);
+              if (event.name !== undefined && isWebSearchToolName(event.name)) {
+                bufferingSearchTool = true;
+                searchToolEvents.push(...deferredToolEvents.splice(0));
+              } else if (bufferingSearchTool) {
+                searchToolEvents.push(event);
+              }
+              continue;
+            }
+            if (bufferingSearchTool) {
+              deferredToolEvents.push(event);
+              searchToolEvents.push(event);
+              if (event.type === "terminal") {
+                const looped = await searchLoop?.run(dispatchRequest, searchToolEvents);
+                if (looped?.served) {
+                  searchLoopReplay = clientStreamStarted
+                    ? looped.events.filter((item) => item.type !== "message_start" && item.type !== "response_start")
+                    : looped.events;
+                  deferredToolEvents.length = 0;
+                  searchToolEvents.length = 0;
+                  bufferingSearchTool = false;
+                  continue;
+                }
+                if (flushDeferredToolEvents(controller)) return;
+                continue;
+              }
+              continue;
+            }
+            if (deferredToolEvents.length > 0 && flushDeferredToolEvents(controller)) return;
+            if (enqueueClientEvent(event, controller)) return;
           }
         } catch (err) {
           finalizer.clearStallWatchdog();
@@ -439,6 +474,9 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
       finalizer.settleUpstreamIterator();
       return finalizer.releaseStreamResources();
     },
+  }, {
+    // Do not prefetch provider events while the previous SSE frame is queued.
+    highWaterMark: 0,
   });
 
   // Ownership of the lease handles now belongs to the stream's async
