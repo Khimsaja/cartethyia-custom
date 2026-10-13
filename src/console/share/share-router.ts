@@ -13,7 +13,11 @@ import { canonicalClientIpKey } from "../../security/ip-boundary";
 import { decryptCredentialToString } from "../../security/crypto";
 import { isModelAllowed, type ApiKeyAuthorizationSnapshot } from "../../security/api-key-auth";
 import { API_CONTENT_SECURITY_POLICY, X_FRAME_OPTIONS } from "../../security/outbound-headers";
-import { SHARED_CHILD_HINT_MAX_LENGTH, generateApiKeySecret } from "../api-keys/contracts";
+import {
+  SHARED_CHILD_HINT_MAX_LENGTH,
+  generateApiKeySecret,
+  resolveShareKeyPrefix,
+} from "../api-keys/contracts";
 import { popupImageBytes } from "../api-keys/share-popup-image";
 import type { ShareFamilyStats, ShareStatsPort } from "./share-stats";
 import { consoleSseResponse, createConsoleSseStream } from "../observability/sse";
@@ -366,7 +370,7 @@ export function createShareRouter(options: ShareRouterOptions): Elysia {
         return json({ error: { code: "name_required", message: "Your name is required" } }, 400);
       }
       const template = resolved.key;
-      const generated = generateApiKeySecret(template.keyPrefix ?? undefined);
+      const generated = generateApiKeySecret(resolveShareKeyPrefix(template.keyPrefix ?? undefined));
       const issued = await shareStore.issueSharedApiKey(tokenHash, {
         keyHash: generated.hash,
         keyPrefix: generated.prefix,

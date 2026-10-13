@@ -252,4 +252,30 @@ describe("default gateway API key", () => {
       await operations.revokeKey(owner(tenant.tenantId), created.id);
     });
   });
+
+  test("share templates default to sh-carte_ and migrate the old rk_ prefix", async () => {
+    await withRollback(async (client) => {
+      const tenant = await createTenant(client, RUN_ID);
+      const db = drizzle(client as never, { schema: fullSchema });
+      const operations = createApiKeyOperations({
+        store: new DrizzleApiKeyStore(db as never),
+        accessResolver: () => owner(tenant.tenantId),
+        admissionService: { purgeKey: async () => undefined },
+      });
+
+      const template = await operations.createKey(owner(tenant.tenantId), {
+        keyMode: "share",
+        scopes: [...TENANT_KEY_SCOPES],
+      });
+      expect(template.keyPrefix).toBe("sh-carte_");
+      expect(template.secret).toBeUndefined();
+
+      const legacy = await operations.createKey(owner(tenant.tenantId), {
+        keyMode: "share",
+        keyPrefix: "rk_",
+        scopes: [...TENANT_KEY_SCOPES],
+      });
+      expect(legacy.keyPrefix).toBe("sh-carte_");
+    });
+  });
 });

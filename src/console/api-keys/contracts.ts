@@ -157,6 +157,8 @@ export interface ShareLinkResponse {
 
 /** Default prefix for newly generated API keys. */
 export const DEFAULT_API_KEY_PREFIX = "carte_";
+/** Default prefix used by share templates and the keys they issue. */
+export const DEFAULT_SHARE_API_KEY_PREFIX = "sh-carte_";
 
 /** Label of the default gateway API key seeded at first boot; never revoked. */
 export const DEFAULT_API_KEY_LABEL = "Default Cartethyia API key";
@@ -186,6 +188,12 @@ export function generateApiKeySecret(prefix = DEFAULT_API_KEY_PREFIX): {
 export function resolveKeyPrefix(raw: string | undefined): string {
   const trimmed = raw?.trim();
   return trimmed && trimmed.length > 0 ? trimmed : DEFAULT_API_KEY_PREFIX;
+}
+
+/** Resolves the share-key prefix and upgrades the legacy default prefix. */
+export function resolveShareKeyPrefix(raw: string | undefined): string {
+  const trimmed = raw?.trim();
+  return !trimmed || trimmed === "rk_" ? DEFAULT_SHARE_API_KEY_PREFIX : trimmed;
 }
 
 /** Maximum hint the enroll page accepts; the dashboard caps its input there. */
@@ -323,6 +331,8 @@ export function validateApiKeyRequest(request: CreateApiKeyRequest): readonly Ac
 
 /** Serializes a persisted record without credential material or IP-key digests. */
 export function sanitizeApiKeyResponse(record: ApiKeyRecord): ApiKeyResponse {
+  const keyPrefix =
+    record.keyMode === "share" ? resolveShareKeyPrefix(record.keyPrefix) : record.keyPrefix;
   return {
     id: record.id,
     label: record.label,
@@ -334,7 +344,7 @@ export function sanitizeApiKeyResponse(record: ApiKeyRecord): ApiKeyResponse {
      * marker for legacy restores and is promoted to the flag on the next update.
      */
     isDefault: isDefaultGatewayApiKey(record),
-    ...(record.keyPrefix === undefined ? {} : { keyPrefix: record.keyPrefix }),
+    ...(keyPrefix === undefined ? {} : { keyPrefix }),
     ...(record.parentKeyId === undefined ? {} : { parentKeyId: record.parentKeyId }),
     ...(record.notesTitle === undefined ? {} : { notesTitle: record.notesTitle }),
     ...(record.notesSubtitle === undefined ? {} : { notesSubtitle: record.notesSubtitle }),

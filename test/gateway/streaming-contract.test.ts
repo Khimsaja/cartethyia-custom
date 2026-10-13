@@ -78,6 +78,23 @@ const FAILED: CanonicalEvent = {
   usage: USAGE,
 };
 
+const TOOL_CALL: CanonicalEvent = {
+  type: "tool_call_delta",
+  sequence_number: 1,
+  call_id: "call_read_test",
+  index: 0,
+  name: "read",
+  arguments_delta: "{\"path\":\"README.md\"}",
+};
+
+const TOOL_COMPLETE: CanonicalEvent = {
+  type: "terminal",
+  sequence_number: 2,
+  state: "complete",
+  stop_reason: "tool_use",
+  usage: USAGE,
+};
+
 /** Splits an SSE body into its `data:` payloads, in order. */
 function sseFrames(body: string): string[] {
   return body
@@ -218,6 +235,34 @@ dbDescribe("streaming dispatch contract", () => {
       const body = new TextDecoder().decode(Buffer.concat(chunks));
       expect(chunks.length).toBeGreaterThan(1);
       expect(body).toContain("Hello from Cartethyia");
+    });
+
+    test("preserves the completion terminal after forwarding a tool call", async () => {
+      gateway.adapter(world.providerId, { events: () => [START, TOOL_CALL, TOOL_COMPLETE] });
+      const response = await gateway.json(
+        "/v1/chat/completions",
+        {
+          model: world.qualifiedModel,
+          max_tokens: 64,
+          stream: true,
+          messages: [{ role: "user", content: "Read the README" }],
+          tools: [{
+            type: "function",
+            function: {
+              name: "read",
+              description: "Read a file",
+              parameters: { type: "object", properties: { path: { type: "string" } } },
+            },
+          }],
+        },
+        { token: world.token },
+      );
+      const body = await response.text();
+      const frames = sseFrames(body);
+      expect(response.status).toBe(200);
+      expect(lastFinishReason(frames)).toBe("tool_calls");
+      expect(errorEnvelope(frames)).toBeUndefined();
+      expect(body).toContain("\"name\":\"read\"");
     });
   });
 

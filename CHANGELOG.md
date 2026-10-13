@@ -17,6 +17,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- Newly issued personal API keys use `carte_` followed by 12 random characters;
+  share templates issue `sh-carte_` keys, upgrading the legacy `rk_` prefix.
 - PostgreSQL and SQLite now ship only a complete baseline. Existing databases
   with retired migration history must be recreated and recovered through
   backup/restore; startup rejects in-place upgrades. Restore maps retired
@@ -24,6 +26,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- Streaming tool calls now retain the upstream completion event, so completed
+  tool-call turns end with `tool_calls` instead of a synthetic stream error.
 - PostgreSQL and SQLite baselines now include provider account identity
   enrichment fields. Databases created from an older baseline are rejected
   instead of repeatedly failing the enrichment sweep.

@@ -431,7 +431,12 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
               }
               continue;
             }
-            if (deferredToolEvents.length > 0 && flushDeferredToolEvents(controller)) return;
+            if (deferredToolEvents.length > 0) {
+              const flushedToolEvents = flushDeferredToolEvents(controller);
+              const enqueuedEvent = enqueueClientEvent(event, controller);
+              if (flushedToolEvents || enqueuedEvent) return;
+              continue;
+            }
             if (enqueueClientEvent(event, controller)) return;
           }
         } catch (err) {

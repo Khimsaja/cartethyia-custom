@@ -28,6 +28,7 @@ import {
   mapShareLinkResponse,
   type ShareKeyResponse,
   type ShareLinkResponse,
+  resolveShareKeyPrefix,
 } from "./contracts";
 import type { SharedKeyActivityDetail, SharedKeySummary } from "../share/share-usage";
 import { popupImageBytes } from "./share-popup-image";
@@ -107,11 +108,15 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
       const scopes = validateApiKeyRequest(request);
       const popupImage = parseSharePopupImage(request.sharePopupImage);
       const keyMode = request.keyMode ?? "personal";
+      const keyPrefix =
+        keyMode === "share"
+          ? resolveShareKeyPrefix(request.keyPrefix)
+          : resolveKeyPrefix(request.keyPrefix);
       const generated =
         keyMode === "personal"
           ? request.key === undefined
-            ? generateApiKeySecret(request.keyPrefix)
-            : { ...prepareCustomKey(request.key), prefix: resolveKeyPrefix(request.keyPrefix) }
+            ? generateApiKeySecret(keyPrefix)
+            : { ...prepareCustomKey(request.key), prefix: keyPrefix }
           : undefined;
       const record: ApiKeyRecord = {
         id: randomUUID(),
@@ -124,7 +129,7 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
         // Only first boot seeds the default; a key created from the console is
         // never it, so it stays renamable and revocable.
         isDefault: false,
-        keyPrefix: generated?.prefix ?? resolveKeyPrefix(request.keyPrefix),
+        keyPrefix: generated?.prefix ?? keyPrefix,
         ...(generated ? { keyEncrypted: encryptCredential(generated.secret) } : {}),
         ...(request.notesTitle === undefined ? {} : { notesTitle: request.notesTitle }),
         ...(request.notesSubtitle === undefined ? {} : { notesSubtitle: request.notesSubtitle }),
@@ -187,7 +192,12 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
 
       const nextMode = patchRequest.keyMode ?? current.keyMode;
       const modeChanged = nextMode !== current.keyMode;
-      const nextPrefix = resolveKeyPrefix(patchRequest.keyPrefix ?? current.keyPrefix);
+      const nextPrefix =
+        nextMode === "share"
+          ? resolveShareKeyPrefix(
+              patchRequest.keyPrefix ?? (modeChanged ? undefined : current.keyPrefix),
+            )
+          : resolveKeyPrefix(patchRequest.keyPrefix ?? current.keyPrefix);
       const prefixChanged =
         patchRequest.keyPrefix !== undefined &&
         nextPrefix !== resolveKeyPrefix(current.keyPrefix);
@@ -199,7 +209,7 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
           keyMode: "share",
           keyHash: null,
           keyEncrypted: null,
-          keyPrefix: resolveKeyPrefix(patchRequest.keyPrefix ?? current.keyPrefix),
+          keyPrefix: nextPrefix,
         };
       } else if (
         nextMode === "personal" &&
@@ -222,8 +232,8 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
           keyEncrypted: encryptCredential(generated.secret),
           keyPrefix: generated.prefix,
         };
-      } else if (patchRequest.keyPrefix !== undefined && nextMode === "share") {
-        credentialPatch = { keyPrefix: resolveKeyPrefix(patchRequest.keyPrefix) };
+      } else if (nextMode === "share" && nextPrefix !== current.keyPrefix) {
+        credentialPatch = { keyPrefix: nextPrefix };
       }
 
       const scopes =
