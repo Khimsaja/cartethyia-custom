@@ -167,7 +167,7 @@ const KIRO_NODE_VERSION = "24.18.0";
 export const VERSION_SOURCES = {
   antigravity: {
     key: "antigravity",
-    fallback: "2.21.1",
+    fallback: "2.23.0",
     sources: [
       {
         url: "https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml",
@@ -177,7 +177,7 @@ export const VERSION_SOURCES = {
   },
   qoder: {
     key: "qoder",
-    fallback: "1.1.68",
+    fallback: "1.1.70",
     sources: [
       {
         url: "https://registry.npmjs.org/@qoder-ai/qodercli/latest",
@@ -189,18 +189,18 @@ export const VERSION_SOURCES = {
     key: "opencode",
     // The v1 package (`opencode-ai`) stopped at 1.18. The v2 line publishes
     // under `@opencode/cli`, and this feed is what its own installer reads.
-    fallback: "2.0.25",
+    fallback: "2.0.28",
     minVersion: "2.0.0",
     sources: [{ url: "https://opencode.ai/update/api/latest/cli/npm" }],
   },
   commandcode: {
     key: "commandcode",
-    fallback: "1.79.2",
+    fallback: "1.81.0",
     sources: [{ url: "https://registry.npmjs.org/command-code/latest" }],
   },
   grok: {
     key: "grok",
-    fallback: "1.0.50",
+    fallback: "1.0.52",
     sources: [
       { url: "https://storage.googleapis.com/grok-build-public-artifacts/cli/stable" },
       { url: "https://registry.npmjs.org/@xai-official/grok/latest" },
@@ -334,7 +334,7 @@ export const VERSION_SOURCES = {
   },
   kilo: {
     key: "kilo-code",
-    fallback: "7.8.8",
+    fallback: "7.8.9",
     sources: [{ url: "https://open-vsx.org/api/kilocode/kilo-code" }],
   },
   mimo: {
@@ -344,7 +344,7 @@ export const VERSION_SOURCES = {
   },
   muse: {
     key: "muse-code",
-    fallback: "1.4.3-R5018.1",
+    fallback: "1.4.7-R6101.1",
     sources: [{ url: "https://api.meta.ai/muse-code/channels/muse-stable" }],
   },
   zcode: {

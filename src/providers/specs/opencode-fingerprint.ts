@@ -1,7 +1,9 @@
 import { getOpenCodeVersion } from "../operations/client-versions";
+import { createHash, randomBytes } from "node:crypto";
 
 let lastTimestamp = 0;
 let sequenceCounter = 0;
+const SESSION_ID_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
 /**
  * Generate a valid OpenCode session identifier matching official binary:
@@ -19,31 +21,53 @@ export function generateOpenCodeSessionId(now = Date.now()): string {
     Number((inverted >> BigInt(40 - 8 * i)) & 0xffn).toString(16).padStart(2, "0"),
   ).join("");
   const rand = crypto.getRandomValues(new Uint8Array(14));
-  const chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-  const suffix = Array.from(rand, (byte) => chars[byte % 62]).join("");
+  const suffix = Array.from(rand, (byte) => SESSION_ID_ALPHABET[byte % 62]).join("");
   return `ses_${hex}${suffix}`;
 }
 
-/** Generate a valid OpenCode message/request identifier: `msg_` + 30-char hex. */
-export function generateOpenCodeRequestId(): string {
-  return `msg_${crypto.randomUUID().replaceAll("-", "").slice(0, 30)}`;
+function stableOpenCodeSessionId(affinity: string): string {
+  const digest = createHash("sha256").update(`opencode-session:${affinity}`).digest();
+  const timestamp = digest.subarray(0, 6).toString("hex");
+  const suffix = Array.from(digest.subarray(6, 20), (byte) => SESSION_ID_ALPHABET[byte % 62]).join("");
+  return `ses_${timestamp}${suffix}`;
 }
 
 function isOpenCodeSessionId(value: string | undefined): value is string {
   return value !== undefined && /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/.test(value);
 }
 
-/** Build OpenCode identity headers while keeping cache affinity separate from its session ID. */
+function createTraceHeaders(): Record<string, string> {
+  const traceId = randomBytes(16).toString("hex");
+  const spanId = randomBytes(8).toString("hex");
+  const parentSpanId = randomBytes(8).toString("hex");
+  return {
+    traceparent: `00-${traceId}-${spanId}-01`,
+    b3: `${traceId}-${spanId}-1-${parentSpanId}`,
+  };
+}
+
+/** Build the observed OpenCode CLI identity headers for an upstream dispatch. */
 export function buildOpenCodeHeaders(
   version = getOpenCodeVersion(),
   affinity?: string,
+  projectId?: string,
 ): Record<string, string> {
+  let sessionId: string;
+  if (isOpenCodeSessionId(affinity)) {
+    sessionId = affinity;
+  } else if (affinity !== undefined) {
+    sessionId = stableOpenCodeSessionId(affinity);
+  } else {
+    sessionId = generateOpenCodeSessionId();
+  }
   return {
-    "x-opencode-client": "opencode",
-    "x-opencode-session": isOpenCodeSessionId(affinity) ? affinity : generateOpenCodeSessionId(),
-    ...(affinity === undefined ? {} : { "x-session-affinity": affinity }),
-    "x-opencode-request": generateOpenCodeRequestId(),
-    "x-opencode-project": "global",
-    "user-agent": `opencode/${version}`,
+    "x-opencode-client": "cli",
+    "x-opencode-session": sessionId,
+    "x-opencode-session-id": sessionId,
+    "x-session-affinity": sessionId,
+    "x-session-id": sessionId,
+    "x-opencode-project": projectId ?? "global",
+    "user-agent": `opencode/latest/${version}/cli`,
+    ...createTraceHeaders(),
   };
 }

@@ -14,18 +14,17 @@ const context = {
 } as unknown as ProviderDispatchContext;
 
 describe("Buddy upstream protocol alignment", () => {
-  test("keeps tools when tool_choice is none and injects an account-scoped cache key", () => {
+  test("keeps tools when tool_choice is none without inventing a cache key", () => {
     const payload: Record<string, unknown> = {
       model: "glm-5.2",
       messages: [{ role: "user", content: "hi" }],
       tools: [{ type: "function", function: { name: "run_shell" } }],
       tool_choice: "none",
     };
-    buddyPrePayloadCommon(payload, request, context);
+    buddyPrePayloadCommon(payload, request);
     expect(payload["tool_choice"]).toBe("none");
     expect(payload["tools"]).toHaveLength(1);
-    expect(payload["prompt_cache_key"]).toBeString();
-    expect(String(payload["prompt_cache_key"])).toStartWith("wb2a-abcdef12-");
+    expect(payload["prompt_cache_key"]).toBeUndefined();
   });
 
   test("clamps an unsupported international effort without touching a supported one", () => {
@@ -35,7 +34,7 @@ describe("Buddy upstream protocol alignment", () => {
       reasoning_effort: "max",
       prompt_cache_key: "client-key",
     };
-    buddyPrePayloadCommon(payload, request, context, "intl");
+    buddyPrePayloadCommon(payload, request, "intl");
     expect(payload["reasoning_effort"]).toBe("high");
     expect(payload["prompt_cache_key"]).toBe("client-key");
   });
@@ -46,7 +45,7 @@ describe("Buddy upstream protocol alignment", () => {
       messages: [],
       reasoning_effort: "max",
     };
-    buddyPrePayloadCommon(payload, request, context, "cn");
+    buddyPrePayloadCommon(payload, request, "cn");
     expect(payload["reasoning_effort"]).toBe("max");
   });
 

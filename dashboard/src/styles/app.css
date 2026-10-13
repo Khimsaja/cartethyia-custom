@@ -1412,6 +1412,11 @@ html[data-app="landing"] .landing-story-visual {
 .provider-grid {
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
 }
+/* The routing controls form a balanced pair; auto-fit collapses unused tracks
+   so the two cards always share the available row instead of leaving a gap. */
+.routing-controls-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+}
 .quota-account-grid {
   display: grid;
   grid-template-columns: var(--grid-template-columns-quota-account);

@@ -6,6 +6,7 @@ const SESSION_HEADERS = [
   "x-session-id",
   "x-session-affinity",
   "x-opencode-session",
+  "x-opencode-session-id",
   "x-claude-code-session-id",
   "prompt_cache_key",
   "prompt-cache-key",

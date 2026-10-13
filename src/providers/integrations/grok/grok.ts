@@ -438,6 +438,7 @@ function normalizeGrokPayload(
   payload: Record<string, unknown>,
   request: CanonicalRequest,
   candidate: ProviderDispatchTarget,
+  context: ProviderDispatchContext,
 ): void {
   payload.stream = true;
   if (payload.store === undefined || payload.store === null) payload.store = false;
@@ -489,7 +490,7 @@ function normalizeGrokPayload(
   if (!include.includes("reasoning.encrypted_content")) include.push("reasoning.encrypted_content");
   payload.include = include;
 
-  const cacheKey = resolvePromptCacheKey(request);
+  const cacheKey = resolvePromptCacheKey(request, context);
   if (cacheKey !== undefined && typeof payload.prompt_cache_key !== "string")
     payload.prompt_cache_key = cacheKey.slice(0, 512);
 
@@ -538,4 +539,3 @@ class GrokAdapter extends OpenAICompatibleAdapter {
 
 /** Dedicated Grok Build provider adapter. */
 export const grokAdapter: ProviderAdapter = new GrokAdapter();
-

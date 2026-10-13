@@ -14,6 +14,7 @@ import { BaseProviderAdapter } from "./base-adapter";
 import { encodeWireRequest, decodeWireResponse, decodeWireStream } from "../protocol/registry";
 import { postUpstreamJson } from "../protocol/upstream/post-json";
 import { GATEWAY_USER_AGENT } from "./operations/gateway-user-agent";
+import { resolvePromptCacheKey } from "./operations/session-resolution";
 import {
   BUILTIN_DEFAULT_ENDPOINTS,
   filterProviderCustomHeaders,
@@ -62,13 +63,15 @@ export interface OpenAICompatibleAdapterConfig {
   readonly structured_output?: { readonly mode: "json_object" | "json_schema"; readonly enabled: boolean; readonly schema?: Record<string, unknown> };
   /** Whether this provider accepts OpenAI prompt cache controls on its wire. */
   readonly supports_prompt_caching?: boolean;
+  /** Chat wire field used for the maximum completion token limit. */
+  readonly chat_token_limit_field?: "max_tokens" | "max_completion_tokens";
   /** Final payload mutation hook — runs after canonical translation, before serialization. Lets a provider promote extension-namespaced `generation_controls` fields (e.g. Cerebras `extra_body`) without a fetch-wrapping hack. */
   /**
    * Per-dispatch dynamic header hook, applied after `extra_headers` (so it
    * can layer on top of static config). Unlike `extra_headers`, this runs
    * once per request — for providers that need fresh per-request values
-   * (e.g. OpenCode's `x-opencode-session`/`x-opencode-request` correlation
-   * IDs) rather than a fixed header set.
+   * (e.g. OpenCode's session aliases and trace headers) rather than a fixed
+   * header set.
    */
   readonly buildExtraHeaders?: (
     context: ProviderDispatchContext,
@@ -196,8 +199,13 @@ export class OpenAICompatibleAdapter extends BaseProviderAdapter {
   ): Promise<unknown> {
     const wireFamily = candidate.wire_family;
     const effectiveRequest = this.config.prepareRequest?.(request) ?? request;
+    const promptCacheKey = resolvePromptCacheKey(effectiveRequest, context);
     const payload = await encodeWireRequest(wireFamily, effectiveRequest, {
       supportsPromptCaching: this.config.supports_prompt_caching !== false,
+      ...(promptCacheKey === undefined ? {} : { promptCacheKey }),
+      ...(this.config.chat_token_limit_field === undefined
+        ? {}
+        : { chatTokenLimitField: this.config.chat_token_limit_field }),
     });
     if (
       wireFamily !== "messages" &&

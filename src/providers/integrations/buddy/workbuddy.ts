@@ -120,9 +120,9 @@ export function workbuddyPrePayload(
   payload: Record<string, unknown>,
   request: CanonicalRequest,
   candidate: ProviderDispatchTarget,
-  context?: ProviderDispatchContext,
+  _context?: ProviderDispatchContext,
 ): void {
-  buddyPrePayloadCommon(payload, request, context);
+  buddyPrePayloadCommon(payload, request);
   const rawModel = payload["model"];
   const source =
     typeof rawModel === "string" && rawModel.length > 0 ? rawModel : candidate.model_id;

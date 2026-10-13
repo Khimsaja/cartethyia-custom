@@ -59,8 +59,12 @@ function computerOutputForWire(content: unknown): Record<string, unknown> {
 
 export function canonicalToResponsesPayload(
   request: CanonicalRequest,
-  supportsPromptCaching = true,
+  options: {
+    readonly supportsPromptCaching?: boolean;
+    readonly promptCacheKey?: string;
+  } = {},
 ): Record<string, unknown> {
+  const supportsPromptCaching = options.supportsPromptCaching ?? true;
   const input: Array<Record<string, unknown>> = [];
   // `pending_safety_checks` have no canonical content-part representation, so
   // `parseResponsesRequest` retains them per-item in the scoped item-metadata
@@ -233,7 +237,7 @@ export function canonicalToResponsesPayload(
     input,
     stream: request.stream,
   };
-  const responsesCacheKey = resolvePromptCacheKey(request);
+  const responsesCacheKey = options.promptCacheKey ?? resolvePromptCacheKey(request);
   if (supportsPromptCaching && responsesCacheKey !== undefined)
     payload.prompt_cache_key = responsesCacheKey;
   if (request.tools?.length) {
@@ -341,6 +345,7 @@ export function canonicalToResponsesPayload(
     "user",
   ];
   for (const field of responsesPassthrough) {
+    if (!supportsPromptCaching && field.startsWith("prompt_cache_")) continue;
     // A bare `extension:<field>` fallback exists because the Chat parser files
     // shared top-level params (`store`, `user`, `moderation`, …) under the bare
     // key, and those have the same shape on every wire. `context_management`

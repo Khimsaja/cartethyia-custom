@@ -9,6 +9,8 @@ const FORWARDED_REQUEST_HEADERS = new Set([
   "x-session-id",
   "x-session-affinity",
   "x-opencode-session",
+  "x-opencode-session-id",
+  "x-opencode-project",
   "prompt-cache-key",
   "prompt_cache_key",
   "session-id",

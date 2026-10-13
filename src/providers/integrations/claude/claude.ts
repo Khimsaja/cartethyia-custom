@@ -223,7 +223,8 @@ export class ClaudeAdapter implements ProviderAdapter {
     const profileId = request.generation_controls["extension:user_profile_id"];
     if (typeof profileId === "string" && profileId.length > 0)
       ensureAnthropicBeta(headers, "user-profiles");
-    const sessionId = headers["X-Claude-Code-Session-Id"] ?? resolvePromptCacheKey(request);
+    const sessionId =
+      headers["X-Claude-Code-Session-Id"] ?? resolvePromptCacheKey(request, context);
     // Provider/model parameter quirks run before translation, exactly as they do
     // on the API-key (`anthropic`) path. Without this call the Claude Code
     // adapter never reached the table, so a model that rejects `temperature`
@@ -312,4 +313,3 @@ export class ClaudeAdapter implements ProviderAdapter {
 }
 
 export const claudeAdapter = new ClaudeAdapter();
-

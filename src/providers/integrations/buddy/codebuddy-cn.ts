@@ -79,10 +79,10 @@ export function codeBuddyCnPrePayload(
   payload: Record<string, unknown>,
   request: CanonicalRequest,
   candidate: ProviderDispatchTarget,
-  context?: ProviderDispatchContext,
+  _context?: ProviderDispatchContext,
 ): void {
   payload["x-buddy-realm"] = "cn";
-  buddyPrePayloadCommon(payload, request, context);
+  buddyPrePayloadCommon(payload, request);
   if (Array.isArray(payload["messages"])) {
     const messages = payload["messages"] as Array<Record<string, unknown>>;
     neutralizeCnMessages(messages);

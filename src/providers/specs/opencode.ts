@@ -89,7 +89,11 @@ export function isFreeTierZenModel(modelId: string): boolean {
 }
 
 function opencodeDesktopHeaders(context: ProviderDispatchContext): Record<string, string> {
-  return buildOpenCodeHeaders(undefined, context.conversation_affinity);
+  return buildOpenCodeHeaders(
+    undefined,
+    context.conversation_affinity,
+    context.request_headers?.["x-opencode-project"],
+  );
 }
 /** Canonical agent-tool fingerprint OpenCode Free requires on every dispatch.
  * Upstream rejects tool-less or non-agent requests with `FreeTierError`
@@ -160,7 +164,7 @@ function opencodeSpec(providerId: "opencodeft" | "opencodezen" | "opencodego"): 
     endpoint_paths_by_wire_family: {
       ...PROVIDER_COMPATIBILITY_PROFILES[providerId]?.endpoint_paths_by_wire_family,
     },
-    promptCache: false,
+    chatTokenLimitField: "max_completion_tokens",
     extra_headers: { accept: "application/json" },
     // Go is API-key-only: it never receives the desktop fingerprint.
     ...(providerId === "opencodego" ? {} : { buildExtraHeaders: opencodeDesktopHeaders }),

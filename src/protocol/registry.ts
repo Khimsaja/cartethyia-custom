@@ -4,16 +4,17 @@ export interface CodecContext {
   readonly isOAuth?: boolean;
   readonly sessionId?: string;
   readonly supportsPromptCaching?: boolean;
+  readonly chatTokenLimitField?: "max_tokens" | "max_completion_tokens";
+  readonly promptCacheKey?: string;
   readonly signal?: AbortSignal;
 }
 
 /**
  * One loaded codec for a single wire family.
  *
- * A union rather than one shape: `messages` takes an options object while
- * `chat`/`responses` take a positional boolean, because those are the shapes the
- * codecs actually declare. Modelling it as a single signature forced a cast at
- * the call site, which hid the real difference instead of expressing it.
+ * A union rather than one shape: the request encoders have different options
+ * per wire family, so the registry can call each with its actual contract
+ * without casting.
  */
 type CodecModule =
   | {
@@ -34,10 +35,14 @@ type CodecModule =
       ) => AsyncIterable<CanonicalEvent>;
     }
   | {
-      readonly family: "chat" | "responses";
+      readonly family: "chat";
       readonly encodeWireRequest: (
         request: CanonicalRequest,
-        supportsPromptCaching?: boolean,
+        options?: {
+          readonly supportsPromptCaching?: boolean;
+          readonly tokenLimitField?: "max_tokens" | "max_completion_tokens";
+          readonly promptCacheKey?: string;
+        },
       ) => Record<string, unknown>;
       readonly decodeWireResponse: (
         json: Record<string, unknown>,
@@ -48,7 +53,26 @@ type CodecModule =
         request: CanonicalRequest,
         signal?: AbortSignal,
       ) => AsyncIterable<CanonicalEvent>;
-    };
+    }
+  | {
+      readonly family: "responses";
+      readonly encodeWireRequest: (
+        request: CanonicalRequest,
+        options?: {
+          readonly supportsPromptCaching?: boolean;
+          readonly promptCacheKey?: string;
+        },
+      ) => Record<string, unknown>;
+      readonly decodeWireResponse: (
+        json: Record<string, unknown>,
+        request: CanonicalRequest,
+      ) => readonly CanonicalEvent[];
+      readonly decodeWireStream: (
+        body: ReadableStream<Uint8Array>,
+        request: CanonicalRequest,
+        signal?: AbortSignal,
+      ) => AsyncIterable<CanonicalEvent>;
+    }
 
 /**
  * Loads the codec for one wire family, caching the module after the first load.
@@ -115,7 +139,27 @@ export async function encodeWireRequest(
       ...(context?.isOAuth === undefined ? {} : { isOAuth: context.isOAuth }),
     });
   }
-  return codec.encodeWireRequest(request, context?.supportsPromptCaching !== false);
+  if (codec.family === "chat") {
+    return codec.encodeWireRequest(request, {
+      ...(context?.supportsPromptCaching === undefined
+        ? {}
+        : { supportsPromptCaching: context.supportsPromptCaching }),
+      ...(context?.chatTokenLimitField === undefined
+        ? {}
+        : { tokenLimitField: context.chatTokenLimitField }),
+      ...(context?.promptCacheKey === undefined
+        ? {}
+        : { promptCacheKey: context.promptCacheKey }),
+    });
+  }
+  return codec.encodeWireRequest(request, {
+    ...(context?.supportsPromptCaching === undefined
+      ? {}
+      : { supportsPromptCaching: context.supportsPromptCaching }),
+    ...(context?.promptCacheKey === undefined
+      ? {}
+      : { promptCacheKey: context.promptCacheKey }),
+  });
 }
 
 export async function decodeWireResponse(

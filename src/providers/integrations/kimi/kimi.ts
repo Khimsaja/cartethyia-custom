@@ -172,7 +172,7 @@ class KimiCodeAdapter implements ProviderAdapter {
       // max-token caps. Kimi's own per-model caps are applied below.
       isOAuth: false,
     });
-    applyKimiBootstrap(payload, bootstrap, request);
+    applyKimiBootstrap(payload, bootstrap, request, context);
     const headers: Record<string, string> = {
       "content-type": "application/json",
       accept: request.stream ? "text/event-stream" : "application/json",
@@ -201,6 +201,7 @@ function applyKimiBootstrap(
   payload: Record<string, unknown>,
   bootstrap: KimiModelBootstrap | undefined,
   request: CanonicalRequest,
+  context: ProviderDispatchContext,
 ): void {
   if (!bootstrap) return;
   // `canonicalToClaudeMessagesPayload` already emits the provider-native
@@ -210,7 +211,7 @@ function applyKimiBootstrap(
   if (!bootstrap.supportsPromptCache && request.cache_hint !== undefined) {
     removeKimiCacheControls(payload);
   }
-  const promptCacheKey = lookupKimiPromptCacheKey(request);
+  const promptCacheKey = lookupKimiPromptCacheKey(request, context);
   if (bootstrap.supportsPromptCache && promptCacheKey !== undefined) {
     const metadata = isRecord(payload["metadata"])
       ? (payload["metadata"] as Record<string, unknown>)
@@ -229,8 +230,9 @@ function applyKimiBootstrap(
 /** Looks up Kimi's normalized prompt-cache affinity key from canonical controls. */
 export function lookupKimiPromptCacheKey(
   request: CanonicalRequest,
+  context?: ProviderDispatchContext,
 ): string | undefined {
-  const raw = resolvePromptCacheKey(request);
+  const raw = resolvePromptCacheKey(request, context);
   if (typeof raw !== "string") return undefined;
   const trimmed = raw.trim();
   if (!trimmed) return undefined;

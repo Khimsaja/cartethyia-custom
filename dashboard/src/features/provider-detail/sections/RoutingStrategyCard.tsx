@@ -183,10 +183,9 @@ export function RoutingStrategyCard({
             </div>
           </Row>
 
-          {/* Two panels side by side while there is room; the auto-fit track is a
-              card-width question, so it stays in CSS rather than an arbitrary
-              utility. */}
-          <div className="provider-grid grid gap-5 min-w-0">
+          {/* Keep these paired controls balanced, filling the row on wide cards
+              and stacking when the card cannot fit two readable tracks. */}
+          <div className="routing-controls-grid grid gap-5 min-w-0 w-full">
             <div
               className="px-6 py-5 rounded-control border border-inner-border bg-surface-2 min-w-0"
             >

@@ -56,8 +56,10 @@ export interface ApiKeyProviderSpec {
    * never get it.
    */
   readonly gatewayUserAgent?: boolean;
-  /** `false` drops OpenAI prompt-cache controls from the payload (OpenCode). */
+  /** `false` drops OpenAI prompt-cache controls from the payload. */
   readonly promptCache?: boolean;
+  /** Chat wire field used for the maximum completion token limit. */
+  readonly chatTokenLimitField?: "max_tokens" | "max_completion_tokens";
   /** Canonical request hook, applied before wire translation. Use for
    * provider-side request contracts (e.g. OpenCode Free's agent tool
    * fingerprint) so every wire codec serializes the same canonical input.
@@ -86,6 +88,9 @@ export function createApiKeyAdapter(
       ...(spec.buildExtraHeaders ? { buildExtraHeaders: spec.buildExtraHeaders } : {}),
       ...(spec.credential_forwarding ? { credential_forwarding: spec.credential_forwarding } : {}),
       ...(spec.promptCache === false ? { supports_prompt_caching: false } : {}),
+      ...(spec.chatTokenLimitField === undefined
+        ? {}
+        : { chat_token_limit_field: spec.chatTokenLimitField }),
       ...(spec.prepareRequest ? { prepareRequest: spec.prepareRequest } : {}),
       ...(spec.prePayload ? { prePayload: spec.prePayload } : {}),
       ...(fetchImpl ? { fetchImpl } : {}),
@@ -93,4 +98,3 @@ export function createApiKeyAdapter(
     }),
   );
 }
-

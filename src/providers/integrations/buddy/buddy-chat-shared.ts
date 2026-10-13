@@ -17,13 +17,10 @@
  * Provider-specific identity headers and catalog tables stay in each variant's
  * own `*-shared.ts`.
  */
-import { createHash } from "node:crypto";
 import { completeRequiredSchema } from "../../../protocol/codecs";
 import type { CanonicalRequest } from "../../../protocol/canonical-model";
 import { isRecord } from "../../../protocol/codecs";
 import { applyDeepSeekReasoning, applyOpenAIReasoning, backfillDeepSeekReasoningContent } from "../../reasoning";
-import { resolvePromptCacheKey } from "../../operations/session-resolution";
-import type { ProviderDispatchContext } from "../../contracts";
 
 const BUDDY_TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
 const INVALID_BUDDY_TOOL_NAME_CHARS = /[^a-zA-Z0-9_-]/g;
@@ -163,7 +160,6 @@ export function normalizeBuddyToolNames(payload: Record<string, unknown>): void 
 export function buddyPrePayloadCommon(
   payload: Record<string, unknown>,
   request?: CanonicalRequest,
-  context?: ProviderDispatchContext,
   realm: "intl" | "cn" = "intl",
 ): void {
   // Canonical upstream renames: max_completion_tokens is OpenAI compat alias, buddy only reads max_tokens
@@ -196,7 +192,6 @@ export function buddyPrePayloadCommon(
   }
   backfillDeepSeekReasoningContent(payload);
   clampBuddyReasoningEffort(payload, realm);
-  injectBuddyPromptCacheKey(payload, request, context);
   const messages = payload["messages"];
   if (Array.isArray(messages)) {
     const arr = messages as Array<Record<string, unknown>>;
@@ -382,28 +377,6 @@ function clampBuddyReasoningEffort(payload: Record<string, unknown>, realm: "int
     ? below.reduce((best, entry) => (entry.rank > best.rank ? entry : best))
     : ranked.reduce((best, entry) => (entry.rank < best.rank ? entry : best));
   payload[key] = chosen.effort;
-}
-
-/**
- * Stable, account-scoped prefix-cache key. A client key wins; otherwise the
- * conversation id is hashed with the account id so two accounts never share a
- * cached prefix.
- */
-function injectBuddyPromptCacheKey(
-  payload: Record<string, unknown>,
-  request: CanonicalRequest | undefined,
-  context: ProviderDispatchContext | undefined,
-): void {
-  const existing = payload["prompt_cache_key"];
-  if (typeof existing === "string" && existing.trim().length > 0) return;
-  const uid = context?.credential.account_id?.trim() ?? "";
-  const bodyConversation = payload["conversation_id"] ?? payload["conversationId"];
-  const conversation = typeof bodyConversation === "string" && bodyConversation.trim().length > 0
-    ? bodyConversation.trim()
-    : resolvePromptCacheKey(request, context) ?? "";
-  const uid8 = uid.slice(0, 8) || "-";
-  const digest = createHash("sha256").update(`${uid}|${conversation}`).digest("hex").slice(0, 32);
-  payload["prompt_cache_key"] = `wb2a-${uid8}-${digest}`;
 }
 
 function normalizeBuddyToolChoice(payload: Record<string, unknown>): void {

@@ -177,8 +177,14 @@ function markLatestChatCacheBreakpoint(messages: Array<Record<string, unknown>>)
 
 export function canonicalToChatPayload(
   request: CanonicalRequest,
-  supportsPromptCaching = true,
+  options: {
+    readonly supportsPromptCaching?: boolean;
+    readonly tokenLimitField?: "max_tokens" | "max_completion_tokens";
+    readonly promptCacheKey?: string;
+  } = {},
 ): Record<string, unknown> {
+  const supportsPromptCaching = options.supportsPromptCaching ?? true;
+  const tokenLimitField = options.tokenLimitField ?? "max_tokens";
   const messages: Array<Record<string, unknown>> = [];
   if (request.system?.length) {
     for (const p of request.system) {
@@ -393,7 +399,7 @@ export function canonicalToChatPayload(
     messages,
     stream: request.stream,
   };
-  const chatCacheKey = resolvePromptCacheKey(request);
+  const chatCacheKey = options.promptCacheKey ?? resolvePromptCacheKey(request);
   if (supportsPromptCaching && chatCacheKey !== undefined)
     payload.prompt_cache_key = chatCacheKey;
   if (request.tools?.length) {
@@ -497,6 +503,7 @@ export function canonicalToChatPayload(
     ["extension:prompt_cache_key", "prompt_cache_key"],
   ];
   for (const [extension, field] of passthrough) {
+    if (!supportsPromptCaching && field.startsWith("prompt_cache_")) continue;
     const value =
       request.generation_controls[extension as `extension:${string}`] ??
       request.generation_controls[`extension:responses.${field}` as `extension:${string}`];
@@ -517,7 +524,8 @@ export function canonicalToChatPayload(
   // reject a large prompt whose `max_tokens` is absent outright (WorkBuddy
   // `400 model_param_invalid`, reproduced through the gateway).
   const bounded = resolveWireMaxTokens("chat", { max_tokens: requestedMaxTokens });
-  if (bounded !== undefined) payload["max_tokens"] = bounded;
+  delete payload["max_tokens"];
+  if (bounded !== undefined) payload[tokenLimitField] = bounded;
   return payload;
 }
 
