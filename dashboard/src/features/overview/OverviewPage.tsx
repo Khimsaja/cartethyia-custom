@@ -1,26 +1,30 @@
 import { Activity, Check, Copy, Database, Globe, MemoryStick } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import { Button } from "../../components/ui/button";
 import { Card, CardBody, CardHeader } from "../../components/ui/card";
 import { ErrorState, LoadingState } from "../../components/ui/state";
 import { Stack } from "../../components/ui/stack";
 import { ApiKeysPanel } from "../../components/ApiKeysPanel";
 import { CompressionPanel } from "../../components/CompressionPanel";
+import { useClipboard } from "../../hooks/use-clipboard";
 import { useSystemHealth } from "../../hooks/system";
 
-import { useTrackedTimeout } from "../../hooks/use-timeout";
 import { formatBytes } from "../../lib/format/numbers";
 import { getErrorMessage } from "../../data/api";
+import { toast } from "../../lib/toast";
 
 
 function ApiEndpointCard() {
-  const [copied, setCopied] = useState(false);
-  const schedule = useTrackedTimeout();
-  const endpoint = `${window.location.origin}/v1`;
-  const copy = () => {
-    void navigator.clipboard.writeText(endpoint);
-    setCopied(true);
-    schedule(() => setCopied(false), 2000);
+  const { copied, copy } = useClipboard(2000);
+  const gatewayOrigin = new URL(window.location.origin);
+  gatewayOrigin.port = "12800";
+  const endpoint = `${gatewayOrigin.origin}/v1`;
+  const copyEndpoint = async () => {
+    if (await copy(endpoint)) {
+      toast.success("Gateway endpoint copied", endpoint);
+      return;
+    }
+    toast.error("Clipboard unavailable on this origin");
   };
   return (
     <Card>
@@ -29,7 +33,7 @@ function ApiEndpointCard() {
         subtitle="Universal OpenAI & Anthropic Wire API Endpoint Compatible"
         icon={<Globe size={16} />}
         action={
-          <Button variant="secondary" size="sm" onClick={copy} icon={copied ? <Check size={13} /> : <Copy size={13} />}>
+          <Button variant="secondary" size="sm" onClick={() => void copyEndpoint()} icon={copied ? <Check size={13} /> : <Copy size={13} />}>
             {copied ? "Copied" : "Copy"}
           </Button>
         }
