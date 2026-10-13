@@ -382,7 +382,29 @@ export function ChatBubble({
             ) : message.text.length > 0 ? (
               <div className="min-w-0 font-sans text-body-lg leading-normal [&_p]:m-0 [&_p]:mb-4 [&_ul]:m-0 [&_ul]:mb-4 [&_ol]:m-0 [&_ol]:mb-4 [&_pre]:m-0 [&_pre]:mb-4 [&_p:last-child]:mb-0 [&_ul:last-child]:mb-0 [&_ol:last-child]:mb-0 [&_pre:last-child]:mb-0 [&_pre]:overflow-x-auto [&_pre]:px-6 [&_pre]:py-5 [&_pre]:rounded-control [&_pre]:bg-surface-muted [&_pre]:font-mono [&_pre]:text-caption [&_code]:font-mono [&_svg]:flex-none [&_svg]:mt-1.5">
                 {message.error === true ? <AlertCircle size={14} aria-hidden="true" /> : null}
-                <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ pre: MarkdownPre }}>{message.text}</ReactMarkdown>
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    pre: MarkdownPre,
+                    table: ({ children }) => (
+                      <div className="my-4 max-w-full overflow-x-auto rounded-control border border-inner-border">
+                        <table className="w-full border-collapse text-left text-caption">{children}</table>
+                      </div>
+                    ),
+                    th: ({ children }) => (
+                      <th className="border-b border-inner-border bg-surface-2 px-4 py-3 text-left font-semibold text-text-primary">
+                        {children}
+                      </th>
+                    ),
+                    td: ({ children }) => (
+                      <td className="border-b border-inner-border px-4 py-3 align-top text-text-secondary [&>p]:my-0">
+                        {children}
+                      </td>
+                    ),
+                  }}
+                >
+                  {message.text}
+                </ReactMarkdown>
                 {live ? <span className="ml-1 inline-block text-accent mlab-stream-caret" aria-hidden="true">▋</span> : null}
               </div>
             ) : null}

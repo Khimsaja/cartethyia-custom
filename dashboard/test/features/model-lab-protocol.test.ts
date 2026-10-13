@@ -345,6 +345,23 @@ describe("buildLabRequest", () => {
     expect(markup).not.toContain(">Bold</span>");
   });
 
+  test("GFM tables render with readable cells inside a horizontal scroll region", () => {
+    const markup = renderToStaticMarkup(createElement(ChatBubble, {
+      message: {
+        id: "markdown-table",
+        role: "assistant",
+        text: "| Model | Status |\n| --- | --- |\n| deepseek-v4.1-flash | Ready |",
+      },
+    }));
+
+    expect(markup).toContain("<table");
+    expect(markup).toContain("<th");
+    expect(markup).toContain("<td");
+    expect(markup).toContain("overflow-x-auto");
+    expect(markup).toContain("deepseek-v4.1-flash");
+    expect(markup).toContain("Ready");
+  });
+
   test("pending agentic tools render an inline approval prompt", () => {
     const markup = renderToStaticMarkup(createElement(ChatBubble, {
       message: {

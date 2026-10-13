@@ -1174,11 +1174,9 @@ function LiveInFlightPill(): ReactNode {
 function RequestsStatCard({
   pending,
   requests,
-  period,
 }: {
   readonly pending: boolean;
   readonly requests: number | undefined;
-  readonly period: Period;
 }): ReactNode {
   const flight = useContext(InFlightContext);
   return (
@@ -1187,8 +1185,8 @@ function RequestsStatCard({
       value={pending ? "…" : formatNumber(requests)}
       detail={
         flight.count === null || flight.uniqueIps === null
-          ? `${periodLabel(period)} · In-flight unavailable`
-          : `${periodLabel(period)} · ${flight.count} in flight from ${flight.uniqueIps} IPs`
+          ? "In-flight unavailable"
+          : `${flight.count} in flight from ${flight.uniqueIps} IPs`
       }
       icon={<Activity size={13} />}
     />
@@ -1479,7 +1477,6 @@ export default function Usage(): ReactNode {
         <RequestsStatCard
           pending={summaryQuery.isPending}
           requests={summary?.requests}
-          period={period}
         />
         <StatCard
           label="Input tokens"
@@ -1533,8 +1530,24 @@ export default function Usage(): ReactNode {
           value={summaryQuery.isPending ? "…" : formatDuration(summary?.avgResolveMs)}
           detail={
             summaryQuery.isPending
-              ? `${periodLabel(period)} · Performance`
-              : `${periodLabel(period)} · Performance P50 ${formatDuration(summary?.latencyP50Ms)} · P95 ${formatDuration(summary?.latencyP95Ms)} · P99 ${formatDuration(summary?.latencyP99Ms)}`
+              ? "Performance"
+              : (
+                <span className="inline-flex flex-wrap gap-1.5">
+                  {[
+                    ["P50", summary?.latencyP50Ms],
+                    ["P95", summary?.latencyP95Ms],
+                    ["P99", summary?.latencyP99Ms],
+                  ].map(([label, latency]) => (
+                    <span
+                      key={label}
+                      className="inline-flex items-center gap-1 rounded-control border border-inner-border bg-surface-1 px-1.5 py-1 font-mono tabular-nums text-micro leading-none"
+                    >
+                      <span className="font-semibold text-text-tertiary">{label}</span>
+                      <span>{formatDuration(typeof latency === "number" ? latency : undefined)}</span>
+                    </span>
+                  ))}
+                </span>
+              )
           }
           tone="teal"
           icon={<Route size={13} />}
