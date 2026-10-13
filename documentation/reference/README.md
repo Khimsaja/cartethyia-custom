@@ -13,6 +13,7 @@ Keep it that way — a feature that needs prose gets a page under `features/`.
 | [Providers](providers.md) | Provider layers, boot and bundled vs BYOK, credentials and auth, discovery, quota, per-family notes |
 | [Console API](console-api.md) | Anatomy of a domain, wiring, the four boundaries, feature inventory, where to change what |
 | [Dashboard](dashboard.md) | Shell, pages, data flow, layout rules, mutation feedback, build and serve |
+| [Codebase size](codebase-size.md) | Tracked backend and frontend source-line counts and counting scope |
 | [Configuration](configuration.md) | Every environment variable. **Generated** from `src/config/spec.ts` by `scripts/generate/config-reference.ts`; regenerate it, never edit it by hand |
 | [SQLite parity](sqlite-parity.md) | Measured dialect differences between Lite and Full, and which ones are not defects |
 

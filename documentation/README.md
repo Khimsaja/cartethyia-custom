@@ -24,6 +24,8 @@ How the system is built — [reference/](reference/README.md), one page per laye
 - [Console API](reference/console-api.md) — the admin/operator surface: domains,
   feature inventory, and the browser mirror.
 - [Dashboard](reference/dashboard.md) — pages, data flow, layout, mutations.
+- [Codebase size](reference/codebase-size.md) — tracked backend and frontend
+  source-line counts and counting scope.
 - [Configuration](reference/configuration.md) — variables declared in
   `src/config/spec.ts` (not the separate database, setup, or Compose settings).
   **Generated** from `src/config/spec.ts`; regenerate, never edit by hand.
