@@ -619,14 +619,6 @@ export function tryParseJsonObject(
 }
 
 /**
- * Marks every declared property of a tool schema as `required`.
- *
- * OpenAI-compatible bridges reject a tool whose `properties` are not all listed
- * in `required`, so both the OpenCode and buddy-family adapters complete the
- * schema before sending. Property *names* are preserved verbatim (they are
- * caller-defined) while each subschema recurses.
- */
-/**
  * Builds the canonical terminal event.
  *
  * Eight call sites across the four response decoders assembled this envelope by
@@ -659,6 +651,10 @@ export function canonicalTerminal(input: {
   };
 }
 
+/**
+ * Defaults a tool schema's `required` list to all declared properties while
+ * preserving an explicit list, including optional properties.
+ */
 export function completeRequiredSchema(value: unknown): unknown {
   return completeRequiredWalk(value, ROOT_WALK);
 }
@@ -682,7 +678,9 @@ function completeRequiredWalk(value: unknown, walk: RewriteWalk): unknown {
     }
     out[key] = completeRequiredWalk(child, inner);
   }
-  if (isRecord(out.properties)) out.required = Object.keys(out.properties);
+  if (isRecord(out.properties) && !Array.isArray(out.required)) {
+    out.required = Object.keys(out.properties);
+  }
   return out;
 }
 

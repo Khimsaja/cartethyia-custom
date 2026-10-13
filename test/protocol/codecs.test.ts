@@ -553,12 +553,12 @@ describe("completeRequiredSchema", () => {
     expect(out.format).toBe("x");
   });
 
-  test("an existing required list is overwritten", () => {
+  test("an existing required list is preserved", () => {
     const out = completeRequiredSchema({
       properties: { a: {}, b: {} },
       required: ["a"],
     }) as Record<string, unknown>;
-    expect(out.required).toEqual(["a", "b"]);
+    expect(out.required).toEqual(["a"]);
   });
 
   test("a schema with no properties is unchanged in shape", () => {

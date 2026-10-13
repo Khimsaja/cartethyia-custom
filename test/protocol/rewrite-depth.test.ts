@@ -402,7 +402,7 @@ describe("rewrite depth bound: invisible below it", () => {
     });
   });
 
-  test("completeRequiredSchema still marks every property required", () => {
+  test("completeRequiredSchema still defaults required to every property when absent", () => {
     expect(completeRequiredSchema({ properties: { a: { type: "string" } } })).toEqual({
       properties: { a: { type: "string" } },
       required: ["a"],

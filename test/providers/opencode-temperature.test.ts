@@ -9,6 +9,8 @@
 import { describe, expect, test } from "bun:test";
 import { OPENCODE_FREE_SPEC } from "../../src/providers/integrations/opencode/provider";
 import type { CanonicalRequest } from "../../src/protocol/canonical-model";
+import { encodeWireRequest } from "../../src/protocol/registry";
+import type { ProviderDispatchTarget } from "../../src/providers/provider-contracts";
 
 function request(model: string, temperature: number | undefined): CanonicalRequest {
   return {
@@ -23,6 +25,41 @@ function request(model: string, temperature: number | undefined): CanonicalReque
 const prepare = OPENCODE_FREE_SPEC.prepareRequest!;
 
 describe("OpenCode Free restricted temperature", () => {
+  test("builds and forwards the default agent tools when the client sends none", async () => {
+    const prepared = prepare({
+      ...request("opencodeft/muse-spark-1.3-contributor-free", undefined),
+      stream: false,
+      tools: [],
+    });
+    const candidate: ProviderDispatchTarget = {
+      provider_id: "opencodeft",
+      model_id: "muse-spark-1.3-contributor-free",
+      wire_family: "responses",
+      endpoint_path: "/v1/responses",
+      capabilities: {},
+    };
+    const payload = await encodeWireRequest("responses", prepared);
+    OPENCODE_FREE_SPEC.prePayload?.(payload, prepared, candidate);
+
+    expect(prepared.stream).toBe(true);
+    expect(prepared.tools?.map((tool) => tool.name)).toEqual(["read", "bash"]);
+    expect(payload.tools).toEqual([
+      {
+        type: "function",
+        name: "read",
+        description: "Read a file. Do not call unless the user explicitly asks for a file read.",
+        parameters: { type: "object", properties: {}, required: [] },
+      },
+      {
+        type: "function",
+        name: "bash",
+        description: "Run a shell command. Do not call unless the user explicitly asks to run a command.",
+        parameters: { type: "object", properties: {}, required: [] },
+      },
+    ]);
+    expect(payload.store).toBe(false);
+  });
+
   test("snaps an out-of-set temperature to the nearest allowed value", () => {
     expect(prepare(request("opencodeft/fledge-alpha-free", 0.7)).generation_controls.temperature).toBe(0.6);
     expect(prepare(request("fledge-alpha-free", 0.2)).generation_controls.temperature).toBe(0);
