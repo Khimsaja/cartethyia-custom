@@ -40,12 +40,23 @@ function ApiEndpointCard() {
       />
       <CardBody>
         <Stack gap="10px">
-          <div className="nested-panel flex items-center justify-between rounded-control border border-inner-border bg-code-surface px-7 py-5 font-mono text-body font-semibold tabular-nums">
-            <code>{endpoint}</code>
-            <span className="text-badge font-normal text-text-tertiary">PORT 12800</span>
+          <div className="nested-panel flex items-center gap-4 rounded-control border border-inner-border bg-code-surface px-7 py-5 font-mono text-body font-semibold tabular-nums">
+            <code className="min-w-0 flex-1 truncate" title={endpoint}>{endpoint}</code>
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={copied ? <Check size={13} /> : <Copy size={13} />}
+              aria-label="Copy endpoint"
+              title="Copy endpoint"
+              onClick={() => void copyEndpoint()}
+              className="shrink-0 p-1.5"
+            />
           </div>
           <p className="text-caption leading-normal text-text-secondary">
-            Point any SDK, CLI, or agent (e.g. Claude Code, OpenCode, Pi, OMP, Kilo, Cline, Droid and more clients) to this same-origin base URL.
+            Point any SDK, CLI, or agent (e.g. OpenCode, Pi, OMP, Kilo, Cline, Droid and more clients) to this same-origin base URL.
+            <span className="mt-1 block text-text-tertiary">
+              You may not put <code className="font-mono">/v1</code> on Claude Code — the CLI appends it itself.
+            </span>
           </p>
         </Stack>
       </CardBody>

@@ -999,7 +999,7 @@ function RequestDetailDrawer({
               className="shrink-0 p-1.5"
             />
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="grid grid-cols-2 gap-2">
             <Button
               variant="secondary"
               size="sm"
@@ -1007,6 +1007,7 @@ function RequestDetailDrawer({
               disabled={!detail.clientIp || banIp.isPending}
               title={detail.clientIp ? `Ban ${detail.clientIp}` : "No client IP recorded for this request"}
               onClick={() => void banThisUser()}
+              className="w-full"
             >
               Banned User
             </Button>
@@ -1017,11 +1018,11 @@ function RequestDetailDrawer({
               disabled={downloading}
               title="Download all captured telemetry for this request as JSON"
               onClick={() => void downloadTelemetry()}
+              className="w-full"
             >
               Download telemetry
             </Button>
           </div>
-
 
           {detail.errorKind ? (
             <Banner tone="danger" live="alert" className="flex flex-col gap-2 [overflow-wrap:anywhere] break-words">
