@@ -12,9 +12,13 @@
  */
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { deriveSqliteBaseline } from "../../scripts/generate/sqlite-ddl";
+import { DrizzleModelRoutingStore } from "../../src/console/routing/model/store";
+import { applySqliteMigrations, buildSqliteHandle, createSqliteDatabase } from "../../src/persistence/db-sqlite";
+import { tenants } from "../../src/persistence/schema";
 
 const committed = readFileSync(resolve(process.cwd(), "migrations", "lite-sqlite3", "0000_baseline.sql"), "utf8");
 
@@ -50,6 +54,10 @@ test("the derived baseline builds and enforces the PostgreSQL constraints", () =
   expect(accountColumns.map((column) => column.name)).toEqual(
     expect.arrayContaining(["identity_checked_at", "account_email"]),
   );
+  const comboColumns = db.prepare("PRAGMA table_info('model_combos')").all() as Array<{ name: string }>;
+  expect(comboColumns.map((column) => column.name)).toContain("sort_index");
+  const aliasColumns = db.prepare("PRAGMA table_info('model_aliases')").all() as Array<{ name: string }>;
+  expect(aliasColumns.map((column) => column.name)).toContain("sort_index");
 
   db.exec("INSERT INTO tenants (id, name, status) VALUES ('t1', 'A', 'active')");
   expect(() => db.exec("INSERT INTO tenants (id, name, status) VALUES ('t2', 'A', 'nope')")).toThrow();
@@ -82,4 +90,19 @@ test("the derived baseline builds and enforces the PostgreSQL constraints", () =
   db.exec("INSERT INTO tenants (id, name, status) VALUES ('t3', 'B', 'active')");
   const created = db.prepare("SELECT created_at FROM tenants WHERE id = 't3'").get() as { created_at: string };
   expect(created.created_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+});
+
+test("a new SQLite tenant can load an empty model-alias list", async () => {
+  const sqlite = createSqliteDatabase(":memory:");
+  try {
+    await applySqliteMigrations(sqlite);
+    const { db } = buildSqliteHandle(sqlite);
+    const tenantId = randomUUID();
+    await db.insert(tenants).values({ id: tenantId, name: "first boot", status: "active" });
+    const store = new DrizzleModelRoutingStore(db);
+
+    expect(await store.listAliases(tenantId)).toEqual([]);
+  } finally {
+    sqlite.close();
+  }
 });

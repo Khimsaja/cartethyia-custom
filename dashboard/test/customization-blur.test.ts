@@ -24,6 +24,13 @@ function resolvedBlurPx(clarity: number, depth: number): number {
 }
 
 describe("customization blur defaults", () => {
+  test("shows the shipped background by default and preserves an explicit hidden setting", () => {
+    expect(CUSTOMIZATION_DEFAULTS.backgroundEnabled).toBe(true);
+    expect(CUSTOMIZATION_DEFAULTS.backgroundSet).toBe(false);
+    expect(normalizeCustomization({}).backgroundEnabled).toBe(true);
+    expect(normalizeCustomization({ backgroundSet: true, backgroundEnabled: false }).backgroundEnabled).toBe(false);
+  });
+
   test("ships the intended clarity and depth for each surface", () => {
     expect(CUSTOMIZATION_DEFAULTS.blurCardsAmount).toBe(45);
     expect(CUSTOMIZATION_DEFAULTS.blurCardsDepth).toBe(20);

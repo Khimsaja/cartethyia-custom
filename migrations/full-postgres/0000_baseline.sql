@@ -163,6 +163,7 @@ CREATE TABLE "model_aliases" (
   "tenant_id" uuid NOT NULL,
   "alias" text NOT NULL,
   "target_model" text NOT NULL,
+  "sort_index" integer DEFAULT 0 NOT NULL,
   "created_at" timestamptz DEFAULT now() NOT NULL,
   "updated_at" timestamptz DEFAULT now() NOT NULL,
   CONSTRAINT "model_aliases_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE cascade
@@ -174,6 +175,7 @@ CREATE TABLE "model_combos" (
   "name" text NOT NULL,
   "members" jsonb NOT NULL,
   "strategy" "model_combo_strategy" DEFAULT 'fallback' NOT NULL,
+  "sort_index" integer DEFAULT 0 NOT NULL,
   "created_at" timestamptz DEFAULT now() NOT NULL,
   "updated_at" timestamptz DEFAULT now() NOT NULL,
   CONSTRAINT "model_combos_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE cascade

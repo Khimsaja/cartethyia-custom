@@ -57,7 +57,7 @@ export interface CustomizationSettings {
 
 export const CUSTOMIZATION_DEFAULTS: CustomizationSettings = {
   backgroundSet: false,
-  backgroundEnabled: false,
+  backgroundEnabled: true,
   backgroundRevision: 0,
   backgroundOpacity: 20,
   backgroundScale: 100,
@@ -104,7 +104,9 @@ export function normalizeCustomization(raw: unknown): CustomizationSettings {
   return {
     backgroundSet: source.backgroundSet === true,
     backgroundRevision: clamp(source.backgroundRevision, 0, Number.MAX_SAFE_INTEGER, 0),
-    backgroundEnabled: source.backgroundEnabled === true,
+    backgroundEnabled: typeof source.backgroundEnabled === "boolean"
+      ? source.backgroundEnabled
+      : CUSTOMIZATION_DEFAULTS.backgroundEnabled,
     backgroundOpacity: clamp(source.backgroundOpacity, 0, 100, CUSTOMIZATION_DEFAULTS.backgroundOpacity),
     backgroundScale: clamp(source.backgroundScale, 100, 180, CUSTOMIZATION_DEFAULTS.backgroundScale),
     backgroundX: clamp(source.backgroundX, -100, 100, CUSTOMIZATION_DEFAULTS.backgroundX),

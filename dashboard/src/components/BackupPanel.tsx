@@ -13,6 +13,7 @@ import { getErrorMessage } from "../data/api";
 import { useDeleteAllBackup, useExportBackup, useRestoreBackup } from "../hooks/backup";
 import { Dialog } from "./ui/dialog";
 import type { BackupImportReport } from "../data/contracts";
+import type { RestoreWarning } from "../../../src/console/backup/contracts";
 import type { DeleteAllScope } from "../../../src/console/backup/store";
 
 /**
@@ -69,6 +70,23 @@ function ImportReportPanel({ report }: { readonly report: BackupImportReport }):
   );
 }
 
+function RestoreWarningPanel({ warnings }: { readonly warnings: readonly RestoreWarning[] }): ReactNode {
+  if (warnings.length === 0) return null;
+  return (
+    <Banner tone="warning" surface="raised" live="status">
+      <strong>Restore completed with {warnings.length} warning{warnings.length === 1 ? "" : "s"}</strong>
+      <ul className="mt-2 ml-8">
+        {warnings.map((warning, index) => (
+          <li key={`${warning.table ?? "backup"}:${warning.column ?? "general"}:${index}`}>
+            {warning.table ? `${warning.table}${warning.column ? `.${warning.column}` : ""}: ` : ""}
+            {warning.reason}
+          </li>
+        ))}
+      </ul>
+    </Banner>
+  );
+}
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -90,6 +108,8 @@ export function BackupPanel(): ReactNode {
   const [highlyCompress, setHighlyCompress] = useState(true);
   const [transfer, setTransfer] = useState<{ loaded: number; total: number | null; startedAt: number } | null>(null);
   const [restored, setRestored] = useState<Record<string, number> | null>(null);
+  const [restoreWarnings, setRestoreWarnings] = useState<readonly RestoreWarning[] | null>(null);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
   const [report, setReport] = useState<BackupImportReport | null>(null);
   const [format, setFormat] = useState<string | null>(null);
   const [deleteScopes, setDeleteScopes] = useState<ReadonlySet<DeleteAllScope>>(new Set());
@@ -155,22 +175,40 @@ export function BackupPanel(): ReactNode {
 
   const upload = (file: File) => {
     setPendingRestoreFile(file);
+    setRestored(null);
+    setRestoreWarnings(null);
+    setRestoreError(null);
+    setReport(null);
+    setFormat(null);
     setPassword("");
     setPasswordFor("restore");
   };
   const performRestore = async () => {
     const file = pendingRestoreFile;
     if (file === null) return;
-    // The compressed download is gzip bytes on disk, so the file cannot be read
-    // as text — see `readBackupFile`.
-    const parsed = await readBackupFile(file);
-    const result = await restoreBackup.mutateAsync({ password, backup: parsed, onProgress: (progress) => setTransfer((current) => ({ ...progress, startedAt: current?.startedAt ?? Date.now() })) });
-    setRestored(result.restored);
-    setReport(result.report ?? null);
-    setFormat(result.format);
-    closePassword();
-    setPendingRestoreFile(null);
-    toast.success("Restore complete.");
+    setRestoreError(null);
+    try {
+      // The compressed download is gzip bytes on disk, so the file cannot be read
+      // as text — see `readBackupFile`.
+      const parsed = await readBackupFile(file);
+      const result = await restoreBackup.mutateAsync({ password, backup: parsed, onProgress: (progress) => setTransfer((current) => ({ ...progress, startedAt: current?.startedAt ?? Date.now() })) });
+      setRestored(result.restored);
+      setRestoreWarnings(result.warnings);
+      setReport(result.report ?? null);
+      setFormat(result.format);
+      closePassword();
+      setPendingRestoreFile(null);
+      toast.success(
+        result.warnings.length === 0 ? "Restore complete." : "Restore completed with warnings.",
+        result.warnings.length === 0
+          ? null
+          : `${result.warnings.length} item(s) need attention. See the restore report below.`,
+      );
+    } catch (error: unknown) {
+      const message = getErrorMessage(error, "Backup restore failed.");
+      setRestoreError(message);
+      toast.error("Backup restore failed", message);
+    }
   };
 
   const restoreRows = restored === null ? [] : Object.entries(restored);
@@ -235,12 +273,15 @@ export function BackupPanel(): ReactNode {
             {format !== null ? (
               <p className="mt-1 text-badge text-text-tertiary">Detected format: {format === "nine_router" ? "router export" : "Cartethyia backup"}</p>
             ) : null}
-            {restoreRows.length > 0 ? (
+            {restored !== null ? (
               <Banner tone="success" surface="raised" live="status">
-                <strong>Restored rows</strong>
-                <ul>{restoreRows.map(([table, count]) => <li key={table}>{table}: {count}</li>)}</ul>
+                <strong>Restore complete</strong>
+                {restoreRows.length > 0 ? (
+                  <ul>{restoreRows.map(([table, count]) => <li key={table}>{table}: {count}</li>)}</ul>
+                ) : <p>No rows were imported.</p>}
               </Banner>
             ) : null}
+            {restoreWarnings !== null ? <RestoreWarningPanel warnings={restoreWarnings} /> : null}
             {report !== null ? <ImportReportPanel report={report} /> : null}
           </Stack>
         </CardBody>
@@ -316,6 +357,9 @@ export function BackupPanel(): ReactNode {
       }
     >
       <Stack gap="10px">
+        {passwordFor === "restore" && restoreError !== null ? (
+          <p role="alert" className="text-caption text-red">{restoreError}</p>
+        ) : null}
         <p className="mt-1 text-badge text-text-tertiary">
           {passwordFor === "delete"
             ? "This cannot be undone. The password is verified again before anything is removed."

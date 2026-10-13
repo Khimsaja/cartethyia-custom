@@ -27,6 +27,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 - PostgreSQL and SQLite baselines now include provider account identity
   enrichment fields. Databases created from an older baseline are rejected
   instead of repeatedly failing the enrichment sweep.
+- SQLite and PostgreSQL baselines now include alias and combo ordering columns,
+  so first-boot routing lists load successfully.
+- Backup restore now maps legacy ciphertext with the active encryption key,
+  skips rows for retired providers with a warning, and includes the current
+  model-combo ordering column in both database baselines.
+- A stored background is shown by default unless it was explicitly hidden.
 - Alibaba Coding Plan is grouped with well-known API-key providers, and its
   import-only credential action is labeled "Add API key" rather than OAuth.
 - The Usage page no longer reports an unreceived in-flight snapshot as zero.

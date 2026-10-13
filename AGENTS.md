@@ -113,6 +113,11 @@ development or production database.
 - `documentation/` — getting started, reference indexes, and feature guides.
 - `.skills/` — focused, repository-specific procedures and domain guidance.
 
+For a new contributor or agent, start with
+[`documentation/agent-context.md`](documentation/agent-context.md) after this
+file. It maps verified subsystem ownership, current architecture, and important
+behavior to the authoritative code and feature guides.
+
 Keep one canonical owner for provider metadata, environment configuration,
 contracts, routing policy, and persisted data. When changing a shared contract,
 inspect and update its relevant producers, consumers, validation, and dashboard

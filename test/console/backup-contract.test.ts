@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { randomBytes } from "node:crypto";
+import { encryptCredential, setCredentialEncryptionKeyForTesting } from "../../src/security/crypto";
 import { CONFIG_TABLES, droppedColumns, ownershipOf, tableName, tablesForSection } from "../../src/console/backup/contracts";
 import { DELETE_ALL_SCOPES, type DeleteAllScope } from "../../src/console/backup/store";
 import { validateRestorePayload } from "../../src/console/backup/validate";
@@ -176,6 +178,79 @@ describe("legacy dropped columns on restore", () => {
 });
 
 describe("partial restore of an old backup", () => {
+  test("opens legacy ciphertext when the source encryption key is available", () => {
+    const sourceKey = randomBytes(32);
+    setCredentialEncryptionKeyForTesting(sourceKey);
+    const legacyCiphertext = encryptCredential("legacy-provider-token").toString("base64");
+    try {
+      const payload = {
+        app: "cartethyia",
+        version: 1,
+        exportedAt: "2026-10-01T00:00:00.000Z",
+        sections: {
+          config: {
+            provider_accounts: [
+              {
+                id: "00000000-0000-0000-0000-000000000006",
+                provider_id: "openai",
+                label: "legacy",
+                credential_kind: "api_key",
+                status: "active",
+                credential_ciphertext: { __bytes: legacyCiphertext },
+              },
+            ],
+          },
+        },
+      };
+      const result = validateRestorePayload(payload, "tenant-1");
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const accountTable = tablesForSection("config").find((table) => tableName(table) === "provider_accounts");
+      const account = result.value.tables.get(accountTable!)?.rows[0];
+      expect(account?.credential_ciphertext).toBe("legacy-provider-token");
+      expect(result.value.warnings.some((warning) => warning.column === "credential_ciphertext")).toBe(false);
+    } finally {
+      setCredentialEncryptionKeyForTesting(undefined);
+    }
+  });
+
+  test("drops legacy ciphertext when it cannot be authenticated by the current key", () => {
+    const sourceKey = randomBytes(32);
+    setCredentialEncryptionKeyForTesting(sourceKey);
+    const legacyCiphertext = encryptCredential("legacy-provider-token").toString("base64");
+    setCredentialEncryptionKeyForTesting(randomBytes(32));
+    try {
+      const payload = {
+        app: "cartethyia",
+        version: 1,
+        exportedAt: "2026-10-01T00:00:00.000Z",
+        sections: {
+          config: {
+            provider_accounts: [
+              {
+                id: "00000000-0000-0000-0000-000000000007",
+                provider_id: "openai",
+                label: "legacy",
+                credential_kind: "api_key",
+                status: "active",
+                credential_ciphertext: { __bytes: legacyCiphertext },
+              },
+            ],
+          },
+        },
+      };
+      const result = validateRestorePayload(payload, "tenant-1");
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const accountTable = tablesForSection("config").find((table) => tableName(table) === "provider_accounts");
+      const account = result.value.tables.get(accountTable!)?.rows[0];
+      expect(account).not.toHaveProperty("credential_ciphertext");
+      expect(result.value.warnings.some((warning) => warning.column === "credential_ciphertext")).toBe(true);
+    } finally {
+      setCredentialEncryptionKeyForTesting(undefined);
+    }
+  });
+
   test("an older version is restored, not refused", () => {
     const payload = {
       app: "cartethyia",

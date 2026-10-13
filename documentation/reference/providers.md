@@ -200,6 +200,16 @@ on `provider_accounts` via `healthColumns()`
 cooldowns, last error category. Cooldown classes, recovery sweeps, leases, and
 pool selection are owned by `.skills/cartethyia-health-routing/SKILL.md`.
 
+Quota cache and refresh behavior is part of that routing contract. The cache is
+bounded to 1,024 in-process entries, has a 15-minute TTL, and uses Redis as an
+optional shared tier. It records attempt and successful-fetch timestamps
+separately. A failed refresh retains a successful reading for up to 30 minutes
+while exposing the refresh error; it does not immediately replace usable quota
+with an empty result. `quota-refresh-sweep` runs every minute, refreshes entries
+at least four minutes old, and bounds each pass to 40 accounts / 90 seconds.
+See [Usage floor](../features/usage-floor.md) for how these readings affect
+account eligibility.
+
 ## Per-family notes
 
 Only what is verified in code. `bespokeWire` means the adapter frames its own
@@ -224,7 +234,8 @@ protocol instead of going through a canonical codec (`metadata.ts:316`).
 | cb / cbcn / workbuddy / workbuddycn | One billing system, so `BUDDY_PROVIDER_IDS` names the family for health, request prep, and daily check-in. WorkBuddy CN mirrors WorkBuddy's contract on `www.workbuddy.cn` and also carries the recent CN model additions published by CodeBuddy CN. The runtime directory and desktop `/v3/config` snapshot are different surfaces; see the [catalog-fetch procedure](../../.skills/cartethyia-provider-catalog/SKILL.md#fetch-a-buddy-model-catalog), [captured catalogs](../../data/provider-catalogs/buddy-live-model-catalogs-2026-10-12.json), and [Buddy media-generation status](../features/buddy-media-generation.md). |
 | opencodeft | `requires_account: false` and `ipScopedRateLimit: true` (`metadata.ts:124`): rate limits follow the egress address, so a 429 cools the pool, not the account. |
 | exa / parallel | `serviceKinds: ["websearch"]` only; served by `/v1/search`, never by the chat pipeline. Their route ids are `exa` and `parallel`. No account uses the public MCP; a stored API key uses the provider's higher-limit HTTP API. |
-| mistral, fireworks, nvidia, gmi, ollamacloud, deepseek | One shared spec, no module of their own: bearer + `/v1` paths (`specs/configured-openai-providers.ts:13`). |
+| deepseek | Bundled API-key provider. Dispatch uses the Anthropic Messages adapter at `/anthropic/v1/messages`; its OpenAI-compatible `/v1/models` discovery remains separate. The dedicated catalog is `specs/deepseek.ts`. See [BYOK base URLs and DeepSeek](../fix-byok-base-url-path.md) for the related endpoint-normalization context. |
+| mistral, fireworks, nvidia, gmi, ollamacloud | Shared configured OpenAI-compatible spec rows; DeepSeek has a dedicated Messages integration. |
 | factory | WorkOS device code against a proxy that multiplexes four wires by model family, so `dispatch` branches on `wire_family` rather than declaring one path (`factory.ts:1-30`). The credential is `{accessToken, orgId}` — the org id is the JWT's `external_org_id` claim and is sent as `X-Factory-Org-Id` — and the host comes from the account's residency region, not from metadata. A real refresh grant exists (`refresh` re-posts to the same WorkOS endpoint), and the token request is issued in the client rather than through `pollGenericDeviceAuth` because the shared helper drops `refresh_token` from the response. |
 | cloudflareai | A gateway, not a model host: the account and gateway slugs are path segments of the base URL (`https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic`) and are stored with the token, so the base URL is built at dispatch time. Auth is `cf-aig-authorization`, not `Authorization` or `x-api-key` (`cloudflareai.ts:11-19`). Messages wire only. No refresh grant. |
 | alibabacp | Two plans — international and mainland China — served by different hosts whose keys are not interchangeable, so the region is stored with the token and resolved to a base URL at dispatch time. The resolved host already ends in `/compatible-mode/v1`, so the endpoint paths are unprefixed (`alibabacp.ts:27-33`). No refresh grant. |

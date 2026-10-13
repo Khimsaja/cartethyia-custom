@@ -19,9 +19,17 @@
  * re-authentication.
  */
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
+import {
+  models,
+  providerAccounts,
+  providerOauthStates,
+  providerRoutingSettings,
+  providers,
+  tenantDisabledModels,
+} from "../../persistence/schema";
 import { ConsoleDomainError } from "../shared/errors";
 import { tablesForSection, tableName } from "./contracts";
-import type { BackupSection, RestoreWarning } from "./contracts";
+import type { BackupSection, RestoreWarning, ValidatedRestore } from "./contracts";
 import {
   applyRestore,
   decompressBackup,
@@ -134,6 +142,75 @@ function parseBackupText(text: string): unknown {
   } catch {
     throw new ConsoleDomainError("invalid_request", 400, "that file is not a JSON backup");
   }
+}
+
+async function omitRowsForUnavailableProviders(
+  db: CartethyiaDatabase,
+  validation: ValidatedRestore,
+  tenantId: string,
+): Promise<ValidatedRestore> {
+  const existingProviders = await db
+    .select({ id: providers.id, tenantId: providers.tenantId })
+    .from(providers);
+  const importedProviders = validation.tables.get(providers)?.rows ?? [];
+  const providerIds = new Set([
+    ...existingProviders
+      .filter((provider) => provider.tenantId === null || provider.tenantId === tenantId)
+      .map((provider) => provider.id),
+    ...importedProviders.map((provider) => String(provider["id"])),
+  ]);
+  const tables = new Map(validation.tables);
+  const warnings = [...validation.warnings];
+  const counts = { ...validation.counts };
+
+  for (const table of [providerAccounts, models, tenantDisabledModels, providerRoutingSettings]) {
+    const entry = tables.get(table);
+    if (entry === undefined) continue;
+    const rows = entry.rows.filter(
+      (row) => typeof row["provider_id"] === "string" && providerIds.has(row["provider_id"]),
+    );
+    if (rows.length === entry.rows.length) continue;
+    tables.set(table, { ...entry, rows });
+    counts[tableName(table)] = rows.length;
+    warnings.push({
+      table: tableName(table),
+      column: "provider_id",
+      reason: "referenced a provider not available in this installation; those rows were skipped",
+    });
+  }
+
+  const accountRows = tables.get(providerAccounts)?.rows ?? [];
+  const replacesTenantAccounts = accountRows.length > 0;
+  const existingAccounts = await db
+    .select({ id: providerAccounts.id, tenantId: providerAccounts.tenantId })
+    .from(providerAccounts);
+  const accountIds = new Set(
+    existingAccounts
+      .filter((account) => !replacesTenantAccounts || account.tenantId !== tenantId)
+      .map((account) => account.id),
+  );
+  for (const account of accountRows) {
+    if (typeof account["id"] === "string") accountIds.add(account["id"]);
+  }
+
+  const oauthEntry = tables.get(providerOauthStates);
+  if (oauthEntry !== undefined) {
+    const rows = oauthEntry.rows.filter(
+      (row) =>
+        typeof row["provider_account_id"] === "string" && accountIds.has(row["provider_account_id"]),
+    );
+    if (rows.length !== oauthEntry.rows.length) {
+      tables.set(providerOauthStates, { ...oauthEntry, rows });
+      counts[tableName(providerOauthStates)] = rows.length;
+      warnings.push({
+        table: tableName(providerOauthStates),
+        column: "provider_account_id",
+        reason: "referenced an account not restored or available in this installation; those rows were skipped",
+      });
+    }
+  }
+
+  return { ...validation, tables, counts, warnings };
 }
 
 export class BackupService {
@@ -277,8 +354,9 @@ export class BackupService {
       throw new ConsoleDomainError("invalid_request", 400, validation.error);
     }
     try {
-      const applied = await applyRestore(this.options.db, validation.value, restoreOrder(), tenantId);
-      return { ...applied, warnings: validation.value.warnings };
+      const compatible = await omitRowsForUnavailableProviders(this.options.db, validation.value, tenantId);
+      const applied = await applyRestore(this.options.db, compatible, restoreOrder(), tenantId);
+      return { ...applied, warnings: compatible.warnings };
     } catch (error) {
       // The message carries table and column names only — the store never
       // interpolates a cell value — so a failed restore cannot leak credentials

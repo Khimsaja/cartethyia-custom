@@ -108,6 +108,11 @@ Admission is separate from eligibility. Eligibility says the account may be trie
 Admission says a concurrency slot is free. Redis holds the slot when `REDIS_URL`
 is set. Otherwise the slot is in-process.
 
+Quota eligibility is also evaluated per account before dispatch. A configured
+Usage floor excludes accounts whose known allowance is at or below the
+threshold; a missing reading remains unknown rather than exhausted. See
+[Usage floor](../features/usage-floor.md) for its accounting and cache behavior.
+
 ## Data
 
 ```mermaid
@@ -163,6 +168,5 @@ not push state into the gateway by any other path.
 ## What is intentionally absent
 
 - Fusion combos. Existing rows become `fallback` in `0003`.
-- A minimum-balance floor. Credit and quota displays are not a routing gate.
 - A `native` wire family and a `degraded` health status.
 - Per-request rows in Postgres. The file log is the source for those reads.

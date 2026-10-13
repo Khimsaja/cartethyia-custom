@@ -12,7 +12,7 @@ not own model selection (`architecture.md`).
 | --- | --- | --- |
 | `network_pools` | `id` | `kind`, `endpoint_config`, `credential_ciphertext`, `max_inflight`, `weight`, `family`, health columns, speed-test and byte totals |
 | `pool_routing_settings` | PK `tenant_id` | `strategy` (`least_loaded` \| `round_robin`), `rotate_count` |
-| `provider_routing_settings` | `(tenant_id, provider_id)` or global when `tenant_id IS NULL` | Account `strategy` / `rotate_count`, `enabled`, `max_inflight`, `usage_floor` / `usage_floor_unit`, and provider `skip_proxy` / `user_agent` |
+| `provider_routing_settings` | `(tenant_id, provider_id)` or global when `tenant_id IS NULL` | Provider/account routing controls, including `skip_proxy`, `user_agent`, and the separate [Usage floor](usage-floor.md) setting |
 
 `skipProxy` and `userAgent` live on the *provider* row, not the pool row: when
 `skipProxy` is false and the tenant has pools configured, dispatch selects
@@ -117,6 +117,10 @@ Writes invalidate the route snapshot: pool strategy and per-provider routing
 are part of the compiled snapshot, so a change that does not call
 `invalidate()` leaves the data plane on the old plan until something unrelated
 invalidates it.
+
+`provider_routing_settings` also owns the account quota threshold, but that
+threshold is not a pool-selection rule. Its evaluation and quota refresh
+behavior are documented in [Usage floor](usage-floor.md).
 
 ## Dashboard
 

@@ -45,7 +45,7 @@ loop.
 | `/` | `OverviewPage` | Tenant health and the first-look summary |
 | `/usage` | `UsagePage` | Usage from the file log, grouped in the console |
 | `/providers` | `ProvidersPage` | Provider catalog |
-| `/providers/:providerId` | `ProviderDetailPage` | Accounts, auth, routing, models |
+| `/providers/:providerId` | `ProviderDetailPage` | Accounts, auth, routing (including Usage floor), models |
 | `/combos` | `CombosPage` | Aliases and combos |
 | `/quota` | `QuotaPage` | Provider quota windows |
 | `/proxy` | `ProxyPage` | Network pools and egress |
@@ -57,14 +57,14 @@ loop.
 | `/settings` | `SettingsPage` | Runtime preferences, backup |
 | `/login`, `/setup`, `/banned` | session pages | No shell |
 
-Unknown protected paths redirect to `/`. There is no fusion page and no
-minimum-balance editor.
+Unknown protected paths redirect to `/`. There is no fusion page.
 
 Three of those pages are backed by a feature page that owns the data and the
 console domain behind them: [`/combos`](../features/routing-aliases-combos.md),
 [`/proxy`](../features/network-pools.md), and `/cli-tools`
 ([CLI model mapping](../features/cli-model-mapping.md)). The share page is public
-and has its own: [share keys](../features/share-keys.md).
+and has its own: [share keys](../features/share-keys.md). Provider detail's
+quota threshold is documented in [Usage floor](../features/usage-floor.md).
 
 ## Data flow
 

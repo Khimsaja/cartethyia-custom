@@ -13,6 +13,7 @@
  */
 import type { Table } from "drizzle-orm";
 import { getTableColumns } from "drizzle-orm";
+import { decryptCredentialToString } from "../../security/crypto";
 import {
   BACKUP_APP,
   BACKUP_SECTIONS,
@@ -24,6 +25,7 @@ import {
   columnNames,
   droppedColumns,
   findTable,
+  payloadNameOf,
   sealedAliases,
   sealedColumns,
   tableName,
@@ -85,6 +87,25 @@ function normalizeLegacyRow(table: Table, row: Record<string, unknown>): Record<
     return { ...row, strategy: "fallback" };
   }
   return row;
+}
+
+function normalizeLegacyCiphertext(table: Table, row: Record<string, unknown>): Record<string, unknown> {
+  const normalized = { ...row };
+  for (const column of sealedColumns(table)) {
+    const cell = normalized[column];
+    if (!isPlainObject(cell) || Object.keys(cell).length !== 1 || typeof cell["__bytes"] !== "string") continue;
+    try {
+      normalized[payloadNameOf(table, column)] = decryptCredentialToString(
+        Buffer.from(cell["__bytes"], "base64"),
+      );
+      delete normalized[column];
+    } catch {
+      // Old exports carry ciphertext rather than portable plaintext. Only the
+      // original encryption key can open it; otherwise the validator reports
+      // and drops the credential instead of inserting unusable bytes.
+    }
+  }
+  return normalized;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -271,7 +292,7 @@ export function validateRestorePayload(payload: unknown, tenantId: string): Rest
           : value.slice(0, capped).map((row) => {
               if (!isPlainObject(row)) return row;
               const mapped: Record<string, unknown> = {};
-              for (const [column, cell] of Object.entries(row)) {
+              for (const [column, cell] of Object.entries(normalizeLegacyCiphertext(table, row))) {
                 mapped[aliases.get(column) ?? column] = cell;
               }
               return mapped;

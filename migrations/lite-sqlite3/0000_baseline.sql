@@ -164,6 +164,7 @@ CREATE TABLE "model_aliases" (
   "tenant_id" text NOT NULL,
   "alias" text NOT NULL,
   "target_model" text NOT NULL,
+  "sort_index" integer DEFAULT 0 NOT NULL,
   "created_at" text DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')) NOT NULL,
   "updated_at" text DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')) NOT NULL,
   CONSTRAINT "model_aliases_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE cascade
@@ -176,6 +177,7 @@ CREATE TABLE "model_combos" (
   "name" text NOT NULL,
   "members" text NOT NULL,
   "strategy" text DEFAULT 'fallback' NOT NULL,
+  "sort_index" integer DEFAULT 0 NOT NULL,
   "created_at" text DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')) NOT NULL,
   "updated_at" text DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')) NOT NULL,
   CONSTRAINT "model_combos_strategy_enum_check" CHECK ("strategy" IS NULL OR "strategy" IN ('fallback', 'round_robin')),

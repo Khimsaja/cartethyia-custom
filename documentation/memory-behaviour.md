@@ -16,6 +16,12 @@ A clean non-hot boot, idle, after the database and catalog are loaded:
 | `external` | 7 MB |
 | `arrayBuffers` | 0 MB |
 
+These figures describe one measured process and are observations, not a memory
+budget or an expected value for every Bun version, database mode, host, or
+workload. Startup now emits named `[startup]` phase lines with elapsed time and
+RSS/heap snapshots; use them to locate boot-time allocations, not as a
+replacement for steady-state measurement.
+
 **Only 24 MB of the 141 MB is JavaScript heap.** The remaining ~117 MB is native:
 the Bun/JSC runtime itself, OpenSSL, `bun:sqlite`'s page cache, and the `pg`
 client's pool. That is fixed runtime cost, not retained objects, and **no amount of
@@ -62,13 +68,17 @@ first, or run `bun run src/main.ts` directly.
 
 ## Where to read the split
 
-The instrumentation already exists; nothing needs to be added to answer "is this a
-leak?".
+Steady-state instrumentation already exists; nothing needs to be added to answer
+"is this a leak?" at runtime.
 
 - **Prometheus gauges** — `cartethyia_memory_rss_bytes`,
   `cartethyia_memory_heap_used_bytes`, `cartethyia_memory_heap_total_bytes`,
   `cartethyia_memory_limit_bytes` (`src/observability/metrics.ts`, sampled by
   `RuntimeMetrics.sample()`).
+- **Startup phases** — `[startup] phase=…` in the backend log. The phase helper
+  records elapsed time and RSS/heap before and after composition work; the
+  `dependencies-ready` line reports total elapsed time and deltas. See
+  `measureStartupPhase` in `src/boot/dependencies.ts`.
 - **`external`** — tracked through `trackMemoryUsage("external", …)` and returned by
   `performanceMetricsSnapshot().memory_bytes`
   (`src/observability/performance-metrics.ts`), surfaced on the console performance

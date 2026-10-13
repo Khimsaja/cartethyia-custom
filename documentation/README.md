@@ -1,5 +1,9 @@
 # Cartethyia documentation
 
+New contributors and agents: start with the
+[agent context](agent-context.md) for a verified architecture map and links to
+the owning code, guides, and procedures.
+
 Start here if you are installing or running Cartethyia:
 
 - [Getting started](getting-started.md) — requirements, database mode, `bun setup`,
@@ -28,7 +32,7 @@ How the system is built — [reference/](reference/README.md), one page per laye
 
 One page per feature — [features/](features/README.md): what it is, the data
 behind it, who owns it. CLI model mapping, share keys, network pools, routing
-aliases and combos.
+aliases and combos, Usage floor, and Buddy media generation.
 
 ## The split
 
@@ -39,6 +43,7 @@ manuals; add a page under `features/` instead.
 
 ```text
 documentation/
+├── agent-context.md     repository onboarding and verified subsystem map
 ├── getting-started.md    installing and running it
 ├── installation.md       install variants, one-shot script, Docker
 ├── reference/            how it is built, one page per layer

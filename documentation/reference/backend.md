@@ -129,9 +129,13 @@ on the next request, not at the next process start.
 | `authentication/` | Token, OAuth refresh, credential envelope |
 | `discovery/` | Offline catalog (`base-models.json`) and live probe |
 | `operations/` | Account import, probe, enable, disable |
-| `quota/` | Provider quota windows, not a routing floor |
+| `quota/` | Provider quota windows; cached readings also inform Usage floor routing |
 | `specs/` | Declarative provider metadata |
 | `search/` | Hosted search tools and grounding |
+
+Per-account quota thresholds are applied during route eligibility; they are not
+account health state. See [Usage floor](../features/usage-floor.md) for the
+threshold and cache semantics.
 
 `base-adapter.ts` and `compatible-adapter.ts` cover providers that speak a
 standard wire. A bespoke provider frames its own bytes in its adapter. That fact
@@ -252,8 +256,7 @@ modules:
 | `sweep-runner.ts` | Shared bounded runner for account-oriented maintenance sweeps |
 | `quota-refresh-sweep.ts` | Refreshes stale quota and rides along with daily check-ins |
 | `oauth-refresh-sweep.ts` | Proactively refreshes due OAuth credentials |
-| `daily-checkin.ts` | Claims daily check-in and reports Buddy activity |
-| `daily-checkin.ts` | Claims daily check-ins, reports Buddy activity, and selects tenant-safe egress |
+| `daily-checkin.ts` | Claims daily check-ins and reports Buddy activity; the quota sweep supplies tenant-safe egress |
 | `account-identity-sweep.ts` | Derives account label/email from stored credentials |
 
 `src/boot/dependencies.ts` registers these and other maintenance tasks with the
@@ -261,6 +264,11 @@ scheduler. Other periodic jobs remain beside their owning domains, such as
 session cleanup under `src/console/auth/` and health cleanup under
 `src/providers/operations/`. A task that needs persistence receives the
 composition root's database handle; it does not open a second pool.
+
+The same composition root logs named startup phases with elapsed time and RSS /
+heap observations. Use `[startup]` lines to attribute the work performed during
+boot; they are phase diagnostics, not steady-state memory benchmarks. Client
+version refresh is deliberately deferred after startup.
 
 ## Where to change what
 
