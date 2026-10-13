@@ -36,6 +36,7 @@ import {
   type ValidatedRestore,
   type ValidatedTable,
 } from "./contracts";
+import { DEFAULT_API_KEY_LABEL } from "../api-keys/contracts";
 import {
   apiKeys,
   modelCombos,
@@ -66,6 +67,15 @@ function normalizeLegacyApiKeyPolicy(row: Record<string, unknown>): Record<strin
 }
 
 function normalizeLegacyRow(table: Table, row: Record<string, unknown>): Record<string, unknown> {
+  if (
+    table === apiKeys &&
+    row["is_default"] === undefined &&
+    (row["key_mode"] === undefined || row["key_mode"] === "personal") &&
+    row["parent_key_id"] == null &&
+    row["label"] === DEFAULT_API_KEY_LABEL
+  ) {
+    return { ...row, is_default: true };
+  }
   if (table === providerRoutingSettings) {
     const { bypass_proxy: legacySkipProxy, ...current } = row;
     let normalized = current;

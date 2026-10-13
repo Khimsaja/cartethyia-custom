@@ -2,10 +2,29 @@ import { describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { encryptCredential, setCredentialEncryptionKeyForTesting } from "../../src/security/crypto";
 import { CONFIG_TABLES, droppedColumns, ownershipOf, tableName, tablesForSection } from "../../src/console/backup/contracts";
+import { DEFAULT_API_KEY_LABEL, isDefaultGatewayApiKey } from "../../src/console/api-keys/contracts";
 import { DELETE_ALL_SCOPES, type DeleteAllScope } from "../../src/console/backup/store";
 import { validateRestorePayload } from "../../src/console/backup/validate";
 
 describe("backup contract coverage", () => {
+  test("recognizes only the legacy personal gateway key by its canonical label", () => {
+    expect(isDefaultGatewayApiKey({
+      isDefault: false,
+      keyMode: "personal",
+      label: DEFAULT_API_KEY_LABEL,
+    })).toBe(true);
+    expect(isDefaultGatewayApiKey({
+      isDefault: false,
+      keyMode: "share",
+      label: DEFAULT_API_KEY_LABEL,
+    })).toBe(false);
+    expect(isDefaultGatewayApiKey({
+      isDefault: false,
+      keyMode: "personal",
+      label: "renamed ordinary key",
+    })).toBe(false);
+  });
+
   test("keeps browser-only studio history out of the backup", () => {
     expect(tablesForSection("config").map(tableName)).not.toContain("studio_sessions");
   });
@@ -34,6 +53,28 @@ describe("backup contract coverage", () => {
 });
 
 describe("legacy dropped columns on restore", () => {
+  test("restores the canonical gateway key as default when the backup predates the flag", () => {
+    const result = validateRestorePayload({
+      app: "cartethyia",
+      version: 1,
+      exportedAt: "2026-10-01T00:00:00.000Z",
+      sections: {
+        config: {
+          api_keys: [{
+            id: "00000000-0000-0000-0000-000000000003",
+            label: "Default Cartethyia API key",
+            key_mode: "personal",
+            scopes: ["tenant:invoke"],
+          }],
+        },
+      },
+    }, "tenant-1");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const table = tablesForSection("config").find((item) => tableName(item) === "api_keys")!;
+    expect(result.value.tables.get(table)?.rows[0]).toMatchObject({ is_default: true });
+  });
+
   test("provider_accounts.max_inflight is accepted and skipped", () => {
     const table = tablesForSection("config").find((t) => tableName(t) === "provider_accounts");
     expect(table).toBeDefined();

@@ -15,6 +15,7 @@ import type { ApiKeyConfig, ApiKeyResponse, UpdateApiKeyResponse } from "./contr
 import type { ApiKeyPatch, ApiKeyRecord } from "../../persistence/stores/api-key-store";
 import {
   generateApiKeySecret,
+  isDefaultGatewayApiKey,
   parseSharePopupImage,
   sanitizeApiKeyResponse,
   validateApiKeyRequest,
@@ -233,6 +234,7 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
           : parseSharePopupImage(patchRequest.sharePopupImage);
       const updated = await config.store.update(authorized.tenantId, keyId, {
         ...(patchRequest.enabled === undefined ? {} : { enabled: patchRequest.enabled }),
+        ...(isDefaultGatewayApiKey(current) ? { isDefault: true } : {}),
         ...credentialPatch,
         ...(scopes === undefined ? {} : { scopes }),
         // Rename. The label was accepted by the body schema and validated, but
@@ -359,7 +361,7 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
       // The gateway routes every request off this key and the CLI reads it for
       // the CLI, so removing it would strand the installation with no way to
       // authenticate. Rotation replaces the secret and keeps the key present.
-      if (target.isDefault === true)
+      if (isDefaultGatewayApiKey(target))
         throw new ConsoleDomainError(
           "default_key_not_revocable",
           409,

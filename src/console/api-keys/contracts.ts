@@ -161,6 +161,17 @@ export const DEFAULT_API_KEY_PREFIX = "carte_";
 /** Label of the default gateway API key seeded at first boot; never revoked. */
 export const DEFAULT_API_KEY_LABEL = "Default Cartethyia API key";
 
+/** Recognizes the default key and legacy rows restored before its flag existed. */
+export function isDefaultGatewayApiKey(
+  record: Pick<ApiKeyRecord, "isDefault" | "keyMode" | "label" | "parentKeyId">,
+): boolean {
+  return record.isDefault || (
+    record.keyMode === "personal" &&
+    record.parentKeyId === undefined &&
+    record.label === DEFAULT_API_KEY_LABEL
+  );
+}
+
 /** Generates an inbound key and its one-way hash. */
 export function generateApiKeySecret(prefix = DEFAULT_API_KEY_PREFIX): {
   secret: string;
@@ -319,11 +330,10 @@ export function sanitizeApiKeyResponse(record: ApiKeyRecord): ApiKeyResponse {
     keyMode: record.keyMode,
     scopes: record.scopes,
     /**
-     * Drives the console: the default key offers rotate only, every other key
-     * can be renamed and revoked. Without this the UI would have to guess from
-     * the label, which stops being meaningful the moment the key is renamed.
+     * Current keys use the persisted flag. The canonical label is a compatibility
+     * marker for legacy restores and is promoted to the flag on the next update.
      */
-    isDefault: record.isDefault === true,
+    isDefault: isDefaultGatewayApiKey(record),
     ...(record.keyPrefix === undefined ? {} : { keyPrefix: record.keyPrefix }),
     ...(record.parentKeyId === undefined ? {} : { parentKeyId: record.parentKeyId }),
     ...(record.notesTitle === undefined ? {} : { notesTitle: record.notesTitle }),

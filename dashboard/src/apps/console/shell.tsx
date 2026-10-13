@@ -573,7 +573,12 @@ export function DashboardShell({
     <>
       <div className="app-bg" aria-hidden="true" />
       <div className="app-shell-frame">
-      <div className="app-shell-root" data-drawer={drawerOpen ? "open" : undefined} onClick={(event) => { if (drawerOpen && (event.target as HTMLElement).closest(".app-main-column")) setDrawerOpen(false); }}>
+      <div
+        className="app-shell-root"
+        data-drawer={drawerOpen ? "open" : undefined}
+        data-page-scroll={location.pathname === "/console-log" ? "contained" : undefined}
+        onClick={(event) => { if (drawerOpen && (event.target as HTMLElement).closest(".app-main-column")) setDrawerOpen(false); }}
+      >
 
         <aside
           className={`glass app-sidebar ${drawerOpen ? "is-open" : ""}`}

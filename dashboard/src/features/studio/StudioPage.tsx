@@ -663,9 +663,21 @@ export function StudioPage(): ReactNode {
     }
   };
 
-  const hasDefaultKey = (keys.data ?? []).some((key) => key.enabled && key.revokedAt === undefined && key.isDefault);
+  const defaultKey = (keys.data ?? []).find((key) => key.isDefault);
+  const hasDefaultKey = defaultKey?.enabled === true && defaultKey.revokedAt === undefined;
   const canSend = (input.trim().length > 0 || images.length > 0) && !sending && draft.model.length > 0 && hasDefaultKey;
   const canSendStarter = !sending && draft.model.length > 0 && hasDefaultKey;
+  const hasDraftToSend = input.trim().length > 0 || images.length > 0;
+  let sendBlockMessage: string | null = null;
+  if (keys.isPending) {
+    sendBlockMessage = "Checking the default gateway API key…";
+  } else if (keys.isError) {
+    sendBlockMessage = "Could not load API keys. Retry the check before sending.";
+  } else if (defaultKey === undefined) {
+    sendBlockMessage = "The default gateway API key is missing. Complete first-boot setup before sending.";
+  } else if (!hasDefaultKey) {
+    sendBlockMessage = "The default gateway API key is disabled or revoked. Enable or rotate it before sending.";
+  }
   const sendStarter = (text: string) => {
     if (!canSendStarter) return;
     const user: LabMessage = {
@@ -802,6 +814,16 @@ export function StudioPage(): ReactNode {
           )}
         </div>
         <div className="flex-none w-full max-w-380 mx-auto px-6 pb-2">
+          {draft.model.length > 0 && hasDraftToSend && sendBlockMessage !== null ? (
+            <div role={keys.isError ? "alert" : "status"} className="mb-2 flex flex-wrap items-center justify-between gap-2 px-2 text-caption text-status-warn">
+              <span>{sendBlockMessage}</span>
+              {keys.isError ? (
+                <Button variant="secondary" size="sm" type="button" onClick={() => void keys.refetch()}>
+                  Retry
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
           <Composer
             model={draft.model}
             sessionTitle={session.title}

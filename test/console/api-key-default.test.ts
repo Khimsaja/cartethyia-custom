@@ -15,9 +15,8 @@
  * 3. **It could be revoked.** Revoke did not distinguish it, so the one key
  *    routing depends on could be removed, stranding the installation.
  *
- * The default is identified by a column, not by its label: a label match stops
- * working the moment the rename in (2) succeeds, which is exactly the bug that
- * motivated it.
+ * Current keys are identified by a column. The canonical label is used only to
+ * recover legacy rows that predate the flag, which are promoted when updated.
  */
 import { describe, expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/node-postgres";
@@ -67,6 +66,38 @@ describe("default gateway API key", () => {
       expect(flagged.length).toBe(1);
       expect(flagged[0]?.label).toBe(DEFAULT_API_KEY_LABEL);
       expect(keys.filter((key) => !key.isDefault).length).toBe(1);
+    });
+  });
+
+  test("recognizes and promotes an unflagged legacy default key", async () => {
+    await withRollback(async (client) => {
+      const tenant = await createTenant(client, RUN_ID);
+      const key = await createApiKey(client, {
+        tenantId: tenant.tenantId,
+        label: DEFAULT_API_KEY_LABEL,
+        isDefault: false,
+      });
+      const db = drizzle(client as never, { schema: fullSchema });
+      const operations = createApiKeyOperations({
+        store: new DrizzleApiKeyStore(db as never),
+        accessResolver: () => owner(tenant.tenantId),
+        admissionService: { purgeKey: async () => undefined },
+      });
+
+      expect((await operations.listKeys(owner(tenant.tenantId))).find((item) => item.id === key.id)?.isDefault)
+        .toBe(true);
+      await expect(operations.revokeKey(owner(tenant.tenantId), key.id)).rejects.toThrow(
+        /cannot be deleted/i,
+      );
+      const updated = await operations.updateKey(owner(tenant.tenantId), key.id, {
+        label: "Production gateway",
+      });
+      expect(updated.isDefault).toBe(true);
+      const stored = await client.query<{ label: string; is_default: boolean }>(
+        `select label, is_default from api_keys where id = $1`,
+        [key.id],
+      );
+      expect(stored.rows[0]).toEqual({ label: "Production gateway", is_default: true });
     });
   });
 

@@ -761,7 +761,7 @@ export function AccountsList({
 
   return (
     <Stack gap="8px">
-      <div className="flex min-w-0 items-center gap-2 overflow-x-auto p-3 border border-inner-border rounded-control bg-surface-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-2 p-3 border border-inner-border rounded-control bg-surface-2">
           <label className="relative min-w-20 flex-[1_1_10rem]">
             <Search
               size={13}

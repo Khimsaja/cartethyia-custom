@@ -44,6 +44,14 @@
   box-sizing: border-box;
 }
 
+/* The log and audit views keep the shell fixed to the viewport so their
+   entries scroll inside the card instead of extending the document. */
+.app-shell-root[data-page-scroll="contained"] {
+  height: 100dvh;
+  min-height: 100dvh;
+  grid-template-rows: minmax(0, 1fr);
+}
+
 @container app-shell (max-width: 860px) {
   .app-shell-root {
     grid-template-columns: minmax(0, 1fr);
@@ -238,6 +246,10 @@
   margin-top: 14px;
 }
 
+.nav-group-section:first-child {
+  margin-top: 0;
+}
+
 .nav-group-title {
   font-size: 10.5px;
   font-weight: 700;
@@ -402,6 +414,13 @@ main.route-enter {
   min-width: 0;
   display: flex;
   flex-direction: column;
+}
+.app-shell-root[data-page-scroll="contained"] .app-main-column {
+  min-height: 0;
+}
+.app-shell-root[data-page-scroll="contained"] main.route-enter {
+  min-height: 0;
+  overflow: hidden;
 }
 /* A page root is only as tall as its content, so a short page (overview,
    combos, proxy) stopped above the viewport bottom even though `main` itself

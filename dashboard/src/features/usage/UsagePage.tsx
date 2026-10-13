@@ -85,7 +85,7 @@ type Dimension = UsageDimension;
 /** Breakdown rows the panel holds before it scrolls; the rest scrolls inside.
  *  The body is locked to this height so the card keeps it when the list is
  *  empty, loading, or short. */
-const BREAKDOWN_VISIBLE_ROWS = 5;
+const BREAKDOWN_VISIBLE_ROWS = 6;
 /** Measured row box (39px) plus the 8px flex gap, minus the trailing gap. */
 const BREAKDOWN_LIST_HEIGHT = BREAKDOWN_VISIBLE_ROWS * 47 - 8;
 
