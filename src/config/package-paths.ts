@@ -1,8 +1,23 @@
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 
-/** Absolute root of the source package, independent of the process working directory. */
-export const PACKAGE_ROOT = resolve(import.meta.dir, "..", "..");
+/**
+ * Absolute root containing package assets. A compiled Bun executable has a
+ * virtual `import.meta.dir`, so deployments can point this at the shipped
+ * assets directory explicitly.
+ */
+export function resolvePackageRoot(
+  moduleDir: string,
+  configuredRoot: string | undefined,
+): string {
+  const root = configuredRoot?.trim();
+  return root ? resolve(root) : resolve(moduleDir, "..", "..");
+}
+
+export const PACKAGE_ROOT = resolvePackageRoot(
+  import.meta.dir,
+  process.env.CARTETHYIA_PACKAGE_ROOT,
+);
 
 /** Resolve an asset shipped with the package. */
 export function resolvePackagePath(...segments: string[]): string {

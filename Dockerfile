@@ -25,6 +25,8 @@ RUN bun run dashboard:build
 # Backend build layer: AOT output is required before standalone compilation.
 COPY scripts ./scripts
 COPY migrations ./migrations
+RUN test -f migrations/full-postgres/0000_baseline.sql \
+    && test -f migrations/lite-sqlite3/0000_baseline.sql
 RUN bun run build:aot && bun run build:binary --outfile /build/dist/cartethyia
 
 # Runtime: only the binary, dashboard assets, migrations, and entrypoint ship.
@@ -40,12 +42,15 @@ RUN apk add --no-cache ca-certificates curl libgcc libstdc++ util-linux \
     && chown -R cartethyia:cartethyia /app
 
 COPY --from=builder --chown=cartethyia:cartethyia /build/migrations ./migrations
+RUN test -f /app/migrations/full-postgres/0000_baseline.sql \
+    && test -f /app/migrations/lite-sqlite3/0000_baseline.sql
 COPY --from=builder --chown=cartethyia:cartethyia /build/dist/dashboard ./dist/dashboard
 COPY --chmod=755 docker-entrypoint.sh ./entrypoint.sh
 COPY --from=builder --chown=cartethyia:cartethyia /build/dist/cartethyia ./cartethyia
 
 ENV NODE_ENV=production \
     DASHBOARD_DIST=/app/dist/dashboard \
+    CARTETHYIA_PACKAGE_ROOT=/app \
     CARTETHYIA_DATA_DIR=/app/data \
     CARTETHYIA_INSTALL_ID_DIR=/app/data/.cartethyia
 
