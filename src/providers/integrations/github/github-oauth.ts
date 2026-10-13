@@ -18,16 +18,16 @@ import {
   nonEmptyTrimmedString,
   readJsonResponse,
   record,
-} from "../../authentication/oauth-flow-store";
+} from "../../runtime/authentication/oauth-flow-store";
 import type {
   OAuthDeviceFlowContext,
   OAuthDevicePollResult,
   OAuthDeviceStartResult,
   OAuthExchangeResult,
-} from "../../authentication/oauth-flow-store";
-import type { OAuthTokenRefreshResult } from "../../authentication/oauth-refresh-service";
-import { OAuthDeviceFlow } from "../../authentication/oauth-device-flow";
-import type { FetchLike } from "../../authentication/oauth-client";
+} from "../../runtime/authentication/oauth-flow-store";
+import type { OAuthTokenRefreshResult } from "../../runtime/authentication/oauth-refresh-service";
+import { OAuthDeviceFlow } from "../../runtime/authentication/oauth-device-flow";
+import type { FetchLike } from "../../runtime/authentication/oauth-client";
 import { resolveGithubEnterpriseDomain } from "../../../config/providers";
 
 /** Public GitHub OAuth app id the Copilot clients use; not a secret. */

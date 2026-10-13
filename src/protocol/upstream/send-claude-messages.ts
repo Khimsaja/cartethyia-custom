@@ -4,11 +4,11 @@
  * impersonation) and `AnthropicApiKeyAdapter` (plain API-key traffic) — pure
  * wire mechanics with no auth-mode branching.
  */
-import type { CanonicalEvent, CanonicalRequest } from '../../protocol/canonical-model';
-import { GatewayError } from '../../protocol/gateway-error';
-import { applyRouteUserAgent, type ProviderDispatchContext } from "../../providers/contracts";
+import type { CanonicalEvent, CanonicalRequest } from '../canonical-model';
+import { GatewayError } from '../gateway-error';
+import { applyRouteUserAgent, type ProviderDispatchContext } from "../../providers/core/contracts";
 import { abortGatewayError, createUpstreamDeadlineLifecycle } from '../../providers/operations/upstream-deadline';
-import { mapClaudeHttpError } from '../../protocol/messages-errors';
+import { mapClaudeHttpError } from '../messages-errors';
 import { isRecord } from '../codecs';
 import { parseClaudeSseStream, claudeResponseToEvents } from '../response/messages';
 

@@ -17,15 +17,15 @@
  * do not expire and there is no refresh grant) and 429s aggressively on
  * `/muse-code/key`, so a repeat mint on refresh reuses the existing key.
  */
-import { composeAbortSignal, truncateUpstreamText } from "../../authentication/oauth-flow-store";
+import { composeAbortSignal, truncateUpstreamText } from "../../runtime/authentication/oauth-flow-store";
 import type {
   OAuthDeviceFlowContext,
   OAuthDevicePollResult,
   OAuthDeviceStartResult,
-} from "../../authentication/oauth-flow-store";
-import type { OAuthTokenRefreshResult } from "../../authentication/oauth-refresh-service";
-import { OAuthDeviceFlow } from "../../authentication/oauth-device-flow";
-import type { FetchLike } from "../../authentication/oauth-client";
+} from "../../runtime/authentication/oauth-flow-store";
+import type { OAuthTokenRefreshResult } from "../../runtime/authentication/oauth-refresh-service";
+import { OAuthDeviceFlow } from "../../runtime/authentication/oauth-device-flow";
+import type { FetchLike } from "../../runtime/authentication/oauth-client";
 import { encodeMuseCodeCredential } from "./muse";
 
 export const MUSE_CODE_CLIENT_ID = "1031625952748946";

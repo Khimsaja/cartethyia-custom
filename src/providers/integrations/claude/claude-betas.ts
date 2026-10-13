@@ -1,4 +1,4 @@
-import type { CredentialKind } from "../../contracts";
+import type { CredentialKind } from "../../core/contracts";
 import { GatewayError, capabilityUnsupported } from "../../../protocol/gateway-error";
 
 export type AnthropicBetaInput = string | readonly string[] | undefined;

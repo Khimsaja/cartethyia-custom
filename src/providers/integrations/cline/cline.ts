@@ -1,13 +1,13 @@
-import { createApiKeyAdapter } from "../shared/configured-provider";
-import type { ProviderDispatchTarget, ProviderAdapter, ProviderDispatchContext } from "../../contracts";
-import type { ModelDefinition } from "../../model-definition";
-import { unwrapProviderToken } from "../../credential-envelope";
+import { createApiKeyAdapter } from "../../configured-provider";
+import type { ProviderDispatchTarget, ProviderAdapter, ProviderDispatchContext } from "../../core/contracts";
+import type { ModelDefinition } from "../../core/model-definition";
+import { unwrapProviderToken } from "../../core/credential-envelope";
 import { GatewayError } from "../../../protocol/gateway-error";
 import type { CanonicalRequest } from "../../../protocol/canonical-model";
 import { completeRequiredSchema, isRecord } from "../../../protocol/codecs";
-import { providerBaseUrl } from "../../metadata";
+import { providerBaseUrl } from "../../core/metadata";
 import { getCachedModelDiscovery } from "../../operations/model-discovery-cache";
-import { defineModel } from "../../model-definition";
+import { defineModel } from "../../core/model-definition";
 import { clinePlatform, clinePlatformVersion } from "../../operations/cli-platform";
 import {
   getClineClientVersion,

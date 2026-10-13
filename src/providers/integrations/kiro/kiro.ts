@@ -33,7 +33,7 @@ import type {
 } from "../../../protocol/canonical-model";
 import { GatewayError } from "../../../protocol/gateway-error";
 import { mapUpstreamHttpError } from "../../../transport/failure-policy";
-import type { ProviderAdapter, ProviderDispatchContext, ProviderDispatchTarget } from "../../contracts";
+import type { ProviderAdapter, ProviderDispatchContext, ProviderDispatchTarget } from "../../core/contracts";
 import {
   buildKiroAmzUserAgent,
   buildKiroUserAgent,

@@ -7,10 +7,10 @@
  * - reasoning include/effort/summary/context wiring
  * - Responses Lite reasoning override + body shape mutation
  */
-import type { CanonicalMessage, CanonicalRequest, ContentPart } from "../../protocol/canonical-model";
-import { canContainToolResult, toolResultParts } from "../../protocol/canonical-model";
+import type { CanonicalMessage, CanonicalRequest, ContentPart } from "../canonical-model";
+import { canContainToolResult, toolResultParts } from "../canonical-model";
 import { isWebSearchTool } from "../../transport/translation/search";
-import { reasoningEffortFromIntent } from "../../providers/reasoning";
+import { reasoningEffortFromIntent } from "../../providers/core/reasoning";
 import {
   decodeCodexToolCallId,
   encodeCodexToolCallId,

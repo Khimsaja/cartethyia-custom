@@ -1,5 +1,5 @@
-import type { FetchLike, ProviderQuotaResult, ProviderQuotaWindow } from "../../quota/quota-contracts";
-import { isoDate, number, percentWindow, record, text } from "../../quota/quota-contracts";
+import type { FetchLike, ProviderQuotaResult, ProviderQuotaWindow } from "../../runtime/quota/quota-contracts";
+import { isoDate, number, percentWindow, record, text } from "../../runtime/quota/quota-contracts";
 import { buildGrokAuthUserAgent, getGrokVersion } from "../../operations/client-versions";
 import { decodeGrokCreditsFrame } from "./grok-quota-frame";
 

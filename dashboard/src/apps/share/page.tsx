@@ -22,7 +22,7 @@ import {
   readStoredShareKey,
   writeStoredShareKey,
   type StoredShareKey,
-} from "../../apps/share/share-key-storage";
+} from "./share-key-storage";
 
 interface IssueResult { key: string; keyId: string; keyPrefix: string; createdAt: string }
 interface ApiError { error?: string | { code?: string; message?: string }; message?: string }

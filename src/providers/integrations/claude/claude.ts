@@ -39,9 +39,9 @@ import { canonicalToClaudeMessagesPayload } from "../../../protocol/request/mess
 import { applyParamQuirks } from "../../../transport/translation/quirks";
 import { CLAUDE_BILLING_HEADER_PREFIX, endpointUrl } from "../../../protocol/codecs";
 import { sendClaudeMessagesRequest } from "../../../protocol/upstream/send-claude-messages";
-import type { ProviderDispatchTarget, ProviderAdapter, ProviderDispatchContext } from "../../contracts";
-import { defineModel } from "../../model-definition";
-import type { ModelDefinition } from "../../model-definition";
+import type { ProviderDispatchTarget, ProviderAdapter, ProviderDispatchContext } from "../../core/contracts";
+import { defineModel } from "../../core/model-definition";
+import type { ModelDefinition } from "../../core/model-definition";
 
 const claudeMessagesModel = (
   modelId: string,

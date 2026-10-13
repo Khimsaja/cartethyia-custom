@@ -5,7 +5,7 @@ import type { SurfaceAdapter, SurfaceInput, SurfaceOutput } from "./adapters";
 import { eventText } from "./adapters";
 import { isRecord } from "../../protocol/codecs";
 import { textPart } from "./content-parts";
-import { usageToChatWire, type OpenAiUsage } from "../../providers/usage";
+import { usageToChatWire, type OpenAiUsage } from "../../providers/core/usage";
 import { TEXT_ENCODER } from "../../protocol/sse-frame";
 import { SurfaceStreamEncoder } from "./stream-frame";
 

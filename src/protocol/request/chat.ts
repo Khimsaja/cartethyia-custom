@@ -1,7 +1,7 @@
 /**
  * [OpenAI]-compatible /chat/completions request encoder: canonical → wire body.
  */
-import type { CanonicalRequest, ResponseFormat } from "../../protocol/canonical-model";
+import type { CanonicalRequest, ResponseFormat } from "../canonical-model";
 import { isRecord } from "../codecs";
 import { markLatestBreakpoint } from "../../transport/translation/cache-controls";
 import { isWebSearchTool } from "../../transport/translation/search";
@@ -14,7 +14,7 @@ import {
 } from "../../transport/translation/thinking";
 import { isClaudeBillingHeaderText, resolveImageSource } from "../codecs";
 import { resolvePromptCacheKey } from "../../providers/operations/session-resolution";
-import { reasoningEffortFromIntent } from "../../providers/reasoning";
+import { reasoningEffortFromIntent } from "../../providers/core/reasoning";
 import { parseChatResponseToEvents, decodeChatSseStream } from "../response/chat";
 
 /**

@@ -13,7 +13,7 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import type { CartethyiaDatabase } from "../persistence/db-handle";
 import { providerAccounts } from "../persistence/schema";
 import { decryptCredentialToString } from "../security/crypto";
-import { decodeJwtPayload } from "../providers/authentication/oauth-flow-store";
+import { decodeJwtPayload } from "../providers/runtime/authentication/oauth-flow-store";
 import { runSweep } from "./sweep-runner";
 
 /** One account whose stored credential has never had its identity read. */

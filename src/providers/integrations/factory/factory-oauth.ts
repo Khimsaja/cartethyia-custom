@@ -20,20 +20,20 @@
  * endpoint the device flow uses, and a revoked grant is rejected there with the
  * message the refresh service classifies as definitive.
  */
-import { OAuthDeviceFlow } from "../../authentication/oauth-device-flow";
+import { OAuthDeviceFlow } from "../../runtime/authentication/oauth-device-flow";
 import type {
   OAuthDeviceFlowContext,
   OAuthDevicePollResult,
   OAuthDeviceStartResult,
   OAuthExchangeResult,
-} from "../../authentication/oauth-flow-store";
+} from "../../runtime/authentication/oauth-flow-store";
 import {
   devicePollBackoff,
   nonEmptyTrimmedString,
   readJsonResponse,
   record,
-} from "../../authentication/oauth-flow-store";
-import type { OAuthTokenRefreshResult } from "../../authentication/oauth-refresh-service";
+} from "../../runtime/authentication/oauth-flow-store";
+import type { OAuthTokenRefreshResult } from "../../runtime/authentication/oauth-refresh-service";
 import { encodeFactoryDroidCredential, type FactoryDroidEnvelope } from "../../../security/credential-codec";
 
 /** WorkOS public client. Public by design: it authorizes a user, not a secret. */

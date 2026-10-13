@@ -27,11 +27,11 @@ import {
   type RouteSnapshot,
   type SnapshotBuilder,
 } from "./route-model";
-import { DEFAULT_PROXY_SKIP_PROVIDER_IDS } from "../../providers/metadata";
+import { DEFAULT_PROXY_SKIP_PROVIDER_IDS } from "../../providers/core/metadata";
 import { buildClaudeCliUserAgent } from "../../providers/operations/custom-cli-headers";
-import { isBundledProviderId } from "../../providers/contracts";
+import { isBundledProviderId } from "../../providers/core/contracts";
 import type { ServiceKind, WireFamily } from "../../protocol/canonical-model";
-import { providerHasAdapterUserAgent, providerSupportsWebSearch, providerUsesBespokeWire } from "../../providers/metadata";
+import { providerHasAdapterUserAgent, providerSupportsWebSearch, providerUsesBespokeWire } from "../../providers/core/metadata";
 
 const CLAUDE_MODEL_FAMILIES = new Set(["opus", "sonnet", "haiku", "fable", "mythos"]);
 

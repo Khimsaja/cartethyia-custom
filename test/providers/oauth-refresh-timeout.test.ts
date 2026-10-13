@@ -22,7 +22,7 @@ import { readFileSync } from "node:fs";
 import type {
   OAuthTokenRefreshResult,
   OAuthTokenRefresher,
-} from "../../src/providers/authentication/oauth-refresh-service";
+} from "../../src/providers/runtime/authentication/oauth-refresh-service";
 
 /**
  * A refresher that never answers on its own, to model a hung token endpoint.

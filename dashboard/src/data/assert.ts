@@ -1,7 +1,7 @@
 import type { QueryFunctionContext } from "@tanstack/react-query";
-import { isRecord } from "../data/api";
+import { isRecord } from "./api";
 import { USAGE_DIMENSIONS } from "./contracts";
-import type { ApiErrorShape } from "../data/api";
+import type { ApiErrorShape } from "./api";
 import type {
   ApiKeyResponse,
   AuditEntry,

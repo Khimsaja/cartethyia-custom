@@ -1,6 +1,6 @@
 // Attempt completion bookkeeping: one home for everything every dispatch attempt ends with.
 import { GatewayError, publicGatewayErrorBody } from "../../protocol/gateway-error";
-import type { ValidatedOutboundFetch } from "../../providers/contracts";
+import type { ValidatedOutboundFetch } from "../../providers/core/contracts";
 import { reportAttemptOutcome } from "../../providers/operations/account-health-service";
 import type { UsageRecord } from "../../protocol/canonical-model";
 import { classifyUpstreamFailure } from "../failure-policy";

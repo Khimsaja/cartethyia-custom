@@ -4,7 +4,7 @@
  * because it depends on Codex account identity via `getCodexAccountId`.
  */
 import { getCodexAccountId } from "./codex-identity";
-import type { ResolvedCredential } from "../../contracts";
+import type { ResolvedCredential } from "../../core/contracts";
 import { toAsciiJsonString } from "../../../protocol/codecs";
 import { buildCodexUserAgent } from "../../operations/cli-platform";
 

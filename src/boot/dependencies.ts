@@ -14,8 +14,8 @@ import {
 } from "../providers/operations/provider-catalog-service";
 import type { BundledProviderCatalog } from "../providers/operations/provider-catalog-service";
 import { createDefaultProviderRegistry } from "../providers/default-registry";
-import { OAuthRefreshService, loadDueOAuthAccounts, reconcileStaticTokenAccounts } from "../providers/authentication/oauth-refresh-service";
-import type { OAuthTokenRefresher } from "../providers/authentication/oauth-refresh-service";
+import { OAuthRefreshService, loadDueOAuthAccounts, reconcileStaticTokenAccounts } from "../providers/runtime/authentication/oauth-refresh-service";
+import type { OAuthTokenRefresher } from "../providers/runtime/authentication/oauth-refresh-service";
 import { oauthRefreshSweep } from "../workers/oauth-refresh-sweep";
 import { accountIdentitySweep } from "../workers/account-identity-sweep";
 import { pushStructuredConsoleLog } from "../observability/log-ring";
@@ -67,8 +67,8 @@ import {
 import { resolveSsrfPolicy, resolveTrustedProxyBoundary } from "../config/network";
 import type { TrustedProxyBoundary } from "../config/network";
 import { resolveTelemetryRetentionDays } from "../config/telemetry";
-import type { ProviderAdapter } from "../providers/contracts";
-import type { ProviderRegistry } from "../providers/registry";
+import type { ProviderAdapter } from "../providers/core/contracts";
+import type { ProviderRegistry } from "../providers/core/registry";
 import type { ByokUpstreamHost } from "../providers/operations/provider-catalog-service";
 import type { ReadinessCheckResult } from "../persistence/readiness";
 import { log } from "../observability/logger";

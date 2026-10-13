@@ -1,7 +1,7 @@
 // Persisted API-key store: the console API-key domain and gateway authentication both consume this boundary.
 
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
-import { nextSortIndex, reorderSortIndex } from "../../persistence/sort-order";
+import { nextSortIndex, reorderSortIndex } from "../sort-order";
 import { getDbHandle } from "../boot";
 import type { CartethyiaDatabase } from "../db-handle";
 import { lockRows } from "../dialect";

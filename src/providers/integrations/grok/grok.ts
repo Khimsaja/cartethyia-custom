@@ -14,14 +14,14 @@ import type { CanonicalEvent, CanonicalRequest } from "../../../protocol/canonic
 import {
   OpenAICompatibleAdapter,
   withBearerAuthentication,
-} from "../../compatible-adapter";
-import type { ProviderAdapter, ProviderDispatchTarget, ProviderDispatchContext } from "../../contracts";
-import { providerBaseUrl } from "../../metadata";
-import { boundedUpstreamArray, boundedUpstreamNumber, sanitizeUpstreamLabel } from "../../sanitize";
+} from "../../runtime/adapters/compatible-adapter";
+import type { ProviderAdapter, ProviderDispatchTarget, ProviderDispatchContext } from "../../core/contracts";
+import { providerBaseUrl } from "../../core/metadata";
+import { boundedUpstreamArray, boundedUpstreamNumber, sanitizeUpstreamLabel } from "../../core/sanitize";
 import { isRecord } from "../../../protocol/codecs";
-import { modelsDevCatalog } from "../../discovery/models-dev-catalog";
+import { modelsDevCatalog } from "../../runtime/discovery/models-dev-catalog";
 import type { ReasoningEffortLevel } from "../../../transport/translation/thinking";
-import type { FetchLike } from "../../quota/quota-contracts";
+import type { FetchLike } from "../../runtime/quota/quota-contracts";
 import { resolveInboundSessionId, resolvePromptCacheKey } from "../../operations/session-resolution";
 import {
   buildGrokUserAgent,
@@ -74,7 +74,7 @@ interface GrokModelDiscoveryOptions {
   readonly fetcher?: FetchLike;
 }
 
-import type { ModelDefinition } from "../../model-definition";
+import type { ModelDefinition } from "../../core/model-definition";
 
 const grokModel = (
   modelId: string,

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { totalRemainingCredit, totalRemainingPercent, type ProviderQuotaWindow } from "../../src/providers/quota/quota-contracts";
+import { totalRemainingCredit, totalRemainingPercent, type ProviderQuotaWindow } from "../../src/providers/runtime/quota/quota-contracts";
 
 const window = (value: Partial<ProviderQuotaWindow>): ProviderQuotaWindow => ({
   kind: "test",

@@ -7,7 +7,7 @@ import {
   trackToolCall,
   type ToolCallState,
 } from "../../../protocol/tool-identity";
-import { usageToChatWire, type OpenAiUsage } from "../../../providers/usage";
+import { usageToChatWire, type OpenAiUsage } from "../../../providers/core/usage";
 import { chatFinishReason } from "../../../protocol/stop-reason";
 import { TEXT_ENCODER } from "../../../protocol/sse-frame";
 import { SurfaceStreamEncoder } from "../stream-frame";

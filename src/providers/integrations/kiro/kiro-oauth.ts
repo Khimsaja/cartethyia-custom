@@ -29,7 +29,7 @@ import {
   nonEmptyTrimmedString,
   readJsonResponse,
   record,
-} from "../../authentication/oauth-flow-store";
+} from "../../runtime/authentication/oauth-flow-store";
 import type {
   OAuthAuthorizeRequest,
   OAuthCodeExchangeContext,
@@ -39,12 +39,12 @@ import type {
   OAuthExchangeResult,
   OAuthImportInput,
   OAuthLoginField,
-} from "../../authentication/oauth-flow-store";
+} from "../../runtime/authentication/oauth-flow-store";
 import type {
   OAuthRefreshContext,
   OAuthTokenRefreshResult,
-} from "../../authentication/oauth-refresh-service";
-import { OAuthDeviceFlow } from "../../authentication/oauth-device-flow";
+} from "../../runtime/authentication/oauth-refresh-service";
+import { OAuthDeviceFlow } from "../../runtime/authentication/oauth-device-flow";
 import {
   buildKiroAmzUserAgent,
   buildKiroSsoAmzUserAgent,

@@ -2,7 +2,7 @@
  * Shared upstream JSON executor for [OpenAI]-compatible adapters: POSTs a payload
  * with deadline/abort wiring and returns the response plus a release hook.
  */
-import type { ProviderDispatchContext, ValidatedOutboundFetch } from "../../providers/contracts";
+import type { ProviderDispatchContext, ValidatedOutboundFetch } from "../../providers/core/contracts";
 import { abortGatewayError, createUpstreamDeadlineLifecycle } from "../../providers/operations/upstream-deadline";
 
 export async function postUpstreamJson(

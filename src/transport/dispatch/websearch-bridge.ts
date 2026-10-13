@@ -15,7 +15,7 @@ import type { CanonicalEvent, CanonicalRequest, SourceSurface } from "../../prot
 import type { RouteCandidate } from "../routing/route-model";
 import { isWebSearchTool, isWebSearchToolName } from "../translation/search";
 import type { WebSearchInvocation } from "../translation/search";
-import type { ProviderAdapter, ProviderDispatchTarget, WebSearchOutcome } from "../../providers/contracts";
+import type { ProviderAdapter, ProviderDispatchTarget, WebSearchOutcome } from "../../providers/core/contracts";
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import type { ValidatedNetworkBindingFactory } from "../../network/pool/resolver";
 import { resolveCredentialForAccount } from "../../providers/operations/provider-credential-service";

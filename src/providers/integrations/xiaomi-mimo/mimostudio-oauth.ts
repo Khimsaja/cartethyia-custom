@@ -1,9 +1,9 @@
-import { OAuthClient, type FetchLike } from "../../authentication/oauth-client";
+import { OAuthClient, type FetchLike } from "../../runtime/authentication/oauth-client";
 import {
   type OAuthAuthorizeRequest,
   type OAuthExchangeResult,
-} from "../../authentication/oauth-flow-store";
-import type { OAuthTokenRefreshResult } from "../../authentication/oauth-refresh-service";
+} from "../../runtime/authentication/oauth-flow-store";
+import type { OAuthTokenRefreshResult } from "../../runtime/authentication/oauth-refresh-service";
 import { GatewayError } from "../../../protocol/gateway-error";
 import { oauthCallbackUrl } from "../../../config/providers";
 import {

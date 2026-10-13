@@ -7,10 +7,10 @@ import {
   type OAuthDeviceStartResult,
   type OAuthExchangeResult,
   type OAuthFlowStorage,
-} from "../../authentication/oauth-flow-store";
-import type { OAuthTokenRefreshResult } from "../../authentication/oauth-refresh-service";
-import { OAuthDeviceFlow } from "../../authentication/oauth-device-flow";
-import type { FetchLike } from "../../authentication/oauth-client";
+} from "../../runtime/authentication/oauth-flow-store";
+import type { OAuthTokenRefreshResult } from "../../runtime/authentication/oauth-refresh-service";
+import { OAuthDeviceFlow } from "../../runtime/authentication/oauth-device-flow";
+import type { FetchLike } from "../../runtime/authentication/oauth-client";
 import { resolveRedisClient } from "../../../persistence/redis";
 import type { RedisClient } from "../../../persistence/redis";
 import { isRecord } from "../../../protocol/codecs";

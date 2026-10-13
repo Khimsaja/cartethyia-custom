@@ -1,7 +1,7 @@
 /**
  * [OpenAI]-compatible /v1/responses request encoder: canonical → wire body.
  */
-import type { CanonicalRequest } from "../../protocol/canonical-model";
+import type { CanonicalRequest } from "../canonical-model";
 import { isRecord } from "../codecs";
 import { markLatestBreakpoint } from "../../transport/translation/cache-controls";
 import { pickWireSupportedControls } from "../../transport/translation/capabilities";
@@ -13,7 +13,7 @@ import {
 } from "../../transport/translation/thinking";
 import { isClaudeBillingHeaderText, resolveImageSource, resolveOutputVerbosity } from "../codecs";
 import { resolvePromptCacheKey } from "../../providers/operations/session-resolution";
-import { reasoningEffortFromIntent } from "../../providers/reasoning";
+import { reasoningEffortFromIntent } from "../../providers/core/reasoning";
 import { isWebSearchTool } from "../../transport/translation/search";
 import { parseResponsesResponseToEvents, decodeResponsesSseStream } from "../response/responses";
 

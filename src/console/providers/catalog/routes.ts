@@ -2,7 +2,7 @@ import { consoleErrorHandler } from "../../shared/errors";
 import { literalUnion } from "../../shared/elysia-schema";
 import { Elysia, t } from "elysia";
 import { SERVICE_KINDS, WIRE_FAMILIES } from "../../../protocol/canonical-model";
-import { PROBE_REASONING_EFFORTS } from "../../../providers/discovery/discovery-types";
+import { PROBE_REASONING_EFFORTS } from "../../../providers/runtime/discovery/discovery-types";
 import {
   ACCOUNT_STATUSES,
   CREDENTIAL_KINDS,

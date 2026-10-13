@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createCodexAdapter } from "../../src/providers/integrations/codex/codex";
-import type { ProviderDispatchContext, ProviderDispatchTarget, ResolvedCredential, ValidatedOutboundFetch } from "../../src/providers/contracts";
+import type { ProviderDispatchContext, ProviderDispatchTarget, ResolvedCredential, ValidatedOutboundFetch } from "../../src/providers/core/contracts";
 
 const target: ProviderDispatchTarget = {
   provider_id: "codex",

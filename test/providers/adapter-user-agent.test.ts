@@ -15,7 +15,7 @@
  * on the provider response).
  */
 import { describe, expect, test } from "bun:test";
-import { providerHasAdapterUserAgent, BUNDLED_PROVIDER_METADATA } from "../../src/providers/metadata";
+import { providerHasAdapterUserAgent, BUNDLED_PROVIDER_METADATA } from "../../src/providers/core/metadata";
 import { resolveRouteUserAgent } from "../../src/transport/routing/route-catalog";
 
 describe("route User-Agent is only offered where the adapter reads it", () => {

@@ -9,11 +9,11 @@
  * `attempt` closures; this module never forks retry policy.
  */
 import { GatewayError } from "../../protocol/gateway-error";
-import type { ResolvedCredential } from "../../providers/contracts";
+import type { ResolvedCredential } from "../../providers/core/contracts";
 import { classifyTerminalOutcome, fallbackRetryDelayMs, isRetryableFailure, sleep } from "../failure-policy";
 import { resolveRouteMaxAttempts } from "../../config/timeouts";
-import type { OAuthTokenRefresher } from "../../providers/authentication/oauth-refresh-service";
-import type { OAuthRefreshService } from "../../providers/authentication/oauth-refresh-service";
+import type { OAuthTokenRefresher } from "../../providers/runtime/authentication/oauth-refresh-service";
+import type { OAuthRefreshService } from "../../providers/runtime/authentication/oauth-refresh-service";
 import type { ValidatedNetworkBindingFactory } from "../../network/pool/resolver";
 import type { ByokUpstreamHost } from "../../providers/operations/provider-catalog-service";
 import type { AdmissionLease } from "../../security/admission/contracts";
@@ -27,7 +27,7 @@ import type { ProxyRequestState } from "../request/state";
 import type { TelemetryBatchBuffer } from "../../observability/telemetry-buffer";
 import { flagPoolCooldown } from "../../network/pool-health";
 import { completeAttempt, errorClientResponseBody, estimatedUsage, type ProviderExchangeCapture } from "./attempt-finalize";
-import { repriceUsage } from "../../providers/usage";
+import { repriceUsage } from "../../providers/core/usage";
 import { shouldCooldownPool, isOAuthCredentialInvalidated } from "./retry-policy";
 import { drainAbortReason } from "../shutdown-notice";
 

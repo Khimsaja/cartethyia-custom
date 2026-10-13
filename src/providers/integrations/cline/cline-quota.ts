@@ -1,7 +1,7 @@
-import type { FetchLike, ProviderQuotaResult, ProviderQuotaWindow } from "../../quota/quota-contracts";
-import { authCredential, getJson, record, text } from "../../quota/quota-contracts";
-import { parseLimitWindows } from "../../quota/quota-limit-windows";
-import { probeApiKeyConnectivity } from "../../quota/quota-support";
+import type { FetchLike, ProviderQuotaResult, ProviderQuotaWindow } from "../../runtime/quota/quota-contracts";
+import { authCredential, getJson, record, text } from "../../runtime/quota/quota-contracts";
+import { parseLimitWindows } from "../../runtime/quota/quota-limit-windows";
+import { probeApiKeyConnectivity } from "../../runtime/quota/quota-support";
 import { getClineClientVersion, getClineSdkVersion } from "../../operations/client-versions";
 import { clinePlatform, clinePlatformVersion } from "../../operations/cli-platform";
 

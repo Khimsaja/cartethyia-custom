@@ -19,7 +19,7 @@ they are roots rather than request endpoints.
 This behavior is implemented by `splitEndpointBaseUrl`,
 `modelDiscoveryBaseUrl`, and `modelListUrl` in
 `src/providers/operations/byok-wire-profile.ts`, and consumed by
-`src/providers/discovery/probing-service.ts`. `resolveByokWireProfile` remains
+`src/providers/runtime/discovery/probing-service.ts`. `resolveByokWireProfile` remains
 the authority for supported wire families, endpoint paths, and credential
 header shape; do not duplicate that mapping in the UI or probing code.
 
@@ -37,10 +37,10 @@ separate.
 
 The current implementation is owned by:
 
-- `src/providers/metadata.ts` — DeepSeek identity, host, and default wire.
+- `src/providers/core/metadata.ts` — DeepSeek identity, host, and default wire.
 - `src/providers/default-registry.ts` — adapter, endpoint, and model discovery.
-- `src/providers/adapters/anthropic.ts` — `createDeepseekAnthropicAdapter`.
-- `src/providers/specs/deepseek.ts` — bundled DeepSeek model rows.
+- `src/providers/integrations/anthropic/anthropic.ts` — `createDeepseekAnthropicAdapter`.
+- `src/providers/integrations/deepseek/provider.ts` — bundled DeepSeek model rows.
 
 For provider catalog changes, follow the
 [provider-catalog skill](../.skills/cartethyia-provider-catalog/SKILL.md).

@@ -11,6 +11,7 @@ Keep it that way — a feature that needs prose gets a page under `features/`.
 | [Backend](backend.md) | Boot, public `/v1` routes, dispatch, protocol, providers, routing and network, security, persistence, observability, workers |
 | [Protocol and translation](protocol-and-translation.md) | Wire families, the canonical model, request and response path, error mapping |
 | [Providers](providers.md) | Provider layers, boot and bundled vs BYOK, credentials and auth, discovery, quota, per-family notes |
+| [Provider rework map](provider-rework-map.md) | Current provider layout, broader target structure, Buddy Intl/CN placement, boilerplate goals, migration invariants |
 | [Console API](console-api.md) | Anatomy of a domain, wiring, the four boundaries, feature inventory, where to change what |
 | [Dashboard](dashboard.md) | Shell, pages, data flow, layout rules, mutation feedback, build and serve |
 | [Codebase size](codebase-size.md) | Tracked backend and frontend source-line counts and counting scope |

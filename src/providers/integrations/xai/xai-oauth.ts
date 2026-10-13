@@ -24,15 +24,15 @@ import {
   parseDeviceAuthStart,
   postFormTokenRequest,
   readJsonResponse,
-} from "../../authentication/oauth-flow-store";
+} from "../../runtime/authentication/oauth-flow-store";
 import type {
   OAuthDeviceFlowContext,
   OAuthDevicePollResult,
   OAuthDeviceStartResult,
-} from "../../authentication/oauth-flow-store";
-import type { OAuthTokenRefreshResult } from "../../authentication/oauth-refresh-service";
-import { OAuthDeviceFlow } from "../../authentication/oauth-device-flow";
-import type { FetchLike } from "../../authentication/oauth-client";
+} from "../../runtime/authentication/oauth-flow-store";
+import type { OAuthTokenRefreshResult } from "../../runtime/authentication/oauth-refresh-service";
+import { OAuthDeviceFlow } from "../../runtime/authentication/oauth-device-flow";
+import type { FetchLike } from "../../runtime/authentication/oauth-client";
 
 /** Public xAI OAuth client id for the Grok subscriptions; not a secret. */
 /** One authorization server, one public client registration for both Grok products. */

@@ -3,7 +3,7 @@
  * (contents/systemInstruction/tools/generationConfig) plus the model-URL and
  * schema-sanitization helpers shared with the Antigravity adapter.
  */
-import type { CanonicalRequest } from "../../protocol/canonical-model";
+import type { CanonicalRequest } from "../canonical-model";
 import {
   descend,
   isClaudeBillingHeaderText,
@@ -14,7 +14,7 @@ import {
   splitDataUrl,
   type RewriteWalk,
 } from "../codecs";
-import { geminiThinkingOutputFloor } from "../../providers/reasoning";
+import { geminiThinkingOutputFloor } from "../../providers/core/reasoning";
 
 export function geminiModelUrl(base: string, model: string, action: string): string {
   return `${base}/models/${encodeURIComponent(model)}:${action}`;

@@ -7,9 +7,9 @@
  * having three unrelated causes.
  */
 import { describe, expect, test } from "bun:test";
-import { modelsDevCatalog } from "../../src/providers/discovery/models-dev-catalog";
+import { modelsDevCatalog } from "../../src/providers/runtime/discovery/models-dev-catalog";
 import { PROVIDER_CAPABILITIES } from "../../src/providers/default-registry";
-import type { ModelDefinition } from "../../src/providers/model-definition";
+import type { ModelDefinition } from "../../src/providers/core/model-definition";
 
 async function catalogFor(providerId: string): Promise<readonly ModelDefinition[]> {
   const capabilities = (PROVIDER_CAPABILITIES as Record<

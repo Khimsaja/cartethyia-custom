@@ -1,6 +1,6 @@
 import { GatewayError } from "../../protocol/gateway-error";
 import type { CanonicalRequest, ServiceKind } from "../../protocol/canonical-model";
-import { providerSupportsWebSearch } from "../../providers/metadata";
+import { providerSupportsWebSearch } from "../../providers/core/metadata";
 import type { ApiKeyAdmissionService } from "../../security/admission/service";
 import type { RouteCandidate as RouteCandidate, InMemoryRouteSnapshotService, RoutePlan } from "../routing/route-model";
 import { resolveAliasTarget, type RoutingEngine } from "../routing/router";
@@ -14,7 +14,7 @@ import { dropCorruptAttachments } from "../translation/attachment-integrity";
 import { parseThinkingSuffix, withThinkingSuffixIntent } from "../translation/thinking";
 import { nativeServicePathFor } from "../contracts";
 import { log } from "../../observability/logger";
-import { BUDDY_PROVIDER_IDS } from "../../providers/metadata";
+import { BUDDY_PROVIDER_IDS } from "../../providers/core/metadata";
 import {
   degradedRequestVariants,
   degradeEncryptedReasoning,

@@ -2,8 +2,8 @@ import type {
   FetchLike,
   ProviderQuotaResult,
   ProviderQuotaWindow,
-} from "../../quota/quota-contracts";
-import { getJson, isoDate, number, percentWindow, record } from "../../quota/quota-contracts";
+} from "../../runtime/quota/quota-contracts";
+import { getJson, isoDate, number, percentWindow, record } from "../../runtime/quota/quota-contracts";
 import { getKimiCommonHeaders, parseKimiCredential } from "./kimi-oauth";
 import { resolveKimiQuotaBaseUrl } from "../../../config/providers";
 

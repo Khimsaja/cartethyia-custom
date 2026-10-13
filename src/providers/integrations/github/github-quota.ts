@@ -10,8 +10,8 @@
  * defensively and an unrecognized body yields an empty window list rather than
  * a fabricated percentage.
  */
-import type { FetchLike, ProviderQuotaResult, ProviderQuotaWindow } from "../../quota/quota-contracts";
-import { getJson, isoDate, number, percentWindow, quotaRecord, text } from "../../quota/quota-contracts";
+import type { FetchLike, ProviderQuotaResult, ProviderQuotaWindow } from "../../runtime/quota/quota-contracts";
+import { getJson, isoDate, number, percentWindow, quotaRecord, text } from "../../runtime/quota/quota-contracts";
 import { resolveGithubEnterpriseDomain } from "../../../config/providers";
 import { GITHUB_REQUEST_HEADERS, parseGithubCredential } from "./github-oauth";
 

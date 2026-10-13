@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import type { ProviderDispatchContext } from "../../src/providers/contracts";
+import type { ProviderDispatchContext } from "../../src/providers/core/contracts";
 import type { CanonicalRequest } from "../../src/protocol/canonical-model";
 import { encodeWireRequest } from "../../src/protocol/registry";
-import { OPENCODE_FREE_SPEC } from "../../src/providers/specs/opencode";
+import { OPENCODE_FREE_SPEC } from "../../src/providers/integrations/opencode/provider";
 
 describe("OpenCode request fingerprint", () => {
   test("matches the captured CLI identity and reuses session identity per conversation", async () => {

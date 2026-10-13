@@ -5,7 +5,7 @@ import type { ResolvedApiKey } from "../../security/api-key-auth";
 import type { PreparedProxyRequest } from "./preparer";
 import { createInFlightRegistry, type InFlightSnapshot } from "./inflight";
 import { log } from "../../observability/logger";
-import { fastPathname } from "../../transport/pathname";
+import { fastPathname } from "../pathname";
 
 export interface ProxyRequestOutcome {
   readonly status: "completed" | "failed" | "cancelled" | "truncated";

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createSearchAdapter } from "../../src/providers/search/search-provider";
 import { SEARCH_PROVIDER_SPECS } from "../../src/providers/search/search-providers";
-import type { ProviderDispatchContext, ProviderDispatchTarget, ResolvedCredential, ValidatedOutboundFetch } from "../../src/providers/contracts";
+import type { ProviderDispatchContext, ProviderDispatchTarget, ResolvedCredential, ValidatedOutboundFetch } from "../../src/providers/core/contracts";
 
 const target: ProviderDispatchTarget = {
   provider_id: "exa",

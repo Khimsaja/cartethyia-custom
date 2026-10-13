@@ -8,7 +8,7 @@ import {
   type TelemetryEventRecord,
 } from "../../observability/event-log";
 import { isGatewayError } from "../../observability/telemetry-status";
-import { decodeDatedCursor, encodeCursor } from "../../console/shared/cursor";
+import { decodeDatedCursor, encodeCursor } from "../shared/cursor";
 import { CARTETHYIA_VERSION } from "../../version";
 import { CachedPreferencesReader, DrizzlePreferencesReader, type PreferencesReader } from "../../persistence/tenant-preferences";
 import type {

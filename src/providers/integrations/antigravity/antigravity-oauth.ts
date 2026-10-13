@@ -3,11 +3,11 @@
  * The client uses a dedicated Google OAuth application with Cloud Platform,
  * userinfo, cclog, and experiments/configuration scopes.
  */
-import { postFormTokenRequest } from "../../authentication/oauth-flow-store";
-import { readJsonResponse } from "../../authentication/oauth-flow-store";
-import type { OAuthExchangeResult } from "../../authentication/oauth-flow-store";
-import type { OAuthTokenRefreshResult } from "../../authentication/oauth-refresh-service";
-import { OAuthClient, type FetchLike } from "../../authentication/oauth-client";
+import { postFormTokenRequest } from "../../runtime/authentication/oauth-flow-store";
+import { readJsonResponse } from "../../runtime/authentication/oauth-flow-store";
+import type { OAuthExchangeResult } from "../../runtime/authentication/oauth-flow-store";
+import type { OAuthTokenRefreshResult } from "../../runtime/authentication/oauth-refresh-service";
+import { OAuthClient, type FetchLike } from "../../runtime/authentication/oauth-client";
 import { discoverAntigravityProject } from "./antigravity-protocol";
 import { isRecord } from "../../../protocol/codecs";
 import { log } from "../../../observability/logger";

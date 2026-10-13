@@ -23,8 +23,8 @@ import {
   BuddyMediaAdapter,
   buddyErrorOf,
   extractChatImages,
-} from "../../src/providers/integrations/buddy/buddy-media";
-import type { ProviderDispatchContext, ProviderDispatchTarget } from "../../src/providers/contracts";
+} from "../../src/providers/integrations/buddy/shared/media";
+import type { ProviderDispatchContext, ProviderDispatchTarget } from "../../src/providers/core/contracts";
 
 const IMAGE_TARGET = {
   provider_id: "cb",

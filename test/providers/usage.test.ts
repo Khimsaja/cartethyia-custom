@@ -38,7 +38,7 @@ import {
   usageToMessagesWire,
   usageToResponsesWire,
   type OpenAiUsage,
-} from "../../src/providers/usage";
+} from "../../src/providers/core/usage";
 import type { UsageRecord } from "../../src/protocol/canonical-model";
 
 describe("normalizeUsage: the OpenAI shape", () => {

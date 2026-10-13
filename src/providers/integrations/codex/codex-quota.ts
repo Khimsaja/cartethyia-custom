@@ -2,7 +2,7 @@ import type {
   FetchLike,
   ProviderQuotaResult,
   ProviderQuotaWindow,
-} from "../../quota/quota-contracts";
+} from "../../runtime/quota/quota-contracts";
 import {
   authCredential,
   codexJwtAccountId,
@@ -12,7 +12,7 @@ import {
   text,
   number,
   isoDate,
-} from "../../quota/quota-contracts";
+} from "../../runtime/quota/quota-contracts";
 
 function parseCodexQuota(body: unknown, fetchedAt: string): ProviderQuotaResult {
   const payload = quotaRecord(body);

@@ -21,6 +21,8 @@ How the system is built — [reference/](reference/README.md), one page per laye
   families, the canonical model, and where a provider's dialect is applied.
 - [Providers](reference/providers.md) — the provider layers, credentials,
   discovery, and what makes each family non-standard.
+- [Provider rework map](reference/provider-rework-map.md) — before/after
+  structure, Buddy Intl/CN, boilerplate goals, and safe migration boundaries.
 - [Console API](reference/console-api.md) — the admin/operator surface: domains,
   feature inventory, and the browser mirror.
 - [Dashboard](reference/dashboard.md) — pages, data flow, layout, mutations.

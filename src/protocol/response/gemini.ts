@@ -8,8 +8,8 @@
  * `[DONE]` means (Gemini skips it, Antigravity stops) and in the label used
  * for an error payload, so those are the two inputs.
  */
-import type { CanonicalStopReason } from "../../protocol/canonical-model";
-import { GatewayError } from "../../protocol/gateway-error";
+import type { CanonicalStopReason } from "../canonical-model";
+import { GatewayError } from "../gateway-error";
 import {
   classifyUpstreamError,
   extractUpstreamMessage,

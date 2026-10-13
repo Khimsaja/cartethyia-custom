@@ -7,7 +7,7 @@ import { type ServiceKind, type WireFamily, SERVICE_KINDS, WIRE_FAMILIES } from 
 import type { ProviderRoutingStrategy } from "../../../persistence/schema";
 import { isProtectedHeader } from "../../../security/outbound-headers";
 import type { AccountHealthEventRecord } from "../../../providers/operations/account-health-service";
-import type { CompatibilityProfile } from "../../../providers/metadata";
+import type { CompatibilityProfile } from "../../../providers/core/metadata";
 import type {
   ByokConnectionTestRequest,
   ByokConnectionTestResult,
@@ -15,7 +15,7 @@ import type {
   ProbeAllModelsResult,
   ProbeModelRequest,
   ProbeModelResult,
-} from "../../../providers/discovery/discovery-types";
+} from "../../../providers/runtime/discovery/discovery-types";
 
 /**
  * Credential kinds a provider account may carry, as a runtime tuple. The
@@ -352,7 +352,7 @@ export type { ProbeAllAccountsResult, ProbeAllModelsResult, ProbeModelRequest, P
 export type {
   ByokConnectionTestRequest,
   ByokConnectionTestResult,
-} from "../../../providers/discovery/discovery-types";
+} from "../../../providers/runtime/discovery/discovery-types";
 export interface SetModelEnabledRequest {
   modelId: string;
   route: string;

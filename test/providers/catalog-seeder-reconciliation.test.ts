@@ -20,7 +20,7 @@ import { retireUnbundledProviders } from "../../src/providers/operations/provide
 import { BUNDLED_PROVIDER_MODULES } from "../../src/providers/default-registry";
 import { DrizzleProviderCatalogStore } from "../../src/console/providers/catalog/store";
 import { createProviderCatalogOperations } from "../../src/console/providers/catalog/provider-operations";
-import { ProviderRegistry } from "../../src/providers/registry";
+import { ProviderRegistry } from "../../src/providers/core/registry";
 
 function removeDir(dir: string): void {
   try {

@@ -69,7 +69,7 @@ implementation and correct the owning documentation page.
 | --- | --- | --- |
 | Request parsing, protocol translation, streaming, errors | `src/protocol/`, `src/transport/`, `src/providers/` | [Protocol and translation](reference/protocol-and-translation.md), trace-replay skill |
 | Candidate matching, eligibility, cooldowns, failover | `src/transport/routing/` | [Architecture](reference/architecture.md), [health-routing skill](../.skills/cartethyia-health-routing/SKILL.md) |
-| Quota reads, cache, Usage floor, quota UI | `src/console/quota/`, `src/providers/quota/`, `src/workers/quota-refresh-sweep.ts`, provider-detail dashboard | [Usage floor](features/usage-floor.md), [Providers](reference/providers.md) |
+| Quota reads, cache, Usage floor, quota UI | `src/console/quota/`, `src/providers/runtime/quota/`, `src/workers/quota-refresh-sweep.ts`, provider-detail dashboard | [Usage floor](features/usage-floor.md), [Providers](reference/providers.md) |
 | Provider catalog, auth, discovery, adapters | `src/providers/` | [Providers](reference/providers.md), provider-catalog skill |
 | Egress, proxy pools, SSRF | `src/network/`, `src/console/routing/pools/` | [Network pools](features/network-pools.md), health-routing skill |
 | Console API | `src/console/<domain>/` | [Console API](reference/console-api.md), console-api skill |

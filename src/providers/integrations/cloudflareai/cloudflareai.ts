@@ -20,7 +20,7 @@ import type {
   ProviderAdapter,
   ProviderDispatchContext,
   ProviderDispatchTarget,
-} from "../../contracts";
+} from "../../core/contracts";
 import type { CanonicalEvent, CanonicalRequest } from "../../../protocol/canonical-model";
 import { GatewayError } from "../../../protocol/gateway-error";
 import { buildClaudeMessagesRequest, filterClaudeCustomHeaders } from "../shared/claude-messages";

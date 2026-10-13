@@ -1,10 +1,10 @@
-import { isBundledProviderId } from "../../providers/contracts";
-import type { ProviderDispatchContext, ProviderId, ProviderAdapter } from "../../providers/contracts";
+import { isBundledProviderId } from "../../providers/core/contracts";
+import type { ProviderDispatchContext, ProviderId, ProviderAdapter } from "../../providers/core/contracts";
 import { GatewayError } from "../../protocol/gateway-error";
 import type { CanonicalEvent, CanonicalRequest } from "../../protocol/canonical-model";
 import { resolveCredentialForAccount } from "../../providers/operations/provider-credential-service";
-import type { OAuthTokenRefresher } from "../../providers/authentication/oauth-refresh-service";
-import type { OAuthRefreshService } from "../../providers/authentication/oauth-refresh-service";
+import type { OAuthTokenRefresher } from "../../providers/runtime/authentication/oauth-refresh-service";
+import type { OAuthRefreshService } from "../../providers/runtime/authentication/oauth-refresh-service";
 import type { ValidatedNetworkBindingFactory } from "../../network/pool/resolver";
 import type { ByokUpstreamHost } from "../../providers/operations/provider-catalog-service";
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
@@ -22,7 +22,7 @@ import type { NetworkPoolSelector } from "../../network/pool/selector";
 import type { TelemetryBatchBuffer } from "../../observability/telemetry-buffer";
 import { ProxyRequestStateStore } from "../request/state";
 import type { ProxyRequestPreparer } from "../request/preparer";
-import { repriceUsage } from "../../providers/usage";
+import { repriceUsage } from "../../providers/core/usage";
 import {
   captureProviderExchange,
   completeAttempt,

@@ -20,8 +20,8 @@ import {
   OAuthRefreshService,
   reconcileStaticTokenAccounts,
   type OAuthTokenRefresher,
-} from "../../src/providers/authentication/oauth-refresh-service";
-import { classifyAccessTokenUsability } from "../../src/providers/authentication/static-token-detection";
+} from "../../src/providers/runtime/authentication/oauth-refresh-service";
+import { classifyAccessTokenUsability } from "../../src/providers/runtime/authentication/static-token-detection";
 import { createWorld, type GatewayWorld } from "../helpers/fixtures";
 import { dbDescribe } from "../helpers/database";
 

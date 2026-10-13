@@ -17,9 +17,9 @@
  * throw 409 — so the error itself is the evidence.
  */
 import { describe, expect, test } from "bun:test";
-import { ProviderProbingService } from "../../src/providers/discovery/probing-service";
+import { ProviderProbingService } from "../../src/providers/runtime/discovery/probing-service";
 import { createDefaultProviderRegistry } from "../../src/providers/default-registry";
-import type { ProviderRegistry } from "../../src/providers/registry";
+import type { ProviderRegistry } from "../../src/providers/core/registry";
 import type { CartethyiaDatabase } from "../../src/persistence/db-handle";
 
 const PROVIDER_ID = "groq";

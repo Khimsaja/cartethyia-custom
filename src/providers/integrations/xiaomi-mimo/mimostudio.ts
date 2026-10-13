@@ -5,10 +5,10 @@ import type {
   ContentPart,
 } from "../../../protocol/canonical-model";
 import { GatewayError } from "../../../protocol/gateway-error";
-import { defineModel } from "../../model-definition";
-import type { ModelDefinition } from "../../model-definition";
-import type { ProviderAdapter, ProviderDispatchContext, ProviderDispatchTarget } from "../../contracts";
-import { usageFromProvider } from "../../usage";
+import { defineModel } from "../../core/model-definition";
+import type { ModelDefinition } from "../../core/model-definition";
+import type { ProviderAdapter, ProviderDispatchContext, ProviderDispatchTarget } from "../../core/contracts";
+import { usageFromProvider } from "../../core/usage";
 import { MimoStudioSessionStore } from "./mimostudio-session";
 import {
   extractMimoStudioToolCalls,

@@ -1,14 +1,14 @@
 /**
  * [OpenAI]-compatible /chat/completions response decoder: wire JSON/SSE → canonical events.
  */
-import { canonicalTerminal } from "../../protocol/codecs";
-import { GatewayError } from "../../protocol/gateway-error";
-import { type CanonicalEvent, type CanonicalRequest } from "../../protocol/canonical-model";
-import { decodeSseEvents } from "../../protocol/sse-decoder";
+import { canonicalTerminal } from "../codecs";
+import { GatewayError } from "../gateway-error";
+import { type CanonicalEvent, type CanonicalRequest } from "../canonical-model";
+import { decodeSseEvents } from "../sse-decoder";
 import { gatewayErrorFromStreamError } from "../stream-error-frames";
 import { mergeResponsesUsage } from "./responses";
-import { usageFromProvider, readReasoningText } from "../../providers/usage";
-import { createToolEmitLedger } from "../../protocol/tool-identity";
+import { usageFromProvider, readReasoningText } from "../../providers/core/usage";
+import { createToolEmitLedger } from "../tool-identity";
 import { MimoThinkSplitter } from "../../providers/integrations/xiaomi-mimo/think-stream";
 import { parseDsmlToolCalls } from "./dsml";
 

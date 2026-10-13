@@ -4,7 +4,7 @@ import { GatewayError, explainGatewayError, formatPublicErrorMessage, publicGate
 import type { ProxyRequestState, ProxyRequestStateStore } from "../request/state";
 import { GATEWAY_SECURITY_HEADERS } from "../../security/outbound-headers";
 import type { TelemetryBatchBuffer, TelemetryEventInput } from "../../observability/telemetry-buffer";
-import { reasoningEffortFromIntent } from "../../providers/reasoning";
+import { reasoningEffortFromIntent } from "../../providers/core/reasoning";
 import { metrics } from "../../observability/metrics";
 import { computeTokensPerSec } from "../../observability/token-speed";
 import { pushStructuredConsoleLog } from "../../observability/log-ring";

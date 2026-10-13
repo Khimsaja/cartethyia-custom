@@ -24,10 +24,10 @@ import {
   GENERIC_API_KEY_SPECS,
   VERSIONED_ROOT_API_KEY_PROVIDER_IDS,
   VERSIONED_ROOT_API_KEY_SPECS,
-} from "../../src/providers/specs/configured-openai-providers";
+} from "../../src/providers/configured-openai-providers";
 import { createDefaultProviderRegistry } from "../../src/providers/default-registry";
 import { BUNDLED_PROVIDER_MODULES } from "../../src/providers/default-registry";
-import { BUNDLED_PROVIDER_METADATA, providerBaseUrl } from "../../src/providers/metadata";
+import { BUNDLED_PROVIDER_METADATA, providerBaseUrl } from "../../src/providers/core/metadata";
 import { joinUrl } from "../../src/protocol/codecs";
 import { BARE_ROOT_ENDPOINTS } from "../../src/protocol/codecs";
 import type { WireFamily } from "../../src/protocol/canonical-model";

@@ -13,7 +13,7 @@
  * Keeping both beside the spec means the route never learns a provider's wire,
  * and a new search provider is one spec row plus one metadata/registry entry.
  */
-import type { ProviderAdapter, ProviderDispatchContext, ProviderDispatchTarget, ProviderId, WebSearchOutcome, WebSearchResult } from "../contracts";
+import type { ProviderAdapter, ProviderDispatchContext, ProviderDispatchTarget, ProviderId, WebSearchOutcome, WebSearchResult } from "../core/contracts";
 import { GatewayError } from "../../protocol/gateway-error";
 
 /** Caller-facing search parameters, already validated by the route. */

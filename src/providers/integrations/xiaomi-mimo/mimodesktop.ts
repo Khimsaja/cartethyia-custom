@@ -1,8 +1,8 @@
-import { defineModel } from "../../model-definition";
-import type { ModelDefinition } from "../../model-definition";
-import type { ProviderDispatchTarget } from "../../contracts";
+import { defineModel } from "../../core/model-definition";
+import type { ModelDefinition } from "../../core/model-definition";
+import type { ProviderDispatchTarget } from "../../core/contracts";
 import type { CanonicalRequest } from "../../../protocol/canonical-model";
-import type { ApiKeyProviderSpec } from "../shared/configured-provider";
+import type { ApiKeyProviderSpec } from "../../configured-provider";
 import { acquireMimoServiceSession, MIMO_API_UA } from "./mimodesktop-sso";
 import { parseMimoCredential } from "./mimodesktop-oauth";
 

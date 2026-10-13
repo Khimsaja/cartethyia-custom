@@ -24,7 +24,7 @@ import { Input } from "../../components/ui/input";
 import type { AuditEntry } from "../../data/contracts";
 import { useAuditTrail, useSessionUser } from "../../hooks/system";
 import { useConsoleLogStream, type ConsoleLogEntry, type ConsoleLogLevel } from "../../hooks/logs";
-import { auditActionLabel } from "../../features/logs/audit-labels";
+import { auditActionLabel } from "./audit-labels";
 import { getErrorMessage } from "../../data/api";
 import { toast } from "../../lib/toast";
 

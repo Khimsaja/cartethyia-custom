@@ -31,14 +31,14 @@ import type {
   ProviderAdapter,
   ProviderDispatchContext,
   ProviderDispatchTarget,
-} from "../../contracts";
+} from "../../core/contracts";
 import type { CanonicalEvent, CanonicalRequest } from "../../../protocol/canonical-model";
 import { GatewayError } from "../../../protocol/gateway-error";
 import { buildClaudeMessagesRequest, filterClaudeCustomHeaders } from "../shared/claude-messages";
 import { sendClaudeMessagesRequest } from "../../../protocol/upstream/send-claude-messages";
 import { applyParamQuirks } from "../../../transport/translation/quirks";
-import { createApiKeyAdapter } from "../shared/configured-provider";
-import type { ApiKeyProviderSpec } from "../shared/configured-provider";
+import { createApiKeyAdapter } from "../../configured-provider";
+import type { ApiKeyProviderSpec } from "../../configured-provider";
 import { decodeFactoryDroidCredential } from "../../../security/credential-codec";
 
 import { FACTORY_MODELS, FACTORY_PROVIDER_ID } from "./factory-models";

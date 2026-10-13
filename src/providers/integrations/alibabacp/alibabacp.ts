@@ -9,13 +9,13 @@
  * credential at dispatch time and a stored region that no longer resolves is a
  * dispatch-time error rather than a silent fallback to the default host.
  */
-import { createApiKeyAdapter } from "../shared/configured-provider";
-import type { ApiKeyProviderSpec } from "../shared/configured-provider";
+import { createApiKeyAdapter } from "../../configured-provider";
+import type { ApiKeyProviderSpec } from "../../configured-provider";
 import type {
   ProviderAdapter,
   ProviderDispatchContext,
   ProviderDispatchTarget,
-} from "../../contracts";
+} from "../../core/contracts";
 import type { CanonicalEvent, CanonicalRequest } from "../../../protocol/canonical-model";
 import { GatewayError } from "../../../protocol/gateway-error";
 import { decodeAlibabaCodingPlanCredential } from "../../../security/credential-codec";

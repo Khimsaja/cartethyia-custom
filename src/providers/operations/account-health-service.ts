@@ -4,7 +4,7 @@ import { affectedRows, pruneExpiredCooldowns } from "../../persistence/dialect";
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import { isRecord } from "../../protocol/codecs";
 import { GatewayError } from "../../protocol/gateway-error";
-import { BUDDY_PROVIDER_IDS } from "../metadata";
+import { BUDDY_PROVIDER_IDS } from "../core/metadata";
 import { healthEvents, providerAccounts } from "../../persistence/schema";
 
 import { parseProviderResetDuration, parseUpstreamBackoff } from "../../transport/failure-policy";

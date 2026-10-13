@@ -9,13 +9,13 @@
  * Provider-specific primitives that depend on provider identity (e.g. Codex
  * identity headers) deliberately live with their provider, not here.
  */
-import { providerBaseUrl } from "../providers/metadata";
+import { providerBaseUrl } from "../providers/core/metadata";
 import { GatewayError } from "./gateway-error";
 import type { CanonicalStopReason, CanonicalTerminalEvent, UsageRecord } from "./canonical-model";
 import { type WireFamily } from "./canonical-model";
 import type { GenerationControls } from "./canonical-model";
 import { BASE_PROTECTED_HEADERS, HEADER_CONTROL, HEADER_TOKEN } from "../security/outbound-headers";
-import { unwrapProviderToken } from "../providers/credential-envelope";
+import { unwrapProviderToken } from "../providers/core/credential-envelope";
 
 const TEXT_ENCODER = new TextEncoder();
 

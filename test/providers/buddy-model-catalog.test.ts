@@ -9,11 +9,11 @@
  * pass while a provider's image/video filter silently dropped the row.
  */
 import { describe, expect, test } from "bun:test";
-import { CODEBUDDY_MODELS } from "../../src/providers/integrations/buddy/codebuddy";
-import { WORKBUDDY_MODELS } from "../../src/providers/integrations/buddy/workbuddy";
-import { WORKBUDDY_CN_MODELS } from "../../src/providers/integrations/buddy/workbuddy-cn";
-import type { ModelDefinition } from "../../src/providers/model-definition";
-import { CODEBUDDY_CN_MODELS } from "../../src/providers/integrations/buddy/codebuddy-cn";
+import { CODEBUDDY_MODELS } from "../../src/providers/integrations/buddy/intl/codebuddy/provider";
+import { WORKBUDDY_MODELS } from "../../src/providers/integrations/buddy/intl/workbuddy/provider";
+import { WORKBUDDY_CN_MODELS } from "../../src/providers/integrations/buddy/cn/workbuddy/provider";
+import type { ModelDefinition } from "../../src/providers/core/model-definition";
+import { CODEBUDDY_CN_MODELS } from "../../src/providers/integrations/buddy/cn/codebuddy/provider";
 
 function luna(rows: readonly ModelDefinition[]) {
   return rows.find((row) => row.modelId === "gpt-6-luna");

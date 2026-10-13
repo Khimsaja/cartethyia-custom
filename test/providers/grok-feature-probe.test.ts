@@ -6,7 +6,7 @@ import { classifyAccountError } from "../../src/providers/operations/account-hea
 import {
   GROK_407_PROBE_PROMPT,
   grok407ProbeFailure,
-} from "../../src/providers/discovery/probe-phases";
+} from "../../src/providers/runtime/discovery/probe-phases";
 
 function textEvent(text: string): readonly CanonicalEvent[] {
   return [

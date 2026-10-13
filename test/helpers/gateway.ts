@@ -31,8 +31,8 @@ import type {
   ContentPart,
   UsageRecord,
 } from "../../src/protocol/canonical-model";
-import type { ProviderAdapter, ProviderDispatchContext, ProviderDispatchTarget, WebSearchOutcome, WebSearchResult } from "../../src/providers/contracts";
-import { parseProviderId } from "../../src/providers/contracts";
+import type { ProviderAdapter, ProviderDispatchContext, ProviderDispatchTarget, WebSearchOutcome, WebSearchResult } from "../../src/providers/core/contracts";
+import { parseProviderId } from "../../src/providers/core/contracts";
 import { ProxyRequestPreparer } from "../../src/transport/request/preparer";
 import { RoutingEngine } from "../../src/transport/routing/router";
 import { ApiKeyAdmissionService } from "../../src/security/admission/service";

@@ -31,7 +31,7 @@ import { decodeSseEvents } from "../../../protocol/sse-decoder";
 import { imageCreatedSeconds, imagePrompt, responsesImageResult } from "../../../protocol/image-generation";
 import { isRecord, joinUrl } from "../../../protocol/codecs";
 import { postUpstreamJson } from "../../../protocol/upstream/post-json";
-import type { ImageGenerationOutcome, ProviderDispatchTarget, ProviderAdapter, ProviderDispatchContext, ResolvedCredential, WebSearchOutcome, WebSearchResult } from "../../contracts";
+import type { ImageGenerationOutcome, ProviderDispatchTarget, ProviderAdapter, ProviderDispatchContext, ResolvedCredential, WebSearchOutcome, WebSearchResult } from "../../core/contracts";
 import {
   createCodexIdentity,
   getCodexAccountId,
@@ -49,8 +49,8 @@ import {
   createCodexRequestMetadata,
 } from "./codex-headers";
 import type { CodexSessionState } from "../../../protocol/codecs";
-import { defineModel } from "../../model-definition";
-import type { ModelDefinition } from "../../model-definition";
+import { defineModel } from "../../core/model-definition";
+import type { ModelDefinition } from "../../core/model-definition";
 
 /**
  * Codex static model catalog.

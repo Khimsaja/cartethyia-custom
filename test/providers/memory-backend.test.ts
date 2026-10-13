@@ -11,8 +11,8 @@ import {
   InMemoryOAuthFlowStore,
   type DeviceFlowCorrelation,
   type PendingOAuthFlow,
-} from "../../src/providers/authentication/oauth-flow-store";
-import type { ProviderQuotaResult } from "../../src/providers/quota/quota-contracts";
+} from "../../src/providers/runtime/authentication/oauth-flow-store";
+import type { ProviderQuotaResult } from "../../src/providers/runtime/quota/quota-contracts";
 
 function pending(state: string): PendingOAuthFlow {
   return {

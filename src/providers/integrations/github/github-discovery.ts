@@ -19,11 +19,11 @@
  * responses-only SKU is registered against `/responses` instead of being
  * mislabelled as chat.
  */
-import type { ModelDefinition } from "../../model-definition";
+import type { ModelDefinition } from "../../core/model-definition";
 import { isRecord } from "../../../protocol/codecs";
-import { boundedUpstreamArray, boundedUpstreamNumber, sanitizeUpstreamLabel } from "../../sanitize";
-import { modelsDevCatalog } from "../../discovery/models-dev-catalog";
-import type { DiscoveryInput } from "../../discovery/discovery-types";
+import { boundedUpstreamArray, boundedUpstreamNumber, sanitizeUpstreamLabel } from "../../core/sanitize";
+import { modelsDevCatalog } from "../../runtime/discovery/models-dev-catalog";
+import type { DiscoveryInput } from "../../runtime/discovery/discovery-types";
 import {
   GITHUB_EXCLUDED_MODEL_IDS,
   GITHUB_PROVIDER_ID,

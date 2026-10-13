@@ -23,8 +23,8 @@ import {
 import { InMemoryAdmissionController } from "./admission";
 import { ReservationManager } from "./reservations";
 import { getOrCreateRoundRobin, RoundRobinState } from "./round-robin";
-import { providerSupportsWebSearch } from "../../providers/metadata";
-import { totalRemainingCredit, totalRemainingPercent, type ProviderQuotaWindow } from "../../providers/quota/quota-contracts";
+import { providerSupportsWebSearch } from "../../providers/core/metadata";
+import { totalRemainingCredit, totalRemainingPercent, type ProviderQuotaWindow } from "../../providers/runtime/quota/quota-contracts";
 import { getCachedQuotaEntry, quotaLens } from "../../console/quota/cache";
 import type { RedisClient } from "../../persistence/redis";
 

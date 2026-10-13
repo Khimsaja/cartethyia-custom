@@ -15,7 +15,7 @@
  * Bespoke by wire protocol (Phase C5): verified Claude-pipeline reuse
  * (Messages envelope via `../claude/*`) — stays bespoke, never re-audit.
  */
-import type { ModelDefinition } from "../../model-definition";
+import type { ModelDefinition } from "../../core/model-definition";
 import { createHash } from "node:crypto";
 import type { CanonicalEvent, CanonicalRequest } from "../../../protocol/canonical-model";
 import { isRecord } from "../../../protocol/codecs";
@@ -26,12 +26,12 @@ import {
 } from "../../../protocol/request/messages";
 import { sendClaudeMessagesRequest } from "../../../protocol/upstream/send-claude-messages";
 import { endpointUrl } from "../../../protocol/codecs";
-import type { ProviderDispatchTarget, ProviderAdapter, ProviderDispatchContext } from "../../contracts";
+import type { ProviderDispatchTarget, ProviderAdapter, ProviderDispatchContext } from "../../core/contracts";
 import {
   getKimiCommonHeaders,
   parseKimiCredential,
 } from "./kimi-oauth";
-import { providerBaseUrl } from "../../metadata";
+import { providerBaseUrl } from "../../core/metadata";
 
 
 export const KIMI_CODE_PROVIDER_ID = "kimi" as const;
@@ -89,7 +89,7 @@ export function lookupKimiModelBootstrap(
 
 
 
-import { defineModel } from "../../model-definition";
+import { defineModel } from "../../core/model-definition";
 
 const kimiModel = (
   modelId: string,

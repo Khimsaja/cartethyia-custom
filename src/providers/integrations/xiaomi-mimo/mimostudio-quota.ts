@@ -1,4 +1,4 @@
-import type { FetchLike, ProviderQuotaResult } from "../../quota/quota-contracts";
+import type { FetchLike, ProviderQuotaResult } from "../../runtime/quota/quota-contracts";
 import { parseMimoUsageWindows } from "./mimo-quota-shared";
 import {
   buildMimoStudioCookieHeader,

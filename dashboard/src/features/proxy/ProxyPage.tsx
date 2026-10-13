@@ -55,7 +55,7 @@ import {
   summarizePools,
   type PoolSortKey,
   type ProxyPoolSummary,
-} from "../../features/proxy/proxy-metrics";
+} from "./proxy-metrics";
 import { formatBytes } from "../../lib/format/numbers";
 import { downloadTextFile } from "../../lib/download";
 import { toast } from "../../lib/toast";

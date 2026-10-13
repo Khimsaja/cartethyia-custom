@@ -18,9 +18,9 @@ import type {
   OAuthImportInput,
   OAuthLoginClient,
   OAuthLoginField,
-} from "../../authentication/oauth-flow-store";
-import { readJsonResponse } from "../../authentication/oauth-flow-store";
-import type { FetchLike } from "../../authentication/oauth-client";
+} from "../../runtime/authentication/oauth-flow-store";
+import { readJsonResponse } from "../../runtime/authentication/oauth-flow-store";
+import type { FetchLike } from "../../runtime/authentication/oauth-client";
 import {
   encodeAlibabaCodingPlanCredential,
   type AlibabaCodingPlanEnvelope,

@@ -1,4 +1,4 @@
-import type { ValidatedOutboundFetch } from "../contracts";
+import type { ValidatedOutboundFetch } from "../core/contracts";
 
 /**
  * Probe fetch wrapper: merges `Request`-carried headers with per-call init

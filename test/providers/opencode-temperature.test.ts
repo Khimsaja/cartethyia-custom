@@ -7,7 +7,7 @@
  * unchanged, and a model that is not restricted must not be touched.
  */
 import { describe, expect, test } from "bun:test";
-import { OPENCODE_FREE_SPEC } from "../../src/providers/specs/opencode";
+import { OPENCODE_FREE_SPEC } from "../../src/providers/integrations/opencode/provider";
 import type { CanonicalRequest } from "../../src/protocol/canonical-model";
 
 function request(model: string, temperature: number | undefined): CanonicalRequest {

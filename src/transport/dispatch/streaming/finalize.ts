@@ -21,7 +21,7 @@ import type { ProxyRequestState } from "../../request/state";
 import type { PreparedProxyRequest } from "../../request/preparer";
 import type { AdmissionLease } from "../../../security/admission/contracts";
 import type { Reservation } from "../../routing/route-model";
-import { repriceUsage } from "../../../providers/usage";
+import { repriceUsage } from "../../../providers/core/usage";
 import { metrics } from "../../../observability/metrics";
 import { flagPoolCooldown } from "../../../network/pool-health";
 import { shouldCooldownPool } from "../retry-policy";

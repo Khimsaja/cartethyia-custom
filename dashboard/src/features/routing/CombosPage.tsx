@@ -18,7 +18,7 @@ import { useTrackedTimeout } from "../../hooks/use-timeout";
 import { useClipboard } from "../../hooks/use-clipboard";
 import { toast } from "../../lib/toast";
 import type { ComboStrategy, ModelAliasRow, ModelComboRow } from "../../data/contracts";
-import { COMBO_STRATEGY_OPTIONS } from "../../features/routing/combo-strategy";
+import { COMBO_STRATEGY_OPTIONS } from "./combo-strategy";
 import {
   useCloneModelCombo,
   useCreateModelAlias,

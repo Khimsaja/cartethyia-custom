@@ -310,10 +310,10 @@ inter-delta gaps.
 
 ## Relevant gateway implementation
 
-- [`opencode.ts`](../../src/providers/specs/opencode.ts) marks the OpenCode
+- [`provider.ts`](../../src/providers/integrations/opencode/provider.ts) marks the OpenCode
   adapter behavior, including Free-tier request preparation and cache-key
   forwarding.
-- [`opencode-fingerprint.ts`](../../src/providers/specs/opencode-fingerprint.ts)
+- [`fingerprint.ts`](../../src/providers/integrations/opencode/fingerprint.ts)
   builds the observed CLI client, session, project, user-agent, and trace headers.
 - [`opencode-fingerprint.test.ts`](../../test/providers/opencode-fingerprint.test.ts)
   asserts CLI identity shape, stable session aliases, project forwarding, and

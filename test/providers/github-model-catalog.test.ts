@@ -6,7 +6,7 @@ import {
   githubModelRoute,
   recordGithubLongContextModels,
 } from "../../src/providers/integrations/github/github";
-import { defineModel } from "../../src/providers/model-definition";
+import { defineModel } from "../../src/providers/core/model-definition";
 import { discoverGithubModels } from "../../src/providers/integrations/github/github-discovery";
 
 describe("GitHub Copilot fallback model catalog", () => {

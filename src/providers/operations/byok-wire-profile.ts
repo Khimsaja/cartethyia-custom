@@ -14,7 +14,7 @@
  * while the OpenAI chat/responses wires read `Authorization: Bearer`.
  */
 import type { WireFamily } from "../../protocol/canonical-model";
-import type { CompatibilityProfile } from "../metadata";
+import type { CompatibilityProfile } from "../core/metadata";
 import { BARE_ROOT_ENDPOINTS, type AuthHeaderShape } from "../../protocol/codecs";
 
 /** The two wires an OpenAI-compatible root conventionally serves. */

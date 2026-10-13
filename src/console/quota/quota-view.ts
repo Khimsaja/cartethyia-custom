@@ -1,5 +1,5 @@
 import { providerAccounts } from "../../persistence/schema";
-import type { ProviderQuotaResult } from "../../providers/quota/quota-contracts";
+import type { ProviderQuotaResult } from "../../providers/runtime/quota/quota-contracts";
 import { log } from "../../observability/logger";
 import { GLOBAL_QUOTA_LENS } from "./cache";
 import {

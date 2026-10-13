@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { decodeJwtPayload } from "../../authentication/oauth-flow-store";
+import { decodeJwtPayload } from "../../runtime/authentication/oauth-flow-store";
 import { getOrCreateInstallId } from "../shared/install-id";
 
 interface CodexIdentity {

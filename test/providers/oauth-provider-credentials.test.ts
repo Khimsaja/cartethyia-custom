@@ -11,7 +11,7 @@ import { createDefaultProviderRegistry } from "../../src/providers/default-regis
 import type {
   ProviderDispatchContext,
   ProviderDispatchTarget,
-} from "../../src/providers/contracts";
+} from "../../src/providers/core/contracts";
 import type { CanonicalRequest } from "../../src/protocol/canonical-model";
 import { encodeAlibabaCodingPlanCredential } from "../../src/security/credential-codec";
 import { encodeCloudflareAiGatewayCredential } from "../../src/security/credential-codec";

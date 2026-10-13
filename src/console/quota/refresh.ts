@@ -11,12 +11,12 @@ import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import { providerAccounts } from "../../persistence/schema";
 import type { RedisClient } from "../../persistence/redis";
 import { log } from "../../observability/logger";
-import { fetchProviderQuota } from "../../providers/quota/quota-support";
-import { type FetchLike, type ProviderQuotaResult } from "../../providers/quota/quota-contracts";
-import type { ProviderId } from "../../providers/contracts";
-import type { ProviderRegistry } from "../../providers/registry";
+import { fetchProviderQuota } from "../../providers/runtime/quota/quota-support";
+import { type FetchLike, type ProviderQuotaResult } from "../../providers/runtime/quota/quota-contracts";
+import type { ProviderId } from "../../providers/core/contracts";
+import type { ProviderRegistry } from "../../providers/core/registry";
 import { GLOBAL_QUOTA_LENS, setCachedQuota } from "./cache";
-import { record } from "../../providers/authentication/oauth-flow-store";
+import { record } from "../../providers/runtime/authentication/oauth-flow-store";
 
 /** Why an account quota refresh failed; `null` means the fetch succeeded. */
 export type QuotaRefreshFailureCode = "missing_credential" | "quota_fetch_failed";

@@ -3,7 +3,7 @@ import { caseInsensitiveLike } from "../../persistence/dialect";
 import { globalOrOwnedBy, ownedByOnly } from "../../persistence/tenant-scope";
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import { adminAuditLog, consoleUsers } from "../../persistence/schema";
-import { decodeDatedCursor, encodeCursor } from "../../console/shared/cursor";
+import { decodeDatedCursor, encodeCursor } from "../shared/cursor";
 import type { AuditEntry, AuditListPage, AuditReadStore } from "./contracts";
 
 /**

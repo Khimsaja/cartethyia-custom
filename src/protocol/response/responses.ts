@@ -1,14 +1,14 @@
 /**
  * [OpenAI]-compatible /v1/responses response decoder: wire JSON/SSE → canonical events.
  */
-import { canonicalTerminal } from "../../protocol/codecs";
-import type { CanonicalEvent, CanonicalRequest, ContentPart } from "../../protocol/canonical-model";
-import { GatewayError } from "../../protocol/gateway-error";
+import { canonicalTerminal } from "../codecs";
+import type { CanonicalEvent, CanonicalRequest, ContentPart } from "../canonical-model";
+import { GatewayError } from "../gateway-error";
 import { isRecord, readOutputIndex } from "../codecs";
-import { decodeSseEvents } from "../../protocol/sse-decoder";
+import { decodeSseEvents } from "../sse-decoder";
 import { gatewayErrorFromStreamError } from "../stream-error-frames";
-import { usageFromProvider, readResponsesReasoningDelta } from "../../providers/usage";
-import { createToolEmitLedger } from "../../protocol/tool-identity";
+import { usageFromProvider, readResponsesReasoningDelta } from "../../providers/core/usage";
+import { createToolEmitLedger } from "../tool-identity";
 
 export function mapResponsesStopReason(
   status: unknown,

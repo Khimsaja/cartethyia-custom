@@ -13,7 +13,7 @@ import { and, eq, isNull, or } from "drizzle-orm";
 import type { CartethyiaDatabase } from "../../../persistence/db-handle";
 import { modelAliases, modelCombos, models, providerAccounts, providers } from "../../../persistence/schema";
 import { isModelAllowed, listIncludes, type ApiKeyAuthorizationSnapshot } from "../../../security/api-key-auth";
-import { providerSupportsWebSearch } from "../../../providers/metadata";
+import { providerSupportsWebSearch } from "../../../providers/core/metadata";
 
 export interface AllowedModelEntry {
   id: string;

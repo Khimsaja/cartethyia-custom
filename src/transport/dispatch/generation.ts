@@ -18,10 +18,10 @@
  * and a missing route answers 404 in a way that looks like a typo rather than
  * an unfinished capability.
  */
-import type { ImageGenerationOutcome, ProviderAdapter, ProviderDispatchTarget } from "../../providers/contracts";
+import type { ImageGenerationOutcome, ProviderAdapter, ProviderDispatchTarget } from "../../providers/core/contracts";
 import { GatewayError } from "../../protocol/gateway-error";
 import { resolveCredentialForAccount } from "../../providers/operations/provider-credential-service";
-import type { OAuthTokenRefresher, OAuthRefreshService } from "../../providers/authentication/oauth-refresh-service";
+import type { OAuthTokenRefresher, OAuthRefreshService } from "../../providers/runtime/authentication/oauth-refresh-service";
 import type { ValidatedNetworkBindingFactory } from "../../network/pool/resolver";
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import type { RouteSnapshotService } from "../routing/route-model";

@@ -24,8 +24,8 @@
  * Haiku and Opus 4.5 at 200k, the rest at 1M — and the shared default would
  * flatten that.
  */
-import { defineModel } from "../../model-definition";
-import type { ModelDefinition } from "../../model-definition";
+import { defineModel } from "../../core/model-definition";
+import type { ModelDefinition } from "../../core/model-definition";
 
 export const CLOUDFLAREAI_PROVIDER_ID = "cloudflareai" as const;
 
