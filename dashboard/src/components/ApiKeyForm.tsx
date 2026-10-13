@@ -1,3 +1,28 @@
+import {
+  Ban,
+  Boxes,
+  ChevronDown,
+  Database,
+  Eye,
+  Fingerprint,
+  Gauge,
+  KeyRound,
+  LayoutDashboard,
+  LockKeyhole,
+  Repeat2,
+  Route,
+  Search,
+  Server,
+  Share2,
+  Shield,
+  ShieldCheck,
+  ShieldX,
+  StickyNote,
+  Pencil,
+  UserRound,
+  UsersRound,
+  type LucideIcon,
+} from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { Button } from "./ui/button";
 import { FileInput, Input } from "./ui/input";
@@ -33,6 +58,17 @@ const SCOPE_DESCRIPTIONS: Record<TenantScope, string> = {
   "providers:write": "Add, modify, or delete provider rows and their credentials.",
   "models:read": "Read catalog model rows.",
   "models:write": "Add, modify, or delete catalog model rows.",
+};
+const SCOPE_ICONS: Record<TenantScope, LucideIcon> = {
+  "routing:invoke": Route,
+  "routing:cli_mapping": Route,
+  "search:invoke": Search,
+  "dashboard:read": Eye,
+  "dashboard:write": Pencil,
+  "providers:read": Server,
+  "providers:write": LockKeyhole,
+  "models:read": Boxes,
+  "models:write": Database,
 };
 
 type TokenBudgetMode = "recurring" | "one-time";
@@ -182,7 +218,9 @@ function RemoteRoutingRow({
         background: enabled ? "var(--accent-soft)" : "var(--surface-1)",
       }}
     >
-      <div>
+      <div className="flex min-w-0 items-start gap-3">
+        <Route size={16} className="mt-1 shrink-0 text-accent" aria-hidden="true" />
+        <div className="min-w-0">
         <div className="text-caption font-semibold text-text-primary">
           {tool.name}
         </div>
@@ -191,6 +229,7 @@ function RemoteRoutingRow({
             ? `Remote routing on — ${rowCount} route${rowCount === 1 ? "" : "s"} active, routing:cli_mapping granted.`
             : "Remote routing off — this key's requests go straight to the provider."}
         </p>
+        </div>
       </div>
       <div className="flex items-center gap-4">
         <Switch
@@ -242,9 +281,10 @@ function RemoteRoutingSection({
   return (
     <section aria-labelledby="remote-routing-heading" className="flex flex-col gap-4">
       <div>
-        <h4 id="remote-routing-heading" className="text-caption font-bold text-text-primary">
-          Remote routing
-        </h4>
+    <h4 id="remote-routing-heading" className="inline-flex items-center gap-2 text-caption font-bold text-text-primary">
+      <Route size={15} className="text-accent" aria-hidden="true" />
+      Remote routing
+    </h4>
         <p className="mt-1 text-badge text-text-tertiary">
           Route this key's CLI model calls through persisted mappings and grant routing:cli_mapping. Applies immediately — no save needed.
         </p>
@@ -316,6 +356,15 @@ export function keyCredentialFields(
 export function oneTimeSecretForMode(keyMode: ApiKeyResponse["keyMode"], secret: string | undefined): string | null {
   return keyMode === "personal" ? secret ?? null : null;
 }
+export function initialApiKeyScopes(
+  record: { readonly isDefault?: boolean; readonly scopes?: readonly string[] } | null,
+): string[] {
+  if (record?.isDefault) return [...TENANT_KEY_SCOPES];
+  const savedScopes = record?.scopes;
+  return savedScopes && savedScopes.length > 0
+    ? [...savedScopes]
+    : ["routing:invoke", "search:invoke"];
+}
 export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: KeyFormProps): ReactNode {
   const [label, setLabel] = useState(record?.label ?? "");
   const [prefix, setPrefix] = useState(record?.keyPrefix ?? "");
@@ -342,10 +391,7 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
       : "recurring",
   );
   const [concurrent, setConcurrent] = useState(record?.maxConcurrentRequests?.toString() ?? "");
-  const [scopes, setScopes] = useState<string[]>(() => {
-    const s = (record as unknown as { scopes?: string[] })?.scopes;
-    return s && s.length ? [...s] : ["routing:invoke", "search:invoke"];
-  });
+  const [scopes, setScopes] = useState<string[]>(() => initialApiKeyScopes(record));
   const [modelAccessMode, setModelAccessMode] = useState<"whitelist" | "blacklist">(
     (record as unknown as { modelAccessMode?: "whitelist" | "blacklist" | null })?.modelAccessMode ??
       "whitelist",
@@ -440,7 +486,10 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
   return (
     <div className="flex flex-col gap-6 min-w-0 pb-2">
       <section className="flex flex-col gap-4 min-w-0 p-6 border border-inner-border rounded-card bg-surface-2 col-span-full">
-        <h3 className="text-body font-bold text-text-primary">Credential mode</h3>
+        <h3 className="inline-flex items-center gap-2 text-body font-bold text-text-primary">
+          <KeyRound size={16} className="text-accent" aria-hidden="true" />
+          Credential mode
+        </h3>
         <div role="group" aria-label="Credential mode" className="flex gap-4">
           {(["personal", "share"] as const).map((modeOption) => (
             <button key={modeOption} type="button" aria-pressed={keyMode === modeOption}
@@ -451,7 +500,10 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
                 color: keyMode === modeOption ? "var(--accent)" : "var(--text-secondary)",
                 background: keyMode === modeOption ? "var(--accent-soft)" : "var(--surface-2)",
                 cursor: modeLocked ? "not-allowed" : "pointer", opacity: modeLocked && keyMode !== modeOption ? 0.5 : 1 }}>
-              {modeOption === "personal" ? "Personal" : "Share template"}
+              <span className="inline-flex items-center gap-2">
+                {modeOption === "personal" ? <UserRound size={14} aria-hidden="true" /> : <UsersRound size={14} aria-hidden="true" />}
+                {modeOption === "personal" ? "Personal" : "Share template"}
+              </span>
             </button>
           ))}
         </div>
@@ -465,7 +517,10 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
       {mode === "create" && (
         <section className="flex flex-col gap-4 min-w-0 p-6 border border-inner-border rounded-card bg-surface-2 break-inside-avoid mb-6">
           <div>
-            <h3 className="text-body font-bold text-text-primary">Identity</h3>
+            <h3 className="inline-flex items-center gap-2 text-body font-bold text-text-primary">
+              <Fingerprint size={16} className="text-accent" aria-hidden="true" />
+              Identity
+            </h3>
             <p className="mt-1 text-badge text-text-tertiary">
               Give this credential a recognizable name.
             </p>
@@ -486,6 +541,7 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
         <section className="flex flex-col gap-4 min-w-0 p-6 border border-inner-border rounded-card bg-surface-2 break-inside-avoid mb-6">
           <div>
             <h3 className="text-body font-bold text-text-primary">
+              <Fingerprint size={16} className="mr-2 inline text-accent" aria-hidden="true" />
               Identity
             </h3>
             <p className="mt-1 text-badge text-text-tertiary">
@@ -510,6 +566,7 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
       <section className="flex flex-col gap-4 min-w-0 p-6 border border-inner-border rounded-card bg-surface-2 break-inside-avoid mb-6">
         <div>
           <h3 className="text-body font-bold text-text-primary">
+            <StickyNote size={16} className="mr-2 inline text-accent" aria-hidden="true" />
             Share notes
           </h3>
           <p className="mt-1 text-badge text-text-tertiary">
@@ -543,6 +600,7 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
       <section className="flex flex-col gap-4 min-w-0 p-6 border border-inner-border rounded-card bg-surface-2 break-inside-avoid mb-6">
         <div>
           <h3 className="text-body font-bold text-text-primary">
+            <Gauge size={16} className="mr-2 inline text-accent" aria-hidden="true" />
             Limits
           </h3>
           <p className="mt-1 text-badge text-text-tertiary">
@@ -574,6 +632,7 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
         >
           <div>
             <div className="text-caption font-bold text-text-primary">
+              <Gauge size={14} className="mr-2 inline text-accent" aria-hidden="true" />
               Token budget
             </div>
             <p className="mt-1 text-text-tertiary text-micro">
@@ -596,7 +655,10 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
                 color: !isOneTime ? "var(--accent)" : "var(--text-tertiary)",
               }}
             >
+              <span className="inline-flex items-center gap-2">
+                <Repeat2 size={13} aria-hidden="true" />
               Recurring
+              </span>
             </button>
             <button
               type="button"
@@ -609,7 +671,10 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
                 color: isOneTime ? "var(--accent)" : "var(--text-tertiary)",
               }}
             >
+              <span className="inline-flex items-center gap-2">
+                <LockKeyhole size={13} aria-hidden="true" />
               One-time
+              </span>
             </button>
           </div>
         </div>
@@ -642,6 +707,7 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
         <div className="flex items-start justify-between gap-6">
           <div>
             <h3 id="share-popup-heading" className="text-body font-bold text-text-primary">
+              <Share2 size={16} className="mr-2 inline text-accent" aria-hidden="true" />
               Share page popup
             </h3>
             <p className="mt-1 text-badge text-text-tertiary">
@@ -718,20 +784,42 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
           </div>
         ) : null}
       </section>
-      <section className="flex flex-col gap-4 min-w-0 p-6 border border-inner-border rounded-card bg-surface-2 col-span-full">
-        <div>
-          <h3 className="text-body font-bold text-text-primary">
-            Access
-          </h3>
-          <p className="mt-1 text-badge text-text-tertiary">
-            Choose which models this key can use and what it is allowed to access.
-          </p>
-        </div>
+      <details className="group min-w-0 col-span-full rounded-card border border-inner-border bg-surface-2">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-4 p-6 [&::-webkit-details-marker]:hidden">
+          <span className="flex min-w-0 items-start gap-3">
+            <span className="grid size-10 shrink-0 place-items-center rounded-inset bg-accent-soft text-accent">
+              <Shield size={18} aria-hidden="true" />
+            </span>
+            <span className="min-w-0">
+              <span className="block text-body font-bold text-text-primary">Access</span>
+              <span className="mt-1 block text-badge text-text-tertiary">
+                {record?.isDefault
+                  ? "Default gateway key · all tenant permissions, including gateway routing and remote debugging."
+                  : "Choose model, router, and dashboard permissions for this key."}
+              </span>
+            </span>
+          </span>
+          <span className="inline-flex shrink-0 items-center gap-2 rounded-control border border-inner-border bg-surface-1 px-3 py-2 text-micro font-semibold text-text-secondary">
+            {scopes.length}/{TENANT_KEY_SCOPES.length} grants
+            <ChevronDown size={14} className="transition-transform group-open:rotate-180" aria-hidden="true" />
+          </span>
+        </summary>
+        <div className="flex flex-col gap-5 border-t border-inner-border p-6">
+          {record?.isDefault ? (
+            <div className="flex items-start gap-3 rounded-control border border-accent/30 bg-accent-soft p-4 text-badge text-text-secondary">
+              <ShieldCheck size={16} className="mt-0.5 shrink-0 text-accent" aria-hidden="true" />
+              <p className="m-0">
+                This default API key is provisioned with every tenant permission, including <code>routing:invoke</code> and
+                {" "}<code>routing:cli_mapping</code>. Those grant gateway access and authorization to use remote CLI mappings;
+                each client's mapping toggle below still controls whether those routes are active. You can remove individual
+                grants here.
+              </p>
+            </div>
+          ) : null}
         <div className="columns-2 gap-6 min-w-0 max-medium:columns-1">
         <div>
-          <label
-            className="text-badge font-semibold text-text-secondary block mb-3"
-          >
+          <label className="inline-flex items-center gap-2 text-badge font-semibold text-text-secondary block mb-3">
+            <Boxes size={14} className="text-accent" aria-hidden="true" />
             Model access
           </label>
           <div
@@ -762,6 +850,9 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
                 }}
               >
                 {option === "whitelist" ? "Whitelist" : "Blacklist"}
+                {option === "whitelist"
+                  ? <ShieldCheck size={13} className="ml-2 inline" aria-hidden="true" />
+                  : <ShieldX size={13} className="ml-2 inline" aria-hidden="true" />}
               </button>
             ))}
           </div>
@@ -815,7 +906,8 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
         </div>
         <section aria-labelledby="blocked-routers-heading" className="flex flex-col gap-4">
           <div>
-            <h4 id="blocked-routers-heading" className="text-caption font-bold text-text-primary">
+            <h4 id="blocked-routers-heading" className="inline-flex items-center gap-2 text-caption font-bold text-text-primary">
+              <Ban size={15} className="text-accent" aria-hidden="true" />
               Blocked client routers
             </h4>
             <p className="mt-1 text-badge text-text-tertiary">
@@ -833,13 +925,16 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
                   background: blockedRouters.includes(router.id) ? "var(--accent-soft)" : "var(--surface-1)",
                 }}
               >
-                <div>
+                <div className="flex min-w-0 items-start gap-3">
+                  <Ban size={15} className="mt-1 shrink-0 text-orange" aria-hidden="true" />
+                  <div className="min-w-0">
                   <div className="text-caption text-text-primary">
                     Block {router.label} Client
                   </div>
                   <p className="mt-1 text-badge text-text-tertiary">
                     Reject requests fingerprinted as {router.label}.
                   </p>
+                  </div>
                 </div>
                 <Switch
                   checked={blockedRouters.includes(router.id)}
@@ -858,7 +953,8 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
           </div>
         </section>
         <section aria-labelledby="routing-scopes-heading" className="flex flex-col gap-4">
-          <h4 id="routing-scopes-heading" className="text-caption font-bold text-text-primary">
+          <h4 id="routing-scopes-heading" className="inline-flex items-center gap-2 text-caption font-bold text-text-primary">
+            <Route size={15} className="text-accent" aria-hidden="true" />
             Routing
           </h4>
           <div className="flex flex-col gap-3">
@@ -876,9 +972,12 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
                   background: scopes.includes(scope) ? "var(--accent-soft)" : "var(--surface-1)",
                 }}
               >
-                <div>
+                <div className="flex items-start gap-3">
+                  <Route size={16} className="mt-1 shrink-0 text-accent" aria-hidden="true" />
+                  <div className="min-w-0">
                   <div className="text-caption font-semibold text-text-primary">{scope}</div>
                   <p className="mt-1 text-badge text-text-tertiary">{SCOPE_DESCRIPTIONS[scope]}</p>
+                  </div>
                 </div>
                 <Switch checked={scopes.includes(scope)} onChange={() => toggleScope(scope)} disabled={busy} aria-label={`Grant ${scope}`} />
               </div>
@@ -912,7 +1011,8 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
           }}
         />
         <section aria-labelledby="dashboard-scopes-heading" className="flex flex-col gap-4">
-          <h4 id="dashboard-scopes-heading" className="text-caption font-bold text-text-primary">
+          <h4 id="dashboard-scopes-heading" className="inline-flex items-center gap-2 text-caption font-bold text-text-primary">
+            <LayoutDashboard size={15} className="text-accent" aria-hidden="true" />
             Dashboard / Resources
           </h4>
           <div className="flex flex-col gap-3">
@@ -926,9 +1026,15 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
                   background: scopes.includes(scope) ? "var(--accent-soft)" : "var(--surface-1)",
                 }}
               >
-                <div>
+                <div className="flex items-start gap-3">
+                  {(() => {
+                    const ScopeIcon = SCOPE_ICONS[scope];
+                    return <ScopeIcon size={16} className="mt-1 shrink-0 text-accent" aria-hidden="true" />;
+                  })()}
+                  <div className="min-w-0">
                   <div className="text-caption font-semibold text-text-primary">{scope}</div>
                   <p className="mt-1 text-badge text-text-tertiary">{SCOPE_DESCRIPTIONS[scope]}</p>
+                  </div>
                 </div>
                 <Switch checked={scopes.includes(scope)} onChange={() => toggleScope(scope)} disabled={busy} aria-label={`Grant ${scope}`} />
               </div>
@@ -936,7 +1042,8 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
           </div>
         </section>
         </div>
-      </section>
+        </div>
+      </details>
     </div>
   );
 }
