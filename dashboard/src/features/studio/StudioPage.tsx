@@ -222,6 +222,7 @@ export function StudioPage(): ReactNode {
   const stickRef = useRef(true);
   const abortRef = useRef<AbortController | null>(null);
   const answeredQuestionsRef = useRef(new Set<string>());
+  const toolApprovalInProgressRef = useRef(new Set<string>());
   const keys = useApiKeys();
   const reveal = useRevealApiKey();
   const modelCatalog = useAllModelsCatalog(true);
@@ -345,7 +346,7 @@ export function StudioPage(): ReactNode {
     const workerModels = new Set<string>();
     const toolRounds: LabToolRound[] = [];
     let mediaWorkerExecuted = false;
-    const paint = (next: { text: string; reasoning: string; status: string; pending?: boolean; usage?: LabMessage["usage"]; error?: boolean; tools?: readonly string[]; images?: readonly LabImage[]; videos?: readonly LabVideo[]; workerModels?: readonly string[]; mediaPending?: "image" | "video"; mediaStage?: "planning" | "generating"; question?: LabUserQuestion; toolCalls?: readonly LabToolCall[]; toolRounds?: readonly LabToolRound[] }) => {
+    const paint = (next: { text: string; reasoning: string; status: string; pending?: boolean; usage?: LabMessage["usage"]; error?: boolean; tools?: readonly string[]; images?: readonly LabImage[]; videos?: readonly LabVideo[]; workerModels?: readonly string[]; mediaPending?: "image" | "video"; mediaStage?: "planning" | "generating"; question?: LabUserQuestion; toolCalls?: readonly LabToolCall[]; pendingToolCalls?: readonly LabToolCall[]; toolApprovalError?: string; toolRounds?: readonly LabToolRound[] }) => {
       replaceMessage(assistantId, {
         id: assistantId,
         role: "assistant",
@@ -364,6 +365,8 @@ export function StudioPage(): ReactNode {
         ...(next.mediaStage === undefined ? {} : { mediaStage: next.mediaStage }),
         ...(next.question === undefined ? {} : { question: next.question }),
         ...(next.toolCalls === undefined ? {} : { toolCalls: next.toolCalls }),
+        ...(next.pendingToolCalls === undefined ? {} : { pendingToolCalls: next.pendingToolCalls }),
+        ...(next.toolApprovalError === undefined ? {} : { toolApprovalError: next.toolApprovalError }),
         ...(next.toolRounds === undefined ? {} : { toolRounds: next.toolRounds }),
       });
     };
@@ -556,6 +559,26 @@ export function StudioPage(): ReactNode {
       }
       round += 1;
       totalToolCalls += calls.length;
+      if (draft.toolPermission === "ask" && calls.some((call) => call.name !== "ask_user_question")) {
+        if (calls.filter((call) => call.name === "ask_user_question").length > 1) {
+          throw new Error("The planner asked more than one question at a time.");
+        }
+        const actionCalls = calls.filter((call) => call.name !== "ask_user_question");
+        for (const call of calls) tools.add(call.name);
+        toolRounds.push({ text: accumulated, toolCalls: calls, toolResults: [] });
+        flushPaint();
+        paint({
+          text: accumulated,
+          reasoning,
+          status: "Waiting for tool approval",
+          usage,
+          tools: [...tools],
+          toolCalls: calls,
+          pendingToolCalls: actionCalls,
+          toolRounds,
+        });
+        return;
+      }
       turns.push({ role: "assistant", text: "", toolCalls: calls });
       const toolResults: LabToolRound["toolResults"][number][] = [];
       for (const call of calls) {
@@ -729,6 +752,166 @@ export function StudioPage(): ReactNode {
       resumeToolResult: true,
     });
   };
+  const answerToolApproval = async (message: LabMessage, approved: boolean) => {
+    if (
+      sending ||
+      toolApprovalInProgressRef.current.has(message.id) ||
+      message.pendingToolCalls === undefined ||
+      message.pendingToolCalls.length === 0
+    ) return;
+    const pendingCalls = message.pendingToolCalls;
+    const roundIndex = message.toolRounds?.findIndex((round) =>
+      pendingCalls.some((call) => round.toolCalls.some((roundCall) => roundCall.id === call.id)),
+    ) ?? -1;
+    const originalRound = message.toolRounds?.[roundIndex];
+    if (originalRound === undefined) return;
+
+    const questionCall = originalRound.toolCalls.find((call) => call.name === "ask_user_question");
+    let question: LabUserQuestion | undefined;
+    try {
+      if (questionCall !== undefined) question = parseUserQuestion(toolArguments(questionCall));
+    } catch (error) {
+      replaceMessage(message.id, {
+        ...message,
+        toolApprovalError: error instanceof Error ? error.message : "The planner returned an invalid question.",
+      });
+      return;
+    }
+    toolApprovalInProgressRef.current.add(message.id);
+
+    const results = [...originalRound.toolResults];
+    const generatedImages = [...(message.images ?? [])];
+    const generatedVideos = [...(message.videos ?? [])];
+    const workerModels = new Set(message.workerModels ?? []);
+    const tools = new Set(message.tools ?? []);
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setSending(true);
+    replaceMessage(message.id, {
+      ...message,
+      status: approved ? "Running approved tools…" : "Skipping tools…",
+      toolApprovalError: undefined,
+    });
+
+    const updateApprovalMessage = (remaining: readonly LabToolCall[], error?: string) => {
+      const nextRounds = [...(message.toolRounds ?? [])];
+      nextRounds[roundIndex] = { ...originalRound, toolResults: results };
+      replaceMessage(message.id, {
+        ...message,
+        toolRounds: nextRounds,
+        status: error === undefined
+          ? question !== undefined && remaining.length === 0
+            ? "Waiting for your answer"
+            : remaining.length > 0
+              ? "Waiting for approval"
+              : "Waiting for model…"
+          : "Approval failed",
+        ...(remaining.length === 0 ? { pendingToolCalls: undefined } : { pendingToolCalls: remaining }),
+        ...(error === undefined ? { toolApprovalError: undefined } : { toolApprovalError: error }),
+        ...(question === undefined || remaining.length > 0 ? {} : { question, status: "Waiting for your answer" }),
+        ...(remaining.length === 0 && question === undefined ? { status: "Waiting for model…" } : {}),
+        ...(generatedImages.length > 0 ? { images: generatedImages } : {}),
+        ...(generatedVideos.length > 0 ? { videos: generatedVideos } : {}),
+        ...(workerModels.size > 0 ? { workerModels: [...workerModels] } : {}),
+        ...(tools.size > 0 ? { tools: [...tools] } : {}),
+      });
+      return nextRounds;
+    };
+
+    let completed = false;
+    try {
+      let token = "";
+      if (approved) {
+        const defaultKey = (keys.data ?? []).find((key) => key.enabled && key.revokedAt === undefined && key.isDefault);
+        if (defaultKey === undefined) throw new Error("The default gateway API key is unavailable.");
+        token = (await reveal.mutateAsync({ keyId: defaultKey.id })).secret;
+      }
+      const userText = [...draft.messages]
+        .reverse()
+        .find((item) => item.role === "user")?.text ?? "";
+      const mediaIntent = detectMediaIntent(userText);
+      const mediaTool = mediaIntent === undefined ? undefined : `generate_${mediaIntent}`;
+      const allImages = availableToolModels(modelCatalog.items, "imageGeneration", draft.model);
+      const allVideos = availableToolModels(modelCatalog.items, "videoGeneration", draft.model);
+      const toolModels = {
+        webSearch: availableToolModels(modelCatalog.items, "websearch", draft.model),
+        imageGeneration: draft.imageWorkerModel.length > 0 && allImages.includes(draft.imageWorkerModel)
+          ? [draft.imageWorkerModel]
+          : [],
+        videoGeneration: draft.videoWorkerModel.length > 0 && allVideos.includes(draft.videoWorkerModel)
+          ? [draft.videoWorkerModel]
+          : [],
+      };
+
+      for (const call of pendingCalls) {
+        if (controller.signal.aborted) throw new Error("Stopped");
+        tools.add(call.name);
+        if (!approved) {
+          results.push({
+            toolCallId: call.id,
+            text: JSON.stringify({ denied: true, message: "The user denied this tool call. Continue without running it." }),
+          });
+          continue;
+        }
+        const result = mediaIntent !== undefined && call.name === mediaTool
+          ? await executeConfiguredMedia(
+              mediaIntent,
+              plannedMediaPrompt(call, userText),
+              mediaIntent === "image" ? toolModels.imageGeneration[0] ?? "" : toolModels.videoGeneration[0] ?? "",
+              draft,
+              token,
+              controller.signal,
+            )
+          : await executeAgenticTool(call, toolModels, draft, token, controller.signal);
+        if (result.images !== undefined) generatedImages.push(...result.images);
+        if (result.videos !== undefined) generatedVideos.push(...result.videos);
+        if (result.workerModel !== undefined) workerModels.add(result.workerModel);
+        results.push({ toolCallId: call.id, text: result.text });
+      }
+
+      const remaining = originalRound.toolCalls.filter((call) =>
+        call.name !== "ask_user_question" &&
+        !results.some((result) => result.toolCallId === call.id),
+      );
+      const nextRounds = updateApprovalMessage(remaining);
+      const history = draft.messages.map((item) => item.id === message.id
+        ? {
+            ...item,
+            toolRounds: nextRounds,
+            ...(remaining.length === 0 ? { pendingToolCalls: undefined } : { pendingToolCalls: remaining }),
+            ...(question === undefined || remaining.length > 0 ? {} : { question, status: "Waiting for your answer" }),
+            ...(remaining.length === 0 && question === undefined ? { status: "Waiting for model…" } : {}),
+            ...(generatedImages.length > 0 ? { images: generatedImages } : {}),
+            ...(generatedVideos.length > 0 ? { videos: generatedVideos } : {}),
+            ...(workerModels.size > 0 ? { workerModels: [...workerModels] } : {}),
+            ...(tools.size > 0 ? { tools: [...tools] } : {}),
+          }
+        : item);
+      if (remaining.length === 0 && question === undefined) {
+        setSending(false);
+        abortRef.current = null;
+        completed = true;
+        void send({
+          text: userText || "Continue after tool approval.",
+          history,
+          resumeToolResult: true,
+        });
+      } else {
+        setSending(false);
+        abortRef.current = null;
+      }
+    } catch (error) {
+      const resolvedIds = new Set(results.map((result) => result.toolCallId));
+      const remaining = pendingCalls.filter((call) => !resolvedIds.has(call.id));
+      updateApprovalMessage(remaining, error instanceof Error ? error.message : "Tool execution failed.");
+    } finally {
+      toolApprovalInProgressRef.current.delete(message.id);
+      if (!completed) {
+        abortRef.current = null;
+        setSending(false);
+      }
+    }
+  };
 
   return (
     <Card className="flex-auto min-h-0 h-route max-h-route flex flex-col overflow-hidden overscroll-none">
@@ -801,6 +984,7 @@ export function StudioPage(): ReactNode {
                   retryDisabled={sending || !hasDefaultKey || draft.model.length === 0}
                   onQuestionAnswer={(question, optionId) => answerQuestion(question, optionId)}
                   onQuestionCancel={(question) => answerQuestion(question)}
+                  onToolApproval={(approval, approved) => void answerToolApproval(approval, approved)}
                   questionDisabled={sending || !hasDefaultKey || draft.model.length === 0}
                   onEdit={message.role === "user" ? (text) => {
                     const next = { ...message, text };
@@ -872,6 +1056,7 @@ export function StudioPage(): ReactNode {
                 imageCount: draft.imageCount,
                 videoSize: draft.videoSize,
                 videoCount: draft.videoCount,
+                toolPermission: draft.toolPermission,
               });
               setSession(created);
               setInput("");
@@ -911,6 +1096,7 @@ export function StudioPage(): ReactNode {
                       imageCount: draft.imageCount,
                       videoSize: draft.videoSize,
                       videoCount: draft.videoCount,
+                      toolPermission: draft.toolPermission,
                     }));
                     setSessions(await listLabSessions());
                   });

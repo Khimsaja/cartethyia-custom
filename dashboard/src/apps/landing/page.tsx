@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactElement } fr
 import { Activity, ArrowRight, ArrowUpRight, Home, Menu, MessageCircle, Network, ShieldCheck, Sparkles, Terminal, X } from "lucide-react";
 import { GITHUB_REPO_URL } from "../../lib/links";
 import { GithubBadge } from "../../components/patterns/github-badge";
+import { acquireBodyScrollLock } from "../../hooks/use-modal-focus";
 import { useReducedMotion } from "../../hooks/use-reduced-motion";
 
 type SignalIconName = "activity" | "network" | "shield" | "sparkles" | "terminal";
@@ -217,11 +218,8 @@ export function LandingPage(): ReactElement {
   const sectionRefs = useRef<Array<HTMLElement | null>>([]);
 
   useEffect(() => {
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = menuOpen ? "hidden" : "";
-    return () => {
-      document.body.style.overflow = prev;
-    };
+    if (!menuOpen) return;
+    return acquireBodyScrollLock(document.body);
   }, [menuOpen]);
 
 

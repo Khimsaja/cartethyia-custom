@@ -27,12 +27,11 @@ state, and availability each have their own owner.
 ## Contract or schema
 
 Find every producer, validator, store, reader, and dashboard mirror. A schema
-change updates `src/persistence/schema.ts`, `migrations/full-postgres/0000_baseline.sql`,
-regenerates the SQLite baseline with `bun scripts/generate/sqlite-ddl.ts`, and
-updates backup validation/mapping for legacy rows. Each migration directory
-contains only `0000_baseline.sql`; do not add numbered forward migrations.
-Existing databases with retired migration history are recreated and restored
-from backup, not upgraded in place. The procedure is in the
+change updates `src/persistence/schema.ts` and adds matching numbered
+migrations for both backends. Preserve released baseline files so deployed
+databases keep matching their baseline marker. Update backup validation/mapping
+for legacy rows when needed. Existing databases with retired migration history
+are recreated and restored from backup. The procedure is in the
 `cartethyia-schema-telemetry` skill. Dashboard contracts stay browser-safe.
 
 ## Removal

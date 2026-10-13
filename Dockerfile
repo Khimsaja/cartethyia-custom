@@ -26,7 +26,9 @@ RUN bun run dashboard:build
 COPY scripts ./scripts
 COPY migrations ./migrations
 RUN test -f migrations/full-postgres/0000_baseline.sql \
-    && test -f migrations/lite-sqlite3/0000_baseline.sql
+    && test -f migrations/lite-sqlite3/0000_baseline.sql \
+    && test -f migrations/full-postgres/0001_allow_multiple_shared_keys_per_ip.sql \
+    && test -f migrations/lite-sqlite3/0001_allow_multiple_shared_keys_per_ip.sql
 RUN bun run build:aot && bun run build:binary --outfile /build/dist/cartethyia
 
 # Runtime: only the binary, dashboard assets, migrations, and entrypoint ship.
@@ -43,7 +45,9 @@ RUN apk add --no-cache ca-certificates curl libgcc libstdc++ util-linux \
 
 COPY --from=builder --chown=cartethyia:cartethyia /build/migrations ./migrations
 RUN test -f /app/migrations/full-postgres/0000_baseline.sql \
-    && test -f /app/migrations/lite-sqlite3/0000_baseline.sql
+    && test -f /app/migrations/lite-sqlite3/0000_baseline.sql \
+    && test -f /app/migrations/full-postgres/0001_allow_multiple_shared_keys_per_ip.sql \
+    && test -f /app/migrations/lite-sqlite3/0001_allow_multiple_shared_keys_per_ip.sql
 COPY --from=builder --chown=cartethyia:cartethyia /build/dist/dashboard ./dist/dashboard
 COPY --chmod=755 docker-entrypoint.sh ./entrypoint.sh
 COPY --from=builder --chown=cartethyia:cartethyia /build/dist/cartethyia ./cartethyia

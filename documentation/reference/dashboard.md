@@ -126,6 +126,11 @@ with it. The dashboard does not keep a second, drifted type.
 A page-specific hook stays next to the page. A hook used by two features moves
 to `dashboard/src/hooks/`.
 
+Model Lab's Chat settings persist tool permission per session. **Ask before
+running** is the default and shows an inline approval prompt before web search
+or media-generation tools run; **YOLO** runs those tools automatically.
+`ask_user_question` remains a separate user-answer flow in either mode.
+
 ## Share and landing
 
 `apps/share` is the public page a share link opens: it reads the share API,

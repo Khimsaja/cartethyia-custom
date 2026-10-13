@@ -210,7 +210,6 @@ export function SharePage(): ReactElement {
   const [probingModels, setProbingModels] = useState<ReadonlySet<string>>(() => new Set());
   const [probeResults, setProbeResults] = useState<ReadonlyMap<string, ProbeResult>>(() => new Map());
   const probeAbortRef = useRef<Map<string, AbortController>>(new Map());
-  const [issueConflict, setIssueConflict] = useState(false);
   const [sharePopupOpen, setSharePopupOpen] = useState(false);
   const sharePopupRef = useRef<HTMLElement>(null);
   const apiKeyPanelRef = useRef<HTMLDivElement>(null);
@@ -269,8 +268,7 @@ export function SharePage(): ReactElement {
       const response = await fetch(issuePath, { method: "POST", credentials: "same-origin", cache: "no-store", referrerPolicy: "no-referrer", headers: { "content-type": "application/json" }, body: JSON.stringify(nameHint.trim() ? { nameHint: nameHint.trim().slice(0, NAME_HINT_MAX_LENGTH) } : {}) });
       const payload = await response.json() as IssueResult | ApiError;
       if (!response.ok) {
-        if (response.status === 409) setIssueConflict(true);
-        setIssueError(response.status === 409 ? "A recipient from this IP already has an active key for a share. This link cannot issue another key." : message(payload as ApiError));
+        setIssueError(message(payload as ApiError));
         return;
       }
       const issued = payload as IssueResult;
@@ -380,7 +378,7 @@ export function SharePage(): ReactElement {
   }, []);
   // Only an enrollment link can mint; a handoff link already carries its key.
   const canIssue =
-    Boolean(enrollment?.canIssue) && !enrollment?.alreadyIssued && !issueConflict && !visibleSecret;
+    Boolean(enrollment?.canIssue) && !visibleSecret;
   const handoffKey = data?.kind === "handoff" ? data.key : null;
   const modelGroups = new Map<string, string[]>();
   for (const model of data?.models ?? []) {
@@ -613,9 +611,7 @@ export function SharePage(): ReactElement {
                 )}
                 {data.kind === "enroll" && !canIssue && !visibleSecret ? (
                   <p role="status" className="w-full rounded-inset border border-orange-soft bg-orange-soft px-5 py-4 text-badge leading-normal text-orange">
-                    {enrollment?.alreadyIssued || issueConflict
-                      ? "An active key has already been issued from this IP."
-                      : issueError ?? "This enrollment link is not currently accepting key requests."}
+                    {issueError ?? "This enrollment link is not currently accepting key requests."}
                   </p>
                 ) : null}
                 {issueError && canIssue ? <p role="alert" className="form-error">{issueError}</p> : null}

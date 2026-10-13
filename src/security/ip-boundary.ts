@@ -50,7 +50,7 @@ function unwrapMappedIpv4(address: string): string {
   // but it failed the prefix test, fell through to `ipv6ToBigInt`, and was treated
   // as an unrelated IPv6 address. The trust check then refused a peer the allowlist
   // covered, and `canonicalClientIpKey` minted a second key for one host — which is
-  // what the one-active-key-per-IP rule deduplicates on.
+  // stored on issued child keys for consistent usage reporting and audit.
   //
   // A mapped address is `::ffff:<32 bits>`, i.e. the first 80 bits are zero and the
   // next 16 are `0xffff`. Matching that is the same test `isIP` uses internally.

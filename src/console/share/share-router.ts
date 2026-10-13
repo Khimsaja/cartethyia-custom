@@ -267,14 +267,7 @@ export function createShareRouter(options: ShareRouterOptions): Elysia {
       const row = resolved.key;
       const clientIp = options.resolveClientIp(request);
       const clientIpKey = clientIp === null ? undefined : canonicalClientIpKey(clientIp);
-      const [models, alreadyIssued] = await Promise.all([
-        modelsForShare(db, row),
-        // Only an enrollment link hands out keys, so only it can be exhausted
-        // by the one-active-key-per-IP rule.
-        resolved.kind === "enroll" && clientIpKey !== undefined
-          ? shareStore.hasActiveSharedKeyForIp(clientIpKey)
-          : Promise.resolve(false),
-      ]);
+      const models = await modelsForShare(db, row);
       const modelInfo = await modelInfoForShare(db, row, models);
       void shareStore.touchView(tokenHash).catch(() => undefined);
       const policy = {
@@ -318,8 +311,7 @@ export function createShareRouter(options: ShareRouterOptions): Elysia {
       }
       return json({
         kind: "enroll",
-        canIssue: clientIpKey !== undefined && !alreadyIssued,
-        alreadyIssued,
+        canIssue: clientIpKey !== undefined,
         ...policy,
       });
     })
@@ -383,12 +375,6 @@ export function createShareRouter(options: ShareRouterOptions): Elysia {
         nameHint,
       });
       if (issued.kind === "link_unavailable") return notFound();
-      if (issued.kind === "ip_limit") {
-        return json(
-          { error: { code: "shared_key_ip_limit", message: "This IP address already has an active shared API key" } },
-          409,
-        );
-      }
       set.status = 201;
       return json({
         key: generated.secret,

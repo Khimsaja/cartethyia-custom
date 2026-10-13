@@ -11,6 +11,11 @@ const PERSONAS = [
   { value: "unset", label: "None" },
 ] as const;
 
+const TOOL_PERMISSIONS = [
+  { value: "ask", label: "Ask before running" },
+  { value: "yolo", label: "YOLO (run automatically)" },
+] as const;
+
 /**
  * Chat settings stay inside the Model Lab card on desktop and use a drawer on mobile.
  *
@@ -119,6 +124,16 @@ export function SettingsDrawer({
           options={PERSONAS}
           onValueChange={(persona) => onChange({ persona: persona as LabDraft["persona"] })}
         />
+        <Select
+          label="Tool permission"
+          aria-label="Tool permission"
+          value={draft.toolPermission}
+          options={TOOL_PERMISSIONS}
+          onValueChange={(toolPermission) => onChange({ toolPermission: toolPermission as LabDraft["toolPermission"] })}
+        />
+        <p className="m-0 text-text-tertiary text-caption leading-normal">
+          Ask pauses before web search or media generation. YOLO runs these tools without confirmation; user questions still wait for your answer.
+        </p>
       </section>
 
       <section className="flex flex-col gap-5">

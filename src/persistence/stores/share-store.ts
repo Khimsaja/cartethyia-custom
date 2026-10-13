@@ -4,7 +4,7 @@ import { createHash, randomInt } from "node:crypto";
 // key; the bearer token is retained encrypted so the console can re-display a
 // stable link, and is never selected by a public lookup.
 
-import { and, desc, eq, isNull, isNotNull, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import type { CartethyiaDatabase } from "../db-handle";
 import { lockRows } from "../dialect";
 import { apiKeys, shareLinks, sharePopups, type ShareLinkKind, type ApiKeyModelAccessMode } from "../schema";
@@ -130,8 +130,7 @@ export type SharedApiKeyIssueResult =
       readonly keyPrefix: string;
       readonly createdAt: Date;
     }
-  | { readonly kind: "link_unavailable" }
-  | { readonly kind: "ip_limit" };
+  | { readonly kind: "link_unavailable" };
 
 type ApiKeyRow = typeof apiKeys.$inferSelect;
 type ShareLinkRow = typeof shareLinks.$inferSelect;
@@ -193,22 +192,6 @@ function mapHandoffRow(key: ApiKeyRow, link: ShareLinkRow, popup?: PopupRow): Sh
   };
 }
 
-function uniqueConstraint(error: unknown): string | undefined {
-  let current: unknown = error;
-  for (let depth = 0; depth < 3; depth += 1) {
-    if (typeof current !== "object" || current === null) return undefined;
-    if (
-      "code" in current && current.code === "23505" &&
-      "constraint" in current && typeof current.constraint === "string"
-    ) {
-      return current.constraint;
-    }
-    if (!("cause" in current)) return undefined;
-    current = current.cause;
-  }
-  return undefined;
-}
-
 /** Persistence boundary for public enrollment links and child API keys. */
 export interface ShareLinkStore {
   /**
@@ -239,7 +222,6 @@ export interface ShareLinkStore {
   resolveShareLinkOutcome(tokenHash: string): Promise<ShareLinkOutcome>;
   /** The key's active link with its retained token, for console re-display. */
   findTokenForApiKey(apiKeyId: string): Promise<ShareLinkToken | null>;
-  hasActiveSharedKeyForIp(clientIpKey: string): Promise<boolean>;
   issueSharedApiKey(
     tokenHash: string,
     material: SharedApiKeyMaterial,
@@ -251,7 +233,6 @@ export interface ShareLinkStore {
   revoke(apiKeyId: string, shareId: string): Promise<boolean>;
 }
 
-/** SQLSTATE/constraint extraction is local so only the IP uniqueness violation becomes a conflict. */
 export class DrizzleShareLinkStore implements ShareLinkStore {
   constructor(private readonly db: CartethyiaDatabase) {}
 
@@ -394,128 +375,107 @@ export class DrizzleShareLinkStore implements ShareLinkStore {
     return rows[0] ?? null;
   }
 
-  async hasActiveSharedKeyForIp(clientIpKey: string): Promise<boolean> {
-    const rows = await this.db
-      .select({ id: apiKeys.id })
-      .from(apiKeys)
-      .where(
-        and(
-          eq(apiKeys.issuedClientIpKey, clientIpKey),
-          isNotNull(apiKeys.parentKeyId),
-          isNull(apiKeys.revokedAt),
-        ),
-      )
-      .limit(1);
-    return rows.length > 0;
-  }
-
   async issueSharedApiKey(
     tokenHash: string,
     material: SharedApiKeyMaterial,
   ): Promise<SharedApiKeyIssueResult> {
-    try {
-      return await this.db.transaction(async (tx) => {
-        // Read the link first without locking, then lock its parent before the
-        // link. Parent revocation uses the same lock order and is atomic with
-        // child revocation, so a concurrent issue cannot escape the parent.
-        const [linkRef] = await tx
-          .select({ id: shareLinks.id, apiKeyId: shareLinks.apiKeyId })
+    return this.db.transaction(async (tx) => {
+      // Read the link first without locking, then lock its parent before the
+      // link. Parent revocation uses the same lock order and is atomic with
+      // child revocation, so a concurrent issue cannot escape the parent.
+      const [linkRef] = await tx
+        .select({ id: shareLinks.id, apiKeyId: shareLinks.apiKeyId })
+        .from(shareLinks)
+        .where(
+          and(
+            eq(shareLinks.tokenHash, tokenHash),
+            eq(shareLinks.kind, "enroll"),
+            eq(shareLinks.active, true),
+            sql`(${shareLinks.expiresAt} IS NULL OR ${shareLinks.expiresAt} > now())`,
+          ),
+        )
+        .limit(1);
+      if (!linkRef) return { kind: "link_unavailable" };
+
+      const [parent] = await lockRows(
+        tx
+          .select()
+          .from(apiKeys)
+          .where(
+            and(
+              eq(apiKeys.id, linkRef.apiKeyId),
+              eq(apiKeys.keyMode, "share"),
+              isNull(apiKeys.parentKeyId),
+              isNull(apiKeys.revokedAt),
+            ),
+          )
+          .limit(1),
+      );
+      if (!parent) return { kind: "link_unavailable" };
+
+      const [activeLink] = await lockRows(
+        tx
+          .select({ id: shareLinks.id })
           .from(shareLinks)
           .where(
             and(
+              eq(shareLinks.id, linkRef.id),
               eq(shareLinks.tokenHash, tokenHash),
-              eq(shareLinks.kind, "enroll"),
               eq(shareLinks.active, true),
               sql`(${shareLinks.expiresAt} IS NULL OR ${shareLinks.expiresAt} > now())`,
             ),
           )
-          .limit(1);
-        if (!linkRef) return { kind: "link_unavailable" };
+          .limit(1),
+      );
+      if (!activeLink) return { kind: "link_unavailable" };
 
-        const [parent] = await lockRows(
-          tx
-            .select()
-            .from(apiKeys)
-            .where(
-              and(
-                eq(apiKeys.id, linkRef.apiKeyId),
-                eq(apiKeys.keyMode, "share"),
-                isNull(apiKeys.parentKeyId),
-                isNull(apiKeys.revokedAt),
-              ),
-            )
-            .limit(1),
-        );
-        if (!parent) return { kind: "link_unavailable" };
-
-        const [activeLink] = await lockRows(
-          tx
-            .select({ id: shareLinks.id })
-            .from(shareLinks)
-            .where(
-              and(
-                eq(shareLinks.id, linkRef.id),
-                eq(shareLinks.tokenHash, tokenHash),
-                eq(shareLinks.active, true),
-                sql`(${shareLinks.expiresAt} IS NULL OR ${shareLinks.expiresAt} > now())`,
-              ),
-            )
-            .limit(1),
-        );
-        if (!activeLink) return { kind: "link_unavailable" };
-
-        // The label is `hint + random`, capped at 12 chars — never the
-        // parent's full label plus a suffix, which grew past every table
-        // column it rendered in. Built here (not imported from the console
-        // domain) because persistence never imports console code.
-        const hint = (material.nameHint ?? "").trim().slice(0, 7);
-        const suffix = randomInt(1000, 10_000).toString();
-        const label =
-          hint.length === 0 ? `key-${suffix}` : `${hint}-${suffix}`.slice(0, 12);
-        const [child] = await tx
-          .insert(apiKeys)
-          .values({
-            tenantId: parent.tenantId,
-            keyHash: material.keyHash,
-            keyMode: "share",
-            parentKeyId: parent.id,
-            issuedClientIp: material.clientIp,
-            issuedClientIpKey: material.clientIpKey,
-            label,
-            scopes: parent.scopes,
-            keyPrefix: material.keyPrefix,
-            keyEncrypted: null,
-            notesTitle: parent.notesTitle,
-            notesSubtitle: parent.notesSubtitle,
-            notesBody: parent.notesBody,
-            requestsPerMinute: parent.requestsPerMinute,
-            dailyTokenLimit: parent.dailyTokenLimit,
-            monthlyTokenLimit: parent.monthlyTokenLimit,
-            lifetimeTokenBudget: parent.lifetimeTokenBudget,
-            maxConcurrentRequests: parent.maxConcurrentRequests,
-            modelPrefix: parent.modelPrefix,
-            modelAccessMode: parent.modelAccessMode,
-            modelList: parent.modelList,
-            clientRouterDenylist: parent.clientRouterDenylist,
-            lifetimeTokensConsumed: 0,
-          })
-          .returning({ id: apiKeys.id, tenantId: apiKeys.tenantId, createdAt: apiKeys.createdAt });
-        if (!child) throw new Error("shared API-key insert returned no row");
-        return {
-          kind: "issued",
-          apiKeyId: child.id,
+      // The label is `hint + random`, capped at 12 chars — never the
+      // parent's full label plus a suffix, which grew past every table
+      // column it rendered in. Built here (not imported from the console
+      // domain) because persistence never imports console code.
+      const hint = (material.nameHint ?? "").trim().slice(0, 7);
+      const suffix = randomInt(1000, 10_000).toString();
+      const label =
+        hint.length === 0 ? `key-${suffix}` : `${hint}-${suffix}`.slice(0, 12);
+      const [child] = await tx
+        .insert(apiKeys)
+        .values({
+          tenantId: parent.tenantId,
+          keyHash: material.keyHash,
+          keyMode: "share",
           parentKeyId: parent.id,
-          tenantId: child.tenantId,
+          issuedClientIp: material.clientIp,
+          issuedClientIpKey: material.clientIpKey,
           label,
+          scopes: parent.scopes,
           keyPrefix: material.keyPrefix,
-          createdAt: child.createdAt,
-        };
-      });
-    } catch (error) {
-      if (uniqueConstraint(error) === "api_keys_active_shared_ip_uidx")
-        return { kind: "ip_limit" };
-      throw error;
-    }
+          keyEncrypted: null,
+          notesTitle: parent.notesTitle,
+          notesSubtitle: parent.notesSubtitle,
+          notesBody: parent.notesBody,
+          requestsPerMinute: parent.requestsPerMinute,
+          dailyTokenLimit: parent.dailyTokenLimit,
+          monthlyTokenLimit: parent.monthlyTokenLimit,
+          lifetimeTokenBudget: parent.lifetimeTokenBudget,
+          maxConcurrentRequests: parent.maxConcurrentRequests,
+          modelPrefix: parent.modelPrefix,
+          modelAccessMode: parent.modelAccessMode,
+          modelList: parent.modelList,
+          clientRouterDenylist: parent.clientRouterDenylist,
+          lifetimeTokensConsumed: 0,
+        })
+        .returning({ id: apiKeys.id, tenantId: apiKeys.tenantId, createdAt: apiKeys.createdAt });
+      if (!child) throw new Error("shared API-key insert returned no row");
+      return {
+        kind: "issued",
+        apiKeyId: child.id,
+        parentKeyId: parent.id,
+        tenantId: child.tenantId,
+        label,
+        keyPrefix: material.keyPrefix,
+        createdAt: child.createdAt,
+      };
+    });
   }
 
   async touchView(tokenHash: string): Promise<void> {

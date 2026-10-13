@@ -311,6 +311,27 @@ describe("buildLabRequest", () => {
     expect(markup).not.toContain(">Bold</span>");
   });
 
+  test("pending agentic tools render an inline approval prompt", () => {
+    const markup = renderToStaticMarkup(createElement(ChatBubble, {
+      message: {
+        id: "tool-approval",
+        role: "assistant",
+        text: "",
+        pendingToolCalls: [{
+          id: "search-1",
+          name: "web_search",
+          arguments: "{\"query\":\"latest weather\"}",
+        }],
+      },
+      onToolApproval: () => {},
+    }));
+    expect(markup).toContain("Allow these actions?");
+    expect(markup).toContain("web search");
+    expect(markup).toContain("latest weather");
+    expect(markup).toContain("Allow and run");
+    expect(markup).toContain("Deny");
+  });
+
   test("an attached image is a wire image part, and a blank turn is kept", () => {
     const image = { name: "cat.png", dataUrl: "data:image/png;base64,Y2F0" };
     const chat = buildLabRequest([{ role: "user", text: "", images: [image] }], settings({ persona: "unset" }));
@@ -453,6 +474,7 @@ describe("buildLabRequest", () => {
       expect(migrated).toMatchObject({
         id: "legacy",
         model: "openai/gpt-4.1",
+        toolPermission: "ask",
         imageWorkerModel: "",
         videoWorkerModel: "",
         imageSize: "1024x1024",
@@ -472,6 +494,7 @@ describe("buildLabRequest", () => {
         imageCount: "3",
         videoSize: "720p",
         videoCount: "2",
+        toolPermission: "yolo",
         messages: [{
           id: "assistant-1",
           role: "assistant",
@@ -498,6 +521,7 @@ describe("buildLabRequest", () => {
         imageCount: "3",
         videoSize: "720p",
         videoCount: "2",
+        toolPermission: "yolo",
         messages: [{
           videos: [{ name: "clip.mp4", src: "https://cdn.example/clip.mp4" }],
           workerModels: ["workbuddy/seedance-2.5"],
@@ -506,6 +530,30 @@ describe("buildLabRequest", () => {
           }],
           question: { question: "Which style?", options: expect.any(Array) },
           selectedOption: "minimal",
+        }],
+      });
+      const approval = migrateLabSessionRecord({
+        id: "approval",
+        title: "approval",
+        updatedAt: 3,
+        toolPermission: "yolo",
+        messages: [{
+          id: "assistant-pending",
+          role: "assistant",
+          text: "",
+          pendingToolCalls: [{ id: "search-2", name: "web_search", arguments: "{\"query\":\"latest news\"}" }],
+          toolRounds: [{
+            text: "",
+            toolCalls: [{ id: "search-2", name: "web_search", arguments: "{\"query\":\"latest news\"}" }],
+            toolResults: [],
+          }],
+        }],
+      });
+      expect(approval).toMatchObject({
+        toolPermission: "yolo",
+        messages: [{
+          pendingToolCalls: [{ id: "search-2", name: "web_search", arguments: "{\"query\":\"latest news\"}" }],
+          toolRounds: [{ toolCalls: [{ id: "search-2" }], toolResults: [] }],
         }],
       });
     });

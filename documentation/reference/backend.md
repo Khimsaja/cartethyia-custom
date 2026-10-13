@@ -179,11 +179,13 @@ exactly one row matches. Two tenants sharing a username do not guess.
 
 ## Persistence
 
-`src/persistence/schema.ts` is the Drizzle source. `migrations/full-postgres/0000_baseline.sql`
-must match it. Both migration directories contain only `0000_baseline.sql`;
-SQLite's file is generated from the PostgreSQL baseline. Do not add numbered
-forward migrations. Existing databases with retired migration history must be
-recreated from this baseline and recovered through the backup/restore flow.
+`src/persistence/schema.ts` is the Drizzle source. The baselines define the
+foundational schema; SQLite's baseline is generated from PostgreSQL. Preserve
+released baseline files because their hashes are recorded in deployed
+databases. Matching numbered migrations bring both backends to the current
+schema and upgrade supported existing databases. Databases with retired
+migration history must be recreated from the baseline and recovered through
+the backup/restore flow.
 That flow maps legacy routing names and values (`bypass_proxy`, `bridge`, the
 old provider User-Agent default, Cline's skip-proxy default, and `fusion`) before
 inserting rows.

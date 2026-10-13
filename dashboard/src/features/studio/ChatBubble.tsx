@@ -28,6 +28,21 @@ function duration(ms: number | undefined): string | null {
   return `${Math.round(ms)}ms`;
 }
 
+function toolSummary(call: { readonly name: string; readonly arguments: string }): string {
+  let args: unknown;
+  try {
+    args = JSON.parse(call.arguments);
+  } catch {
+    return "Invalid tool arguments";
+  }
+  if (args === null || typeof args !== "object" || Array.isArray(args)) return "No action details";
+  const record = args as Record<string, unknown>;
+  const detail = call.name === "web_search" ? record.query : record.prompt;
+  return typeof detail === "string" && detail.trim().length > 0
+    ? detail.trim().slice(0, 240)
+    : "No action details";
+}
+
 function count(value: number | undefined): string | null {
   if (value === undefined || !Number.isFinite(value)) return null;
   return new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(value);
@@ -125,6 +140,7 @@ export function ChatBubble({
   onRetry,
   onQuestionAnswer,
   onQuestionCancel,
+  onToolApproval,
   retryDisabled = false,
   questionDisabled = false,
 }: {
@@ -133,6 +149,7 @@ export function ChatBubble({
   readonly onRetry?: () => void;
   readonly onQuestionAnswer?: (message: LabMessage, optionId: string) => void;
   readonly onQuestionCancel?: (message: LabMessage) => void;
+  readonly onToolApproval?: (message: LabMessage, approved: boolean) => void;
   readonly retryDisabled?: boolean;
   readonly questionDisabled?: boolean;
 }): ReactNode {
@@ -372,6 +389,45 @@ export function ChatBubble({
           </>
         )}
       </div>
+      {message.pendingToolCalls !== undefined ? (
+        <section className="flex w-full max-w-280 flex-col gap-3 rounded-control border border-inner-border bg-surface-2 p-5" aria-label="Tool approval">
+          <h3 className="m-0 text-body-lg font-semibold text-text-primary">Allow these actions?</h3>
+          <p role="status" className="m-0 text-caption text-text-tertiary">
+            {message.status ?? "Waiting for approval"}
+          </p>
+          <ul className="m-0 flex flex-col gap-3 pl-5 text-caption text-text-secondary">
+            {message.pendingToolCalls.map((call) => (
+              <li key={call.id}>
+                <span className="font-semibold">{call.name.replaceAll("_", " ")}</span>
+                <p className="m-0 mt-1 whitespace-pre-wrap break-words text-text-tertiary">{toolSummary(call)}</p>
+              </li>
+            ))}
+          </ul>
+          {message.toolApprovalError ? (
+            <p role="alert" className="m-0 text-caption text-red">{message.toolApprovalError}</p>
+          ) : null}
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="primary"
+              size="sm"
+              type="button"
+              disabled={questionDisabled}
+              onClick={() => onToolApproval?.(message, true)}
+            >
+              Allow and run
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              type="button"
+              disabled={questionDisabled}
+              onClick={() => onToolApproval?.(message, false)}
+            >
+              Deny
+            </Button>
+          </div>
+        </section>
+      ) : null}
       {message.question !== undefined ? (
         <section className="flex w-full max-w-280 flex-col gap-3 rounded-control border border-inner-border bg-surface-2 p-5" aria-label="Planner question">
           {message.selectedOption === undefined ? (

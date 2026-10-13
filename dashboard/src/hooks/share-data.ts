@@ -46,7 +46,6 @@ export interface ShareLinkPolicyData {
 export interface ShareEnrollmentData extends ShareLinkPolicyData {
   readonly kind: "enroll";
   readonly canIssue: boolean;
-  readonly alreadyIssued: boolean;
 }
 
 /** A handoff link, which reveals the personal key it was created for. */

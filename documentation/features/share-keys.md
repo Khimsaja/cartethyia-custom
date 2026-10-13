@@ -50,14 +50,15 @@ make every `/v1` request drag a 2 MiB blob through it.
 | `GET /share/:token/stats` | Family totals, hourly buckets, top models, top client IPs |
 | `GET /share/:token/stats/stream` | The same as SSE, one snapshot every 2 s |
 
-Enrollment allows **one active child key per canonical client IP across share
-templates** (`canonicalClientIpKey`), so a NAT'd office shares a key rather than
-issuing one per link. The newly minted bearer is returned by the successful
-`issue` response, not by stats or enrollment data. The share page saves that
-enrollment key in IndexedDB in the same browser, keyed by link token, so it can
-redisplay a local copy; it deletes that copy if the link lookup fails. A
-handoff link is different: its `data` response reveals the existing personal
-key whenever the link resolves, and the browser does not persist that key.
+Enrollment can issue multiple active child keys from the same canonical client
+IP, including across different share templates. The client IP and its
+canonicalized form are still recorded on each child for usage reporting and
+audit. The newly minted bearer is returned by the successful `issue` response,
+not by stats or enrollment data. The share page saves that enrollment key in
+IndexedDB in the same browser, keyed by link token, so it can redisplay a local
+copy; it deletes that copy if the link lookup fails. A handoff link is
+different: its `data` response reveals the existing personal key whenever the
+link resolves, and the browser does not persist that key.
 
 ## Inheritance
 
@@ -92,7 +93,7 @@ check against the bundle proves nothing.
 | Change | Start here |
 | --- | --- |
 | Token format or hash | `src/console/api-keys/routes.ts`, `hashShareToken` in `src/persistence/stores/share-store.ts`, and `MIN_TOKEN_LENGTH` in `src/console/share/share-router.ts` |
-| Enrollment rules (one per IP, refusal reasons) | `src/console/share/share-router.ts` |
+| Enrollment issuance | `src/console/share/share-router.ts` and `src/persistence/stores/share-store.ts` |
 | Family usage and stats | `src/console/share/{share-usage,share-stats}.ts` |
 | Popup validation | `src/console/api-keys/share-popup-image.ts` |
 | Link and popup schema | `src/persistence/schema.ts` (`shareLinks`, `sharePopups`) |

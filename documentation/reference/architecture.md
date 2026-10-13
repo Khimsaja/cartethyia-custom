@@ -137,11 +137,12 @@ Two database modes share one schema:
 | Lite | embedded SQLite at `<data-dir>/cartethyia.sqlite` | in-process unless `REDIS_URL` is set. One process is the whole deployment, so the in-process admission counters are the shared counters; set `REDIS_URL` only to share them with a second process |
 | Full | external PostgreSQL | Redis when `REDIS_URL` is set, else memory |
 
-`migrations/full-postgres/0000_baseline.sql` is the current schema for a new database. Lite builds from `migrations/lite-sqlite3/0000_baseline.sql`, derived from it.
-Each backend ships only this baseline; older numbered migrations are retired.
-An existing database with retired migration history, or tables without the
-current baseline ledger entry, is rejected at startup rather than upgraded
-in-place. Create a fresh database and restore a backup. Restore maps the retired
+The PostgreSQL baseline defines the foundational schema for a new database;
+Lite builds from its generated SQLite baseline. Numbered migrations bring
+both backends to the current schema and support compatible in-place upgrades.
+An existing database with retired migration history, or
+tables without the current baseline ledger entry, is rejected at startup.
+Create a fresh database and restore a backup. Restore maps the retired
 `bypass_proxy` name, `bridge` pool kind, old provider User-Agent default, and
 legacy Cline/fusion values to the current schema.
 

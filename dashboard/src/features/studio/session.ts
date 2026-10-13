@@ -26,6 +26,8 @@ export interface LabMessage {
   readonly mediaPending?: "image" | "video";
   readonly mediaStage?: "planning" | "generating";
   readonly toolCalls?: readonly LabToolCall[];
+  readonly pendingToolCalls?: readonly LabToolCall[];
+  readonly toolApprovalError?: string;
   readonly toolRounds?: readonly LabToolRound[];
   readonly question?: LabUserQuestion;
   readonly selectedOption?: string;
@@ -52,6 +54,7 @@ export interface LabDraft {
   readonly temperature: string;
   readonly topP: string;
   readonly effort: LabEffort;
+  readonly toolPermission: "ask" | "yolo";
   readonly messages: readonly LabMessage[];
 
 }
@@ -70,6 +73,7 @@ export const EMPTY_DRAFT: LabDraft = {
   temperature: "",
   topP: "",
   effort: "high",
+  toolPermission: "ask",
   messages: [],
 
 };
@@ -163,6 +167,7 @@ export function migrateLabSessionRecord(value: unknown): LabSession | null {
     protocol: isProtocol(record.protocol) ? record.protocol : "chat",
     persona: isPersona(record.persona) ? record.persona : "cartethyia",
     effort: isEffort(record.effort) ? record.effort : "high",
+    toolPermission: isToolPermission(record.toolPermission) ? record.toolPermission : "ask",
     messages: readMessages(record.messages),
     title: (record.title || sessionName()).slice(0, 8),
   };
@@ -217,6 +222,10 @@ function isPersona(value: unknown): value is LabPersona {
 
 function isEffort(value: unknown): value is LabEffort {
   return value === "auto" || value === "low" || value === "medium" || value === "high" || value === "max";
+}
+
+function isToolPermission(value: unknown): value is LabDraft["toolPermission"] {
+  return value === "ask" || value === "yolo";
 }
 
 function readImages(value: unknown): readonly LabImage[] | undefined {
@@ -323,6 +332,7 @@ function readMessages(value: unknown): readonly LabMessage[] {
     const images = readImages(record.images);
     const videos = readVideos(record.videos);
     const toolCalls = readToolCalls(record.toolCalls);
+    const pendingToolCalls = readToolCalls(record.pendingToolCalls);
     const toolRounds = readToolRounds(record.toolRounds);
     const question = readQuestion(record.question);
     const usage = readUsage(record.usage);
@@ -354,6 +364,8 @@ function readMessages(value: unknown): readonly LabMessage[] {
         ? { workerModels: record.workerModels.filter((worker): worker is string => typeof worker === "string") }
         : {}),
       ...(toolCalls === undefined ? {} : { toolCalls }),
+      ...(pendingToolCalls === undefined ? {} : { pendingToolCalls }),
+      ...(typeof record.toolApprovalError === "string" ? { toolApprovalError: record.toolApprovalError } : {}),
       ...(toolRounds === undefined ? {} : { toolRounds }),
       ...(question === undefined ? {} : { question }),
       ...(typeof record.selectedOption === "string" ? { selectedOption: record.selectedOption } : {}),
@@ -384,6 +396,7 @@ export function readLabDraft(storage: Storage | undefined): LabDraft {
       temperature: typeof record.temperature === "string" ? record.temperature : "",
       topP: typeof record.topP === "string" ? record.topP : "",
       effort: isEffort(record.effort) ? record.effort : "high",
+      toolPermission: isToolPermission(record.toolPermission) ? record.toolPermission : "ask",
       messages: readMessages(record.messages),
 
     };

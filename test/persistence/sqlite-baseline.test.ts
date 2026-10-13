@@ -18,6 +18,7 @@ import { resolve } from "node:path";
 import { deriveSqliteBaseline } from "../../scripts/generate/sqlite-ddl";
 import { DrizzleModelRoutingStore } from "../../src/console/routing/model/store";
 import { applySqliteMigrations, buildSqliteHandle, createSqliteDatabase } from "../../src/persistence/db-sqlite";
+import { baselineSchemaMarker, MIGRATION_LEDGER_TABLE } from "../../src/persistence/migrate";
 import { tenants } from "../../src/persistence/schema";
 
 const committed = readFileSync(resolve(process.cwd(), "migrations", "lite-sqlite3", "0000_baseline.sql"), "utf8");
@@ -33,11 +34,12 @@ function migratedDatabase(): Database {
   return db;
 }
 
-test("each backend ships only its baseline migration", () => {
+test("each backend has matching baseline and incremental migrations", () => {
   const postgres = readdirSync(resolve(process.cwd(), "migrations", "full-postgres")).filter((name) => name.endsWith(".sql")).sort();
   const sqlite = readdirSync(resolve(process.cwd(), "migrations", "lite-sqlite3")).filter((name) => name.endsWith(".sql")).sort();
-  expect(postgres).toEqual(["0000_baseline.sql"]);
-  expect(sqlite).toEqual(["0000_baseline.sql"]);
+  const expected = ["0000_baseline.sql", "0001_allow_multiple_shared_keys_per_ip.sql"];
+  expect(postgres).toEqual(expected);
+  expect(sqlite).toEqual(expected);
 });
 
 test("the committed SQLite baseline matches the generator output", () => {
@@ -102,6 +104,43 @@ test("a new SQLite tenant can load an empty model-alias list", async () => {
     const store = new DrizzleModelRoutingStore(db);
 
     expect(await store.listAliases(tenantId)).toEqual([]);
+  } finally {
+    sqlite.close();
+  }
+});
+
+test("SQLite migration upgrades existing databases to allow multiple shared keys per IP", async () => {
+  const sqlite = migratedDatabase();
+  try {
+    sqlite.exec(
+      `CREATE TABLE ${MIGRATION_LEDGER_TABLE} (` +
+        "migration_id text PRIMARY KEY, applied_at text NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))",
+    );
+    const marker = baselineSchemaMarker(committed);
+    sqlite
+      .prepare(`INSERT INTO ${MIGRATION_LEDGER_TABLE} (migration_id) VALUES (?)`)
+      .run("0000_baseline.sql");
+    sqlite
+      .prepare(`INSERT INTO ${MIGRATION_LEDGER_TABLE} (migration_id) VALUES (?)`)
+      .run(marker);
+    sqlite.exec("INSERT INTO tenants (id, name, status) VALUES ('tenant', 'Test', 'active')");
+    sqlite.exec(
+      "INSERT INTO api_keys (id, tenant_id, key_mode, label, scopes) VALUES ('template', 'tenant', 'share', 'Template', '[]')",
+    );
+    sqlite.exec(
+      "INSERT INTO api_keys (id, tenant_id, key_mode, parent_key_id, issued_client_ip, issued_client_ip_key, key_hash, label, scopes) " +
+        "VALUES ('child-1', 'tenant', 'share', 'template', '192.0.2.1', '192.0.2.1', 'hash-child-1', 'child-1', '[]')",
+    );
+
+    await applySqliteMigrations(sqlite);
+    sqlite.exec(
+      "INSERT INTO api_keys (id, tenant_id, key_mode, parent_key_id, issued_client_ip, issued_client_ip_key, key_hash, label, scopes) " +
+        "VALUES ('child-2', 'tenant', 'share', 'template', '192.0.2.1', '192.0.2.1', 'hash-child-2', 'child-2', '[]')",
+    );
+    const children = sqlite
+      .query("SELECT count(*) AS count FROM api_keys WHERE parent_key_id = 'template' AND revoked_at IS NULL")
+      .get() as { count: number };
+    expect(children.count).toBe(2);
   } finally {
     sqlite.close();
   }

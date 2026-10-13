@@ -657,9 +657,6 @@ export const apiKeys = pgTable(
   },
   (table) => [
     uniqueIndex("api_keys_key_hash_idx").on(table.keyHash),
-    uniqueIndex("api_keys_active_shared_ip_uidx")
-      .on(table.issuedClientIpKey)
-      .where(sql`${table.parentKeyId} IS NOT NULL AND ${table.revokedAt} IS NULL`),
     index("api_keys_tenant_id_idx").on(table.tenantId),
     index("api_keys_enabled_tenant_idx").on(table.tenantId).where(sql`${table.enabled} = true`),
     index("api_keys_parent_key_id_idx").on(table.parentKeyId),
