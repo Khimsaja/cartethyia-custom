@@ -24,6 +24,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- PostgreSQL and SQLite baselines now include provider account identity
+  enrichment fields. Databases created from an older baseline are rejected
+  instead of repeatedly failing the enrichment sweep.
+- Alibaba Coding Plan is grouped with well-known API-key providers, and its
+  import-only credential action is labeled "Add API key" rather than OAuth.
 - The Usage page no longer reports an unreceived in-flight snapshot as zero.
 - Proxy imports work on Lite databases by restoring network-pool health and
   accounting columns omitted by the SQLite transport migration.

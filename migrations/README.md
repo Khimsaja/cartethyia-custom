@@ -8,7 +8,8 @@ Cartethyia keeps one SQL baseline per database backend:
 
 Both directories must contain only `0000_baseline.sql`. The startup runner
 applies that file to an empty database and records it in
-`cartethyia_schema_migrations`. There is no in-place upgrade path for a database
+`cartethyia_schema_migrations` along with a hash marker for the exact baseline
+contents. There is no in-place upgrade path for a database
 with retired migration history. Startup fails with a recovery instruction
 instead of treating an old schema as current.
 

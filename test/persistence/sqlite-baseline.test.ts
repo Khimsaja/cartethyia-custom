@@ -46,6 +46,10 @@ test("the derived baseline builds and enforces the PostgreSQL constraints", () =
   const tables = db.prepare("SELECT count(*) AS c FROM sqlite_master WHERE type = 'table'").get() as { c: number };
   expect(tables.c).toBe(26);
   expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'studio_sessions'").get()).toBeNull();
+  const accountColumns = db.prepare("PRAGMA table_info('provider_accounts')").all() as Array<{ name: string }>;
+  expect(accountColumns.map((column) => column.name)).toEqual(
+    expect.arrayContaining(["identity_checked_at", "account_email"]),
+  );
 
   db.exec("INSERT INTO tenants (id, name, status) VALUES ('t1', 'A', 'active')");
   expect(() => db.exec("INSERT INTO tenants (id, name, status) VALUES ('t2', 'A', 'nope')")).toThrow();

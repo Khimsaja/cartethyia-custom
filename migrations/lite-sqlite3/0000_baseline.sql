@@ -47,6 +47,8 @@ CREATE TABLE "provider_accounts" (
   "model_cooldowns" text DEFAULT '{}' NOT NULL,
   "sort_index" integer DEFAULT 0 NOT NULL,
   "static_token" integer DEFAULT false NOT NULL CHECK ("static_token" IN (0, 1)),
+  "identity_checked_at" text,
+  "account_email" text,
   "created_at" text DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')) NOT NULL,
   CONSTRAINT "provider_accounts_provider_id_providers_id_fk" FOREIGN KEY ("provider_id") REFERENCES "providers"("id") ON DELETE cascade,
   CONSTRAINT "provider_accounts_credential_kind_enum_check" CHECK ("credential_kind" IS NULL OR "credential_kind" IN ('api_key', 'oauth', 'none')),

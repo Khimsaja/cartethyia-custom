@@ -96,6 +96,22 @@ test("an unversioned database with existing tables requires backup and restore",
   }
 });
 
+test("a database created from an older baseline requires backup and restore", async () => {
+  const dir = freshDir();
+  const sqlite = createSqliteDatabase(join(dir, "cartethyia.sqlite"));
+  try {
+    await applySqliteMigrations(sqlite);
+    sqlite.exec("DELETE FROM cartethyia_schema_migrations WHERE migration_id LIKE 'baseline-schema:%'");
+
+    await expect(applySqliteMigrations(sqlite)).rejects.toThrow(
+      /different baseline schema.*fresh database and restore from a backup/i,
+    );
+  } finally {
+    sqlite.close();
+    removeDir(dir);
+  }
+});
+
 test("a database with retired migration history requires backup and restore", async () => {
   const dir = freshDir();
   const sqlite = createSqliteDatabase(join(dir, "cartethyia.sqlite"));
@@ -127,7 +143,10 @@ test("a migration that fails names the file and records nothing for it", async (
     const recorded = sqlite
       .prepare("SELECT migration_id FROM cartethyia_schema_migrations")
       .all() as { migration_id: string }[];
-    expect(recorded.map((row) => row.migration_id)).toEqual(["0000_baseline.sql"]);
+    const migrationIds = recorded.map((row) => row.migration_id);
+    expect(migrationIds).toContain("0000_baseline.sql");
+    expect(migrationIds.some((migrationId) => migrationId.startsWith("baseline-schema:"))).toBe(true);
+    expect(migrationIds).not.toContain("0001_broken.sql");
     sqlite.close();
   } finally {
     removeDir(dir);

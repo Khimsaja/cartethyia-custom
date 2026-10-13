@@ -13,7 +13,9 @@ import { fullSchema, type CartethyiaDatabase, type DatabaseHandle } from "./db-h
 import {
   LEDGER_DDL,
   MIGRATION_LEDGER_TABLE,
+  BASELINE_MIGRATION_ID,
   assertMigrationHistorySupported,
+  baselineSchemaMarker,
   migrationFiles,
   resolveMigrationsFolder,
 } from "./migrate";
@@ -154,6 +156,11 @@ export async function applySqlMigrations(
   folder = resolveMigrationsFolder(),
 ): Promise<void> {
   const files = migrationFiles(folder);
+  const baselineFile = files.find((file) => basename(file) === BASELINE_MIGRATION_ID);
+  const baselineMarker =
+    baselineFile === undefined
+      ? undefined
+      : baselineSchemaMarker(readFileSync(baselineFile, "utf8"));
   const client = await pool.connect();
   try {
     await client.query(`SELECT pg_advisory_lock(hashtext('cartethyia:migrations'))`);
@@ -167,8 +174,12 @@ export async function applySqlMigrations(
     );
     assertMigrationHistorySupported(
       applied,
-      files.map((file) => basename(file)),
+      [
+        ...files.map((file) => basename(file)),
+        ...(baselineMarker === undefined ? [] : [baselineMarker]),
+      ],
       tenants.rows[0]?.present === true,
+      baselineMarker,
     );
 
     for (const file of files) {
@@ -182,8 +193,17 @@ export async function applySqlMigrations(
           `INSERT INTO ${MIGRATION_LEDGER_TABLE} (migration_id) VALUES ($1)`,
           [migrationId],
         );
+        if (migrationId === BASELINE_MIGRATION_ID && baselineMarker !== undefined) {
+          await client.query(
+            `INSERT INTO ${MIGRATION_LEDGER_TABLE} (migration_id) VALUES ($1)`,
+            [baselineMarker],
+          );
+        }
         await client.query("COMMIT");
         applied.add(migrationId);
+        if (migrationId === BASELINE_MIGRATION_ID && baselineMarker !== undefined) {
+          applied.add(baselineMarker);
+        }
       } catch (error) {
         // Rollback on migration failure is best-effort before throwing.
         await client.query("ROLLBACK").catch(() => {});

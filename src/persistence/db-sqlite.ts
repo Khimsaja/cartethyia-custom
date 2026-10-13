@@ -8,7 +8,9 @@ import { dirname } from "node:path";
 import { resolvePackagePath } from "../config/package-paths";
 import { fullSchema, type DatabaseHandle } from "./db-handle";
 import {
+  BASELINE_MIGRATION_ID,
   assertMigrationHistorySupported,
+  baselineSchemaMarker,
   MIGRATION_LEDGER_TABLE,
   migrationFiles,
   migrationIdFor,
@@ -433,10 +435,19 @@ export async function applySqliteMigrations(
     .prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'tenants'")
     .get() as { present: number } | null;
   const files = migrationFiles(folder);
+  const baselineFile = files.find((file) => migrationIdFor(file) === BASELINE_MIGRATION_ID);
+  const baselineMarker =
+    baselineFile === undefined
+      ? undefined
+      : baselineSchemaMarker(readFileSync(baselineFile, "utf8"));
   assertMigrationHistorySupported(
     applied,
-    files.map(migrationIdFor),
+    [
+      ...files.map(migrationIdFor),
+      ...(baselineMarker === undefined ? [] : [baselineMarker]),
+    ],
     tenants !== null,
+    baselineMarker,
   );
 
   for (const file of files) {
@@ -457,8 +468,14 @@ export async function applySqliteMigrations(
           sqlite.exec(sql);
         }
         record.run(migrationId);
+        if (migrationId === BASELINE_MIGRATION_ID && baselineMarker !== undefined) {
+          record.run(baselineMarker);
+        }
       })();
       applied.add(migrationId);
+      if (migrationId === BASELINE_MIGRATION_ID && baselineMarker !== undefined) {
+        applied.add(baselineMarker);
+      }
     } catch (error) {
       throw new Error(`Migration ${migrationId} failed: ${String(error)}`, { cause: error });
     }

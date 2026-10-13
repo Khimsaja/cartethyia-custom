@@ -427,6 +427,7 @@ function CustomProviderCard({ customProvider }: { customProvider: ProviderRespon
             icon={customProvider.wireFamilyDefault === "messages" ? "anthropic" : "openai"}
             name={customProvider.label || customProvider.providerId}
             size={48}
+            imageSize={40}
           />
           <div className="min-w-0 flex-1">
             <div
@@ -685,6 +686,7 @@ const WELL_KNOWN_API_KEY_IDS = new Set([
   "anthropic",
   "openai",
   "gemini",
+  "alibabacp",
   "ollamacloud",
   "opencodezen",
   "opencodego",
@@ -692,6 +694,10 @@ const WELL_KNOWN_API_KEY_IDS = new Set([
   "meta",
   "deepseek",
 ]);
+
+function hasInteractiveOAuth(provider: ProviderResponse): boolean {
+  return provider.oauthFlows?.browser === true || provider.oauthFlows?.device === true;
+}
 
 /**
  * Connection counts for one provider's card.
@@ -844,7 +850,7 @@ const ProviderCard = memo(function ProviderCard({
         className={CARD_LINK}
       >
         <Inline gap="10px">
-          <ProviderIcon icon={provider.providerId} name={displayName} size={48} />
+          <ProviderIcon icon={provider.providerId} name={displayName} size={48} imageSize={40} />
           <div className="min-w-0 flex-1">
             <div
               className={CARD_NAME}
@@ -960,12 +966,10 @@ const SECTIONS = [
   },
   {
     title: "OAuth & Agent Providers",
-    // Membership follows the backend registry rather than a hand-kept id list:
-    // `oauthFlows` is present on a provider response exactly when the registry
-    // resolves a login client for it, so this section cannot drift from the
-    // providers that really support a login flow.
+    // Import-only clients validate and store API keys; only browser/device
+    // authorization belongs in this section.
     filter: (p: ProviderResponse) =>
-      p.oauthFlows !== undefined && !FREE_LIMITED_IDS.has(p.providerId.toLowerCase()) && !WEB_LLM_IDS.has(p.providerId.toLowerCase()),
+      hasInteractiveOAuth(p) && !FREE_LIMITED_IDS.has(p.providerId.toLowerCase()) && !WEB_LLM_IDS.has(p.providerId.toLowerCase()),
   },
   {
     title: "Well Known API Key Providers",
@@ -975,7 +979,7 @@ const SECTIONS = [
       WELL_KNOWN_API_KEY_IDS.has(p.providerId.toLowerCase()) &&
       !FOUNDING_IDS.has(p.providerId.toLowerCase()) &&
       !FREE_LIMITED_IDS.has(p.providerId.toLowerCase()) &&
-      p.oauthFlows === undefined && !WEB_LLM_IDS.has(p.providerId.toLowerCase()),
+      !hasInteractiveOAuth(p) && !WEB_LLM_IDS.has(p.providerId.toLowerCase()),
   },
   {
     title: "Other API Key Providers",
@@ -985,7 +989,7 @@ const SECTIONS = [
       !WELL_KNOWN_API_KEY_IDS.has(p.providerId.toLowerCase()) &&
       !FOUNDING_IDS.has(p.providerId.toLowerCase()) &&
       !FREE_LIMITED_IDS.has(p.providerId.toLowerCase()) &&
-      p.oauthFlows === undefined && !WEB_LLM_IDS.has(p.providerId.toLowerCase()),
+      !hasInteractiveOAuth(p) && !WEB_LLM_IDS.has(p.providerId.toLowerCase()),
   },
 ];
 

@@ -99,17 +99,20 @@ export const ProviderIcon = memo(function ProviderIcon({
   icon,
   name,
   size = 32,
+  imageSize,
   style,
   className,
 }: {
   icon: string;
   name: string;
   size?: number;
+  imageSize?: number;
   style?: React.CSSProperties;
   className?: string;
 }) {
   const [failed, setFailed] = useState(() => failedIcons.has(icon));
   const asset = assetFor(icon);
+  const renderedImageSize = imageSize ?? size;
   return (
     <div
       className={className}
@@ -142,11 +145,16 @@ export const ProviderIcon = memo(function ProviderIcon({
         <img
           src={`${import.meta.env.BASE_URL}assets/providers/${asset.file}.${asset.ext}`}
           alt=""
-          width={size}
-          height={size}
+          width={renderedImageSize}
+          height={renderedImageSize}
           loading="lazy"
           decoding="async"
-          style={{ width: "100%", height: "100%", objectFit: "contain", padding: asset.ext === "svg" ? "1px" : "2px" }}
+          style={{
+            width: `${renderedImageSize}px`,
+            height: `${renderedImageSize}px`,
+            objectFit: "contain",
+            padding: asset.ext === "svg" ? "1px" : "2px",
+          }}
           onError={() => {
             failedIcons.add(icon);
             setFailed(true);

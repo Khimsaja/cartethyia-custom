@@ -507,9 +507,15 @@ export default function ProviderDetail(): ReactNode {
                     size="sm"
                     icon={<Download size={13} />}
                     onClick={() => setImportDialogOpen(true)}
-                    title="Import a credential you already hold — a refresh token, an exported auth blob, or an API key"
+                    title={
+                      provider.oauthFlows.browser || provider.oauthFlows.device
+                        ? "Import a credential you already hold — a refresh token, an exported auth blob, or an API key"
+                        : "Add and validate an API key"
+                    }
                   >
-                    Import credential
+                    {provider.oauthFlows.browser || provider.oauthFlows.device
+                      ? "Import credential"
+                      : "Add API key"}
                   </Button>
                 )}
                 <Button
