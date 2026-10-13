@@ -5,12 +5,9 @@
  * both are easy to get subtly wrong, so these assertions are about the
  * *contract* rather than string output:
  *
- * - **image is a chat model.** cb answers `gemini-*-flash-image` on
- *   `/chat/completions`, and it rejects a body that does not open with a
- *   `system` turn (`11128`) or that is not streamed (`11101`). So the body this
- *   adapter posts must be the same buddy chat body the chat route sends —
- *   leading system, typed user content, `stream:true`. A raw `{prompt}` post is
- *   the bug this pins against.
+ * - **CodeBuddy image generation is native.** The request must use
+ *   `/images/generations` and preserve size/count; its nested response envelope
+ *   must be normalized to the gateway's image outcome.
  * - **cb refuses over HTTP 200.** Exhausted credits arrive as a 200 JSON
  *   envelope `{error:{data:{code,msg}}}`, not a 4xx. Surfacing `msg` verbatim is
  *   the difference between "top up" and a meaningless "no image".
@@ -33,7 +30,7 @@ const IMAGE_TARGET = {
   provider_id: "cb",
   model_id: "gemini-3.1-flash-image",
   wire_family: "chat",
-  endpoint_path: "/chat/completions",
+  endpoint_path: "/images/generations",
   capabilities: {},
 } as unknown as ProviderDispatchTarget;
 
@@ -81,21 +78,8 @@ function capture(responder: (call: Captured, index: number) => Response): { fetc
   return { fetcher, calls };
 }
 
-/** An SSE body of chat chunks whose concatenated content is `text`. */
-function sseChunk(delta: string, finish = false): string {
-  return `data: ${JSON.stringify({
-    choices: [{ index: 0, delta: { content: delta }, finish_reason: finish ? "stop" : null }],
-  })}\n\n`;
-}
-
-function sseResponse(text: string): Response {
-  const body = sseChunk(text) + "data: [DONE]\n\n";
-  return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
-}
-
 function adapter(): BuddyMediaAdapter {
-  // Constructed through the real factory path: chat config + media identity.
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // Use the CodeBuddy adapter settings with a mocked native image endpoint.
   const cfg = {
     provider_id: "cb" as const,
     base_url: "https://www.codebuddy.ai/v2",
@@ -105,35 +89,41 @@ function adapter(): BuddyMediaAdapter {
     variant: "IDE",
     systemPrompt: "SYSTEM",
     baseUrl: "https://www.codebuddy.ai/v2",
+    imageGenerationPath: "/images/generations",
   });
 }
 
-describe("buddyGenerateImage — a chat-shaped body cb accepts", () => {
-  test("posts a leading system turn, typed user content, and stream:true", async () => {
-    const { fetcher, calls } = capture(() => sseResponse("![img](https://cdn.example/a.png)"));
+describe("buddyGenerateImage — CodeBuddy native image endpoint", () => {
+  test("sends size and count and normalizes the nested success envelope", async () => {
+    const { fetcher, calls } = capture(() => new Response(
+      JSON.stringify({
+        code: 0,
+        msg: "OK",
+        data: {
+          created: 1_700_000_000,
+          data: [{ url: "https://cdn.example/a.png" }],
+          usage: { total_tokens: 10 },
+        },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    ));
     const result = await adapter().generateImage(
-      { model: "gemini-3.1-flash-image", prompt: "a red apple" },
+      { model: "gemini-3.1-flash-image", prompt: "a red apple", size: "1024x1024", n: 2 },
       IMAGE_TARGET,
       context(fetcher),
     );
     expect(calls).toHaveLength(1);
     const body = calls[0]!.body!;
-    // The three things cb enforces: a system turn first, stream on, model named.
-    expect(body["stream"]).toBe(true);
-    expect(body["model"]).toBe("gemini-3.1-flash-image");
-    const messages = body["messages"] as Array<{ role: string; content: unknown }>;
-    expect(messages[0]!.role).toBe("system");
-    expect(messages[0]!.content).toBe("SYSTEM");
-    // The user turn is typed content, not a bare string — buddy requires it.
-    const user = messages[1]!;
-    expect(Array.isArray(user.content)).toBe(true);
-    // And the endpoint is the chat completions path, not an images path.
-    expect(calls[0]!.url).toBe("https://www.codebuddy.ai/v2/chat/completions");
-    expect(result.data[0]).toEqual({ url: "https://cdn.example/a.png" });
+    expect(calls[0]!.url).toBe("https://www.codebuddy.ai/v2/images/generations");
+    expect(body).toMatchObject({ model: "gemini-3.1-flash-image", prompt: "a red apple", size: "1024x1024", n: 2 });
+    expect(result).toEqual({
+      created: 1_700_000_000,
+      data: [{ url: "https://cdn.example/a.png" }],
+      usage: { total_tokens: 10 },
+    });
   });
 
-  test("surfaces cb's own refusal verbatim instead of a generic no-image", async () => {
-    // cb returns exhausted-credits as HTTP 200 JSON, not 4xx and not SSE.
+  test("surfaces provider error envelopes instead of a generic no-image", async () => {
     const { fetcher } = capture(() =>
       new Response(
         JSON.stringify({ error: { data: { code: 14018, msg: "Credits exhausted. Please top up." } } }),
@@ -145,8 +135,11 @@ describe("buddyGenerateImage — a chat-shaped body cb accepts", () => {
     ).rejects.toThrow(/Credits exhausted/);
   });
 
-  test("a stream with no image is a failure, not an empty success", async () => {
-    const { fetcher } = capture(() => sseResponse("I cannot make images."));
+  test("an empty image array is a failure, not an empty success", async () => {
+    const { fetcher } = capture(() => new Response(
+      JSON.stringify({ code: 0, data: { created: 1, data: [] } }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    ));
     await expect(
       adapter().generateImage({ prompt: "x" }, IMAGE_TARGET, context(fetcher)),
     ).rejects.toThrow(/no image/i);
@@ -170,12 +163,12 @@ describe("buddyGenerateVideo — submit then poll to completion", () => {
       );
     });
     const result = await adapter().generateVideo(
-      { model: "seedance-2.5", prompt: "a paper boat" },
+      { model: "seedance-2.5", prompt: "a paper boat", size: "720p", n: 2 },
       VIDEO_TARGET,
       context(fetcher),
     );
     expect(calls).toHaveLength(2);
-    expect(calls[0]!.body).toMatchObject({ model: "seedance-2.5", prompt: "a paper boat" });
+    expect(calls[0]!.body).toMatchObject({ model: "seedance-2.5", prompt: "a paper boat", size: "720p", n: 2 });
     expect(result).toEqual({ data: [{ url: "https://cdn.example/v.mp4" }], task_id: "task-1" });
   });
 

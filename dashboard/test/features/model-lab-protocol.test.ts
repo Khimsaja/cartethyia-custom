@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { buildLabRequest, reasoningDelta, takeSseEvents, textDelta, type LabRequestSettings } from "../../src/features/studio/protocol";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { ChatBubble } from "../../src/features/studio/ChatBubble";
+import { buildLabRequest, parseUserQuestion, reasoningDelta, takeSseEvents, textDelta, type LabRequestSettings } from "../../src/features/studio/protocol";
+import { detectMediaIntent, parseImageGenerationResponse, parseVideoGenerationResponse, preferredImageWorker, shouldFallbackToMediaWorker } from "../../src/features/studio/media";
+import { migrateLabSessionRecord } from "../../src/features/studio/session";
+import { createSvgPreviewDocument } from "../../src/features/studio/svgPreview";
 import { readLabStream } from "../../src/features/studio/stream";
 
 const settings = (patch: Partial<LabRequestSettings> = {}): LabRequestSettings => ({
@@ -42,7 +48,9 @@ describe("buildLabRequest", () => {
       { role: "user", content: "hi" },
     ]);
     expect(built.body.temperature).toBe(0.4);
-    expect(built.body.tools).toBeUndefined();
+    expect(built.body.tools).toEqual([
+      expect.objectContaining({ function: expect.objectContaining({ name: "ask_user_question" }) }),
+    ]);
   });
 
   test("responses uses input and messages uses a top-level system field", () => {
@@ -73,9 +81,7 @@ describe("buildLabRequest", () => {
       expect(system).toContain("Selected model: openai/gpt-4.1");
       expect(system).toContain(`Selected protocol: ${protocol}`);
       expect(system).toContain("## User system prompt\nKeep answers concise.");
-      expect(system).toContain("You do not have web search or other external tools");
-      expect(system).toContain("access to the local filesystem");
-      expect(system).toContain("inspect the user's device or runtime");
+      expect(system).toContain("ask_user_question tools");
       expect(system).toContain("Image understanding depends on whether the selected model supports it");
       expect(system).toContain("Your knowledge may not be current");
       if (protocol === "messages") {
@@ -110,12 +116,199 @@ describe("buildLabRequest", () => {
     expect(built.body.top_p).toBeUndefined();
   });
 
-  test("never adds web search tools to any protocol", () => {
+  test("chat always exposes the selectable user-question tool", () => {
     const turns = [{ role: "user" as const, text: "hi" }];
-    for (const protocol of ["chat", "responses", "messages"] as const) {
+    const chat = buildLabRequest(turns, settings());
+    expect(chat.body.tools).toEqual([
+      expect.objectContaining({ function: expect.objectContaining({ name: "ask_user_question" }) }),
+    ]);
+    for (const protocol of ["responses", "messages"] as const) {
       const built = buildLabRequest(turns, settings({ protocol }));
       expect(built.body.tools).toBeUndefined();
     }
+  });
+
+  test("agentic chat declares only configured search and image models and sends tool results", () => {
+    const built = buildLabRequest(
+      [
+        { role: "user", text: "Find recent news and make an illustration." },
+        {
+          role: "assistant",
+          text: "",
+          toolCalls: [{ id: "call-search", name: "web_search", arguments: "{\"query\":\"recent news\"}" }],
+        },
+        { role: "tool", text: "{\"results\":[]}", toolCallId: "call-search" },
+      ],
+      settings({
+        webSearchModels: ["gemini/gemini-3-flash-preview"],
+        imageGenerationModels: ["gemini/gemini-3-pro-image-preview"],
+        imageSize: "1024x1024",
+        imageCount: 2,
+      }),
+    );
+    expect(built.body.tools).toEqual([
+      expect.objectContaining({ function: expect.objectContaining({ name: "web_search" }) }),
+      expect.objectContaining({
+        function: expect.objectContaining({
+          name: "generate_image",
+          description: expect.stringContaining("1024x1024, 2 images"),
+        }),
+      }),
+      expect.objectContaining({ function: expect.objectContaining({ name: "ask_user_question" }) }),
+    ]);
+    expect(built.body.messages).toEqual([
+      { role: "system", content: expect.stringContaining("configured web_search") },
+      { role: "user", content: "Find recent news and make an illustration." },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: "call-search",
+          type: "function",
+          function: { name: "web_search", arguments: "{\"query\":\"recent news\"}" },
+        }],
+      },
+      { role: "tool", tool_call_id: "call-search", content: "{\"results\":[]}" },
+    ]);
+  });
+
+  test("an explicit media request forces only its independently selected worker", () => {
+    const videoModel = "workbuddy/seedance-2.5";
+    const imageModel = "gemini/gemini-3-pro-image-preview";
+    const imageBuilt = buildLabRequest(
+      [{ role: "user", text: "Generate an image of a red kite." }],
+      settings({
+        imageGenerationModels: [imageModel],
+        forcedTool: "generate_image",
+      }),
+    );
+    const built = buildLabRequest(
+      [{ role: "user", text: "Make a video of a paper boat sailing." }],
+      settings({
+        videoGenerationModels: [videoModel],
+        forcedTool: "generate_video",
+      }),
+    );
+    expect(imageBuilt.body.tool_choice).toEqual({ type: "function", function: { name: "generate_image" } });
+    expect(imageBuilt.body.model).toBe("openai/gpt-4.1");
+    expect(built.body.tool_choice).toEqual({ type: "function", function: { name: "generate_video" } });
+    expect(built.body.tools).toEqual([
+      expect.objectContaining({
+        function: expect.objectContaining({
+          name: "generate_video",
+          parameters: expect.objectContaining({
+            properties: expect.objectContaining({ model: { type: "string", enum: [videoModel], description: "Available video-generation model." } }),
+          }),
+        }),
+      }),
+      expect.objectContaining({ function: expect.objectContaining({ name: "ask_user_question" }) }),
+    ]);
+    expect(built.body.model).toBe("openai/gpt-4.1");
+    expect(built.body.model).not.toBe(videoModel);
+  });
+
+  test("a planner question is validated as structured selectable options", () => {
+    expect(parseUserQuestion({
+      question: "Which style should I use?",
+      options: [
+        { id: "minimal", label: "Minimal", description: "Clean lines and few colors." },
+        { id: "bold", label: "Bold" },
+      ],
+    })).toEqual({
+      question: "Which style should I use?",
+      options: [
+        { id: "minimal", label: "Minimal", description: "Clean lines and few colors." },
+        { id: "bold", label: "Bold" },
+      ],
+    });
+    expect(() => parseUserQuestion({
+      question: "Choose",
+      options: [{ id: "same", label: "One" }, { id: "same", label: "Two" }],
+    })).toThrow("invalid selectable option");
+  });
+
+  test("tool result turns resume the matching planner call in order", () => {
+    const built = buildLabRequest(
+      [
+        { role: "user", text: "Make a cover." },
+        {
+          role: "assistant",
+          text: "",
+          toolCalls: [{ id: "question-1", name: "ask_user_question", arguments: "{\"question\":\"Style?\"}" }],
+        },
+        { role: "tool", text: "{\"selected\":{\"id\":\"minimal\",\"label\":\"Minimal\"}}", toolCallId: "question-1" },
+      ],
+      settings(),
+    );
+    expect(built.body.messages).toEqual([
+      { role: "system", content: expect.any(String) },
+      { role: "user", content: "Make a cover." },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: "question-1",
+          type: "function",
+          function: { name: "ask_user_question", arguments: "{\"question\":\"Style?\"}" },
+        }],
+      },
+      { role: "tool", tool_call_id: "question-1", content: "{\"selected\":{\"id\":\"minimal\",\"label\":\"Minimal\"}}" },
+    ]);
+  });
+
+  test("media placeholders keep an accessible aspect-ratio frame while workers run", () => {
+    const image = renderToStaticMarkup(createElement(ChatBubble, {
+      message: { id: "image-pending", role: "assistant", text: "", mediaPending: "image" },
+    }));
+    const video = renderToStaticMarkup(createElement(ChatBubble, {
+      message: { id: "video-pending", role: "assistant", text: "", mediaPending: "video" },
+    }));
+    expect(image).toContain('role="status"');
+    expect(image).toContain('aria-label="Generating image"');
+    expect(image).toContain("aspect-square");
+    expect(image).toContain("motion-reduce:animate-none");
+    expect(video).toContain("aspect-video");
+  });
+
+  test("a forced image tool is visible while the planner prepares its call", () => {
+    const markup = renderToStaticMarkup(createElement(ChatBubble, {
+      message: {
+        id: "image-planning",
+        role: "assistant",
+        text: "",
+        pending: true,
+        status: "Calling generate_image…",
+        mediaPending: "image",
+        mediaStage: "planning",
+        tools: ["generate_image"],
+      },
+    }));
+    expect(markup).toContain('aria-label="Calling generate_image"');
+    expect(markup).toContain("Calling generate_image…");
+    expect(markup).toContain("generate_image");
+    expect(markup).not.toContain("Thinking…");
+  });
+
+  test("answered planner questions start collapsed but keep an accessible disclosure control", () => {
+    const markup = renderToStaticMarkup(createElement(ChatBubble, {
+      message: {
+        id: "answered-question",
+        role: "assistant",
+        text: "",
+        question: {
+          question: "Which style should I use?",
+          options: [
+            { id: "minimal", label: "Minimal" },
+            { id: "bold", label: "Bold" },
+          ],
+        },
+        selectedOption: "minimal",
+      },
+    }));
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).toContain("Which style should I use?");
+    expect(markup).toContain("Answer: Minimal");
+    expect(markup).not.toContain(">Bold</span>");
   });
 
   test("an attached image is a wire image part, and a blank turn is kept", () => {
@@ -137,6 +330,185 @@ describe("buildLabRequest", () => {
         ],
       },
     ]);
+  });
+
+  describe("media workers", () => {
+    test("detects explicit image and video generation requests without matching ordinary questions", () => {
+      expect(detectMediaIntent("Generate an image of a small red kite.")).toBe("image");
+      expect(detectMediaIntent("Buatkan video kapal kertas di laut.")).toBe("video");
+      expect(detectMediaIntent("What is an image model good at?")).toBeUndefined();
+    });
+
+    test("falls back to the native worker unless the planner called the requested media tool", () => {
+      expect(shouldFallbackToMediaWorker("image", [])).toBe(true);
+      expect(shouldFallbackToMediaWorker("image", [{ name: "web_search" }])).toBe(true);
+      expect(shouldFallbackToMediaWorker("image", [{ name: "generate_image" }])).toBe(false);
+      expect(shouldFallbackToMediaWorker(undefined, [])).toBe(false);
+    });
+
+    test("prefers Gemini image workers in product order then any configured worker", () => {
+      expect(preferredImageWorker([
+        "provider/other",
+        "gemini/gemini-3.1-flash-image-preview",
+        "gemini/gemini-3-pro-image-preview",
+      ])).toBe("gemini/gemini-3-pro-image-preview");
+      expect(preferredImageWorker(["provider/custom-image"])).toBe("provider/custom-image");
+      expect(preferredImageWorker([])).toBeUndefined();
+    });
+
+    test("parses supported image MIME data and secure media URLs", () => {
+      expect(parseImageGenerationResponse({
+        data: [{ b64_json: "QUJD", mime_type: "image/webp" }, { url: "https://cdn.example/image.png" }],
+      })).toEqual([
+        { name: "generated-1.webp", dataUrl: "data:image/webp;base64,QUJD" },
+        { name: "generated-2", dataUrl: "https://cdn.example/image.png" },
+      ]);
+      expect(() => parseImageGenerationResponse({ data: [{ url: "http://cdn.example/image.png" }] })).toThrow(/HTTPS/);
+      expect(() => parseImageGenerationResponse({ data: [{ b64_json: "QUJD", mime_type: "image/svg+xml" }] })).toThrow(/unsupported media type/i);
+      expect(() => parseImageGenerationResponse({ task_id: "task-1", status: "pending" })).toThrow(/asynchronous task/i);
+      expect(() => parseImageGenerationResponse({ data: [{ status: "processing" }] })).toThrow(/asynchronous task/i);
+    });
+
+    test("parses video URLs and refuses malformed or asynchronous-only output", () => {
+      expect(parseVideoGenerationResponse({ data: [{ url: "https://cdn.example/clip.mp4" }] })).toEqual([
+        { name: "generated-1.mp4", src: "https://cdn.example/clip.mp4" },
+      ]);
+      expect(() => parseVideoGenerationResponse({ data: [{ status: "processing" }] })).toThrow(/asynchronous task/i);
+      expect(() => parseVideoGenerationResponse({ task_id: "task-1", status: "queued" })).toThrow(/asynchronous task/i);
+    });
+  });
+
+  describe("SVG preview", () => {
+    test("builds a sandbox document with restrictive CSP and enforces the size and root limits", () => {
+      const document = createSvgPreviewDocument('<svg xmlns="http://www.w3.org/2000/svg"><circle r="4"/></svg>');
+      expect(document).toContain("default-src 'none'");
+      expect(document).toContain("script-src 'none'");
+      expect(document).toContain("overflow:hidden");
+      expect(document).toContain("max-width:100%;max-height:100%");
+      expect(createSvgPreviewDocument("<html><script>alert(1)</script></html>")).toBeUndefined();
+      expect(createSvgPreviewDocument(`<svg>${"x".repeat(100_001)}</svg>`)).toBeUndefined();
+    });
+  });
+
+  describe("stored Model Lab sessions", () => {
+    test("interrupted image generation reloads as an explicit error instead of an endless loader", () => {
+      const migrated = migrateLabSessionRecord({
+        id: "interrupted",
+        title: "interrupted",
+        updatedAt: 1,
+        model: "openai/gpt-4.1",
+        messages: [{
+          id: "pending-image",
+          role: "assistant",
+          text: "",
+          pending: true,
+          mediaPending: "image",
+          mediaStage: "generating",
+          tools: ["generate_image"],
+        }],
+      });
+      expect(migrated?.messages[0]).toMatchObject({
+        text: "Generation was interrupted when the page reloaded. Retry to run it again.",
+        status: "interrupted",
+        error: true,
+        tools: ["generate_image"],
+      });
+      expect(migrated?.messages[0]).not.toHaveProperty("pending");
+      expect(migrated?.messages[0]).not.toHaveProperty("mediaPending");
+    });
+    test("an interrupted media request reloads as an explicit retryable error, not an endless loader", () => {
+      const migrated = migrateLabSessionRecord({
+        id: "interrupted",
+        title: "interrupted",
+        updatedAt: 1,
+        model: "openai/gpt-4.1",
+        messages: [{
+          id: "pending-image",
+          role: "assistant",
+          text: "",
+          pending: true,
+          mediaPending: "image",
+          mediaStage: "generating",
+          tools: ["generate_image"],
+        }],
+      });
+      expect(migrated?.messages[0]).toMatchObject({
+        text: "Generation was interrupted when the page reloaded. Retry to run it again.",
+        status: "interrupted",
+        error: true,
+        tools: ["generate_image"],
+      });
+      expect(migrated?.messages[0]).not.toHaveProperty("mediaPending");
+    });
+
+    test("older session records migrate with independent empty media-worker choices", () => {
+      const migrated = migrateLabSessionRecord({
+        id: "legacy",
+        title: "legacy",
+        updatedAt: 1,
+        model: "openai/gpt-4.1",
+        mode: "chat",
+        messages: [],
+      });
+      expect(migrated).toMatchObject({
+        id: "legacy",
+        model: "openai/gpt-4.1",
+        imageWorkerModel: "",
+        videoWorkerModel: "",
+        imageSize: "1024x1024",
+        imageCount: "1",
+        videoSize: "",
+        videoCount: "1",
+      });
+      expect(migrated).not.toHaveProperty("mode");
+      const configured = migrateLabSessionRecord({
+        id: "configured",
+        title: "configured",
+        updatedAt: 2,
+        model: "openai/gpt-4.1",
+        imageWorkerModel: "gemini/gemini-3-pro-image-preview",
+        videoWorkerModel: "workbuddy/seedance-2.5",
+        imageSize: "1536x1024",
+        imageCount: "3",
+        videoSize: "720p",
+        videoCount: "2",
+        messages: [{
+          id: "assistant-1",
+          role: "assistant",
+          text: "Generated",
+          videos: [{ name: "clip.mp4", src: "https://cdn.example/clip.mp4" }],
+          workerModels: ["workbuddy/seedance-2.5"],
+          toolCalls: [{ id: "question-1", name: "ask_user_question", arguments: "{}" }],
+          toolRounds: [{
+            text: "",
+            toolCalls: [{ id: "question-1", name: "ask_user_question", arguments: "{}" }],
+            toolResults: [{ toolCallId: "question-1", text: "{\"selected\":{\"id\":\"minimal\"}}" }],
+          }],
+          question: {
+            question: "Which style?",
+            options: [{ id: "minimal", label: "Minimal" }, { id: "bold", label: "Bold" }],
+          },
+          selectedOption: "minimal",
+        }],
+      });
+      expect(configured).toMatchObject({
+        imageWorkerModel: "gemini/gemini-3-pro-image-preview",
+        videoWorkerModel: "workbuddy/seedance-2.5",
+        imageSize: "1536x1024",
+        imageCount: "3",
+        videoSize: "720p",
+        videoCount: "2",
+        messages: [{
+          videos: [{ name: "clip.mp4", src: "https://cdn.example/clip.mp4" }],
+          workerModels: ["workbuddy/seedance-2.5"],
+          toolRounds: [{
+            toolResults: [{ toolCallId: "question-1", text: "{\"selected\":{\"id\":\"minimal\"}}" }],
+          }],
+          question: { question: "Which style?", options: expect.any(Array) },
+          selectedOption: "minimal",
+        }],
+      });
+    });
   });
 });
 
@@ -193,6 +565,32 @@ describe("stream text", () => {
     expect(thought).toBe("hmm");
     closeStream?.();
     await reading;
+  });
+
+  test("collects streamed chat tool-call ids, names, and JSON arguments", async () => {
+    const encoder = new TextEncoder();
+    const response = new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"web_search","arguments":"{\\"query\\":"}}]}}]}\n\n'));
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"latest news\\"}"}}]}}]}\n\n'));
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        controller.close();
+      },
+    }));
+    const calls = await readLabStream(
+      response,
+      "chat",
+      () => {},
+      () => {},
+      () => {},
+      () => {},
+      new AbortController().signal,
+    );
+    expect(calls).toEqual([{
+      id: "call-1",
+      name: "web_search",
+      arguments: "{\"query\":\"latest news\"}",
+    }]);
   });
 
   test("flushes a complete final SSE frame when the stream ends without a blank line", async () => {

@@ -102,7 +102,7 @@ const CODEBUDDY_INTL_RAW: readonly BuddyRawEntry[] = BUDDY_SHARED_RAW;
  */
 export const CODEBUDDY_IMAGE_MODELS: readonly ModelDefinition[] = makeBuddyImageModels(
   "cb",
-  "/chat/completions",
+  "/images/generations",
 );
 
 /**
@@ -164,6 +164,11 @@ export function createCodeBuddyAdapter(fetchImpl?: typeof fetch): ProviderAdapte
       prePayload: codeBuddyIntlPrePayload,
       ...(fetchImpl ? { fetchImpl } : {}),
     }),
-    { variant: "IDE", systemPrompt: CODEBUDDY_SYSTEM_PROMPT, baseUrl: CODEBUDDY_BASE_URL },
+    {
+      variant: "IDE",
+      systemPrompt: CODEBUDDY_SYSTEM_PROMPT,
+      baseUrl: CODEBUDDY_BASE_URL,
+      imageGenerationPath: "/images/generations",
+    },
   );
 }

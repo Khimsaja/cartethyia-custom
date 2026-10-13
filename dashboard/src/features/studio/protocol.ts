@@ -8,15 +8,76 @@ export type LabProtocol = "chat" | "responses" | "messages";
 export type LabEffort = "auto" | "low" | "medium" | "high" | "max";
 export type LabPersona = "cartethyia" | "unset";
 
+export interface LabQuestionOption {
+  readonly id: string;
+  readonly label: string;
+  readonly description?: string;
+}
+
+export interface LabUserQuestion {
+  readonly question: string;
+  readonly options: readonly LabQuestionOption[];
+}
+
+/** Validates and bounds a planner-provided question before showing choices. */
+export function parseUserQuestion(value: unknown): LabUserQuestion {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("The ask_user_question tool returned invalid arguments.");
+  }
+  const record = value as Record<string, unknown>;
+  const question = typeof record.question === "string" ? record.question.trim() : "";
+  if (question.length === 0 || question.length > 500 || !Array.isArray(record.options) ||
+      record.options.length < 2 || record.options.length > 6) {
+    throw new Error("The ask_user_question tool requires one concise question and 2–6 selectable options.");
+  }
+  const ids = new Set<string>();
+  const options = record.options.map((value) => {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("The ask_user_question tool returned an invalid selectable option.");
+    }
+    const option = value as Record<string, unknown>;
+    const id = typeof option.id === "string" ? option.id.trim() : "";
+    const label = typeof option.label === "string" ? option.label.trim() : "";
+    const description = typeof option.description === "string" ? option.description.trim() : "";
+    if (id.length === 0 || id.length > 100 || ids.has(id) || label.length === 0 || label.length > 200 ||
+        description.length > 500) {
+      throw new Error("The ask_user_question tool returned an invalid selectable option.");
+    }
+    ids.add(id);
+    return { id, label, ...(description.length > 0 ? { description } : {}) };
+  });
+  return { question, options };
+}
+
 export interface LabImage {
   readonly name: string;
   readonly dataUrl: string;
 }
 
 export interface LabTurn {
-  readonly role: "user" | "assistant";
+  readonly role: "user" | "assistant" | "tool";
   readonly text: string;
   readonly images?: readonly LabImage[];
+  readonly toolCalls?: readonly LabToolCall[];
+  readonly toolCallId?: string;
+  readonly toolResultFor?: string;
+}
+
+export interface LabToolCall {
+  readonly id: string;
+  readonly name: string;
+  readonly arguments: string;
+}
+
+export interface LabToolResult {
+  readonly toolCallId: string;
+  readonly text: string;
+}
+
+export interface LabToolRound {
+  readonly text: string;
+  readonly toolCalls: readonly LabToolCall[];
+  readonly toolResults: readonly LabToolResult[];
 }
 
 export interface LabRequestSettings {
@@ -27,6 +88,14 @@ export interface LabRequestSettings {
   readonly temperature: string;
   readonly topP: string;
   readonly effort: LabEffort;
+  readonly webSearchModels?: readonly string[];
+  readonly imageGenerationModels?: readonly string[];
+  readonly videoGenerationModels?: readonly string[];
+  readonly imageSize?: string;
+  readonly imageCount?: number;
+  readonly videoSize?: string;
+  readonly videoCount?: number;
+  readonly forcedTool?: "generate_image" | "generate_video";
 }
 
 export interface BuiltLabRequest {
@@ -86,7 +155,13 @@ function userContent(protocol: LabProtocol, turn: LabTurn): string | readonly Re
 }
 
 function spokenTurns(turns: readonly LabTurn[]): readonly LabTurn[] {
-  return turns.filter((turn) => turn.text.trim().length > 0 || (turn.images?.length ?? 0) > 0);
+  return turns.filter(
+    (turn) =>
+      turn.text.trim().length > 0 ||
+      (turn.images?.length ?? 0) > 0 ||
+      (turn.toolCalls?.length ?? 0) > 0 ||
+      turn.role === "tool",
+  );
 }
 
 function systemPrompt(settings: LabRequestSettings): string {
@@ -96,7 +171,7 @@ function systemPrompt(settings: LabRequestSettings): string {
   const context = [
     "You are Cartethyia, an AI assistant in Cartethyia Model Lab.",
     "Use the conversation context and attachments explicitly provided by the user. Image understanding depends on whether the selected model supports it; if support is unclear, say so.",
-    "You do not have web search or other external tools, access to the local filesystem, or access to inspect the user's device or runtime. Do not imply otherwise; rely on this conversation and your existing knowledge.",
+    "You can use the configured web_search, generate_image, generate_video, and ask_user_question tools. Use them when appropriate, and never claim a tool succeeded until its result confirms success.",
     "Your knowledge may not be current. Be transparent about uncertainty and do not present external information as recently verified.",
     "",
     `Selected model: ${settings.model}`,
@@ -106,6 +181,128 @@ function systemPrompt(settings: LabRequestSettings): string {
   return custom.length > 0
     ? `## Cartethyia Model Lab persona\n${context}\n\n## User system prompt\n${custom}`
     : `## Cartethyia Model Lab persona\n${context}`;
+}
+
+function agenticTools(settings: LabRequestSettings): readonly Record<string, unknown>[] {
+  if (settings.protocol !== "chat") return [];
+  const tools: Record<string, unknown>[] = [];
+  const searchModels = settings.webSearchModels ?? [];
+  const imageModels = settings.imageGenerationModels ?? [];
+  const videoModels = settings.videoGenerationModels ?? [];
+  if (searchModels.length > 0) {
+    tools.push({
+      type: "function",
+      function: {
+        name: "web_search",
+        description: "Search the web for current information relevant to the user's question.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string", description: "A concise web search query." },
+            model: { type: "string", enum: searchModels, description: "Available web search model." },
+          },
+          required: ["query"],
+        },
+      },
+    });
+  }
+  if (imageModels.length > 0) {
+    const imageSettings = [
+      settings.imageSize ? `size ${settings.imageSize}` : undefined,
+      settings.imageCount === undefined ? undefined : `${settings.imageCount} image${settings.imageCount === 1 ? "" : "s"}`,
+    ].filter((value) => value !== undefined).join(", ");
+    tools.push({
+      type: "function",
+      function: {
+        name: "generate_image",
+        description: `Generate image media using the configured output settings${imageSettings ? ` (${imageSettings})` : ""}, then attach it to the response.`,
+        parameters: {
+          type: "object",
+          properties: {
+            prompt: { type: "string", description: "A detailed image-generation prompt." },
+            model: { type: "string", enum: imageModels, description: "Available image generation model." },
+          },
+          required: ["prompt"],
+        },
+      },
+    });
+  }
+  if (videoModels.length > 0) {
+    const videoSettings = [
+      settings.videoSize ? `size ${settings.videoSize}` : undefined,
+      settings.videoCount === undefined ? undefined : `${settings.videoCount} video${settings.videoCount === 1 ? "" : "s"}`,
+    ].filter((value) => value !== undefined).join(", ");
+    tools.push({
+      type: "function",
+      function: {
+        name: "generate_video",
+        description: `Generate video media using the configured output settings${videoSettings ? ` (${videoSettings})` : ""}, then attach it to the response.`,
+        parameters: {
+          type: "object",
+          properties: {
+            prompt: { type: "string", description: "A detailed video-generation prompt." },
+            model: { type: "string", enum: videoModels, description: "Available video-generation model." },
+          },
+          required: ["prompt"],
+        },
+      },
+    });
+  }
+  tools.push({
+    type: "function",
+    function: {
+      name: "ask_user_question",
+      description: "Ask the user one concise follow-up question when their choice is needed to continue. Offer clear selectable options.",
+      parameters: {
+        type: "object",
+        properties: {
+          question: { type: "string", description: "One concise question for the user." },
+          options: {
+            type: "array",
+            minItems: 2,
+            maxItems: 6,
+            items: {
+              type: "object",
+              properties: {
+                id: { type: "string", description: "A stable short identifier for this option." },
+                label: { type: "string", description: "A concise selectable answer." },
+                description: { type: "string", description: "Optional brief explanation." },
+              },
+              required: ["id", "label"],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ["question", "options"],
+        additionalProperties: false,
+      },
+    },
+  });
+  return tools;
+}
+
+function chatTurn(turn: LabTurn): Record<string, unknown> {
+  if (turn.role === "tool") {
+    return { role: "tool", tool_call_id: turn.toolCallId, content: turn.text };
+  }
+  if (turn.role === "assistant" && turn.toolCalls !== undefined) {
+    return {
+      role: "assistant",
+      content: turn.text.length > 0 ? turn.text : null,
+      tool_calls: turn.toolCalls.map((call) => ({
+        id: call.id,
+        type: "function",
+        function: { name: call.name, arguments: call.arguments },
+      })),
+    };
+  }
+  if (turn.role === "assistant" && turn.toolResultFor !== undefined) {
+    return { role: "tool", tool_call_id: turn.toolResultFor, content: turn.text };
+  }
+  return {
+    role: turn.role,
+    content: userContent("chat", turn),
+  };
 }
 
 
@@ -166,10 +363,14 @@ export function buildLabRequest(turns: readonly LabTurn[], settings: LabRequestS
       stream: true,
       messages: [
         ...(system.length > 0 ? [{ role: "system", content: system }] : []),
-        ...spoken.map((turn) => ({ role: turn.role, content: userContent("chat", turn) })),
+        ...spoken.map(chatTurn),
       ],
       ...sample,
       ...effort,
+      ...(agenticTools(settings).length > 0 ? { tools: agenticTools(settings) } : {}),
+      ...(settings.forcedTool !== undefined
+        ? { tool_choice: { type: "function", function: { name: settings.forcedTool } } }
+        : {}),
     },
   };
 }

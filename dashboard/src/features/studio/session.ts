@@ -4,7 +4,8 @@
  * does not wipe the others.
  */
 
-import type { LabEffort, LabImage, LabPersona, LabProtocol } from "./protocol";
+import { parseUserQuestion, type LabEffort, type LabImage, type LabPersona, type LabProtocol, type LabToolCall, type LabToolRound, type LabUserQuestion } from "./protocol";
+import type { LabVideo } from "./media";
 
 export interface LabUsage {
   readonly inputTokens?: number;
@@ -20,6 +21,14 @@ export interface LabMessage {
   readonly role: "user" | "assistant";
   readonly text: string;
   readonly images?: readonly LabImage[];
+  readonly videos?: readonly LabVideo[];
+  readonly workerModels?: readonly string[];
+  readonly mediaPending?: "image" | "video";
+  readonly mediaStage?: "planning" | "generating";
+  readonly toolCalls?: readonly LabToolCall[];
+  readonly toolRounds?: readonly LabToolRound[];
+  readonly question?: LabUserQuestion;
+  readonly selectedOption?: string;
   readonly model?: string;
   readonly reasoning?: string;
   readonly status?: string;
@@ -31,6 +40,12 @@ export interface LabMessage {
 
 export interface LabDraft {
   readonly model: string;
+  readonly imageWorkerModel: string;
+  readonly videoWorkerModel: string;
+  readonly imageSize: string;
+  readonly imageCount: string;
+  readonly videoSize: string;
+  readonly videoCount: string;
   readonly protocol: LabProtocol;
   readonly persona: LabPersona;
   readonly systemPrompt: string;
@@ -43,6 +58,12 @@ export interface LabDraft {
 
 export const EMPTY_DRAFT: LabDraft = {
   model: "",
+  imageWorkerModel: "",
+  videoWorkerModel: "",
+  imageSize: "1024x1024",
+  imageCount: "1",
+  videoSize: "",
+  videoCount: "1",
   protocol: "chat",
   persona: "cartethyia",
   systemPrompt: "",
@@ -122,17 +143,41 @@ export async function readLabSession(id: string): Promise<LabSession | null> {
   const db = await openDb();
   const row = await requestToPromise(db.transaction(STORE, "readonly").objectStore(STORE).get(id));
   db.close();
-  if (row === undefined || row === null || typeof row !== "object") return null;
-  const record = row as LabSession & { readonly mode?: unknown };
+  return migrateLabSessionRecord(row);
+}
+
+/** Migrates older stored sessions while adding empty, independent worker selections. */
+export function migrateLabSessionRecord(value: unknown): LabSession | null {
+  if (value === undefined || value === null || typeof value !== "object") return null;
+  const record = value as LabSession & { readonly mode?: unknown };
   const { mode: _legacyMode, ...session } = record;
   return {
     ...EMPTY_DRAFT,
     ...session,
+    imageWorkerModel: modelSelection(record.imageWorkerModel),
+    videoWorkerModel: modelSelection(record.videoWorkerModel),
+    imageSize: mediaSize(record.imageSize, "1024x1024"),
+    imageCount: mediaCount(record.imageCount),
+    videoSize: mediaSize(record.videoSize, ""),
+    videoCount: mediaCount(record.videoCount),
+    protocol: isProtocol(record.protocol) ? record.protocol : "chat",
     persona: isPersona(record.persona) ? record.persona : "cartethyia",
     effort: isEffort(record.effort) ? record.effort : "high",
     messages: readMessages(record.messages),
     title: (record.title || sessionName()).slice(0, 8),
   };
+}
+
+function modelSelection(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function mediaSize(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.length <= 32 ? value : fallback;
+}
+
+function mediaCount(value: unknown): string {
+  return typeof value === "string" && /^[1-9]\d?$/.test(value) && Number(value) <= 10 ? value : "1";
 }
 
 export async function writeLabSession(session: LabSession): Promise<void> {
@@ -180,10 +225,73 @@ function readImages(value: unknown): readonly LabImage[] | undefined {
     if (item === null || typeof item !== "object") return [];
     const record = item as Record<string, unknown>;
     if (typeof record.name !== "string" || typeof record.dataUrl !== "string") return [];
-    if (!record.dataUrl.startsWith("data:image/")) return [];
+    if (!record.dataUrl.startsWith("data:image/") && !isSecureMediaUrl(record.dataUrl)) return [];
     return [{ name: record.name, dataUrl: record.dataUrl }];
   });
   return images.length > 0 ? images : undefined;
+}
+
+function readVideos(value: unknown): readonly LabVideo[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const videos = value.flatMap((item) => {
+    if (item === null || typeof item !== "object") return [];
+    const record = item as Record<string, unknown>;
+    if (typeof record.name !== "string" || typeof record.src !== "string") return [];
+    if (!record.src.startsWith("data:video/mp4;base64,") &&
+        !record.src.startsWith("data:video/webm;base64,") &&
+        !isSecureMediaUrl(record.src)) return [];
+    return [{ name: record.name, src: record.src }];
+  });
+  return videos.length > 0 ? videos : undefined;
+}
+
+function readToolCalls(value: unknown): readonly LabToolCall[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const calls = value.flatMap((item) => {
+    if (item === null || typeof item !== "object") return [];
+    const record = item as Record<string, unknown>;
+    if (typeof record.id !== "string" || typeof record.name !== "string" || typeof record.arguments !== "string") return [];
+    return [{ id: record.id, name: record.name, arguments: record.arguments }];
+  });
+  return calls.length > 0 ? calls : undefined;
+}
+
+function readToolRounds(value: unknown): readonly LabToolRound[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const rounds = value.flatMap((item) => {
+    if (item === null || typeof item !== "object" || Array.isArray(item)) return [];
+    const record = item as Record<string, unknown>;
+    if (typeof record.text !== "string") return [];
+    const toolCalls = readToolCalls(record.toolCalls);
+    if (toolCalls === undefined) return [];
+    const toolResults = Array.isArray(record.toolResults)
+      ? record.toolResults.flatMap((result) => {
+          if (result === null || typeof result !== "object" || Array.isArray(result)) return [];
+          const entry = result as Record<string, unknown>;
+          if (typeof entry.toolCallId !== "string" || typeof entry.text !== "string") return [];
+          return [{ toolCallId: entry.toolCallId, text: entry.text }];
+        })
+      : [];
+    return [{ text: record.text, toolCalls, toolResults }];
+  });
+  return rounds.length > 0 ? rounds : undefined;
+}
+
+function readQuestion(value: unknown): LabUserQuestion | undefined {
+  try {
+    return parseUserQuestion(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function isSecureMediaUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.username.length === 0 && url.password.length === 0;
+  } catch {
+    return false;
+  }
 }
 
 function readNumber(value: unknown): number | undefined {
@@ -213,17 +321,42 @@ function readMessages(value: unknown): readonly LabMessage[] {
     if (record.role !== "user" && record.role !== "assistant") continue;
     if (typeof record.id !== "string" || typeof record.text !== "string") continue;
     const images = readImages(record.images);
+    const videos = readVideos(record.videos);
+    const toolCalls = readToolCalls(record.toolCalls);
+    const toolRounds = readToolRounds(record.toolRounds);
+    const question = readQuestion(record.question);
     const usage = readUsage(record.usage);
+    const wasPending = record.pending === true;
+    let restoredText = record.text;
+    if (wasPending) {
+      const interruption = record.mediaPending === "image" || record.mediaPending === "video"
+        ? "Generation was interrupted when the page reloaded. Retry to run it again."
+        : "This response was interrupted when the page reloaded. Retry to continue.";
+      restoredText = restoredText.length > 0 ? `${restoredText}\n\n${interruption}` : interruption;
+    }
     messages.push({
       id: record.id,
       role: record.role,
-      text: record.text,
+      text: restoredText,
       ...(images === undefined ? {} : { images }),
+      ...(videos === undefined ? {} : { videos }),
       ...(typeof record.model === "string" && record.model.length > 0 ? { model: record.model } : {}),
       ...(typeof record.reasoning === "string" && record.reasoning.length > 0 ? { reasoning: record.reasoning } : {}),
-      ...(typeof record.status === "string" && record.status.length > 0 ? { status: record.status } : {}),
+      ...(wasPending ? { status: "interrupted" } : typeof record.status === "string" && record.status.length > 0 ? { status: record.status } : {}),
+      ...(!wasPending && (record.mediaPending === "image" || record.mediaPending === "video") ? { mediaPending: record.mediaPending } : {}),
+      ...(!wasPending && (record.mediaStage === "planning" || record.mediaStage === "generating") ? { mediaStage: record.mediaStage } : {}),
       ...(usage === undefined ? {} : { usage }),
-      ...(record.error === true ? { error: true } : {}),
+      ...(record.error === true || wasPending ? { error: true } : {}),
+      ...(Array.isArray(record.tools)
+        ? { tools: record.tools.filter((tool): tool is string => typeof tool === "string") }
+        : {}),
+      ...(Array.isArray(record.workerModels)
+        ? { workerModels: record.workerModels.filter((worker): worker is string => typeof worker === "string") }
+        : {}),
+      ...(toolCalls === undefined ? {} : { toolCalls }),
+      ...(toolRounds === undefined ? {} : { toolRounds }),
+      ...(question === undefined ? {} : { question }),
+      ...(typeof record.selectedOption === "string" ? { selectedOption: record.selectedOption } : {}),
     });
   }
   return messages;
@@ -239,6 +372,12 @@ export function readLabDraft(storage: Storage | undefined): LabDraft {
     const record = parsed as Record<string, unknown>;
     return {
       model: typeof record.model === "string" ? record.model : "",
+      imageWorkerModel: modelSelection(record.imageWorkerModel),
+      videoWorkerModel: modelSelection(record.videoWorkerModel),
+      imageSize: mediaSize(record.imageSize, "1024x1024"),
+      imageCount: mediaCount(record.imageCount),
+      videoSize: mediaSize(record.videoSize, ""),
+      videoCount: mediaCount(record.videoCount),
       protocol: isProtocol(record.protocol) ? record.protocol : "chat",
       persona: isPersona(record.persona) ? record.persona : "cartethyia",
       systemPrompt: typeof record.systemPrompt === "string" ? record.systemPrompt : "",

@@ -26,8 +26,8 @@ function readImage(file: File): Promise<LabImage> {
 
 /**
  * The docked composer. The model is picked here, once, through the same
- * catalog modal the rest of the console uses. Mode lives in request settings.
- * Effort stays on the tool row because it changes per turn.
+ * catalog modal the rest of the console uses. Effort stays on the tool row
+ * because it changes per turn; mode and worker selection live in settings.
  */
 export function Composer({
   model,

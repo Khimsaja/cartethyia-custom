@@ -35,7 +35,7 @@ const BUDDY_IMAGE_MODEL_IDS: readonly { id: string; endpoint: string; ctx: numbe
   { id: "gemini-3.0-pro-image", endpoint: "/chat/completions", ctx: 1_000_000, out: 64_000 },
   { id: "gemini-3.1-flash-image", endpoint: "/chat/completions", ctx: 1_000_000, out: 64_000 },
   { id: "gpt-image-2", endpoint: "/chat/completions", ctx: 400_000, out: 128_000 },
-  { id: "gpt-image-2.5", endpoint: "/chat/completions", ctx: 400_000, out: 128_000 },
+  { id: "gpt-image-2.5-sunburst", endpoint: "/chat/completions", ctx: 400_000, out: 128_000 },
 ];
 
 /**

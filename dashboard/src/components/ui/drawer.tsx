@@ -59,7 +59,7 @@ export function Drawer({ open, onClose, title, children }: DrawerProps): ReactNo
             <X size={16} />
           </button>
         </div>
-        <div className="drawer-body min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto px-8 pb-8">{children}</div>
+        <div className="drawer-body scroll-region min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto px-8 pb-8">{children}</div>
       </aside>
     </div>,
     document.body,

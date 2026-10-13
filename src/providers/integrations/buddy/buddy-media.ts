@@ -1,37 +1,23 @@
 /**
  * Buddy-family media generation: image and video.
  *
- * CodeBuddy (intl) and WorkBuddy serve media through the same facade, so the
- * request shaping and the upstream call are shared here rather than copied per
- * provider. Only the identity headers differ, and those come from
- * {@link codebuddyHeaders} keyed on the variant.
+ * CodeBuddy (intl) and WorkBuddy serve media through the same facade, so shared
+ * request shaping lives here. Their image endpoint can differ by provider;
+ * identity headers come from {@link codebuddyHeaders} keyed on the variant.
  *
- * Two surfaces, two contracts:
- *
- * - **Image** (`gemini-*-flash-image`, `gpt-image-*`) is a *chat* model. cb
- *   answers it on `/chat/completions`, not on an OpenAI `/images/generations`
- *   path, and it enforces the same buddy chat contract every other model does:
- *   the wire must open with a `system` turn (error `11128` otherwise) and it
- *   must be streamed (`11101` on a non-stream body). So {@link
- *   buddyGenerateImage} builds a chat body and runs it through the very same
- *   {@link buddyPrePayloadCommon} + {@link applyBuddySystemPrompt} the chat
- *   dispatch uses — the shaping is proven, not reinvented.
+ * Two image paths are supported: CodeBuddy can use its native
+ * `/images/generations` API, while WorkBuddy keeps its chat-completion image
+ * path. The configured provider path selects the wire format.
  *
  * - **Video** (`seedance-2.5`) is a native async task. cb accepts a submit and
  *   returns `{data:{id,status:"queued"}}`; the finished clip is fetched from a
  *   sibling task endpoint. {@link buddyGenerateVideo} submits, then polls that
  *   endpoint until the task leaves the queued/running states.
  *
- * ⚠️ Two seams below are implemented against the contract observed live but NOT
- * end-to-end verified, because the operator's CodeBuddy account was out of
- * credits (`14018`) and then quota-cooled before a successful media response
- * could be captured:
- *
- * 1. the exact field cb carries the finished image in (image is extracted
- *    defensively — markdown links and inline base64 both handled);
- * 2. the video task-query path (polled at `<submit-dir>/<task-id>`, the natural
- *    sibling of the submit endpoint). If cb names it differently, that one
- *    constant is the only line to correct after a live probe.
+ * ⚠️ The video task-query path (polled at `<submit-dir>/<task-id>`, the natural
+ * sibling of the submit endpoint) is implemented against the observed contract
+ * but has not been end-to-end verified. If cb names it differently, that one
+ * constant is the only line to correct after a live probe.
  */
 import { OpenAICompatibleAdapter, authHeaders, type OpenAICompatibleAdapterConfig } from "../../compatible-adapter";
 import { GatewayError } from "../../../protocol/gateway-error";
@@ -50,6 +36,7 @@ export interface BuddyMediaConfig {
   readonly variant: CodeBuddyVariant;
   readonly systemPrompt: string;
   readonly baseUrl: string;
+  readonly imageGenerationPath?: string;
   readonly buildHeaders?: (context: ProviderDispatchContext) => Promise<Record<string, string>>;
 }
 
@@ -114,6 +101,59 @@ export async function buddyGenerateImage(
   const model = modelOf(body, candidate);
   if (model.length === 0) throw new GatewayError("invalid_request", 400, "model is required");
   const prompt = imagePrompt(body);
+  if (config.imageGenerationPath !== undefined) {
+    const requestBody: Record<string, unknown> = { model, prompt };
+    if (typeof body.size === "string" && body.size.trim().length > 0) requestBody["size"] = body.size.trim();
+    if (typeof body.n === "number" && Number.isInteger(body.n) && body.n >= 1) requestBody["n"] = body.n;
+    const { res, release } = await postUpstreamJson(
+      joinUrl(config.baseUrl, config.imageGenerationPath),
+      {
+        "content-type": "application/json",
+        accept: "application/json",
+        ...bearer(context),
+        ...(await mediaIdentityHeaders(config, context)),
+      },
+      requestBody,
+      context,
+      outbound(context),
+    );
+    let responseBody: unknown;
+    try {
+      if (!res.ok) throw await mapUpstreamHttpError(res, "codebuddy");
+      responseBody = await res.json();
+    } finally {
+      release();
+    }
+    if (!isRecord(responseBody)) {
+      throw new GatewayError("platform_unavailable", 502, "CodeBuddy image generation returned an invalid response", {}, "upstream");
+    }
+    const providerError = buddyErrorOf(responseBody);
+    if (providerError !== undefined) {
+      throw new GatewayError("platform_unavailable", 502, providerError, {}, "upstream");
+    }
+    if (responseBody.code !== undefined && responseBody.code !== 0 && responseBody.code !== "0") {
+      const message =
+        typeof responseBody.msg === "string" && responseBody.msg.trim().length > 0
+          ? responseBody.msg.trim()
+          : `CodeBuddy image generation failed with code ${String(responseBody.code)}`;
+      throw new GatewayError("platform_unavailable", 502, message, {}, "upstream");
+    }
+    if (!isRecord(responseBody.data)) {
+      throw new GatewayError("platform_unavailable", 502, "CodeBuddy image generation returned no image data", {}, "upstream");
+    }
+    const result = responseBody.data;
+    if (!Array.isArray(result.data) || result.data.some((image) => !isRecord(image))) {
+      throw new GatewayError("platform_unavailable", 502, "CodeBuddy image generation returned malformed image data", {}, "upstream");
+    }
+    if (result.data.length === 0) {
+      throw new GatewayError("platform_unavailable", 502, "CodeBuddy image generation returned no images", {}, "upstream");
+    }
+    return {
+      ...(typeof result.created === "number" ? { created: result.created } : {}),
+      data: result.data,
+      ...(isRecord(result.usage) ? { usage: result.usage } : {}),
+    };
+  }
   const payload: Record<string, unknown> = {
     model,
     stream: true,
@@ -279,6 +319,7 @@ export async function buddyGenerateVideo(
   };
   const submitPath = candidate.endpoint_path;
   const submitUrl = joinUrl(config.baseUrl, submitPath);
+  if (typeof body.size === "string" && body.size.trim().length > 0) submitBody["size"] = body.size.trim();
   const { res, release } = await postUpstreamJson(
     submitUrl,
     headers,

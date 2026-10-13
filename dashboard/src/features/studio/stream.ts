@@ -3,7 +3,7 @@
  * The caller owns the assistant bubble; this only walks the wire.
  */
 
-import { errorMessage, reasoningDelta, takeSseEvents, textDelta, toolCallName, usageDelta, type LabProtocol, type LabUsageDelta } from "./protocol";
+import { errorMessage, reasoningDelta, takeSseEvents, textDelta, toolCallName, usageDelta, type LabProtocol, type LabToolCall, type LabUsageDelta } from "./protocol";
 
 export async function readLabStream(
   response: Response,
@@ -13,7 +13,7 @@ export async function readLabStream(
   onUsage: (usage: LabUsageDelta) => void,
   onTool: (name: string) => void,
   signal: AbortSignal,
-): Promise<void> {
+): Promise<readonly LabToolCall[]> {
   if (!response.ok) {
     const payload: unknown = await response.json().catch(() => null);
     throw new Error(errorMessage(payload, response.status));
@@ -23,6 +23,7 @@ export async function readLabStream(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  const pendingToolCalls = new Map<number, { id: string; name: string; arguments: string }>();
   const handleEvent = (event: { readonly event: string; readonly data: string }): boolean => {
     if (event.data === "[DONE]") return true;
     let payload: unknown;
@@ -41,6 +42,7 @@ export async function readLabStream(
     }
     const tool = toolCallName(protocol, event.event, payload);
     if (tool.length > 0) onTool(tool);
+    if (protocol === "chat") appendChatToolCalls(payload, pendingToolCalls);
     return false;
   };
   try {
@@ -53,15 +55,59 @@ export async function readLabStream(
       const taken = takeSseEvents(buffer);
       buffer = taken.rest;
       for (const event of taken.events) {
-        if (handleEvent(event)) return;
+        if (handleEvent(event)) return collectedToolCalls(pendingToolCalls);
       }
     }
     buffer += decoder.decode();
     const final = takeSseEvents(`${buffer}\n\n`);
     for (const event of final.events) {
-      if (handleEvent(event)) return;
+      if (handleEvent(event)) return collectedToolCalls(pendingToolCalls);
     }
+    return collectedToolCalls(pendingToolCalls);
   } finally {
     reader.releaseLock();
   }
+}
+
+function appendChatToolCalls(
+  payload: unknown,
+  calls: Map<number, { id: string; name: string; arguments: string }>,
+): void {
+  if (payload === null || typeof payload !== "object") return;
+  const choices = (payload as Record<string, unknown>).choices;
+  if (!Array.isArray(choices)) return;
+  for (const choice of choices) {
+    if (choice === null || typeof choice !== "object") continue;
+    const delta = (choice as Record<string, unknown>).delta;
+    if (delta === null || typeof delta !== "object") continue;
+    const toolCalls = (delta as Record<string, unknown>).tool_calls;
+    if (!Array.isArray(toolCalls)) continue;
+    for (const item of toolCalls) {
+      if (item === null || typeof item !== "object") continue;
+      const record = item as Record<string, unknown>;
+      const index = typeof record.index === "number" ? record.index : calls.size;
+      const call = calls.get(index) ?? { id: "", name: "", arguments: "" };
+      if (typeof record.id === "string") call.id += record.id;
+      const fn = record.function;
+      if (fn !== null && typeof fn === "object") {
+        const fields = fn as Record<string, unknown>;
+        if (typeof fields.name === "string") call.name += fields.name;
+        if (typeof fields.arguments === "string") call.arguments += fields.arguments;
+      }
+      calls.set(index, call);
+    }
+  }
+}
+
+function collectedToolCalls(
+  calls: ReadonlyMap<number, { readonly id: string; readonly name: string; readonly arguments: string }>,
+): readonly LabToolCall[] {
+  return Array.from(calls.entries())
+    .sort(([left], [right]) => left - right)
+    .map(([index, call]) => ({
+      id: call.id.length > 0 ? call.id : `model-lab-tool-${index}`,
+      name: call.name,
+      arguments: call.arguments,
+    }))
+    .filter((call) => call.name.length > 0);
 }

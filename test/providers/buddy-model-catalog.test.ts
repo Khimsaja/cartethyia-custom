@@ -44,6 +44,17 @@ describe("live Buddy CLI models on the shared roster", () => {
   });
 });
 
+describe("Buddy image generation routes", () => {
+  test("CodeBuddy uses native image generation while WorkBuddy keeps its chat route", () => {
+    const codebuddy = CODEBUDDY_MODELS.find((model) => model.modelId === "gemini-3.1-flash-image");
+    const workbuddy = WORKBUDDY_MODELS.find((model) => model.modelId === "gemini-3.1-flash-image");
+    expect(codebuddy?.serviceKind).toBe("imageGeneration");
+    expect(codebuddy?.endpointPath).toBe("/images/generations");
+    expect(workbuddy?.serviceKind).toBe("imageGeneration");
+    expect(workbuddy?.endpointPath).toBe("/v2/chat/completions");
+  });
+});
+
 describe("gpt-6-luna on the buddy roster", () => {
   test("cb publishes it at the shared context window", () => {
     const row = luna(CODEBUDDY_MODELS);

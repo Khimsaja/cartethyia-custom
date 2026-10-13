@@ -3,11 +3,13 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button } from "../../components/ui/button";
 import { Card, CardBody } from "../../components/ui/card";
 import { Dialog } from "../../components/ui/dialog";
+import { useAllModelsCatalog, type FlatModelEntry } from "../../components/ModelPicker";
 
 import { useApiKeys, useRevealApiKey } from "../../hooks/api-keys";
 import { ChatBubble } from "./ChatBubble";
 import { Composer } from "./Composer";
-import { buildLabRequest, MODEL_LAB_PRESETS, type LabEffort, type LabImage } from "./protocol";
+import { buildLabRequest, errorMessage, MODEL_LAB_PRESETS, parseUserQuestion, type LabEffort, type LabImage, type LabToolCall, type LabToolRound, type LabTurn, type LabUserQuestion } from "./protocol";
+import { detectMediaIntent, parseImageGenerationResponse, parseVideoGenerationResponse, preferredImageWorker, shouldFallbackToMediaWorker, type GeneratedMedia, type LabMediaIntent, type LabVideo } from "./media";
 import { EMPTY_DRAFT, deleteLabSession, listLabSessions, newLabSession, nextMessageId, readActiveSessionId, readLabDraft, readLabSession, writeActiveSessionId, writeLabSession, type LabDraft, type LabMessage, type LabSession, type LabSessionSummary } from "./session";
 import { SettingsDrawer } from "./SettingsDrawer";
 import { readLabStream } from "./stream";
@@ -18,6 +20,185 @@ const STARTER_ICONS: Readonly<Record<string, LucideIcon>> = {
   Translate: Languages,
   Code: Code2,
 };
+
+const MAX_AGENTIC_CALLS = 4;
+const MAX_AGENTIC_ROUNDS = 4;
+
+function availableToolModels(
+  catalog: readonly FlatModelEntry[],
+  serviceKind: "websearch" | "imageGeneration" | "videoGeneration",
+  selectedModel: string,
+): string[] {
+  const providerId = selectedModel.split("/")[0];
+  return catalog
+    .filter((entry) => entry.kind === "model" && entry.entry.enabled && entry.entry.serviceKind === serviceKind)
+    .sort((left, right) => {
+      const leftPreferred = left.providerId === providerId ? 0 : 1;
+      const rightPreferred = right.providerId === providerId ? 0 : 1;
+      if (leftPreferred !== rightPreferred) return leftPreferred - rightPreferred;
+      return left.qualified.localeCompare(right.qualified);
+    })
+    .map((entry) => entry.qualified);
+}
+
+function toolArguments(call: LabToolCall): Record<string, unknown> {
+  let value: unknown;
+  try {
+    value = JSON.parse(call.arguments);
+  } catch {
+    throw new Error(`The ${call.name} tool returned invalid arguments.`);
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`The ${call.name} tool arguments must be an object.`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function plannedMediaPrompt(call: LabToolCall, fallback: string): string {
+  try {
+    const prompt = toolArguments(call).prompt;
+    if (typeof prompt === "string" && prompt.trim().length > 0 && prompt.trim().length <= 4000) {
+      return prompt.trim();
+    }
+  } catch {
+    return fallback;
+  }
+  return fallback;
+}
+
+async function postNativeService(
+  path: string,
+  body: Record<string, unknown>,
+  token: string,
+  signal: AbortSignal,
+): Promise<unknown> {
+  const response = await fetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    signal,
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(body),
+  });
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new Error(response.ok
+      ? "The gateway returned invalid JSON for an agentic tool."
+      : `The gateway returned HTTP ${response.status} for an agentic tool.`);
+  }
+  if (!response.ok) throw new Error(errorMessage(payload, response.status));
+  return payload;
+}
+
+async function executeAgenticTool(
+  call: LabToolCall,
+  models: { readonly webSearch: readonly string[]; readonly imageGeneration: readonly string[]; readonly videoGeneration: readonly string[] },
+  draft: LabDraft,
+  token: string,
+  signal: AbortSignal,
+): Promise<GeneratedMedia & { readonly text: string; readonly workerModel?: string }> {
+  const args = toolArguments(call);
+  if (call.name === "web_search") {
+    const query = typeof args.query === "string" ? args.query.trim() : "";
+    if (query.length === 0 || query.length > 1000) throw new Error("Web search requires a query under 1,000 characters.");
+    const model = typeof args.model === "string" ? args.model : models.webSearch[0];
+    if (model !== undefined && !models.webSearch.includes(model)) {
+      throw new Error("The model requested an unavailable web-search model.");
+    }
+    if (model === undefined) throw new Error("No enabled web-search model is configured.");
+    const payload = await postNativeService("/v1/search", { model, query, max_results: 5 }, token, signal);
+    return { text: JSON.stringify(payload).slice(0, 8000) };
+  }
+  if (call.name === "generate_image") {
+    const model = typeof args.model === "string" ? args.model : models.imageGeneration[0];
+    if (model !== undefined && !models.imageGeneration.includes(model)) {
+      throw new Error("The model requested an unavailable image-generation model.");
+    }
+    if (model === undefined) throw new Error("No enabled image-generation model is configured.");
+    const result = await generateMedia("image", args.prompt, model, draft.imageSize, draft.imageCount, token, signal);
+    return { ...result, text: `Image generated by ${model}.`, workerModel: model };
+  }
+  if (call.name === "generate_video") {
+    const model = typeof args.model === "string" ? args.model : models.videoGeneration[0];
+    if (model !== undefined && !models.videoGeneration.includes(model)) {
+      throw new Error("The model requested an unavailable video-generation model.");
+    }
+    if (model === undefined) throw new Error("No enabled video-generation model is configured.");
+    const result = await generateMedia("video", args.prompt, model, draft.videoSize, draft.videoCount, token, signal);
+    return { ...result, text: `Video generated by ${model}.`, workerModel: model };
+  }
+  throw new Error(`The model requested unsupported tool "${call.name}".`);
+}
+
+async function generateMedia(
+  intent: LabMediaIntent,
+  rawPrompt: unknown,
+  model: string,
+  size: string,
+  count: string,
+  token: string,
+  signal: AbortSignal,
+): Promise<GeneratedMedia> {
+  const prompt = typeof rawPrompt === "string" ? rawPrompt.trim() : "";
+  if (prompt.length === 0 || prompt.length > 4000) {
+    throw new Error(`${intent === "image" ? "Image" : "Video"} generation requires a prompt under 4,000 characters.`);
+  }
+  const generationCount = parseMediaCount(count, intent);
+  const generationSize = size.trim();
+  if (generationSize.length > 32) {
+    throw new Error(`${intent === "image" ? "Image" : "Video"} size must be 32 characters or fewer.`);
+  }
+  if (intent === "image") {
+    const payload = await postNativeService(
+      "/v1/images/generations",
+      { model, prompt, ...(generationSize.length > 0 ? { size: generationSize } : {}), n: generationCount },
+      token,
+      signal,
+    );
+    return { images: parseImageGenerationResponse(payload) };
+  }
+  const payload = await postNativeService(
+    "/v1/videos/generations",
+    { model, prompt, ...(generationSize.length > 0 ? { size: generationSize } : {}), n: generationCount },
+    token,
+    signal,
+  );
+  return { videos: parseVideoGenerationResponse(payload) };
+}
+
+function parseMediaCount(value: string, intent: LabMediaIntent): number {
+  if (!/^[1-9]\d?$/.test(value) || Number(value) > 10) {
+    throw new Error(`${intent === "image" ? "Image" : "Video"} count must be an integer from 1 to 10.`);
+  }
+  return Number(value);
+}
+
+function configuredMediaCount(value: string): number | undefined {
+  return /^[1-9]\d?$/.test(value) && Number(value) <= 10 ? Number(value) : undefined;
+}
+
+async function executeConfiguredMedia(
+  intent: LabMediaIntent,
+  prompt: string,
+  model: string,
+  draft: LabDraft,
+  token: string,
+  signal: AbortSignal,
+): Promise<GeneratedMedia & { readonly text: string; readonly workerModel: string }> {
+  const media = intent === "image"
+    ? await generateMedia(intent, prompt, model, draft.imageSize, draft.imageCount, token, signal)
+    : await generateMedia(intent, prompt, model, draft.videoSize, draft.videoCount, token, signal);
+  return {
+    ...media,
+    text: `${intent === "image" ? "Image" : "Video"} generated by ${model}.`,
+    workerModel: model,
+  };
+}
 
 
 
@@ -40,8 +221,10 @@ export function StudioPage(): ReactNode {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
   const abortRef = useRef<AbortController | null>(null);
+  const answeredQuestionsRef = useRef(new Set<string>());
   const keys = useApiKeys();
   const reveal = useRevealApiKey();
+  const modelCatalog = useAllModelsCatalog(true);
   const draft = session;
   const setDraft = (next: LabDraft | ((current: LabDraft) => LabDraft)) => {
     setSession((current) => {
@@ -83,6 +266,16 @@ export function StudioPage(): ReactNode {
   }, [session, hydrated]);
 
   useEffect(() => {
+    if (!hydrated || session.imageWorkerModel.length > 0) return;
+    const models = availableToolModels(modelCatalog.items, "imageGeneration", "");
+    const imageWorkerModel = preferredImageWorker(models);
+    if (imageWorkerModel === undefined) return;
+    setSession((current) => current.imageWorkerModel.length > 0
+      ? current
+      : { ...current, imageWorkerModel, updatedAt: Date.now() });
+  }, [hydrated, modelCatalog.items, session.imageWorkerModel]);
+
+  useEffect(() => {
     const node = scrollerRef.current;
     if (node === null || !stickRef.current) return;
     node.scrollTop = node.scrollHeight;
@@ -103,7 +296,7 @@ export function StudioPage(): ReactNode {
     abortRef.current?.abort();
   };
 
-  const send = async (override?: { readonly text: string; readonly history: readonly LabMessage[]; readonly images?: readonly LabImage[] }) => {
+  const send = async (override?: { readonly text: string; readonly history: readonly LabMessage[]; readonly images?: readonly LabImage[]; readonly resumeToolResult?: boolean }) => {
     const text = (override?.text ?? input).trim();
     const outgoingImages = override === undefined ? images : override.images ?? [];
     const defaultKey = (keys.data ?? []).find((key) => key.enabled && key.revokedAt === undefined && key.isDefault);
@@ -122,14 +315,18 @@ export function StudioPage(): ReactNode {
           text,
           model: draft.model,
         };
+    const mediaIntent = override?.resumeToolResult === true ? undefined : detectMediaIntent(text);
+    const mediaTool = mediaIntent === undefined ? undefined : `generate_${mediaIntent}` as const;
     const assistantId = nextMessageId();
     const assistant: LabMessage = {
       id: assistantId,
       role: "assistant",
       text: "",
       model: draft.model,
-      status: "streaming",
+      status: mediaTool === undefined ? "streaming" : `Calling ${mediaTool}…`,
       pending: true,
+      ...(mediaIntent === undefined ? {} : { mediaPending: mediaIntent, mediaStage: "planning" as const }),
+      ...(mediaTool === undefined ? {} : { tools: [mediaTool] }),
     };
     const history = override?.history ?? [...draft.messages, user];
     if (override === undefined) {
@@ -143,7 +340,12 @@ export function StudioPage(): ReactNode {
     const controller = new AbortController();
     abortRef.current = controller;
     const tools = new Set<string>();
-    const paint = (next: { text: string; reasoning: string; status: string; pending?: boolean; usage?: LabMessage["usage"]; error?: boolean; tools?: readonly string[] }) => {
+    const generatedImages: LabImage[] = [];
+    const generatedVideos: LabVideo[] = [];
+    const workerModels = new Set<string>();
+    const toolRounds: LabToolRound[] = [];
+    let mediaWorkerExecuted = false;
+    const paint = (next: { text: string; reasoning: string; status: string; pending?: boolean; usage?: LabMessage["usage"]; error?: boolean; tools?: readonly string[]; images?: readonly LabImage[]; videos?: readonly LabVideo[]; workerModels?: readonly string[]; mediaPending?: "image" | "video"; mediaStage?: "planning" | "generating"; question?: LabUserQuestion; toolCalls?: readonly LabToolCall[]; toolRounds?: readonly LabToolRound[] }) => {
       replaceMessage(assistantId, {
         id: assistantId,
         role: "assistant",
@@ -155,12 +357,28 @@ export function StudioPage(): ReactNode {
         ...(next.pending === true ? { pending: true } : {}),
         ...(next.error === true ? { error: true } : {}),
         ...(next.tools !== undefined && next.tools.length > 0 ? { tools: next.tools } : {}),
+        ...(next.images !== undefined && next.images.length > 0 ? { images: next.images } : {}),
+        ...(next.videos !== undefined && next.videos.length > 0 ? { videos: next.videos } : {}),
+        ...(next.workerModels !== undefined && next.workerModels.length > 0 ? { workerModels: next.workerModels } : {}),
+        ...(next.mediaPending === undefined ? {} : { mediaPending: next.mediaPending }),
+        ...(next.mediaStage === undefined ? {} : { mediaStage: next.mediaStage }),
+        ...(next.question === undefined ? {} : { question: next.question }),
+        ...(next.toolCalls === undefined ? {} : { toolCalls: next.toolCalls }),
+        ...(next.toolRounds === undefined ? {} : { toolRounds: next.toolRounds }),
       });
     };
     let queuedPaint: Parameters<typeof paint>[0] | undefined;
     let paintFrame: number | undefined;
     const schedulePaint = (next: Parameters<typeof paint>[0]) => {
-      queuedPaint = next;
+      queuedPaint = next.pending === true && mediaIntent !== undefined && !mediaWorkerExecuted
+        ? {
+            ...next,
+            ...(next.mediaPending === undefined ? { mediaPending: mediaIntent } : {}),
+            ...(next.mediaStage === undefined ? { mediaStage: "planning" as const } : {}),
+            tools: [...new Set([...(next.tools ?? []), `generate_${mediaIntent}`])],
+            status: next.status === "streaming" ? `Calling generate_${mediaIntent}…` : next.status,
+          }
+        : next;
       if (paintFrame !== undefined) return;
       paintFrame = requestAnimationFrame(() => {
         paintFrame = undefined;
@@ -178,15 +396,111 @@ export function StudioPage(): ReactNode {
     };
     try {
       const revealed = await reveal.mutateAsync({ keyId: defaultKey.id });
-      const built = buildLabRequest(
-        history.map((message) => ({
-          role: message.role,
-          text: message.text,
-          ...(message.images === undefined ? {} : { images: message.images }),
-        })),
-        draft,
-      );
+      const availableImages = availableToolModels(modelCatalog.items, "imageGeneration", draft.model);
+      const availableVideos = availableToolModels(modelCatalog.items, "videoGeneration", draft.model);
+      const toolModels = {
+        webSearch: availableToolModels(modelCatalog.items, "websearch", draft.model),
+        imageGeneration: draft.imageWorkerModel.length > 0 && availableImages.includes(draft.imageWorkerModel)
+          ? [draft.imageWorkerModel]
+          : [],
+        videoGeneration: draft.videoWorkerModel.length > 0 && availableVideos.includes(draft.videoWorkerModel)
+          ? [draft.videoWorkerModel]
+          : [],
+      };
+      const selectedWorker = mediaIntent === "image" ? draft.imageWorkerModel : draft.videoWorkerModel;
+      const enabledWorkers = mediaIntent === "image" ? availableImages : availableVideos;
+      if (mediaIntent !== undefined && (selectedWorker.length === 0 || !enabledWorkers.includes(selectedWorker))) {
+        throw new Error(`No enabled ${mediaIntent}-generation worker is selected in Chat settings.`);
+      }
+      const requestSettings = {
+        ...draft,
+        protocol: "chat" as const,
+        webSearchModels: toolModels.webSearch,
+        imageGenerationModels: toolModels.imageGeneration,
+        videoGenerationModels: toolModels.videoGeneration,
+        imageSize: draft.imageSize,
+        imageCount: configuredMediaCount(draft.imageCount),
+        videoSize: draft.videoSize,
+        videoCount: configuredMediaCount(draft.videoCount),
+      };
+      const turns: LabTurn[] = history.flatMap((message): LabTurn[] => {
+        if (message.toolRounds !== undefined) {
+            return message.toolRounds.flatMap((toolRound) => [
+              { role: "assistant" as const, text: toolRound.text, toolCalls: toolRound.toolCalls },
+              ...toolRound.toolResults.map((result) => ({
+                role: "tool" as const,
+                text: result.text,
+                toolCallId: result.toolCallId,
+              })),
+            ]);
+        }
+        if (message.toolCalls !== undefined) {
+            return [{ role: "assistant" as const, text: message.text, toolCalls: message.toolCalls }];
+        }
+        return [{
+            role: message.role,
+            text: message.text,
+            ...(message.images === undefined ? {} : { images: message.images }),
+        }];
+      });
       const startedAt = performance.now();
+      let accumulated = "";
+      let reasoning = "";
+      let firstTokenAt: number | undefined;
+      let usage: LabMessage["usage"] = {};
+      let status = "streaming";
+      let round = 0;
+      let totalToolCalls = 0;
+      let waitingQuestion: LabUserQuestion | undefined;
+      const runMediaFallback = async () => {
+        if (mediaIntent === undefined) return;
+        const worker = mediaIntent === "image" ? toolModels.imageGeneration[0] : toolModels.videoGeneration[0];
+        if (worker === undefined) {
+          throw new Error(`No enabled ${mediaIntent}-generation worker is selected in Chat settings.`);
+        }
+        schedulePaint({
+          text: accumulated,
+          reasoning,
+          status: `Generating ${mediaIntent}…`,
+          pending: true,
+          usage,
+          mediaPending: mediaIntent,
+          mediaStage: "generating",
+          tools: [...tools],
+          images: generatedImages,
+          videos: generatedVideos,
+          workerModels: [...workerModels],
+        });
+        const result = await executeConfiguredMedia(mediaIntent, text, worker, draft, revealed.secret, controller.signal);
+        tools.add(`generate_${mediaIntent}`);
+        workerModels.add(worker);
+        if (result.images !== undefined) generatedImages.push(...result.images);
+        if (result.videos !== undefined) generatedVideos.push(...result.videos);
+        accumulated = accumulated.length > 0 ? `${accumulated}\n\n${result.text}` : result.text;
+        schedulePaint({
+          text: accumulated,
+          reasoning,
+          status: "Media generated",
+          pending: true,
+          usage,
+          tools: [...tools],
+          images: generatedImages,
+          videos: generatedVideos,
+          workerModels: [...workerModels],
+        });
+        mediaWorkerExecuted = true;
+      };
+      const markFirstToken = () => {
+        if (firstTokenAt === undefined) firstTokenAt = performance.now();
+      };
+      for (;;) {
+      let calls: readonly LabToolCall[];
+      try {
+      const built = buildLabRequest(turns, {
+        ...requestSettings,
+        ...(mediaWorkerExecuted ? { imageGenerationModels: [], videoGenerationModels: [] } : {}),
+        ...(round === 0 && mediaTool !== undefined ? { forcedTool: mediaTool } : {}),
+      });
       const response = await fetch(built.path, {
         method: "POST",
         credentials: "same-origin",
@@ -198,17 +512,9 @@ export function StudioPage(): ReactNode {
         },
         body: JSON.stringify(built.body),
       });
-      let accumulated = "";
-      let reasoning = "";
-      let firstTokenAt: number | undefined;
-      let usage: LabMessage["usage"] = {};
-      let status = "streaming";
-      const markFirstToken = () => {
-        if (firstTokenAt === undefined) firstTokenAt = performance.now();
-      };
-      await readLabStream(
+      calls = await readLabStream(
         response,
-        draft.protocol,
+        requestSettings.protocol,
         (delta) => {
           markFirstToken();
           accumulated += delta;
@@ -229,18 +535,108 @@ export function StudioPage(): ReactNode {
           if (next.status !== undefined) status = next.status;
 
         },
-        (tool) => {
-          tools.add(tool);
-          schedulePaint({ text: accumulated, reasoning, status, pending: true, usage, tools: [...tools] });
-        },
+        () => {},
         controller.signal,
       );
+      } catch (error) {
+        if (mediaIntent === undefined || mediaWorkerExecuted || controller.signal.aborted) throw error;
+        await runMediaFallback();
+        break;
+      }
+      if (calls.length === 0) {
+        if (!mediaWorkerExecuted && shouldFallbackToMediaWorker(mediaIntent, calls)) await runMediaFallback();
+        break;
+      }
+      if (!mediaWorkerExecuted && shouldFallbackToMediaWorker(mediaIntent, calls)) {
+        await runMediaFallback();
+        break;
+      }
+      if (round >= MAX_AGENTIC_ROUNDS || totalToolCalls + calls.length > MAX_AGENTIC_CALLS) {
+        throw new Error("Planner run stopped after reaching its tool-call limit.");
+      }
+      round += 1;
+      totalToolCalls += calls.length;
+      turns.push({ role: "assistant", text: "", toolCalls: calls });
+      const toolResults: LabToolRound["toolResults"][number][] = [];
+      for (const call of calls) {
+        if (call.name === "ask_user_question") {
+          if (waitingQuestion !== undefined) throw new Error("The planner asked more than one question at a time.");
+          waitingQuestion = parseUserQuestion(toolArguments(call));
+          tools.add(call.name);
+          continue;
+        }
+        tools.add(call.name);
+        schedulePaint({
+          text: accumulated,
+          reasoning,
+          status: `Running ${call.name}…`,
+          pending: true,
+          usage,
+          ...(call.name === "generate_image" ? { mediaPending: "image" as const } : {}),
+          ...(call.name === "generate_video" ? { mediaPending: "video" as const } : {}),
+          ...(call.name === "generate_image" || call.name === "generate_video" ? { mediaStage: "generating" as const } : {}),
+          tools: [...tools],
+          images: generatedImages,
+          videos: generatedVideos,
+          workerModels: [...workerModels],
+        });
+        const result = mediaIntent !== undefined && call.name === mediaTool
+          ? await executeConfiguredMedia(
+              mediaIntent,
+              plannedMediaPrompt(call, text),
+              mediaIntent === "image" ? toolModels.imageGeneration[0] ?? "" : toolModels.videoGeneration[0] ?? "",
+              draft,
+              revealed.secret,
+              controller.signal,
+            )
+          : await executeAgenticTool(call, toolModels, draft, revealed.secret, controller.signal);
+        if (result.images !== undefined) generatedImages.push(...result.images);
+        if (result.videos !== undefined) generatedVideos.push(...result.videos);
+        if (result.workerModel !== undefined) workerModels.add(result.workerModel);
+        if (call.name === mediaTool) mediaWorkerExecuted = true;
+        turns.push({ role: "tool", text: result.text, toolCallId: call.id });
+        toolResults.push({ toolCallId: call.id, text: result.text });
+        schedulePaint({
+          text: accumulated,
+          reasoning,
+          status: "Waiting for model…",
+          pending: true,
+          usage,
+          tools: [...tools],
+          images: generatedImages,
+          videos: generatedVideos,
+          workerModels: [...workerModels],
+        });
+      }
+      toolRounds.push({ text: accumulated, toolCalls: calls, toolResults });
+      if (waitingQuestion !== undefined) {
+        flushPaint();
+        paint({
+          text: accumulated,
+          reasoning,
+          status: "Waiting for your answer",
+          question: waitingQuestion,
+          toolCalls: calls,
+          tools: [...tools],
+          images: generatedImages,
+          videos: generatedVideos,
+          workerModels: [...workerModels],
+          toolRounds,
+        });
+        return;
+      }
+      }
       const finishedAt = performance.now();
       flushPaint();
       paint({
         text: accumulated.length > 0 ? accumulated : "No text came back.",
         reasoning,
         status: status === "streaming" ? "completed" : status,
+        ...(generatedImages.length > 0 ? { images: generatedImages } : {}),
+        ...(generatedVideos.length > 0 ? { videos: generatedVideos } : {}),
+        ...(tools.size > 0 ? { tools: [...tools] } : {}),
+        ...(workerModels.size > 0 ? { workerModels: [...workerModels] } : {}),
+        ...(toolRounds.length > 0 ? { toolRounds } : {}),
         usage: {
           ...usage,
           ...(firstTokenAt === undefined ? {} : { ttftMs: Math.round(firstTokenAt - startedAt) }),
@@ -255,6 +651,11 @@ export function StudioPage(): ReactNode {
         reasoning: "",
         status: stopped ? "stopped" : "error",
         ...(stopped ? {} : { error: true }),
+        ...(generatedImages.length > 0 ? { images: generatedImages } : {}),
+        ...(generatedVideos.length > 0 ? { videos: generatedVideos } : {}),
+        ...(tools.size > 0 ? { tools: [...tools] } : {}),
+        ...(workerModels.size > 0 ? { workerModels: [...workerModels] } : {}),
+        ...(toolRounds.length > 0 ? { toolRounds } : {}),
       });
     } finally {
       abortRef.current = null;
@@ -276,6 +677,45 @@ export function StudioPage(): ReactNode {
     setInput("");
     setImages([]);
     void send({ text, history: [...draft.messages, user], images: [] });
+  };
+  const answerQuestion = (message: LabMessage, optionId?: string) => {
+    const call = message.toolCalls?.find((toolCall) => toolCall.name === "ask_user_question");
+    const selected = optionId === undefined
+      ? undefined
+      : message.question?.options.find((option) => option.id === optionId);
+    if (
+      sending ||
+      message.selectedOption !== undefined ||
+      answeredQuestionsRef.current.has(message.id) ||
+      call === undefined
+    ) return;
+    if (optionId !== undefined && selected === undefined) return;
+    const cancelled = optionId === undefined;
+    const selectedId = selected?.id ?? "cancelled";
+    const selectedLabel = selected?.label ?? "";
+    const toolResult = JSON.stringify(
+      cancelled
+        ? { cancelled: true, message: "The user skipped this question. Continue without a selection." }
+        : { cancelled: false, selected: { id: selectedId, label: selectedLabel } },
+    );
+    const toolRounds = (message.toolRounds ?? []).map((round) => (
+      round.toolCalls.some((toolCall) => toolCall.id === call.id)
+        ? { ...round, toolResults: [...round.toolResults, { toolCallId: call.id, text: toolResult }] }
+        : round
+    ));
+    const updated = {
+      ...message,
+      selectedOption: selectedId,
+      toolRounds,
+    };
+    const history = draft.messages.map((item) => (item.id === message.id ? updated : item));
+    answeredQuestionsRef.current.add(message.id);
+    setDraft((current) => ({ ...current, messages: history }));
+    void send({
+      text: cancelled ? "The user skipped the follow-up question." : selectedLabel,
+      history,
+      resumeToolResult: true,
+    });
   };
 
   return (
@@ -320,9 +760,22 @@ export function StudioPage(): ReactNode {
                   key={message.id}
                   message={message}
                   onRetry={
-                    message.role === "user" &&
+                    message.question !== undefined &&
+                    message.selectedOption !== undefined &&
                     draft.messages[index + 1]?.role === "assistant" &&
                     draft.messages[index + 1]?.error === true
+                      ? () => {
+                          const history = draft.messages.slice(0, index + 1);
+                          const selected = message.question?.options.find((option) => option.id === message.selectedOption);
+                          void send({
+                            text: message.selectedOption === "cancelled" ? "The user skipped the follow-up question." : selected?.label ?? "The user answered the follow-up question.",
+                            history,
+                            resumeToolResult: true,
+                          });
+                        }
+                      : message.role === "user" &&
+                        draft.messages[index + 1]?.role === "assistant" &&
+                        draft.messages[index + 1]?.error === true
                       ? () => {
                           const history = draft.messages.slice(0, index + 1);
                           void send({
@@ -334,6 +787,9 @@ export function StudioPage(): ReactNode {
                       : undefined
                   }
                   retryDisabled={sending || !hasDefaultKey || draft.model.length === 0}
+                  onQuestionAnswer={(question, optionId) => answerQuestion(question, optionId)}
+                  onQuestionCancel={(question) => answerQuestion(question)}
+                  questionDisabled={sending || !hasDefaultKey || draft.model.length === 0}
                   onEdit={message.role === "user" ? (text) => {
                     const next = { ...message, text };
                     const history = [...draft.messages.slice(0, index), next];
@@ -372,17 +828,29 @@ export function StudioPage(): ReactNode {
           onClose={() => setSettingsOpen(false)}
           draft={draft}
           onChange={patch}
+          chatModel={draft.model}
+          catalog={modelCatalog.items}
         />
               </div>
       </CardBody>
       <Dialog open={sessionsOpen} onClose={() => setSessionsOpen(false)} title="Chat sessions">
-        <div className="flex flex-col gap-3 max-h-180 overflow-auto">
+        <div className="scroll-region flex flex-col gap-3 max-h-180 overflow-auto">
           <Button
             variant="secondary"
             size="sm"
             type="button"
             onClick={() => {
-              const created = newLabSession({ ...EMPTY_DRAFT, model: draft.model, protocol: draft.protocol, effort: draft.effort });
+              const created = newLabSession({
+                ...EMPTY_DRAFT,
+                model: draft.model,
+                effort: draft.effort,
+                imageWorkerModel: draft.imageWorkerModel,
+                videoWorkerModel: draft.videoWorkerModel,
+                imageSize: draft.imageSize,
+                imageCount: draft.imageCount,
+                videoSize: draft.videoSize,
+                videoCount: draft.videoCount,
+              });
               setSession(created);
               setInput("");
               setImages([]);
@@ -412,7 +880,16 @@ export function StudioPage(): ReactNode {
                 type="button"
                 onClick={() => {
                   void deleteLabSession(item.id).then(async () => {
-                    if (item.id === session.id) setSession(newLabSession({ ...EMPTY_DRAFT, model: draft.model }));
+                    if (item.id === session.id) setSession(newLabSession({
+                      ...EMPTY_DRAFT,
+                      model: draft.model,
+                      imageWorkerModel: draft.imageWorkerModel,
+                      videoWorkerModel: draft.videoWorkerModel,
+                      imageSize: draft.imageSize,
+                      imageCount: draft.imageCount,
+                      videoSize: draft.videoSize,
+                      videoCount: draft.videoCount,
+                    }));
                     setSessions(await listLabSessions());
                   });
                 }}

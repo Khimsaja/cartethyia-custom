@@ -65,7 +65,7 @@ export function Dialog({
   return createPortal(
     <div
       className={cn(
-        "dialog-overlay fixed inset-0 z-drawer box-border flex items-center justify-center overflow-y-auto bg-overlay p-8 backdrop-blur-dialog max-small:p-6",
+        "dialog-overlay scroll-region fixed inset-0 z-drawer box-border flex items-center justify-center overflow-y-auto bg-overlay p-8 backdrop-blur-dialog max-small:p-6",
         closing && "closing pointer-events-none",
       )}
       onClick={(event) => {
@@ -142,7 +142,7 @@ export function Dialog({
           </h3>
           <span className="window-traffic-lights-spacer w-29 shrink-0" aria-hidden="true" />
         </div>
-        {minimized ? null : <div className="modal-body min-h-0 flex-auto overflow-y-auto px-9 py-8">{children}</div>}
+        {minimized ? null : <div className="modal-body scroll-region min-h-0 flex-auto overflow-y-auto px-9 py-8">{children}</div>}
         {minimized || footer === undefined ? null : <div className="modal-footer flex shrink-0 items-center justify-end gap-4 border-t border-inner-border px-9 py-6">{footer}</div>}
         {description ? (
           // `sr-only` is exactly the visually-hidden pattern that was inlined here

@@ -1,8 +1,11 @@
-import { AlertCircle, ArrowDown, ArrowUp, Bot, Brain, Check, ChevronDown, Copy, DatabaseZap, Gauge, Pencil, RotateCcw, Sigma, Timer, Wrench } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { AlertCircle, ArrowDown, ArrowUp, Bot, Brain, Check, ChevronDown, Copy, DatabaseZap, Download, Gauge, Pencil, RotateCcw, Sigma, Timer, Wrench, ZoomIn } from "lucide-react";
+import { isValidElement, useEffect, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { Button } from "../../components/ui/button";
+import { Dialog } from "../../components/ui/dialog";
 import type { LabMessage } from "./session";
+import { createSvgPreviewDocument } from "./svgPreview";
 
 
 
@@ -36,6 +39,76 @@ function thinkingText(text: string): string {
   return text.replace(/\r/g, "").replace(/^\n+|\n+$/g, "");
 }
 
+function markdownText(value: ReactNode): string {
+  if (typeof value === "string" || typeof value === "number") return String(value);
+  if (Array.isArray(value)) return value.map(markdownText).join("");
+  return "";
+}
+
+function MarkdownPre({ children }: { readonly children?: ReactNode }): ReactNode {
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const code = isValidElement<{ readonly className?: string; readonly children?: ReactNode }>(children)
+    ? children
+    : undefined;
+  const className = code?.props.className ?? "";
+  const source = markdownText(code?.props.children ?? children);
+  const isSvg = className.split(/\s+/).includes("language-svg");
+  const preview = createSvgPreviewDocument(source);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(source);
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+  };
+  const copyControls = (
+    <div className="flex items-center justify-end gap-3">
+      <span aria-live="polite" className="text-micro text-text-tertiary">
+        {copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy failed" : ""}
+      </span>
+      <button
+        type="button"
+        onClick={() => void copy()}
+        className="inline-flex h-11 items-center gap-2 rounded-control border border-inner-border bg-surface-2 px-4 text-caption font-semibold text-text-secondary cursor-pointer hover:bg-hover hover:text-text-primary"
+      >
+        {copyState === "copied" ? <Check size={12} /> : copyState === "failed" ? <AlertCircle size={12} /> : <Copy size={12} />}
+        {copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy failed" : "Copy code"}
+      </button>
+    </div>
+  );
+  if (!isSvg) {
+    return (
+      <div className="flex min-w-0 flex-col gap-2">
+        {copyControls}
+        <pre className="scroll-region max-w-full max-h-96 overflow-auto">{children}</pre>
+      </div>
+    );
+  }
+  return (
+    <div className="flex min-w-0 flex-col gap-3">
+      {copyControls}
+      {preview === undefined ? (
+        <p className="m-0 text-caption text-text-tertiary">SVG preview unavailable: invalid or oversized document.</p>
+      ) : (
+        <iframe
+          title="Sandboxed SVG preview"
+          sandbox=""
+          referrerPolicy="no-referrer"
+          srcDoc={preview}
+          className="w-full h-80 max-h-[50vh] border border-inner-border rounded-control bg-surface-2"
+        />
+      )}
+      <details>
+        <summary className="cursor-pointer text-caption text-text-secondary">Show original SVG source</summary>
+        <pre className="scroll-region max-w-full max-h-96 overflow-auto"><code className={className}>{source}</code></pre>
+      </details>
+    </div>
+  );
+}
+
+type MediaPreview = { readonly kind: "image" | "video"; readonly name: string; readonly src: string };
+
 
 
 /**
@@ -50,20 +123,28 @@ export function ChatBubble({
   message,
   onEdit,
   onRetry,
+  onQuestionAnswer,
+  onQuestionCancel,
   retryDisabled = false,
+  questionDisabled = false,
 }: {
   readonly message: LabMessage;
   readonly onEdit?: (text: string) => void;
   readonly onRetry?: () => void;
+  readonly onQuestionAnswer?: (message: LabMessage, optionId: string) => void;
+  readonly onQuestionCancel?: (message: LabMessage) => void;
   readonly retryDisabled?: boolean;
+  readonly questionDisabled?: boolean;
 }): ReactNode {
   const mine = message.role === "user";
   const thinking = thinkingText(message.reasoning ?? "");
   const live = message.pending === true && message.error !== true;
-  const waiting = live && message.text.length === 0 && thinking.length === 0;
+  const waiting = live && message.text.length === 0 && thinking.length === 0 && message.mediaPending === undefined;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(message.text);
   const [copied, setCopied] = useState(false);
+  const [mediaPreview, setMediaPreview] = useState<MediaPreview | null>(null);
+  const [questionExpanded, setQuestionExpanded] = useState(message.selectedOption === undefined);
   const [thinkingOpen, setThinkingOpen] = useState(thinking.length > 0 && message.text.length === 0);
   const thinkingRef = useRef<HTMLDivElement>(null);
   const thinkingAtBottomRef = useRef(true);
@@ -91,6 +172,10 @@ export function ChatBubble({
     if (thinking.length > 0 && message.text.length === 0) setThinkingOpen(true);
     if (message.text.length > 0) setThinkingOpen(false);
   }, [thinking.length, message.text.length]);
+
+  useEffect(() => {
+    if (message.selectedOption !== undefined) setQuestionExpanded(false);
+  }, [message.selectedOption]);
 
   useEffect(() => {
     const panel = thinkingRef.current;
@@ -175,7 +260,93 @@ export function ChatBubble({
             {(message.images?.length ?? 0) > 0 ? (
               <div className="flex flex-wrap gap-2 mb-1">
                 {message.images?.map((image) => (
-                  <img key={image.dataUrl} src={image.dataUrl} alt={image.name} className="w-20 h-20 object-cover rounded-control border border-inner-border" />
+                  mine ? (
+                    <img
+                      key={image.dataUrl}
+                      src={image.dataUrl}
+                      alt={image.name}
+                      referrerPolicy="no-referrer"
+                      className="w-20 h-20 object-cover rounded-control border border-inner-border"
+                    />
+                  ) : (
+                    <button
+                      key={image.dataUrl}
+                      type="button"
+                      aria-label={`Open image preview: ${image.name}`}
+                      title="Open image preview"
+                      onClick={() => setMediaPreview({ kind: "image", name: image.name, src: image.dataUrl })}
+                      className="block aspect-square w-full max-w-120 cursor-zoom-in border-0 bg-surface-2 p-0 focus-visible:outline-2 focus-visible:outline-focus-ring"
+                    >
+                      <img
+                        src={image.dataUrl}
+                        alt={image.name}
+                        referrerPolicy="no-referrer"
+                        className="h-full w-full rounded-control border border-inner-border object-contain"
+                      />
+                    </button>
+                  )
+                ))}
+              </div>
+            ) : null}
+            {(message.videos?.length ?? 0) > 0 ? (
+              <div className="flex flex-col gap-3 mb-3 w-full">
+                {message.videos?.map((video) => (
+                  <div key={video.src} className="flex flex-col items-start gap-2">
+                      <div className="aspect-video w-full max-w-120 rounded-control border border-inner-border bg-surface-2">
+                        <video
+                          controls
+                          preload="metadata"
+                          aria-label={video.name}
+                          src={video.src}
+                          className="h-full w-full rounded-control object-contain"
+                        />
+                      </div>
+                    <button
+                      type="button"
+                      onClick={() => setMediaPreview({ kind: "video", name: video.name, src: video.src })}
+                      className="inline-flex h-11 items-center gap-2 rounded-control border border-inner-border bg-surface-2 px-4 text-caption font-semibold text-text-secondary cursor-pointer hover:bg-hover hover:text-text-primary"
+                    >
+                      <ZoomIn size={13} aria-hidden="true" />
+                      Open video preview
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {message.mediaPending !== undefined ? (
+              <div
+                role="status"
+                aria-label={
+                  message.mediaStage === "planning"
+                    ? `Calling generate_${message.mediaPending}`
+                    : `Generating ${message.mediaPending}`
+                }
+                className={`relative mb-3 grid w-full max-w-120 place-items-center overflow-hidden rounded-control border border-inner-border bg-surface-2 ${
+                  message.mediaPending === "image" ? "aspect-square" : "aspect-video"
+                }`}
+              >
+                <div className="absolute inset-0 animate-pulse bg-linear-to-r from-surface-2 via-hover to-surface-2 motion-reduce:animate-none" />
+                <div className="relative flex flex-col items-center gap-3 px-5 text-center text-caption text-text-secondary">
+                  <span className="h-3 w-3 rounded-full bg-accent animate-typing-bounce motion-reduce:animate-none" aria-hidden="true" />
+                  <span className="font-semibold">
+                    {message.mediaStage === "planning"
+                      ? `Calling generate_${message.mediaPending}…`
+                      : `Generating ${message.mediaPending}…`}
+                  </span>
+                  <span className="text-text-tertiary">
+                    {message.mediaStage === "planning"
+                      ? "The planner is preparing the worker request."
+                      : "Your preview will appear here when it’s ready."}
+                  </span>
+                </div>
+              </div>
+            ) : null}
+            {(message.workerModels?.length ?? 0) > 0 ? (
+              <div className="flex flex-wrap gap-2 mb-3">
+                {message.workerModels?.map((worker) => (
+                  <span key={worker} className="inline-flex items-center h-10 px-3 border border-inner-border rounded-pill bg-surface-2 text-text-tertiary text-micro font-mono">
+                    Media worker · {worker}
+                  </span>
                 ))}
               </div>
             ) : null}
@@ -194,19 +365,79 @@ export function ChatBubble({
             ) : message.text.length > 0 ? (
               <div className="min-w-0 font-sans text-body-lg leading-normal [&_p]:m-0 [&_p]:mb-4 [&_ul]:m-0 [&_ul]:mb-4 [&_ol]:m-0 [&_ol]:mb-4 [&_pre]:m-0 [&_pre]:mb-4 [&_p:last-child]:mb-0 [&_ul:last-child]:mb-0 [&_ol:last-child]:mb-0 [&_pre:last-child]:mb-0 [&_pre]:overflow-x-auto [&_pre]:px-6 [&_pre]:py-5 [&_pre]:rounded-control [&_pre]:bg-surface-muted [&_pre]:font-mono [&_pre]:text-caption [&_code]:font-mono [&_svg]:flex-none [&_svg]:mt-1.5">
                 {message.error === true ? <AlertCircle size={14} aria-hidden="true" /> : null}
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.text}</ReactMarkdown>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ pre: MarkdownPre }}>{message.text}</ReactMarkdown>
                 {live ? <span className="ml-1 text-accent animate-pulse motion-reduce:animate-none" aria-hidden="true">▋</span> : null}
               </div>
             ) : null}
           </>
         )}
       </div>
-      {mine && !editing ? (
+      {message.question !== undefined ? (
+        <section className="flex w-full max-w-280 flex-col gap-3 rounded-control border border-inner-border bg-surface-2 p-5" aria-label="Planner question">
+          {message.selectedOption === undefined ? (
+            <h3 className="m-0 text-body-lg font-semibold text-text-primary">{message.question.question}</h3>
+          ) : (
+            <button
+              type="button"
+              aria-expanded={questionExpanded}
+              onClick={() => setQuestionExpanded((expanded) => !expanded)}
+              className="flex w-full items-start justify-between gap-4 border-0 bg-transparent p-0 text-left cursor-pointer"
+            >
+              <span className="flex min-w-0 flex-col gap-1">
+                <span className="text-body-lg font-semibold text-text-primary">{message.question.question}</span>
+                <span className="text-caption text-text-tertiary">
+                  {message.selectedOption === "cancelled"
+                    ? "Question skipped"
+                    : `Answer: ${message.question.options.find((option) => option.id === message.selectedOption)?.label ?? message.selectedOption}`}
+                </span>
+              </span>
+              <ChevronDown
+                size={16}
+                className={`mt-1 shrink-0 text-text-tertiary transition-transform ${questionExpanded ? "rotate-180" : ""}`}
+                aria-hidden="true"
+              />
+            </button>
+          )}
+          {questionExpanded ? (
+            <>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {message.question.options.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    disabled={questionDisabled || message.selectedOption !== undefined}
+                    aria-pressed={message.selectedOption === option.id}
+                    onClick={() => onQuestionAnswer?.(message, option.id)}
+                    className="flex min-h-14 flex-col items-start gap-1 rounded-control border border-inner-border bg-surface-1 px-4 py-3 text-left text-caption text-text-primary cursor-pointer hover:border-accent hover:bg-accent-soft disabled:cursor-default disabled:opacity-60"
+                  >
+                    <span className="font-semibold">{option.label}</span>
+                    {option.description ? <span className="text-text-tertiary">{option.description}</span> : null}
+                    {message.selectedOption === option.id ? <span className="text-accent">Selected</span> : null}
+                  </button>
+                ))}
+              </div>
+              {message.selectedOption === undefined ? (
+                <button
+                  type="button"
+                  disabled={questionDisabled}
+                  onClick={() => onQuestionCancel?.(message)}
+                  className="h-10 w-fit border-0 bg-transparent px-2 text-caption text-text-tertiary underline cursor-pointer hover:text-text-primary disabled:cursor-default disabled:opacity-60"
+                >
+                  Skip this question
+                </button>
+              ) : null}
+            </>
+          ) : null}
+        </section>
+      ) : null}
+      {(mine || onRetry !== undefined) && !editing ? (
         <div className="inline-flex gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 hover:opacity-100 [.mlab-turn:hover_&]:opacity-100 [.mlab-turn:focus-within_&]:opacity-100">
-          <button type="button" aria-label="Copy message" title="Copy" onClick={() => void copy()} className="inline-flex items-center justify-center w-11 h-11 p-0 border-0 rounded-chip bg-transparent text-text-tertiary cursor-pointer hover:bg-hover hover:text-text-primary">
-            {copied ? <Check size={12} /> : <Copy size={12} />}
-          </button>
-          {onEdit !== undefined ? (
+          {mine ? (
+            <button type="button" aria-label="Copy message" title="Copy" onClick={() => void copy()} className="inline-flex items-center justify-center w-11 h-11 p-0 border-0 rounded-chip bg-transparent text-text-tertiary cursor-pointer hover:bg-hover hover:text-text-primary">
+              {copied ? <Check size={12} /> : <Copy size={12} />}
+            </button>
+          ) : null}
+          {mine && onEdit !== undefined ? (
             <button type="button" aria-label="Edit and resend" title="Edit and resend" onClick={() => { setDraft(message.text); setEditing(true); }} className="inline-flex items-center justify-center w-11 h-11 p-0 border-0 rounded-chip bg-transparent text-text-tertiary cursor-pointer hover:bg-hover hover:text-text-primary">
               <Pencil size={12} />
             </button>
@@ -233,7 +464,53 @@ export function ChatBubble({
           ) : null}
         </div>
       ) : null}
-
+      <Dialog
+        open={mediaPreview !== null}
+        onClose={() => setMediaPreview(null)}
+        title={mediaPreview?.name ?? "Media preview"}
+        description="Full-size generated media preview"
+        size="xl"
+        footer={(
+          <>
+            {mediaPreview === null ? null : (
+              <a
+                href={mediaPreview.src}
+                download={mediaPreview.name}
+                target={mediaPreview.src.startsWith("https:") ? "_blank" : undefined}
+                rel="noreferrer"
+                className="inline-flex h-14 items-center gap-2 rounded-control border border-inner-border bg-surface-2 px-5 text-caption font-semibold text-text-primary no-underline hover:bg-hover"
+              >
+                <Download size={14} aria-hidden="true" />
+                Download
+              </a>
+            )}
+            <Button variant="secondary" type="button" onClick={() => setMediaPreview(null)}>
+              Close
+            </Button>
+          </>
+        )}
+      >
+        {mediaPreview === null ? null : (
+          <div className="grid min-h-0 place-items-center">
+            {mediaPreview.kind === "image" ? (
+              <img
+                src={mediaPreview.src}
+                alt={mediaPreview.name}
+                referrerPolicy="no-referrer"
+                className="max-h-[calc(100dvh-16rem)] max-w-full w-auto h-auto object-contain"
+              />
+            ) : (
+              <video
+                controls
+                preload="metadata"
+                aria-label={mediaPreview.name}
+                src={mediaPreview.src}
+                className="max-h-[calc(100dvh-16rem)] max-w-full w-auto h-auto object-contain"
+              />
+            )}
+          </div>
+        )}
+      </Dialog>
     </div>
   );
 }

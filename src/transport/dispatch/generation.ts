@@ -149,10 +149,8 @@ export function createGenerationHandler(kind: GenerationKind, deps: GenerationHa
         `${noun} generation not allowed for this key — enable routing:invoke on the API key`,
       );
     }
-    // Trust boundary only. Both `prompt` and `messages` are accepted because
-    // the upstream decides which it wants: cb's image endpoint is a chat
-    // endpoint that reads `messages`, so mandating `prompt` would reject a body
-    // the provider is perfectly happy with.
+    // Trust boundary only. Keep accepting `messages` for chat-backed providers
+    // while native image/video endpoints can use the simpler `prompt` field.
     const hasPrompt = typeof generation.prompt === "string" && generation.prompt.trim().length > 0;
     const hasMessages = Array.isArray(generation.messages) && generation.messages.length > 0;
     if (!hasPrompt && !hasMessages) {
