@@ -151,6 +151,8 @@ export interface ProviderExchangeCapture {
 const CAPTURED_REQUEST_HEADERS = [
   "x-opencode-client",
   "x-opencode-session",
+  "x-opencode-session-id",
+  "x-opencode-parent-session-id",
   "x-opencode-request",
   "x-opencode-project",
   "x-session-affinity",
@@ -163,6 +165,9 @@ const CAPTURED_REQUEST_HEADERS = [
   "x-grok-client-identifier",
   "x-grok-agent-id",
   "x-session-id",
+  "x-parent-session-id",
+  "traceparent",
+  "b3",
   "x-claude-code-session-id",
   "user-agent",
 ] as const;
