@@ -371,6 +371,30 @@ export function classifyUpstreamFailure(error: unknown): UpstreamFailurePolicy {
 }
 
 /**
+ * Transport-level failure signatures a runtime fetch body can raise when the
+ * upstream socket dies mid-response. Bun (this gateway's runtime) raises
+ * `TypeError` with `code: "ECONNRESET"` ("The socket connection was closed
+ * unexpectedly"); Node/undici raises `TypeError: terminated`; libuv surfaces
+ * `ECONNRESET`/`EPIPE` on the error. All mean the same thing: the upstream
+ * connection dropped — an upstream transport failure, not an unexplained
+ * gateway fault.
+ */
+function isUpstreamSocketDrop(error: unknown): boolean {
+  if (!(error instanceof TypeError) && !(error instanceof Error)) return false;
+  if ("code" in error && typeof error.code === "string") {
+    if (error.code === "ECONNRESET" || error.code === "EPIPE" || error.code === "UND_ERR_SOCKET") {
+      return true;
+    }
+  }
+  const message = String(error.message ?? "");
+  return (
+    message.includes("socket connection was closed unexpectedly") ||
+    message.startsWith("terminated") ||
+    message.includes("other side closed")
+  );
+}
+
+/**
  * Terminal telemetry category for one failed attempt.
  *
  * A raw abort is not an unexplained gateway failure: our own deadline timers
@@ -394,6 +418,11 @@ export function classifyTerminalCategory(
   if (signal.aborted) {
     if (reason instanceof DOMException && reason.name === "TimeoutError") return "deadline_exceeded";
     return "transport_closed";
+  }
+  // A mid-response upstream socket drop reaches here as a raw runtime error:
+  // the upstream's transport failed, so the blame is upstream, not unknown.
+  if (isUpstreamSocketDrop(error) || isUpstreamSocketDrop(reason)) {
+    return "transport_unavailable";
   }
   return "unknown_error";
 }
