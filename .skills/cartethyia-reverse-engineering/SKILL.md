@@ -22,7 +22,11 @@ or external systems.
 For a reproducible failing request, wire payload, provider response, or live
 dispatch, continue with
 [`cartethyia-trace-replay`](../cartethyia-trace-replay/SKILL.md). For a focused
-domain change, use the closest skill listed in `AGENTS.md`.
+domain change, use the closest skill listed in `AGENTS.md`. For an external
+desktop client or user-designated installer, use
+[`cartethyia-client-protocol-reverse-engineering`](../cartethyia-client-protocol-reverse-engineering/SKILL.md)
+instead; do not treat external-client investigation as Cartethyia source
+tracing.
 
 ## Procedure
 

@@ -110,6 +110,18 @@ Released 2026-10-12.
 - A video generation route is mounted, and a custom provider can declare image
   or video as a service kind.
 - Buddy image models are served by CodeBuddy and WorkBuddy only.
+- CodeBuddy image generation now uses its native image endpoint; WorkBuddy
+  retains its chat-carried image path. Model Lab exposes image/video generation
+  controls, including size and count selection where supported, and keeps media
+  placeholders visible while generation is in progress.
+- `scripts/media.ts` provides reusable CodeBuddy image/video commands, including
+  automatic video task polling by default and `--no-wait` for returning a task
+  ID.
+- Buddy image generation has been verified; Buddy-family video generation has
+  **not** succeeded end to end. The `/v2/videos/generations` submission path is
+  configured, but the actual task polling endpoint remains unknown. The
+  current sibling poll URL is an unverified inference, not a confirmed provider
+  contract.
 
 **Providers**
 

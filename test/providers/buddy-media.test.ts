@@ -147,7 +147,7 @@ describe("buddyGenerateImage — CodeBuddy native image endpoint", () => {
 });
 
 describe("buddyGenerateVideo — submit then poll to completion", () => {
-  test("submits, polls the sibling task endpoint, and returns the clip URL", async () => {
+  test("submits and polls the mocked sibling task URL, returning the clip URL", async () => {
     const { fetcher, calls } = capture((call, index) => {
       // First call: submit → queued task. Second call: status → finished clip.
       if (index === 0) {

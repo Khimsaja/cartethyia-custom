@@ -47,6 +47,9 @@ documentation/
 
 Procedure lives in `.skills/`, not here. Each skill owns one topic and names the
 layer's owner: `cartethyia-engineering` (invariants, taste, gates),
+`cartethyia-reverse-engineering` (tracing Cartethyia's internal behavior),
+`cartethyia-client-protocol-reverse-engineering` (static inspection of an
+external client/installer and evidence-based protocol mapping),
 `cartethyia-trace-replay` (reproducing a failing request),
 `cartethyia-schema-telemetry` (schema and migrations),
 `cartethyia-health-routing` (account and model health),

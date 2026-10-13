@@ -16,6 +16,7 @@ summary plus a link. Do not grow those four into feature manuals.
 | [Share keys](share-keys.md) | Issue a public link that enrolls a child key under a parent's policy |
 | [Network pools](network-pools.md) | Choose and meter the egress a request leaves through |
 | [Routing aliases and combos](routing-aliases-combos.md) | Name a model something else, or fan a name out to several |
+| [Buddy media generation](buddy-media-generation.md) | Generate images and submit/poll video tasks through Buddy providers |
 
 Procedure does not live here. `.skills/` owns procedure, and each skill names
 the layer's owner: [cartethyia-health-routing](../../.skills/cartethyia-health-routing/SKILL.md)

@@ -134,6 +134,7 @@ every skill for every task. The committed skill source lives under `.skills/`.
 |---|---|
 | Repository conventions, verification, or a cross-cutting change | `.skills/cartethyia-engineering/SKILL.md` |
 | Reverse-engineer an undocumented behavior or reconstruct an internal flow | `.skills/cartethyia-reverse-engineering/SKILL.md` |
+| Inspect an external client/installer or map its provider protocol | `.skills/cartethyia-client-protocol-reverse-engineering/SKILL.md` |
 | Reproducing a failing request, payloads, or provider wire behavior | `.skills/cartethyia-trace-replay/SKILL.md` |
 | Schema, migrations, usage, or telemetry | `.skills/cartethyia-schema-telemetry/SKILL.md` |
 | Adding or authenticating a provider, catalog, or capabilities | `.skills/cartethyia-provider-catalog/SKILL.md` |
@@ -196,9 +197,12 @@ details that belong in code or tests.
   `reset --hard`, `checkout --`, or `clean`.
 - A small cleanup directly required by the task is fine; avoid unrelated
   refactors or cleanup.
-- Do not persist credentials in source, environment files, scratch files,
-  commits, logs, reports, or telemetry. Do not expose credentials in tool output
-  or send them to third parties.
+- Do not request, use, echo, or send credentials by default. If the user
+  explicitly asks you to use a credential for a specific authorized operation,
+  handle it as required for that operation and send it only to the intended
+  service. Do not repeat the raw value in chat or tool output unless the user
+  explicitly asks for that, and never persist it in source, environment files,
+  scratch files, commits, logs, reports, or telemetry.
 - Prefer reversible steps for database and environment operations. Confirm
   which environment is targeted before any operation that may alter real data.
 

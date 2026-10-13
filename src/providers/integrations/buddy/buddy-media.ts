@@ -9,15 +9,13 @@
  * `/images/generations` API, while WorkBuddy keeps its chat-completion image
  * path. The configured provider path selects the wire format.
  *
- * - **Video** (`seedance-2.5`) is a native async task. cb accepts a submit and
- *   returns `{data:{id,status:"queued"}}`; the finished clip is fetched from a
- *   sibling task endpoint. {@link buddyGenerateVideo} submits, then polls that
- *   endpoint until the task leaves the queued/running states.
+ * - **Video** (`seedance-2.5`) is implemented as an async task: submission
+ *   expects a task ID, then the adapter polls a sibling task URL until a clip
+ *   appears or the task fails/times out.
  *
- * ⚠️ The video task-query path (polled at `<submit-dir>/<task-id>`, the natural
- * sibling of the submit endpoint) is implemented against the observed contract
- * but has not been end-to-end verified. If cb names it differently, that one
- * constant is the only line to correct after a live probe.
+ * ⚠️ The provider's actual polling route has not been verified. The sibling
+ *   URL is an implementation inference, not an observed contract. See
+ *   `documentation/features/buddy-media-generation.md` before changing it.
  */
 import { OpenAICompatibleAdapter, authHeaders, type OpenAICompatibleAdapterConfig } from "../../compatible-adapter";
 import { GatewayError } from "../../../protocol/gateway-error";
@@ -290,15 +288,13 @@ export function buddyErrorOf(payload: unknown): string | undefined {
 }
 
 /**
- * Generates a video through the buddy native task API.
+ * Generates a video through the Buddy native task API.
  *
- * Submits `{model, prompt}` to the video endpoint, then polls the task until it
- * reports a finished clip. The submit endpoint is `candidate.endpoint_path`
- * (`/videos/generations`); the poll hits its sibling `<dir>/<task-id>`.
+ * Submits `{model, prompt}` to the configured video endpoint, then polls the
+ * inferred sibling task URL until it reports a finished clip.
  *
- * ⚠️ The poll path is the natural sibling of the submit endpoint and is NOT
- * verified against a live cb response (see the module header). If cb names the
- * query route differently, {@link VIDEO_TASK_PATH} is the one line to correct.
+ * ⚠️ The status path is not provider-verified; see the module header and
+ * `documentation/features/buddy-media-generation.md`.
  */
 export async function buddyGenerateVideo(
   config: BuddyMediaConfig,
