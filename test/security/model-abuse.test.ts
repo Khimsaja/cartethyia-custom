@@ -425,6 +425,9 @@ describe("ModelStrikeService — the policy layer over the store", () => {
       unban: async (): Promise<never> => {
         throw new Error("store unavailable");
       },
+      ban: async (): Promise<never> => {
+        throw new Error("store unavailable");
+      },
     };
     const strikes = new ModelStrikeService(failing, {
       threshold: 3,

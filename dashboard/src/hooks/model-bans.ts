@@ -46,3 +46,23 @@ export function useUnbanModel() {
     },
   });
 }
+
+/**
+ * Instantly bans one client address for the full model-ban TTL, bypassing the
+ * graduated strike window. The operator action behind the request-detail
+ * "Ban user" button; keyed on the request's client IP.
+ */
+export function useBanIp() {
+  const queryClient = useQueryClient();
+  return useMutation<{ ban: ModelAbuseBan }, ApiErrorShape, string>({
+    mutationFn: (ip) =>
+      consoleRequest<{ ban: ModelAbuseBan }>("/model-bans", {
+        method: "POST",
+        body: JSON.stringify({ ip }),
+      }),
+    ...DASHBOARD_MUTATION_OPTIONS,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.modelBans.all });
+    },
+  });
+}

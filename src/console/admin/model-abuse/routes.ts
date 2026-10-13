@@ -7,6 +7,10 @@ const unbanBody = t.Object({
   identity: t.String({ minLength: 1 }),
 });
 
+const banBody = t.Object({
+  ip: t.String({ minLength: 1, maxLength: 45 }),
+});
+
 export function createModelAbuseRoutes(config: ModelAbuseRoutesConfig): Elysia {
   return new Elysia()
     .get("/model-bans", async ({ request, set }) => {
@@ -16,6 +20,15 @@ export function createModelAbuseRoutes(config: ModelAbuseRoutesConfig): Elysia {
         return { bans };
       } catch (e) {
         return errorResponse(e, set, "Model ban read failed");
+      }
+    })
+    .post("/model-bans", { body: banBody }, async ({ request, body, set }) => {
+      try {
+        requireGlobalAdmin(config.accessResolver(request));
+        const ban = await config.strikes.ban(body.ip);
+        return { ban };
+      } catch (e) {
+        return errorResponse(e, set, "Model ban failed");
       }
     })
     .delete("/model-bans", { body: unbanBody }, async ({ request, body, set }) => {

@@ -84,7 +84,7 @@ export interface ConsoleDomainContext {
   readonly stateStore?: LiveInFlightSource;
   readonly admissionService: Pick<ApiKeyAdmissionService, "purgeKey">;
   /** Graduated model-abuse strikes: list and lift bans from the console. */
-  readonly modelStrikes?: Pick<ModelStrikeService, "listBans" | "unban">;
+  readonly modelStrikes?: Pick<ModelStrikeService, "listBans" | "unban" | "ban">;
   readonly readRoutingAccountInflight?:
     | ((
         providerId: string,

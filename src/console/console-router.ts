@@ -64,7 +64,7 @@ export interface ConsoleApiCompositionDeps {
    * Optional so reduced compositions (route-only shell, console stubs) stay
    * valid; absent means the `/model-bans` routes are not mounted.
    */
-  readonly modelStrikes?: Pick<ModelStrikeService, "listBans" | "unban">;
+  readonly modelStrikes?: Pick<ModelStrikeService, "listBans" | "unban" | "ban">;
   readonly readRoutingAccountInflight?:
     | ((
         providerId: string,

@@ -99,6 +99,12 @@ export interface ModelAbuseStore {
   listBans(): Promise<readonly ModelAbuseBan[]>;
   /** Lifts one ban. Returns whether a ban existed. */
   unban(ip: string): Promise<boolean>;
+  /**
+   * Bans one address immediately for `ttlMs`, regardless of strike history.
+   * Returns the ban's expiry (epoch ms). The operator's instant-ban action
+   * and the graduated strike path share one ban set, so `unban` lifts both.
+   */
+  ban(ip: string, ttlMs: number): Promise<number>;
 }
 
 interface InMemoryOptions {
@@ -192,6 +198,12 @@ export class InMemoryModelAbuseStore implements ModelAbuseStore {
 
   async unban(ip: string): Promise<boolean> {
     return this.bans.delete(ip);
+  }
+
+  async ban(ip: string, ttlMs: number): Promise<number> {
+    const expiresAt = this.clock() + Math.max(1, ttlMs);
+    this.bans.set(ip, expiresAt);
+    return expiresAt;
   }
 }
 
@@ -304,6 +316,12 @@ export class RedisModelAbuseStore implements ModelAbuseStore {
     const removed = await this.redis.zrem(this.banKey(), ip);
     return Number(removed) > 0;
   }
+
+  async ban(ip: string, ttlMs: number): Promise<number> {
+    const expiresAt = this.clock() + Math.max(1, ttlMs);
+    await this.redis.zadd(this.banKey(), String(expiresAt), ip);
+    return expiresAt;
+  }
 }
 
 export interface ModelStrikeOptions {
@@ -366,6 +384,12 @@ export class ModelStrikeService {
 
   async unban(ip: string): Promise<boolean> {
     return this.store.unban(ip);
+  }
+
+  /** Operator instant-ban: one address, full TTL, no strike history needed. */
+  async ban(ip: string): Promise<ModelAbuseBan> {
+    const expiresAt = await this.store.ban(ip, this.banTtlMs);
+    return { ip, reason: "repeated_invalid_model_requests", expiresAt };
   }
 }
 

@@ -10,7 +10,7 @@ import type { AccessDecision } from "../../../security/access-control";
 import type { ModelStrikeService } from "../../../security/model-abuse";
 
 export interface ModelAbuseRoutesConfig {
-  readonly strikes: Pick<ModelStrikeService, "listBans" | "unban">;
+  readonly strikes: Pick<ModelStrikeService, "listBans" | "unban" | "ban">;
   readonly accessResolver: (request: Request) => AccessDecision | undefined;
 }
 

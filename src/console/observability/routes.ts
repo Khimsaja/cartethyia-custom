@@ -65,6 +65,12 @@ export function createObservabilityRoutes(config: ObservabilityConfig): Elysia {
     .get("/system/usage/requests/:requestId", async ({ request, params }) => {
       return await factory.getUsageRequestDetail(config.accessResolver(request), params.requestId);
 })
+    .get("/system/usage/requests/:requestId/download", async ({ request, params, set }) => {
+      const detail = await factory.getUsageRequestDetail(config.accessResolver(request), params.requestId);
+      set.headers["content-type"] = "application/json";
+      set.headers["content-disposition"] = `attachment; filename="telemetry-${params.requestId}.json"`;
+      return detail;
+})
     .get("/telemetry/events", { query: telemetryListQuery }, async ({ request, query }) => {
       return await factory.listEvents(
         config.accessResolver(request),

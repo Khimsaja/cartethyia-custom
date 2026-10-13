@@ -88,12 +88,23 @@ export function isFreeTierZenModel(modelId: string): boolean {
   return modelId.endsWith("-free") || KNOWN_FREE_ZEN_IDS.includes(modelId);
 }
 
-function opencodeDesktopHeaders(context: ProviderDispatchContext): Record<string, string> {
-  return buildOpenCodeHeaders(
-    undefined,
-    context.conversation_affinity,
-    context.request_headers?.["x-opencode-project"],
-  );
+function opencodeDesktopHeaders(
+  context: ProviderDispatchContext,
+  request?: CanonicalRequest,
+): Record<string, string> {
+  return {
+    ...buildOpenCodeHeaders(
+      undefined,
+      context.conversation_affinity,
+      context.request_headers?.["x-opencode-project"],
+    ),
+    // The free-tier gate refuses non-streaming dispatches with 403
+    // FreeTierError, so free models always advertise SSE regardless of the
+    // client's own Accept; billed models keep the JSON default.
+    ...(request && isFreeTierZenModel(request.model)
+      ? { accept: "text/event-stream" }
+      : {}),
+  };
 }
 /** Canonical agent-tool fingerprint OpenCode Free requires on every dispatch.
  * Upstream rejects tool-less or non-agent requests with `FreeTierError`
@@ -106,15 +117,15 @@ const FREE_AGENT_TOOLS: readonly { readonly name: string; readonly description: 
 ];
 
 function ensureFreeAgentRequest(request: CanonicalRequest): CanonicalRequest {
-  const names = new Set((request.tools ?? []).map((tool) => tool.name));
-  const missing: ToolDefinition[] = FREE_AGENT_TOOLS.filter((tool) => !names.has(tool.name)).map(
+  const present: Record<string, true> = {};
+  for (const tool of request.tools ?? []) present[tool.name] = true;
+  const missing: ToolDefinition[] = FREE_AGENT_TOOLS.filter((tool) => !present[tool.name]).map(
     (tool) => ({ name: tool.name, description: tool.description, jsonSchema: { type: "object", properties: {} } }),
   );
   const temperature = snapRestrictedTemperature(request);
-  if (missing.length === 0 && request.stream && temperature === undefined) return request;
+  if (missing.length === 0 && temperature === undefined) return request;
   return {
     ...request,
-    stream: true,
     tools: [...(request.tools ?? []), ...missing],
     ...(temperature === undefined
       ? {}
@@ -159,19 +170,24 @@ function completeOpenCodeToolSchemas(payload: Record<string, unknown>): void {
 }
 
 function opencodeSpec(providerId: "opencodeft" | "opencodezen" | "opencodego"): ApiKeyProviderSpec {
+  // Free-tier gate facts (verified live 2026-10-14 against opencode.ai/zen/v1):
+  // a request for a free model with stream:false is ALWAYS refused with 403
+  // FreeTierError — regardless of headers, tools, or session shape — while
+  // the same body with stream:true passes. The gate keys on the model's free
+  // status, not the provider row: every tier (free, Zen, Go) carries free
+  // models, so the workarounds below apply per MODEL via isFreeTierZenModel,
+  // never per provider id. The response layer aggregates the forced SSE back
+  // to JSON for non-stream clients.
   return {
     provider_id: providerId,
     endpoint_paths_by_wire_family: {
       ...PROVIDER_COMPATIBILITY_PROFILES[providerId]?.endpoint_paths_by_wire_family,
     },
     chatTokenLimitField: "max_completion_tokens",
-    extra_headers: { accept: "application/json" },
-    // Go is API-key-only: it never receives the desktop fingerprint.
-    ...(providerId === "opencodego" ? {} : { buildExtraHeaders: opencodeDesktopHeaders }),
-    // OpenCode Free is a genuinely public, unauthenticated endpoint. Console
-    // account creation still allows any credentialKind for it, so the
-    // "never forward" contract is enforced here rather than trusting account config.
-    ...(providerId === "opencodeft" ? { credential_forwarding: "never" as const, prepareRequest: ensureFreeAgentRequest } : {}),
+    // The OpenCode client identity fingerprint (x-opencode-* correlation ids,
+    // user-agent, request id) is the provider's own request identity: it goes
+    // on every dispatch of every tier, gated or not — billed traffic included.
+    buildExtraHeaders: opencodeDesktopHeaders,
     prePayload: (payload, request, candidate) => {
       completeOpenCodeToolSchemas(payload);
       if (candidate.wire_family === "responses") {
@@ -185,7 +201,20 @@ function opencodeSpec(providerId: "opencodeft" | "opencodezen" | "opencodego"): 
           include_usage: true,
         };
       }
+      // Free model: force the upstream stream flag regardless of what the
+      // caller asked for. The gate refuses stream:false on free models with
+      // 403 FreeTierError; here it only patches the wire body, never the
+      // client-visible stream contract.
+      if (isFreeTierZenModel(candidate.model_id)) payload.stream = true;
     },
+    // OpenCode Free is a genuinely public, unauthenticated endpoint: no
+    // credential is ever forwarded, whatever the account configuration says.
+    ...(providerId === "opencodeft" ? { credential_forwarding: "never" as const } : {}),
+    // Free models on any tier need the agent-tool fingerprint and the forced
+    // upstream stream (the gate refuses tool-less or stream:false free
+    // dispatches with 403 FreeTierError). Billed models dispatch untouched.
+    prepareRequest: (request) =>
+      isFreeTierZenModel(request.model) ? ensureFreeAgentRequest(request) : request,
   };
 }
 /** OpenCode Free — unauthenticated public route. No credential is ever forwarded. */

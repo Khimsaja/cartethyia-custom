@@ -6,6 +6,7 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpFromLine,
+  Ban,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -13,6 +14,7 @@ import {
   Copy,
   Database,
   DollarSign,
+  Download,
   Eye,
   EyeOff,
   Image as ImageIcon,
@@ -36,6 +38,10 @@ import {
   YAxis,
 } from "recharts";
 import { Button } from "../../components/ui/button";
+import { useBanIp } from "../../hooks/model-bans";
+import { downloadTextFile } from "../../lib/download";
+import { toast } from "../../lib/toast";
+import { consoleRequest, getErrorMessage } from "../../data/api";
 import { Card, CardBody, CardHeader } from "../../components/ui/card";
 import { DataTable, StatCard } from "../../components/ui/layout";
 import { EmptyState, ErrorState, LoadingState } from "../../components/ui/state";
@@ -906,6 +912,8 @@ function RequestDetailDrawer({
   const displayApiKeyName = isProbe ? "Probe" : apiKeyName;
   const [copiedRequestId, setCopiedRequestId] = useState(false);
   const [copiedPayload, setCopiedPayload] = useState<PayloadKind | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const banIp = useBanIp();
   const scheduleReset = useTrackedTimeout();
   const copyRequestId = () => {
     void navigator.clipboard?.writeText(detail?.requestId ?? "");
@@ -917,6 +925,33 @@ function RequestDetailDrawer({
     void navigator.clipboard?.writeText(text);
     setCopiedPayload(kind);
     scheduleReset(() => setCopiedPayload(null), 1500);
+  };
+  const downloadTelemetry = async () => {
+    if (!detail) return;
+    setDownloading(true);
+    try {
+      const telemetry = await consoleRequest<unknown>(
+        `/system/usage/requests/${encodeURIComponent(detail.requestId)}/download`,
+      );
+      downloadTextFile(
+        `telemetry-${detail.requestId}.json`,
+        JSON.stringify(telemetry, null, 2),
+        "application/json",
+      );
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Could not download telemetry."));
+    } finally {
+      setDownloading(false);
+    }
+  };
+  const banThisUser = async () => {
+    if (!detail?.clientIp) return;
+    try {
+      await banIp.mutateAsync(detail.clientIp);
+      toast.success(`Banned ${detail.clientIp}.`);
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Could not ban the address."));
+    }
   };
   const payloadViews = useMemo(
     () =>
@@ -963,6 +998,28 @@ function RequestDetailDrawer({
               onClick={copyRequestId}
               className="shrink-0 p-1.5"
             />
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              icon={<Ban size={13} />}
+              disabled={!detail.clientIp || banIp.isPending}
+              title={detail.clientIp ? `Ban ${detail.clientIp}` : "No client IP recorded for this request"}
+              onClick={() => void banThisUser()}
+            >
+              Banned User
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              icon={<Download size={13} />}
+              disabled={downloading}
+              title="Download all captured telemetry for this request as JSON"
+              onClick={() => void downloadTelemetry()}
+            >
+              Download telemetry
+            </Button>
           </div>
 
 
