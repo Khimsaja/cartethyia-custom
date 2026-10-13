@@ -1403,12 +1403,14 @@ html[data-app="landing"] .landing-story-visual {
 /* The chip inherits the parent's complete mono shorthand, not UA code sizing. */
 .code-chip-value { font: inherit; }
 
-/* Auto-fit grids follow available card width, not viewport breakpoints. */
+/* Metric cards stay compact on phones while dropping to one column when the
+   available width cannot fit two readable tracks. */
 .metric-grid {
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 120px), 1fr));
 }
+/* Keep empty tracks so a partial final row does not stretch its remaining card. */
 .provider-grid {
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
 }
 .quota-account-grid {
   display: grid;

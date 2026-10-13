@@ -1,4 +1,4 @@
-import { ArrowRight, Copy, CopyPlus, GripVertical, Layers, Pencil, Plus, Route, Search, Trash2, X } from "lucide-react";
+import { ArrowRight, Copy, CopyPlus, Layers, Pencil, Plus, Route, Search, Trash2, X } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import { Button } from "../../components/ui/button";
 import { Card, CardBody, CardHeader } from "../../components/ui/card";
@@ -159,8 +159,9 @@ function AliasesSection(): ReactNode {
             }
             renderItem={(a) => (
               <ListRow
+                className="items-start flex-col sm:flex-row"
                 actions={
-                  <Inline gap="4px">
+                  <Inline gap="4px" className="w-full justify-start sm:w-auto sm:justify-end">
                     <Button
                       variant="ghost"
                       size="sm"
@@ -293,9 +294,6 @@ function AliasesSection(): ReactNode {
 }
 
 // ── Combos Section ───────────────────────────────────────────────────────────
-
-/** Member chips shown per combo row before collapsing to a "+N more" note. */
-const COMBO_MEMBER_CHIP_MAX = 4;
 
 function CombosSection(): ReactNode {
   const combosQuery = useModelCombos();
@@ -480,15 +478,15 @@ function CombosSection(): ReactNode {
             }
             renderItem={(c) => (
               <ListRow
-                className="items-start"
+                className="items-start flex-col sm:flex-row"
                 actions={
-                  <Inline gap="8px">
+                  <Inline gap="8px" className="w-full justify-between sm:w-auto sm:justify-start">
                     <Select
                       value={c.strategy}
                       onValueChange={(v) => handleStrategyChange(c, v as ComboStrategy)}
                       options={COMBO_STRATEGY_OPTIONS}
                     />
-                    <Inline gap="4px">
+                    <Inline gap="4px" className="flex-wrap">
                       <Button
                         variant="ghost"
                         size="sm"
@@ -531,16 +529,10 @@ function CombosSection(): ReactNode {
                   <strong className="text-body">{c.name}</strong>
                 </div>
 
-                <Inline gap="6px" className="flex-wrap">
-                  {c.members.slice(0, COMBO_MEMBER_CHIP_MAX).map((m) => (
+                <Inline gap="6px" className="w-full flex-wrap">
+                  {c.members.map((m) => (
                     <CodeChip key={m} value={m} />
                   ))}
-                  {c.members.length > COMBO_MEMBER_CHIP_MAX ? (
-                    <span title={c.members.slice(COMBO_MEMBER_CHIP_MAX).join(", ")}
-                     className="font-mono tabular-nums text-badge text-text-tertiary self-center">
-                      +{c.members.length - COMBO_MEMBER_CHIP_MAX} more models
-                    </span>
-                  ) : null}
                 </Inline>
               </ListRow>
             )}
@@ -584,7 +576,7 @@ function CombosSection(): ReactNode {
           <Stack gap="6px">
             <div className="flex items-center justify-between">
               <label className="text-caption font-semibold text-text-secondary">
-                Member models — drag to reorder
+                Member models — use arrows or drag to reorder
               </label>
               <Button
                 variant="secondary"
@@ -624,7 +616,6 @@ function CombosSection(): ReactNode {
                   renderItem={(m) => (
                     <ListRow
                       density="compact"
-                      leading={<GripVertical size={12} className="text-text-tertiary cursor-grab" />}
                       actions={
                         <button
                           type="button"

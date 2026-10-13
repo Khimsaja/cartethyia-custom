@@ -1,4 +1,4 @@
-import { GripVertical } from "lucide-react";
+import { ChevronDown, ChevronUp, GripVertical } from "lucide-react";
 import { useRef, useState, type DragEvent, type ReactNode } from "react";
 import { cn } from "../lib/classnames";
 import { gapUtility } from "../lib/spacing";
@@ -61,6 +61,15 @@ export function SortableList<T extends { id: string }>({
       {items.map((item, index) => {
         const dragging = dragId === item.id;
         const isOver = overId === item.id && dragId !== null && dragId !== item.id;
+        const moveBy = (offset: -1 | 1) => {
+          const targetIndex = index + offset;
+          if (disabled || targetIndex < 0 || targetIndex >= items.length) return;
+          const ids = items.map((entry) => entry.id);
+          const [movedId] = ids.splice(index, 1);
+          if (movedId === undefined) return;
+          ids.splice(targetIndex, 0, movedId);
+          onReorder(ids);
+        };
         return (
           <div
             key={item.id}
@@ -86,22 +95,49 @@ export function SortableList<T extends { id: string }>({
               endDrag();
             }}
           >
-            <div
-              className="group/rail flex flex-col items-center gap-2 flex-none pt-6 cursor-grab text-text-tertiary select-none active:cursor-grabbing"
-              draggable={!disabled}
-              aria-label={`Drag to reorder, position ${index + 1}`}
-              onDragStart={(event: DragEvent<HTMLDivElement>) => {
-                if (disabled) return;
-                dragIdRef.current = item.id;
-                setDragId(item.id);
-                event.dataTransfer.effectAllowed = "move";
-                // Firefox needs data set for a drag to start at all.
-                event.dataTransfer.setData("text/plain", item.id);
-              }}
-              onDragEnd={endDrag}
-            >
-              <GripVertical size={14} className="opacity-55 group-hover/rail:opacity-100" />
-              <span className="font-mono text-badge tabular-nums leading-none">{index + 1}</span>
+            <div className="flex flex-none flex-col items-center gap-1 pt-4 text-text-tertiary select-none">
+              <div className="flex items-center gap-1">
+                <span className="font-mono text-badge tabular-nums leading-none">{index + 1}</span>
+                <button
+                  type="button"
+                  draggable={!disabled}
+                  aria-label={`Drag item at position ${index + 1} to reorder`}
+                  title="Drag to reorder"
+                  disabled={disabled}
+                  onDragStart={(event: DragEvent<HTMLButtonElement>) => {
+                    dragIdRef.current = item.id;
+                    setDragId(item.id);
+                    event.dataTransfer.effectAllowed = "move";
+                    event.dataTransfer.setData("text/plain", item.id);
+                  }}
+                  onDragEnd={endDrag}
+                  className="grid size-7 cursor-grab place-items-center rounded-control text-text-tertiary hover:bg-hover active:cursor-grabbing disabled:cursor-not-allowed"
+                >
+                  <GripVertical size={14} />
+                </button>
+              </div>
+              <div className="flex gap-1">
+                <button
+                  type="button"
+                  aria-label={`Move item ${index + 1} up`}
+                  title="Move up"
+                  disabled={disabled || index === 0}
+                  onClick={() => moveBy(-1)}
+                  className="grid size-7 place-items-center rounded-control text-text-tertiary hover:bg-hover disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <ChevronUp size={14} />
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Move item ${index + 1} down`}
+                  title="Move down"
+                  disabled={disabled || index === items.length - 1}
+                  onClick={() => moveBy(1)}
+                  className="grid size-7 place-items-center rounded-control text-text-tertiary hover:bg-hover disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <ChevronDown size={14} />
+                </button>
+              </div>
             </div>
             <div className="flex-auto min-w-0">{renderItem(item, index)}</div>
           </div>
