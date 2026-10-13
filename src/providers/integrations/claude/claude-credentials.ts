@@ -1,5 +1,5 @@
 import { GatewayError } from "../../../protocol/gateway-error";
-import type { CredentialKind } from "../../core/contracts";
+import type { CredentialKind } from "../../provider-contracts";
 import { HEADER_CONTROL as CONTROL_CHARACTERS } from "../../../security/outbound-headers";
 import { filterClaudeCustomHeaders } from "../shared/claude-messages";
 import { CLAUDE_CODE_SDK_VERSION, CLAUDE_CODE_VERSION } from "./claude-fingerprint";

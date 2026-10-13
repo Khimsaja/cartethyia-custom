@@ -1,7 +1,7 @@
 // OAuth refresh sweep: one bounded pass that proactively refreshes due
 // OAuth accounts. Registered as a ScheduledTaskRegistry task so the registry
 // owns interval + re-entrancy; this function owns only the domain work.
-import type { OAuthRefreshService, OAuthTokenRefresher } from "../providers/runtime/authentication/oauth-refresh-service";
+import type { OAuthRefreshService, OAuthTokenRefresher } from "../providers/authentication/oauth-refresh-service";
 import { runSweep } from "./sweep-runner";
 
 export interface DueOAuthAccount {

@@ -665,14 +665,10 @@ const FREE_LIMITED_IDS = new Set([
 /**
  * Providers reached with a signed-in session rather than an API key.
  *
- * `mimodesktop` and `mimostudio` belong here alongside the session providers
- * that were: MiMo Studio takes browser cookies pasted from a signed-in session,
- * and MiMo Desktop reads the desktop app's own cookie store and redeems it
- * through a PKCE exchange. Both are a signed-in identity with no key to paste,
- * which is what this section is for — an OAuth device flow would belong in the
- * OAuth section instead, because the operator approves something there.
+ * MiMo Desktop reads the desktop app's own session store through its OAuth
+ * import flow; no browser cookie needs to be pasted.
  */
-const WEB_LLM_IDS = new Set(["mimodesktop", "mimostudio"]);
+const WEB_LLM_IDS = new Set(["mimodesktop"]);
 /**
  * The providers an operator reaches for first: household names with a
  * published API-key signup. Grouped so the long tail of compatible resellers

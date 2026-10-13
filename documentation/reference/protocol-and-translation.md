@@ -38,12 +38,12 @@ Codex and Gemini are client-visible only through their providers, not as public
 surfaces: `src/protocol/request/codex.ts`, `src/protocol/response/codex.ts`, and
 `src/protocol/request/gemini.ts` / `response/gemini.ts` are consumed by
 `src/providers/integrations/codex/codex.ts:40` and
-`src/providers/integrations/gemini/gemini.ts`.
+`src/providers/integrations/gemini.ts`.
 
 Three wire families exist on the provider side — `chat`, `responses`, `messages`
 (`src/protocol/canonical-model.ts:8`). There is no `native` family. A provider
 that frames its own bytes says so on its metadata (`bespokeWire`,
-`src/providers/core/metadata.ts`), which is what exempts it from the codec
+`src/providers/provider-metadata.ts`), which is what exempts it from the codec
 matrices in `src/transport/translation/capabilities.ts:175`.
 
 ## The canonical model
@@ -106,7 +106,7 @@ throws `capability_unsupported` rather than silently dropping semantics. The
 attempt loop re-projects per candidate in
 `src/transport/dispatch/proxy-request.ts:238`.
 
-**Encode.** `BaseProviderAdapter.dispatch` (`src/providers/runtime/adapters/base-adapter.ts`)
+**Encode.** `BaseProviderAdapter.dispatch` (`src/providers/adapters/base-adapter.ts`)
 calls the adapter's `preparePayload`, which for the OpenAI-compatible family
 calls `encodeWireRequest` (`src/protocol/registry.ts:16`) → one of
 `canonicalToChatPayload` (`src/protocol/request/chat.ts:177`),
@@ -130,7 +130,7 @@ because the marker differs per wire but the scan does not.
 Upstream bytes → `CanonicalEvent` stream → client wire.
 
 Adapters yield canonical events from `transformStream`
-(`src/providers/runtime/adapters/compatible-adapter.ts`). SSE bodies go through
+(`src/providers/adapters/compatible-adapter.ts`). SSE bodies go through
 `decodeWireStream` (`src/protocol/registry.ts:53`); JSON bodies through
 `decodeWireResponse` (:35). Every SSE decoder sits on the shared
 `decodeSseEvents` (`src/protocol/sse-decoder.ts:63`), which is bounded, abort
@@ -167,7 +167,7 @@ event's usage wins; a stream with none falls back to
 `estimatedUsage(input, output)` (`src/transport/dispatch/attempt-finalize.ts:363`),
 whose `estimated_cost` is `null`, not `0` — unpriced is not free, and the
 console's `partial` flag depends on that distinction. `repriceUsage`
-(`src/providers/core/usage.ts`) applies the routed model's catalog rate before the
+(`src/providers/provider-usage.ts`) applies the routed model's catalog rate before the
 record is committed, then the wire converters (`usageToChatWire` :357,
 `usageToResponsesWire` :385, `usageToMessagesWire` :411) render it per surface.
 

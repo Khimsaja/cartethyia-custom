@@ -73,7 +73,7 @@ Verify current policy and limits in:
 | --- | --- |
 | Threshold evaluation or failover behavior | `EligibilityEvaluator` in `src/transport/routing/router.ts` |
 | Persisted setting or route snapshot input | `providerRoutingSettings` in `src/persistence/schema.ts`, then the routing settings store/loader |
-| Quota parsing or accounting windows | `src/providers/runtime/quota/` and the provider collector |
+| Quota parsing or accounting windows | `src/providers/quota/` and the provider collector |
 | Cache freshness or failure retention | `src/console/quota/cache.ts` and its focused tests |
 | Refresh scheduling and sweep budget | `src/workers/quota-refresh-sweep.ts`, registered in `src/boot/dependencies.ts` |
 | Console and dashboard presentation | `src/console/quota/`, then the provider-detail usage-floor section |

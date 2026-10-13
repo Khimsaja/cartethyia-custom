@@ -2,7 +2,7 @@ import type {
   FetchLike,
   ProviderQuotaResult,
   ProviderQuotaWindow,
-} from "../../runtime/quota/quota-contracts";
+} from "../../quota/quota-contracts";
 import {
   authCredential,
   getJson,
@@ -12,7 +12,7 @@ import {
   text,
   number,
   isoDate,
-} from "../../runtime/quota/quota-contracts";
+} from "../../quota/quota-contracts";
 import { getAntigravityUserAgent, getAntigravityVersion, collapseAntigravityVariant, loadAntigravityProject } from "./antigravity-protocol";
 import { ANTIGRAVITY_MODELS } from "./antigravity";
 import { log } from "../../../observability/logger";

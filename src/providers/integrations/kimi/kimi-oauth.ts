@@ -3,11 +3,11 @@
  */
 import * as crypto from "node:crypto";
 import { parseEnvelopeRecord } from "../../../security/credential-codec";
-import { devicePollBackoff, expiryFromSeconds, parseDeviceAuthStart, postFormTokenRequest, readJsonResponse } from "../../runtime/authentication/oauth-flow-store";
-import type { OAuthDeviceFlowContext, OAuthDevicePollResult, OAuthDeviceStartResult } from "../../runtime/authentication/oauth-flow-store";
-import type { OAuthTokenRefreshResult } from "../../runtime/authentication/oauth-refresh-service";
-import { OAuthDeviceFlow } from "../../runtime/authentication/oauth-device-flow";
-import type { FetchLike } from "../../runtime/authentication/oauth-client";
+import { devicePollBackoff, expiryFromSeconds, parseDeviceAuthStart, postFormTokenRequest, readJsonResponse } from "../../authentication/oauth-flow-store";
+import type { OAuthDeviceFlowContext, OAuthDevicePollResult, OAuthDeviceStartResult } from "../../authentication/oauth-flow-store";
+import type { OAuthTokenRefreshResult } from "../../authentication/oauth-refresh-service";
+import { OAuthDeviceFlow } from "../../authentication/oauth-device-flow";
+import type { FetchLike } from "../../authentication/oauth-client";
 import { getKimiCliVersion } from "../../operations/client-versions";
 import { kimiDeviceModel, kimiDeviceName, kimiOsVersion } from "../../operations/cli-platform";
 import { resolveKimiOAuthHost } from "../../../config/providers";

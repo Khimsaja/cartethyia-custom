@@ -9,12 +9,12 @@
  * would compose to `/anthropic/messages`.
  */
 import { describe, expect, test } from "bun:test";
-import { createDeepseekAnthropicAdapter } from "../../src/providers/integrations/anthropic/anthropic";
+import { createDeepseekAnthropicAdapter } from "../../src/providers/integrations/anthropic";
 import { endpointUrl } from "../../src/protocol/codecs";
 import { PROVIDER_CAPABILITIES } from "../../src/providers/default-registry";
-import { DEEPSEEK_MODELS } from "../../src/providers/integrations/deepseek/provider";
+import { DEEPSEEK_MODELS } from "../../src/providers/integrations/deepseek";
 import { GENERIC_API_KEY_SPECS, GENERIC_API_KEY_PROVIDER_IDS } from "../../src/providers/configured-openai-providers";
-import { providerBaseUrl, providerDefaultWireFamily } from "../../src/providers/core/metadata";
+import { providerBaseUrl, providerDefaultWireFamily } from "../../src/providers/provider-metadata";
 
 describe("deepseek anthropic messages wire", () => {
   test("every catalog row declares the messages wire and the versioned path", () => {

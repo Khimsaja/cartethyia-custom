@@ -2,7 +2,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import { models } from "../../persistence/schema";
-import type { ModelDefinition } from "../core/model-definition";
+import type { ModelDefinition } from "../provider-model-definition";
 
 /** Persists compiled provider model metadata and reconciles drifted capability flags. */
 export async function seedBundledModels(

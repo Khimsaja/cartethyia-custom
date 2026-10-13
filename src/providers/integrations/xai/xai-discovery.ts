@@ -6,9 +6,9 @@
  * models.dev files these models under, and the base URL carries the `/v1`
  * segment already, so both are passed explicitly rather than inferred.
  */
-import { fetchOpenAICompatibleModels } from "../../runtime/discovery/openai-model-discovery";
-import type { DiscoveryInput } from "../../runtime/discovery/discovery-types";
-import type { ModelDefinition } from "../../core/model-definition";
+import { fetchOpenAICompatibleModels } from "../../discovery/openai-model-discovery";
+import type { DiscoveryInput } from "../../discovery/discovery-types";
+import type { ModelDefinition } from "../../provider-model-definition";
 import { XAI_BASE_URL, XAI_PROVIDER_ID } from "./xai";
 
 /** Reads the subscription's own model list. */

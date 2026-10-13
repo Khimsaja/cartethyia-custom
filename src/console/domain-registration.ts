@@ -37,7 +37,7 @@ import { createBackupRoutes } from "./backup/routes";
 import { BackupService } from "./backup/service";
 import type { ConsoleCredentialService } from "./auth/credentials";
 
-import { InMemoryOAuthFlowStore, OAuthFlowStore } from "../providers/runtime/authentication/oauth-flow-store";
+import { InMemoryOAuthFlowStore, OAuthFlowStore } from "../providers/authentication/oauth-flow-store";
 import { OAuthCallbackListener } from "./providers/oauth/callback-listener";
 import {
   createAccountExportCredentialsResolver,
@@ -56,10 +56,10 @@ import type { LiveInFlightSource } from "./observability/live";
 import type { ApiKeyAdmissionService } from "../security/admission/service";
 import type { ModelStrikeService } from "../security/model-abuse";
 import type { TelemetryBatchBuffer } from "../observability/telemetry-buffer";
-import type { OAuthRefreshService } from "../providers/runtime/authentication/oauth-refresh-service";
+import type { OAuthRefreshService } from "../providers/authentication/oauth-refresh-service";
 import { resolveRedisBackend } from "../persistence/redis";
 import type { RedisClient } from "../persistence/redis";
-import type { ProviderRegistry } from "../providers/core/registry";
+import type { ProviderRegistry } from "../providers/provider-registry";
 import type { BundledProviderCatalog } from "../providers/operations/provider-catalog-service";
 import type { ValidatedNetworkBindingFactory } from "../network/pool/resolver";
 import type { CartethyiaDatabase } from "../persistence/db-handle";
@@ -102,8 +102,8 @@ export interface ConsoleDomainContext {
 import { and, eq, isNull, or } from "drizzle-orm";
 import { networkPools, providerRoutingSettings } from "../persistence/schema";
 import { resolveTenantOverride } from "../persistence/tenant-scope";
-import { DEFAULT_PROXY_SKIP_PROVIDER_IDS } from "../providers/core/metadata";
-import type { ProbeOutboundBinding } from "../providers/runtime/discovery/probing-service";
+import { DEFAULT_PROXY_SKIP_PROVIDER_IDS } from "../providers/provider-metadata";
+import type { ProbeOutboundBinding } from "../providers/discovery/probing-service";
 
 
 export function registerConsoleDomains(

@@ -3,7 +3,7 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import type { CartethyiaDatabase } from "../../../persistence/db-handle";
 import { providerRoutingSettings } from "../../../persistence/schema";
 import { resolveTenantOverride } from "../../../persistence/tenant-scope";
-import { DEFAULT_PROXY_SKIP_PROVIDER_IDS } from "../../../providers/core/metadata";
+import { DEFAULT_PROXY_SKIP_PROVIDER_IDS } from "../../../providers/provider-metadata";
 import type { ProviderRoutingResponse, UpdateProviderRoutingRequest } from "../catalog/contracts";
 import { DEFAULT_PROVIDER_MAX_INFLIGHT } from "../../../persistence/schema";
 import { buildClaudeCliUserAgent } from "../../../providers/operations/custom-cli-headers";

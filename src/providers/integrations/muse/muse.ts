@@ -21,9 +21,9 @@
 import type { CanonicalRequest } from "../../../protocol/canonical-model";
 import { GatewayError } from "../../../protocol/gateway-error";
 import { decodeMuseCredential } from "../../../security/credential-codec";
-import { OpenAICompatibleAdapter, withBearerAuthentication } from "../../runtime/adapters/compatible-adapter";
-import type { ProviderDispatchTarget, ProviderDispatchContext, ResolvedCredential } from "../../core/contracts";
-import { providerBaseUrl } from "../../core/metadata";
+import { OpenAICompatibleAdapter, withBearerAuthentication } from "../../adapters/compatible-adapter";
+import type { ProviderDispatchTarget, ProviderDispatchContext, ResolvedCredential } from "../../provider-contracts";
+import { providerBaseUrl } from "../../provider-metadata";
 
 export const MUSE_CODE_PROVIDER_ID = "muse" as const;
 /** Root URL; model endpoint paths carry the `/v1/...` suffix. */
@@ -31,8 +31,8 @@ export const MUSE_CODE_BASE_URL = providerBaseUrl("muse");
 
 // Model catalog — captured from provider models.json (`muse-code`)
 
-import { defineModel } from "../../core/model-definition";
-import type { ModelDefinition } from "../../core/model-definition";
+import { defineModel } from "../../provider-model-definition";
+import type { ModelDefinition } from "../../provider-model-definition";
 
 const museModel = (
   modelId: string,

@@ -92,10 +92,10 @@ files and some shared catalogs/helpers lived together in one folder:
 
 | Product | Provider ID | Before implementation |
 | --- | --- | --- |
-| CodeBuddy International | `cb` | `codebuddy.ts`, `codebuddy-shared.ts`, `codebuddy-oauth.ts`, `codebuddy-quota.ts` |
-| WorkBuddy International | `workbuddy` | `workbuddy.ts`, `workbuddy-shared.ts`, `workbuddy-oauth.ts`, `workbuddy-quota.ts` |
-| CodeBuddy CN | `cbcn` | `codebuddy-cn.ts`, `codebuddy-cn-oauth.ts` |
-| WorkBuddy CN | `workbuddycn` | `workbuddy-cn.ts`, `workbuddy-cn-oauth.ts` |
+| CodeBuddy International | `cb` | `codebuddy/provider.ts`, `shared.ts`, `oauth.ts`, `quota.ts` |
+| WorkBuddy International | `workbuddy` | `workbuddy/provider.ts`, `shared.ts`, `oauth.ts`, `quota.ts` |
+| CodeBuddy CN | `cbcn` | `codebuddy/cn-provider.ts`, shared `oauth.ts` |
+| WorkBuddy CN | `workbuddycn` | `workbuddy/cn-provider.ts`, `cn-oauth.ts` |
 
 International CodeBuddy and WorkBuddy intentionally share the Intl roster and
 discovery shape. The CN products use a separate catalog/discovery path and
@@ -112,54 +112,22 @@ behavior beside the integration that owns it.
 
 ```text
 src/providers/
-├── core/                                  # provider runtime contracts
-│   ├── contracts.ts
-│   ├── registry.ts
-│   ├── metadata.ts
-│   ├── model-definition.ts
-│   ├── credential-envelope.ts
-│   ├── credential-resolver.ts
-│   ├── reasoning.ts
-│   ├── sanitize.ts
-│   └── usage.ts
-├── runtime/                               # generic protocol/runtime machinery
-│   ├── adapters/
-│   │   ├── base-adapter.ts
-│   │   ├── compatible-adapter.ts
-│   ├── authentication/
-│   ├── discovery/
-│   └── quota/
+├── adapters/                              # shared protocol adapters
+├── authentication/                        # shared OAuth and token flows
+├── discovery/                             # model discovery and probing
+├── quota/                                 # quota contracts and helpers
+├── provider-contracts.ts                  # provider identity and adapter contracts
+├── provider-metadata.ts                   # identity and routing defaults
+├── provider-model-definition.ts            # normalized model rows
+├── provider-registry.ts                   # registry factory and lazy loader cache
+├── provider-credential-envelope.ts
+├── provider-credential-resolver.ts
+├── provider-reasoning.ts
+├── provider-sanitize.ts
+├── provider-usage.ts
 ├── integrations/                          # code with provider-specific behavior
 │   ├── alibabacp/
 │   ├── antigravity/
-│   ├── buddy/
-│   │   ├── shared/                        # only true shared code
-│   │   │   ├── chat.ts
-│   │   │   ├── catalog.ts                 # shared Intl catalog only
-│   │   │   ├── discovery.ts
-│   │   │   ├── media.ts
-│   │   │   ├── oauth.ts
-│   │   │   └── quota.ts
-│   │   ├── intl/
-│   │   │   ├── codebuddy/
-│   │   │   │   ├── provider.ts
-│   │   │   │   ├── models.ts              # maps shared Intl roster
-│   │   │   │   ├── auth.ts
-│   │   │   │   └── quota.ts
-│   │   │   └── workbuddy/
-│   │   │       ├── provider.ts
-│   │   │       ├── models.ts              # same roster; own endpoint path
-│   │   │       ├── auth.ts
-│   │   │       └── quota.ts
-│   │   └── cn/
-│   │       ├── codebuddy/
-│   │       │   ├── provider.ts
-│   │       │   ├── models.ts              # CN catalog and discovery
-│   │       │   └── auth.ts
-│   │       └── workbuddy/
-│   │           ├── provider.ts
-│   │           ├── models.ts              # explicit reuse of CN catalog
-│   │           └── auth.ts
 │   ├── claude/
 │   ├── cline/
 │   ├── cloudflareai/
@@ -167,58 +135,74 @@ src/providers/
 │   ├── factory/
 │   ├── github/
 │   ├── grok/
+│   ├── buddy/
+│   │   ├── codebuddy/                     # provider, OAuth, quota; Intl + CN
+│   │   └── workbuddy/                     # provider, OAuth, quota; Intl + CN
 │   ├── kilo/
 │   ├── kimi/
 │   ├── kiro/
-│   ├── meta/
 │   ├── muse/
+│   ├── opencode/
+│   ├── openrouter/
 │   ├── xai/
-│   └── xiaomi-mimo/
+│   ├── xiaomi-mimo/
+│   ├── aihubmix.ts, bai.ts, cerebras.ts, deepseek.ts
+│   ├── hermes.ts, meta.ts, mistral.ts, openai.ts, tokenharbor.ts
+│   └── ollamacloud-quota.ts
+├── configured-provider.ts                 # shared standard API-key adapter/spec
+├── configured-openai-providers.ts         # typed endpoint-shape declarations
+├── bundled-discovery-providers.ts         # shared API-key discovery behavior
+├── provider-capabilities.ts               # shared lazy OAuth/quota helpers
 ├── operations/                            # cross-provider account/catalog operations
 ├── search/                                # search provider implementations
 ├── default-registry.ts                    # composes metadata and capability groups
-├── configured-provider.ts                 # standard API-key adapter/spec
-├── configured-openai-providers.ts         # flat typed API-key declarations
-├── bundled-discovery-providers.ts         # shared declaration for simple API keys
-├── provider-capabilities.ts               # shared lazy auth/quota loader helpers
-└── core/registry.ts                        # registry factory and lazy loader cache
 ```
 
-This is the migrated structure for the runtime and Buddy areas, plus the
-implemented standard-provider declaration group. Ordinary API-key providers
-stay as flat declarations; directories are for substantial integrations such
-as OAuth/device-flow providers or protocols with multiple owned modules. The
-remainder of the central registry and provider-specific integrations remain
-explicit; not every provider needs a generated manifest or its own `auth.ts`.
+This is the flattened shared provider foundation plus the migrated Buddy
+integrations and standard-provider declaration group. Ordinary API-key providers
+stay as flat files directly under `integrations/`; provider subfolders are for
+substantial integrations such as OAuth/device-flow providers or protocols
+with multiple owned modules. The central registry retains explicit exceptions.
 
-### Buddy after: products and shared code
+### Buddy after: grouped by product, with capabilities kept separate
 
 The four provider IDs stay four distinct, discoverable implementations:
 
 ```text
 src/providers/integrations/buddy/
-├── capabilities.ts         # four distinct, lazy regional provider rows
-├── shared/                 # shared protocol, catalog/discovery, media, and auth helpers
-├── intl/
-│   ├── codebuddy/           # cb: provider, headers, OAuth, quota
-│   └── workbuddy/           # workbuddy: provider, headers, OAuth, quota
-└── cn/
-    ├── codebuddy/           # cbcn: provider and CN catalog/discovery
-    └── workbuddy/           # workbuddycn: own OAuth and provider identity
+├── capabilities.ts                 # four distinct, lazy regional provider rows
+├── buddy-*.ts                       # behavior shared across Buddy products
+├── codebuddy/
+│   ├── provider.ts                  # cb
+│   ├── cn-provider.ts               # cbcn
+│   ├── shared.ts
+│   ├── oauth.ts                     # OAuth clients for cb and cbcn
+│   └── quota.ts                     # quota collectors for cb and cbcn
+└── workbuddy/
+    ├── provider.ts                  # workbuddy
+    ├── cn-provider.ts               # workbuddycn
+    ├── shared.ts
+    ├── oauth.ts                     # international OAuth
+    ├── cn-oauth.ts                  # CN OAuth
+    └── quota.ts                     # quota collectors for both regions
 ```
 
 Rules for this grouping:
 
-- The shared Intl roster and CN catalog/discovery live in `buddy/shared/`;
-  region-specific provider modules select the appropriate data and paths.
+- Group provider-owned files under one product directory (`codebuddy/` or
+  `workbuddy/`); keep OAuth, quota, provider, and shared modules as separate
+  files rather than merging different responsibilities.
+- Keep behavior shared across products in clearly named files directly under
+  `integrations/buddy/`.
 - CN catalog/discovery stays independent from Intl; do not make a CN model
   appear internationally or vice versa through an implicit shared list.
-- WorkBuddy CN's reuse of CodeBuddy CN models should be explicit in its
-  `models.ts` declaration or a clearly named shared CN catalog module.
+- WorkBuddy CN's reuse of CodeBuddy CN models stays explicit in its provider
+  module.
 - Per-product base URL, auth, endpoint path, and provider ID stay on that
   product's manifest. Sharing helper functions must not merge product identity.
-- Shared chat normalization, media, and low-level OAuth/quota helpers may stay
-  shared where request/response evidence shows identical behavior.
+- Shared chat normalization, media, and low-level OAuth/quota helpers stay in
+  clearly named Buddy files when request/response evidence shows identical
+  behavior.
 
 ## Provider declaration model
 
@@ -305,19 +289,18 @@ data. A bespoke provider should make its behavior obvious.
 
 | Current path | Proposed home | Notes |
 | --- | --- | --- |
-| `contracts.ts`, `registry.ts`, `metadata.ts`, `model-definition.ts` | `core/` | Runtime identity and type contracts |
-| `credential-envelope.ts`, `credential-resolver.ts`, `reasoning.ts`, `sanitize.ts`, `usage.ts` | `core/` or `runtime/` by dependency ownership | Keep dependency direction acyclic |
-| `base-adapter.ts`, `compatible-adapter.ts`, `adapters/` | `runtime/adapters/` | Shared wire behavior |
-| `authentication/` | `runtime/authentication/` | Shared flows; provider setup remains local |
-| `discovery/` | `runtime/discovery/` | Discovery mechanics; provider paths and headers remain local declarations |
-| `quota/` | `runtime/quota/` | Shared quota types/fetch helpers; quota interpretation remains local |
+| `core/*.ts` | Flat, `provider-*.ts` files at `src/providers/` | Shared provider foundation without a wrapper directory |
+| `runtime/adapters/` | `adapters/` | Shared wire behavior, one level closer to provider root |
+| `runtime/authentication/` | `authentication/` | Shared flows; provider setup remains local |
+| `runtime/discovery/` | `discovery/` | Discovery mechanics; provider paths and headers remain local declarations |
+| `runtime/quota/` | `quota/` | Shared quota types/fetch helpers; quota interpretation remains local |
 | Generic API-key declarations | Flat files at `src/providers/` | Avoid a directory layer for simple providers |
 | `default-registry.ts` | Keep as composition root; standard groups in flat provider files | Extract only repeated, type-safe capability patterns |
 | `integrations/buddy/*` | `integrations/buddy/{shared,intl,cn}/...` | Four products explicit; preserve independent IDs |
 | Other `integrations/<family>/` folders | Same family name under `integrations/` | Co-locate each provider's implementation, catalog, auth, quota, discovery |
 | `operations/` | `operations/` | Remains cross-provider; not nested into one integration |
 | `search/` | `search/` | Remains separate if it owns hosted search providers rather than dispatch adapters |
-| `integrations/shared/` | Split by ownership | Generic compatible-provider code to flat provider-root files/runtime; Buddy-specific helpers to Buddy shared; truly shared protocol helpers to `runtime/` |
+| `integrations/shared/` | Split by ownership | Generic compatible-provider code to flat provider-root files; Buddy-specific helpers to Buddy shared; truly shared protocol helpers to the provider root categories |
 
 ### Existing integration families retained
 
@@ -363,7 +346,7 @@ should not import individual provider implementations.
 | Add ordinary API-key provider | Add spec/catalog, find registration row, copy adapter/discovery loader wiring, ensure metadata exists | Add typed provider declaration with spec, catalog, and optional discovery differences; composed by the registry |
 | Add OAuth provider | Add implementation files, then wire OAuth loader, optional refresher, adapter, models, and quota in central registry | Add provider-local manifest that opts into explicit capabilities |
 | Change one provider's endpoint | Find provider constants/spec and verify registry's discovery path is synchronized | Update that provider's declaration; typed adapter/discovery capability derives from the same spec |
-| Compare CodeBuddy Intl and CN | Inspect shared Buddy folder and central registration table | Compare `buddy/intl/codebuddy` with `buddy/cn/codebuddy`; shared behavior is separately named |
+| Compare CodeBuddy Intl and CN | Inspect product folder and central registration table | Compare `buddy/codebuddy/provider.ts` with `buddy/codebuddy/cn-provider.ts`; shared behavior is separately named |
 | Add model to one Buddy region | Edit shared catalog and risk publishing it to both regions | Edit the region-owned catalog; shared rosters require an explicit Intl-only decision |
 | Add genuinely shared behavior | Copy implementation into another family or expand central registry | Add one runtime primitive and have relevant provider declarations opt into it |
 
@@ -414,8 +397,9 @@ combine with behavior changes.
 ## Decisions and remaining questions
 
 - **Resolved:** standard API-key declarations are centralized in flat files
-  under `src/providers/`; provider directories are reserved for integrations
-  with substantial OAuth, protocol, or provider-owned module complexity.
+  under `src/providers/integrations/`; deeper provider folders are reserved
+  for integrations with substantial OAuth, protocol, or provider-owned module
+  complexity.
 - Should `metadata.ts` remain a separate canonical list, or can typed provider
   declarations become its source of truth without creating eager imports?
 - Should provider-specific discovery and quota declarations live in the

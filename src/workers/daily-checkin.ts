@@ -21,9 +21,9 @@ import type { ValidatedNetworkBindingFactory } from "../network/pool/resolver";
 import type { RedisClient } from "../persistence/redis";
 import type { CartethyiaDatabase } from "../persistence/db-handle";
 import { dailyCheckinLedger, networkPools } from "../persistence/schema";
-import type { ProviderId } from "../providers/core/contracts";
+import type { ProviderId } from "../providers/provider-contracts";
 import { log } from "../observability/logger";
-import { buddyAccountUid } from "../providers/integrations/buddy/shared/oauth";
+import { buddyAccountUid } from "../providers/integrations/buddy/buddy-oauth-shared";
 import {
   DAILY_CHECKIN_PROVIDER_IDS,
   checkinDayKey,
@@ -31,7 +31,7 @@ import {
   fetchDailyCheckin,
   type BuddyActivityReportResult,
   type DailyCheckinResult,
-} from "../providers/integrations/buddy/shared/checkin";
+} from "../providers/integrations/buddy/buddy-checkin";
 
 export { DAILY_CHECKIN_PROVIDER_IDS, checkinDayKey };
 export type { BuddyActivityReportResult, DailyCheckinResult };

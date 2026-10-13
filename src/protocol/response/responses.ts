@@ -7,7 +7,7 @@ import { GatewayError } from "../gateway-error";
 import { isRecord, readOutputIndex } from "../codecs";
 import { decodeSseEvents } from "../sse-decoder";
 import { gatewayErrorFromStreamError } from "../stream-error-frames";
-import { usageFromProvider, readResponsesReasoningDelta } from "../../providers/core/usage";
+import { usageFromProvider, readResponsesReasoningDelta } from "../../providers/provider-usage";
 import { createToolEmitLedger } from "../tool-identity";
 
 export function mapResponsesStopReason(

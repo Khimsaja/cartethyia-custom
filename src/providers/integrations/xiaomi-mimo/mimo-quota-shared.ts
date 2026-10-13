@@ -1,13 +1,11 @@
 /**
  * Shared MiMo quota window parsing.
  *
- * Desktop and Studio answer the same usage envelope — `data.percent` is
- * *remaining*, and the reset is either a `resetAt` epoch-seconds number or a
- * `resetDate` string — so the reading lives here once instead of twice. The
- * two collectors differ only in the `source` / `plan` strings they stamp.
+ * MiMo Desktop reports `data.percent` as the amount *remaining*, and the
+ * reset is either a `resetAt` epoch-seconds number or a `resetDate` string.
  */
-import type { ProviderQuotaResult, ProviderQuotaWindow } from "../../runtime/quota/quota-contracts";
-import { number, percentWindow, record } from "../../runtime/quota/quota-contracts";
+import type { ProviderQuotaResult, ProviderQuotaWindow } from "../../quota/quota-contracts";
+import { number, percentWindow, record } from "../../quota/quota-contracts";
 
 /** Reads the reset timestamp, preferring the epoch form over the date string. */
 function mimoReset(data: Record<string, unknown>): string | null {

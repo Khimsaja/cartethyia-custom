@@ -28,7 +28,7 @@ import {
   shouldCooldownPool,
 } from "../../src/transport/dispatch/retry-policy";
 import { GatewayError } from "../../src/protocol/gateway-error";
-import { providerRateLimitIsIpScoped } from "../../src/providers/core/metadata";
+import { providerRateLimitIsIpScoped } from "../../src/providers/provider-metadata";
 
 /** The one bundled provider whose rate limit follows the egress address. */
 const IP_SCOPED_PROVIDER = "opencodeft";

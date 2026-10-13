@@ -39,7 +39,6 @@ const iconAssets: Record<string, { file: string; ext: "svg" | "webp" }> = {
   xiaomipg: { file: "mimo", ext: "webp" },
   xiaomitp: { file: "mimo", ext: "webp" },
   mimodesktop: { file: "mimo", ext: "webp" },
-  mimostudio: { file: "mimo", ext: "webp" },
   mimo: { file: "mimo", ext: "webp" },
   cb: { file: "codebuddy", ext: "webp" },
   cbcn: { file: "codebuddy", ext: "webp" },

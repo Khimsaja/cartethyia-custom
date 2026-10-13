@@ -1,13 +1,13 @@
 /** xAI Grok Build device-code OAuth client. */
-import { devicePollBackoff, nonEmptyTrimmedString, parseDeviceAuthStart, postFormTokenRequest, readJsonResponse } from "../../runtime/authentication/oauth-flow-store";
+import { devicePollBackoff, nonEmptyTrimmedString, parseDeviceAuthStart, postFormTokenRequest, readJsonResponse } from "../../authentication/oauth-flow-store";
 import type {
   OAuthDeviceFlowContext,
   OAuthDevicePollResult,
   OAuthDeviceStartResult,
-} from "../../runtime/authentication/oauth-flow-store";
-import type { OAuthTokenRefreshResult } from "../../runtime/authentication/oauth-refresh-service";
-import { OAuthDeviceFlow } from "../../runtime/authentication/oauth-device-flow";
-import type { FetchLike } from "../../runtime/authentication/oauth-client";
+} from "../../authentication/oauth-flow-store";
+import type { OAuthTokenRefreshResult } from "../../authentication/oauth-refresh-service";
+import { OAuthDeviceFlow } from "../../authentication/oauth-device-flow";
+import type { FetchLike } from "../../authentication/oauth-client";
 import { XAI_AUTH_SERVER } from "../xai/xai-oauth";
 
 /**

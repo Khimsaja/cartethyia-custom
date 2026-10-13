@@ -5,8 +5,8 @@ const XIAOMITP_PROVIDER_ID = "xiaomitp" as const;
 
 
 
-import { defineModel } from "../../core/model-definition";
-import type { ModelDefinition } from "../../core/model-definition";
+import { defineModel } from "../../provider-model-definition";
+import type { ModelDefinition } from "../../provider-model-definition";
 
 export const XIAOMI_MODELS: readonly ModelDefinition[] = [
   defineModel({

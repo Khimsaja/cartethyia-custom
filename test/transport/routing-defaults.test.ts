@@ -20,7 +20,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { DEFAULT_PROVIDER_MAX_INFLIGHT } from "../../src/persistence/schema";
-import { DEFAULT_PROXY_SKIP_PROVIDER_IDS } from "../../src/providers/core/metadata";
+import { DEFAULT_PROXY_SKIP_PROVIDER_IDS } from "../../src/providers/provider-metadata";
 import { buildClaudeCliUserAgent } from "../../src/providers/operations/custom-cli-headers";
 import { resolveRouteUserAgent } from "../../src/transport/routing/route-catalog";
 import { InMemoryAdmissionController } from "../../src/transport/routing/admission";

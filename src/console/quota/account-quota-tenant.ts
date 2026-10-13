@@ -3,7 +3,7 @@ import { t } from "elysia";
 import type { Elysia } from "elysia";
 import { and, eq, inArray } from "drizzle-orm";
 import { providerAccounts, providers } from "../../persistence/schema";
-import { providerDisplayName } from "../../providers/core/metadata";
+import { providerDisplayName } from "../../providers/provider-metadata";
 import { invalidateCredentialCache } from "../../providers/operations/provider-credential-service";
 import { requireTenantScope } from "../shared/errors";
 import {
@@ -21,7 +21,7 @@ import {
   type QuotaRefreshDeps,
   type QuotaRefreshFailureCode,
 } from "./refresh";
-import type { ProviderId } from "../../providers/core/contracts";
+import type { ProviderId } from "../../providers/provider-contracts";
 import {
   DAILY_CHECKIN_PROVIDER_IDS,
   checkinDayKey,
@@ -33,8 +33,8 @@ import {
   fetchDailyCheckin,
   type BuddyActivityReportResult,
   type DailyCheckinResult,
-} from "../../providers/integrations/buddy/shared/checkin";
-import { buddyAccountUid } from "../../providers/integrations/buddy/shared/oauth";
+} from "../../providers/integrations/buddy/buddy-checkin";
+import { buddyAccountUid } from "../../providers/integrations/buddy/buddy-oauth-shared";
 import {
   supportsAccountReset,
   consumeAccountResetCredit,

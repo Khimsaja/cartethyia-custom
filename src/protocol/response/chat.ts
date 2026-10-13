@@ -7,7 +7,7 @@ import { type CanonicalEvent, type CanonicalRequest } from "../canonical-model";
 import { decodeSseEvents } from "../sse-decoder";
 import { gatewayErrorFromStreamError } from "../stream-error-frames";
 import { mergeResponsesUsage } from "./responses";
-import { usageFromProvider, readReasoningText } from "../../providers/core/usage";
+import { usageFromProvider, readReasoningText } from "../../providers/provider-usage";
 import { createToolEmitLedger } from "../tool-identity";
 import { MimoThinkSplitter } from "../../providers/integrations/xiaomi-mimo/think-stream";
 import { parseDsmlToolCalls } from "./dsml";

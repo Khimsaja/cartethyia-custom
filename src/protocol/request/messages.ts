@@ -2,7 +2,7 @@
  * Canonical → Claude Messages request builder.
  */
 import type { CanonicalRequest, ContentPart } from "../canonical-model";
-import { buildAnthropicThinkingPayload } from "../../providers/core/reasoning";
+import { buildAnthropicThinkingPayload } from "../../providers/provider-reasoning";
 import { anthropicCacheControl } from "../../transport/translation/cache-controls";
 import {
   THINKING_STRIPPED_SAMPLING_CONTROLS,

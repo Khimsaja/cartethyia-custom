@@ -14,7 +14,7 @@ import {
 } from "../../transport/translation/thinking";
 import { isClaudeBillingHeaderText, resolveImageSource } from "../codecs";
 import { resolvePromptCacheKey } from "../../providers/operations/session-resolution";
-import { reasoningEffortFromIntent } from "../../providers/core/reasoning";
+import { reasoningEffortFromIntent } from "../../providers/provider-reasoning";
 import { parseChatResponseToEvents, decodeChatSseStream } from "../response/chat";
 
 /**

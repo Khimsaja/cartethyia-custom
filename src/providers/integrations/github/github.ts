@@ -13,16 +13,16 @@
  * account's host is recorded.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { defineModel } from "../../core/model-definition";
-import type { ModelDefinition } from "../../core/model-definition";
-import type { ProviderAdapter, ProviderDispatchContext, ProviderDispatchTarget } from "../../core/contracts";
+import { defineModel } from "../../provider-model-definition";
+import type { ModelDefinition } from "../../provider-model-definition";
+import type { ProviderAdapter, ProviderDispatchContext, ProviderDispatchTarget } from "../../provider-contracts";
 import { GatewayError } from "../../../protocol/gateway-error";
 import { isRecord } from "../../../protocol/codecs";
 import { mapUpstreamHttpError } from "../../../transport/failure-policy";
 import { allParts, type CanonicalEvent, type CanonicalRequest, type ContentPart } from "../../../protocol/canonical-model";
-import { OpenAICompatibleAdapter, withBearerAuthentication } from "../../runtime/adapters/compatible-adapter";
+import { OpenAICompatibleAdapter, withBearerAuthentication } from "../../adapters/compatible-adapter";
 import { postUpstreamJson } from "../../../protocol/upstream/post-json";
-import { providerBaseUrl } from "../../core/metadata";
+import { providerBaseUrl } from "../../provider-metadata";
 import { getOrCreateInstallId } from "../shared/install-id";
 import { applyParamQuirks } from "../../../transport/translation/quirks";
 import { resolveInboundSessionId } from "../../operations/session-resolution";

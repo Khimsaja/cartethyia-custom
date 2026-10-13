@@ -1,9 +1,9 @@
 import type { ApiKeyProviderSpec } from "../../configured-provider";
-import type { ModelDefinition } from "../../core/model-definition";
-import { fetchOpenAICompatibleModels } from "../../runtime/discovery/openai-model-discovery";
-import { providerBaseUrl } from "../../core/metadata";
-import type { DiscoveryInput } from "../../runtime/discovery/discovery-types";
-import { defineModel } from "../../core/model-definition";
+import type { ModelDefinition } from "../../provider-model-definition";
+import { fetchOpenAICompatibleModels } from "../../discovery/openai-model-discovery";
+import { providerBaseUrl } from "../../provider-metadata";
+import type { DiscoveryInput } from "../../discovery/discovery-types";
+import { defineModel } from "../../provider-model-definition";
 
 const OPENROUTER_PROVIDER_ID = "openrouter" as const;
 

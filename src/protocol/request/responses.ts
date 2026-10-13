@@ -13,7 +13,7 @@ import {
 } from "../../transport/translation/thinking";
 import { isClaudeBillingHeaderText, resolveImageSource, resolveOutputVerbosity } from "../codecs";
 import { resolvePromptCacheKey } from "../../providers/operations/session-resolution";
-import { reasoningEffortFromIntent } from "../../providers/core/reasoning";
+import { reasoningEffortFromIntent } from "../../providers/provider-reasoning";
 import { isWebSearchTool } from "../../transport/translation/search";
 import { parseResponsesResponseToEvents, decodeResponsesSseStream } from "../response/responses";
 

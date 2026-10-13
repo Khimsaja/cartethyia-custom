@@ -9,17 +9,23 @@
  * pass while a provider's image/video filter silently dropped the row.
  */
 import { describe, expect, test } from "bun:test";
-import { CODEBUDDY_MODELS } from "../../src/providers/integrations/buddy/intl/codebuddy/provider";
-import { WORKBUDDY_MODELS } from "../../src/providers/integrations/buddy/intl/workbuddy/provider";
-import { WORKBUDDY_CN_MODELS } from "../../src/providers/integrations/buddy/cn/workbuddy/provider";
-import type { ModelDefinition } from "../../src/providers/core/model-definition";
-import { CODEBUDDY_CN_MODELS } from "../../src/providers/integrations/buddy/cn/codebuddy/provider";
+import { CODEBUDDY_MODELS } from "../../src/providers/integrations/buddy/codebuddy/provider";
+import { WORKBUDDY_MODELS } from "../../src/providers/integrations/buddy/workbuddy/provider";
+import { WORKBUDDY_CN_MODELS } from "../../src/providers/integrations/buddy/workbuddy/cn-provider";
+import type { ModelDefinition } from "../../src/providers/provider-model-definition";
+import { CODEBUDDY_CN_MODELS } from "../../src/providers/integrations/buddy/codebuddy/cn-provider";
 
 function luna(rows: readonly ModelDefinition[]) {
   return rows.find((row) => row.modelId === "gpt-6-luna");
 }
 
 describe("live Buddy CLI models on the shared roster", () => {
+  test("omits GPT-6 Astra from both international catalogs", () => {
+    for (const rows of [CODEBUDDY_MODELS, WORKBUDDY_MODELS]) {
+      expect(rows.some((model) => model.modelId === "gpt-6-astra")).toBe(false);
+    }
+  });
+
   test("omits DeepSeek V4 Pro from both international catalogs", () => {
     for (const rows of [CODEBUDDY_MODELS, WORKBUDDY_MODELS]) {
       expect(rows.some((model) => model.modelId === "deepseek-v4-pro")).toBe(false);

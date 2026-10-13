@@ -1,5 +1,5 @@
 import type { ApiKeyProviderSpec } from "./configured-provider";
-import type { ProviderId } from "./core/contracts";
+import type { ProviderId } from "./provider-contracts";
 
 /**
  * Builtin providers whose entire adapter contract is "bearer auth against the

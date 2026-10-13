@@ -24,7 +24,7 @@ import { eq } from "drizzle-orm";
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import { healthEvents, providerAccounts } from "../../persistence/schema";
 import { CLAUDE_CODE_USER_AGENT } from "../integrations/claude/claude-fingerprint";
-import { authCredential, codexJwtAccountId, text } from "../runtime/quota/quota-contracts";
+import { authCredential, codexJwtAccountId, text } from "../quota/quota-contracts";
 import { getCodexVersion } from "./client-versions";
 import { buildCodexUserAgent } from "./cli-platform";
 

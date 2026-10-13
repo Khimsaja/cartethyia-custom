@@ -19,15 +19,15 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   nonEmptyTrimmedString,
   record,
-} from "../../runtime/authentication/oauth-flow-store";
+} from "../../authentication/oauth-flow-store";
 import type {
   OAuthDeviceFlowContext,
   OAuthDevicePollResult,
   OAuthDeviceStartResult,
   OAuthExchangeResult,
-} from "../../runtime/authentication/oauth-flow-store";
-import type { OAuthTokenRefreshResult } from "../../runtime/authentication/oauth-refresh-service";
-import { OAuthDeviceFlow } from "../../runtime/authentication/oauth-device-flow";
+} from "../../authentication/oauth-flow-store";
+import type { OAuthTokenRefreshResult } from "../../authentication/oauth-refresh-service";
+import { OAuthDeviceFlow } from "../../authentication/oauth-device-flow";
 
 export const QODER_LOGIN_URL = "https://qoder.com/device/selectAccounts" as const;
 export const QODER_DEVICE_TOKEN_URL = "https://openapi.qoder.sh/api/v1/deviceToken/poll" as const;

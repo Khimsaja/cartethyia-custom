@@ -197,7 +197,11 @@ registration, discovery, or connection-test paths.
 ## Model catalog
 
 - OpenCode Zen is id-oriented; models.dev carries rich metadata.
-- `src/providers/discovery/base-models.json` is the offline catalog authority.
+- `src/providers/discovery/base-models.json` is the single offline catalog
+  authority, with compact rows and generated indexes in the same file. Do not
+  add a duplicate raw or compact snapshot.
+- Refresh it with `bun run scripts/generate/models-dev-snapshot.ts`; generation
+  fetches models.dev manually and the server reads only the committed file.
 - Provider-id remaps live in `MODELS_DEV_PROVIDER_IDS`
   (`src/providers/discovery/models-dev-catalog.ts`).
 - `/v1/models` omits unavailable optional fields rather than emitting null.

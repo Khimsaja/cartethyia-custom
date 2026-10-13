@@ -5,11 +5,11 @@ import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import { providerAccounts, providerOauthStates } from "../../persistence/schema";
 import { decryptCredentialToString } from "../../security/crypto";
 import { GatewayError } from "../../protocol/gateway-error";
-import type { OAuthRefreshService, OAuthTokenRefresher } from "../runtime/authentication/oauth-refresh-service";
-import { CredentialResolver, type CredentialAlternative } from "../core/credential-resolver";
-import { parseProviderId, type CredentialKind } from "../core/contracts";
-import type { ResolvedCredential } from "../core/contracts";
-import { record } from "../runtime/authentication/oauth-flow-store";
+import type { OAuthRefreshService, OAuthTokenRefresher } from "../authentication/oauth-refresh-service";
+import { CredentialResolver, type CredentialAlternative } from "../provider-credential-resolver";
+import { parseProviderId, type CredentialKind } from "../provider-contracts";
+import type { ResolvedCredential } from "../provider-contracts";
+import { record } from "../authentication/oauth-flow-store";
 import { refreshLeadMs } from "./oauth-refresh-lead";
 
 // ── Credential cache ─────────────────────────────────────────────────────────

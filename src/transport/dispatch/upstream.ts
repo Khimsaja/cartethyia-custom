@@ -1,4 +1,4 @@
-import type { ValidatedOutboundFetch, ValidatedOutboundWebSocket } from "../../providers/core/contracts";
+import type { ValidatedOutboundFetch, ValidatedOutboundWebSocket } from "../../providers/provider-contracts";
 import { GATEWAY_SECURITY_HEADERS } from "../../security/outbound-headers";
 
 const FORWARDED_REQUEST_HEADERS = new Set([

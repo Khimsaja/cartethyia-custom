@@ -2,9 +2,9 @@ import { describe, expect, test } from "bun:test";
 import type {
   ProviderDispatchContext,
   ProviderDispatchTarget,
-} from "../../src/providers/core/contracts";
+} from "../../src/providers/provider-contracts";
 import { githubAdapter } from "../../src/providers/integrations/github/github";
-import { defineModel } from "../../src/providers/core/model-definition";
+import { defineModel } from "../../src/providers/provider-model-definition";
 import type { CanonicalRequest } from "../../src/protocol/canonical-model";
 
 const candidate = {

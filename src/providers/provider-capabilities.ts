@@ -1,6 +1,6 @@
-import type { ProviderModule, ProviderAuthentication } from "./core/registry";
-import type { OAuthLoginClient } from "./runtime/authentication/oauth-flow-store";
-import type { QuotaFetcher } from "./runtime/quota/quota-support";
+import type { ProviderModule, ProviderAuthentication } from "./provider-registry";
+import type { OAuthLoginClient } from "./authentication/oauth-flow-store";
+import type { QuotaFetcher } from "./quota/quota-support";
 
 /** Provider implementation fields composed with canonical metadata. */
 export type ProviderModuleCapabilities = Partial<Omit<ProviderModule, "loadAdapter">> &

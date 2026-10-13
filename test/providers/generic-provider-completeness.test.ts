@@ -27,7 +27,7 @@ import {
 } from "../../src/providers/configured-openai-providers";
 import { createDefaultProviderRegistry } from "../../src/providers/default-registry";
 import { BUNDLED_PROVIDER_MODULES } from "../../src/providers/default-registry";
-import { BUNDLED_PROVIDER_METADATA, providerBaseUrl } from "../../src/providers/core/metadata";
+import { BUNDLED_PROVIDER_METADATA, providerBaseUrl } from "../../src/providers/provider-metadata";
 import { joinUrl } from "../../src/protocol/codecs";
 import { BARE_ROOT_ENDPOINTS } from "../../src/protocol/codecs";
 import type { WireFamily } from "../../src/protocol/canonical-model";

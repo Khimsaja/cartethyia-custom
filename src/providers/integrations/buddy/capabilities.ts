@@ -9,74 +9,74 @@ type BuddyProviderId = "cb" | "cbcn" | "workbuddy" | "workbuddycn";
  */
 export const BUDDY_PROVIDER_CAPABILITIES = {
   cb: {
-    loadAdapter: async () => (await import("./intl/codebuddy/provider")).createCodeBuddyAdapter(),
-    loadModels: async () => (await import("./intl/codebuddy/provider")).CODEBUDDY_MODELS,
+    loadAdapter: async () => (await import("./codebuddy/provider")).createCodeBuddyAdapter(),
+    loadModels: async () => (await import("./codebuddy/provider")).CODEBUDDY_MODELS,
     loadModelDiscovery: async () => async ({ credential, fetcher }) =>
-      (await import("./intl/codebuddy/provider")).discoverCodeBuddyModels({
+      (await import("./codebuddy/provider")).discoverCodeBuddyModels({
         credential,
         ...(fetcher === undefined ? {} : { fetcher }),
       }),
     loadAuthentication: oauthCapability(
-      () => import("./intl/codebuddy/oauth"),
+      () => import("./codebuddy/oauth"),
       "codeBuddyOAuthClient",
       { withRefresher: true },
     ),
     loadQuotaCollector: quotaCapability(
-      () => import("./intl/codebuddy/quota"),
+      () => import("./codebuddy/quota"),
       "fetchCodeBuddyIntlQuota",
     ),
   },
   cbcn: {
-    loadAdapter: async () => (await import("./cn/codebuddy/provider")).createCodeBuddyCnAdapter(),
-    loadModels: async () => (await import("./cn/codebuddy/provider")).CODEBUDDY_CN_MODELS,
+    loadAdapter: async () => (await import("./codebuddy/cn-provider")).createCodeBuddyCnAdapter(),
+    loadModels: async () => (await import("./codebuddy/cn-provider")).CODEBUDDY_CN_MODELS,
     loadModelDiscovery: async () => async ({ credential, fetcher }) =>
-      (await import("./cn/codebuddy/provider")).discoverCodeBuddyCnModels({
+      (await import("./codebuddy/cn-provider")).discoverCodeBuddyCnModels({
         credential,
         ...(fetcher === undefined ? {} : { fetcher }),
       }),
     loadAuthentication: oauthCapability(
-      () => import("./intl/codebuddy/oauth"),
+      () => import("./codebuddy/oauth"),
       "codeBuddyCnOAuthClient",
       { withRefresher: true },
     ),
     loadQuotaCollector: quotaCapability(
-      () => import("./intl/codebuddy/quota"),
+      () => import("./codebuddy/quota"),
       "fetchCodeBuddyCnQuota",
     ),
   },
   workbuddy: {
-    loadAdapter: async () => (await import("./intl/workbuddy/provider")).createWorkBuddyAdapter(),
-    loadModels: async () => (await import("./intl/workbuddy/provider")).WORKBUDDY_MODELS,
+    loadAdapter: async () => (await import("./workbuddy/provider")).createWorkBuddyAdapter(),
+    loadModels: async () => (await import("./workbuddy/provider")).WORKBUDDY_MODELS,
     loadModelDiscovery: async () => async ({ credential, fetcher }) =>
-      (await import("./intl/workbuddy/provider")).discoverWorkBuddyModels({
+      (await import("./workbuddy/provider")).discoverWorkBuddyModels({
         credential,
         ...(fetcher === undefined ? {} : { fetcher }),
       }),
     loadAuthentication: oauthCapability(
-      () => import("./intl/workbuddy/oauth"),
+      () => import("./workbuddy/oauth"),
       "workBuddyOAuthClient",
       { withRefresher: true },
     ),
     loadQuotaCollector: quotaCapability(
-      () => import("./intl/workbuddy/quota"),
+      () => import("./workbuddy/quota"),
       "fetchWorkBuddyQuota",
     ),
   },
   workbuddycn: {
-    loadAdapter: async () => (await import("./cn/workbuddy/provider")).createWorkBuddyCnAdapter(),
-    loadModels: async () => (await import("./cn/workbuddy/provider")).WORKBUDDY_CN_MODELS,
+    loadAdapter: async () => (await import("./workbuddy/cn-provider")).createWorkBuddyCnAdapter(),
+    loadModels: async () => (await import("./workbuddy/cn-provider")).WORKBUDDY_CN_MODELS,
     loadModelDiscovery: async () => async ({ credential, fetcher }) =>
-      (await import("./cn/workbuddy/provider")).discoverWorkBuddyCnModels({
+      (await import("./workbuddy/cn-provider")).discoverWorkBuddyCnModels({
         credential,
         ...(fetcher === undefined ? {} : { fetcher }),
       }),
     loadAuthentication: oauthCapability(
-      () => import("./cn/workbuddy/oauth"),
+      () => import("./workbuddy/cn-oauth"),
       "workBuddyCnOAuthClient",
       { withRefresher: true },
     ),
     loadQuotaCollector: quotaCapability(
-      () => import("./intl/workbuddy/quota"),
+      () => import("./workbuddy/quota"),
       "fetchWorkBuddyCnQuota",
     ),
   },

@@ -17,8 +17,8 @@
  * this provider serves the chat surface, and a generation model published on it
  * is not a row this catalog can honestly declare.
  */
-import { defineModel } from "../../core/model-definition";
-import type { ModelDefinition } from "../../core/model-definition";
+import { defineModel } from "../../provider-model-definition";
+import type { ModelDefinition } from "../../provider-model-definition";
 
 export const ALIBABACP_PROVIDER_ID = "alibabacp" as const;
 

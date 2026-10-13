@@ -4,7 +4,7 @@
  * Search routes use the provider's real model ids. A provider with no model
  * catalog, such as Exa or Parallel, exposes one route named after the provider.
  */
-import { defineModel, type ModelDefinition } from "../core/model-definition";
+import { defineModel, type ModelDefinition } from "../provider-model-definition";
 import type { SearchProviderId } from "./search-providers";
 
 function providerSearchModel(providerId: SearchProviderId, endpoint: string): ModelDefinition {

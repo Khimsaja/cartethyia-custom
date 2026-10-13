@@ -5,7 +5,7 @@
  * retryable. Concurrent misses for one key share one load through TtlCache.
  */
 import { TtlCacheFamily } from "../../persistence/ttl-cache";
-import type { ModelDefinition } from "../core/model-definition";
+import type { ModelDefinition } from "../provider-model-definition";
 
 const MODEL_DISCOVERY_CACHE_TTL_MS = 10 * 60 * 1000;
 const discoveryCaches = new TtlCacheFamily<readonly ModelDefinition[]>({

@@ -6,7 +6,7 @@
  */
 import type { CanonicalEvent, CanonicalRequest } from '../canonical-model';
 import { GatewayError } from '../gateway-error';
-import { applyRouteUserAgent, type ProviderDispatchContext } from "../../providers/core/contracts";
+import { applyRouteUserAgent, type ProviderDispatchContext } from "../../providers/provider-contracts";
 import { abortGatewayError, createUpstreamDeadlineLifecycle } from '../../providers/operations/upstream-deadline';
 import { mapClaudeHttpError } from '../messages-errors';
 import { isRecord } from '../codecs';

@@ -19,16 +19,16 @@ import {
   nonEmptyTrimmedString,
   readJsonResponse,
   record,
-} from "../../runtime/authentication/oauth-flow-store";
+} from "../../authentication/oauth-flow-store";
 import type {
   OAuthDeviceFlowContext,
   OAuthDevicePollResult,
   OAuthDeviceStartResult,
   OAuthExchangeResult,
-} from "../../runtime/authentication/oauth-flow-store";
-import type { OAuthTokenRefreshResult } from "../../runtime/authentication/oauth-refresh-service";
-import { OAuthDeviceFlow } from "../../runtime/authentication/oauth-device-flow";
-import type { FetchLike } from "../../runtime/authentication/oauth-client";
+} from "../../authentication/oauth-flow-store";
+import type { OAuthTokenRefreshResult } from "../../authentication/oauth-refresh-service";
+import { OAuthDeviceFlow } from "../../authentication/oauth-device-flow";
+import type { FetchLike } from "../../authentication/oauth-client";
 
 export const KILO_API_BASE_URL = "https://api.kilo.ai" as const;
 export const KILO_DEVICE_CODES_URL = `${KILO_API_BASE_URL}/api/device-auth/codes` as const;

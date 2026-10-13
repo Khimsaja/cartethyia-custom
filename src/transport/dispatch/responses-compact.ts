@@ -1,7 +1,7 @@
-import type { ProviderAdapter } from "../../providers/core/contracts";
+import type { ProviderAdapter } from "../../providers/provider-contracts";
 import { GatewayError } from "../../protocol/gateway-error";
 import { resolveCredentialForAccount } from "../../providers/operations/provider-credential-service";
-import type { OAuthTokenRefresher, OAuthRefreshService } from "../../providers/runtime/authentication/oauth-refresh-service";
+import type { OAuthTokenRefresher, OAuthRefreshService } from "../../providers/authentication/oauth-refresh-service";
 import type { ValidatedNetworkBindingFactory } from "../../network/pool/resolver";
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import type { RouteSnapshotService } from "../routing/route-model";
@@ -13,7 +13,7 @@ import { ProxyRequestPreparer } from "../request/preparer";
 import { parseThinkingSuffix } from "../translation/thinking";
 import type { CodexCompactAdapter } from "../../providers/integrations/codex/codex";
 import { completeAttempt, estimatedUsage } from "./attempt-finalize";
-import { repriceUsage, usageFromProvider } from "../../providers/core/usage";
+import { repriceUsage, usageFromProvider } from "../../providers/provider-usage";
 import { runAttemptLoop } from "./attempt-loop";
 
 /**

@@ -17,7 +17,7 @@ import {
 import { CANONICAL_REASONING_EFFORTS, parseReasoningIntent, parseToolChoice } from "../dialects";
 import { groupedBlocks, startModel, stopData } from "./encode";
 import { finiteNumber, stringValue } from "../../../protocol/codecs";
-import { usageToMessagesWire } from "../../../providers/core/usage";
+import { usageToMessagesWire } from "../../../providers/provider-usage";
 
 export class MessagesAdapter implements SurfaceAdapter {
   readonly surface = "messages" as const;

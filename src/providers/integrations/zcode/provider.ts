@@ -9,12 +9,12 @@
  * as-is and no credential codec is needed here — the sign-in client is what
  * turns an OAuth grant into that key.
  */
-import { defineModel } from "../../core/model-definition";
-import type { ModelDefinition } from "../../core/model-definition";
-import { fetchOpenAICompatibleModels } from "../../runtime/discovery/openai-model-discovery";
-import { providerBaseUrl } from "../../core/metadata";
+import { defineModel } from "../../provider-model-definition";
+import type { ModelDefinition } from "../../provider-model-definition";
+import { fetchOpenAICompatibleModels } from "../../discovery/openai-model-discovery";
+import { providerBaseUrl } from "../../provider-metadata";
 import type { ApiKeyProviderSpec } from "../../configured-provider";
-import type { DiscoveryInput } from "../../runtime/discovery/discovery-types";
+import type { DiscoveryInput } from "../../discovery/discovery-types";
 
 export const ZCODE_PROVIDER_ID = "zcode" as const;
 

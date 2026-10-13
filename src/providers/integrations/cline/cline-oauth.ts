@@ -6,10 +6,10 @@ import {
   postJsonTokenRequest,
   readJsonResponse,
   record,
-} from "../../runtime/authentication/oauth-flow-store";
-import type { OAuthDeviceFlowContext, OAuthDevicePollResult, OAuthDeviceStartResult, OAuthExchangeResult } from "../../runtime/authentication/oauth-flow-store";
-import type { OAuthTokenRefreshResult } from "../../runtime/authentication/oauth-refresh-service";
-import { OAuthDeviceFlow } from "../../runtime/authentication/oauth-device-flow";
+} from "../../authentication/oauth-flow-store";
+import type { OAuthDeviceFlowContext, OAuthDevicePollResult, OAuthDeviceStartResult, OAuthExchangeResult } from "../../authentication/oauth-flow-store";
+import type { OAuthTokenRefreshResult } from "../../authentication/oauth-refresh-service";
+import { OAuthDeviceFlow } from "../../authentication/oauth-device-flow";
 
 const WORKOS_API_BASE_URL = "https://api.workos.com";
 const WORKOS_DEVICE_AUTHORIZATION_URL = `${WORKOS_API_BASE_URL}/user_management/authorize/device`;

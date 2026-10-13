@@ -1,9 +1,9 @@
 // Drizzle-backed provider, account, model, routing, and API-key repositories.
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { ConsoleDomainError } from "../../shared/errors";
-import { parseCustomProviderId, isBundledProviderId } from "../../../providers/core/contracts";
-import type { ModelDefinition } from "../../../providers/core/model-definition";
-import type { ProviderRegistry } from "../../../providers/core/registry";
+import { parseCustomProviderId, isBundledProviderId } from "../../../providers/provider-contracts";
+import type { ModelDefinition } from "../../../providers/provider-model-definition";
+import type { ProviderRegistry } from "../../../providers/provider-registry";
 import { BUNDLED_PROVIDER_MODULES } from "../../../providers/default-registry";
 import { globalOrOwnedBy, ownedByOnly } from "../../../persistence/tenant-scope";
 import { nextSortIndex, reorderSortIndex } from "../../../persistence/sort-order";
@@ -19,12 +19,12 @@ import type { TelemetryBatchBuffer } from "../../../observability/telemetry-buff
 import type { BundledProviderCatalog } from "../../../providers/operations/provider-catalog-service";
 import type { AccountInflightReading, ByokConnectionTestRequest, ByokConnectionTestResult, CreateProviderAccountBatchItemResult, CreateProviderAccountBatchResult, CreateProviderAccountRequest, CredentialMode, ModelCatalogEntry, ProbeAllAccountsResult, ProbeAllModelsResult, ProbeModelRequest, ProbeModelResult, ProviderAccountResponse, ProviderAccountTokenUsage, ProviderCatalogStore, ProviderRecord, SetModelEnabledRequest, UpdateProviderAccountRequest } from "./contracts";
 import { isServiceKind, validateCompatibilityProfile } from "./contracts";
-import { ProviderProbingService, type ProbeOutboundResolver } from "../../../providers/runtime/discovery/probing-service";
-import { resolveManualModelMetadata } from "../../../providers/core/model-definition";
+import { ProviderProbingService, type ProbeOutboundResolver } from "../../../providers/discovery/probing-service";
+import { resolveManualModelMetadata } from "../../../providers/provider-model-definition";
 import { isUniqueViolation } from "../../../persistence/boot";
 import { DEFAULT_ENDPOINT_BY_WIRE_FAMILY, endpointPathForProviderModel, mapProviderRow } from "./catalog-projections";
 import { pushStructuredConsoleLog } from "../../../observability/log-ring";
-import { decodeJwtPayload } from "../../../providers/runtime/authentication/oauth-flow-store";
+import { decodeJwtPayload } from "../../../providers/authentication/oauth-flow-store";
 
 /** Real Drizzle-backed provider and model catalog repository. */
 
@@ -927,15 +927,6 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
             oauthRefreshCiphertext = encryptCredential(creds.passToken);
             oauthExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
             effectiveSecret = encodeMimoCredential(creds);
-            oauthHasRefreshToken = true;
-          } else if (request.credentialKind === "oauth" && providerId === "mimostudio") {
-            const { parseMimoStudioCredential, encodeMimoStudioCredential } = await import(
-              "../../../providers/integrations/xiaomi-mimo/mimostudio-auth"
-            );
-            const creds = parseMimoStudioCredential(trimmed);
-            oauthRefreshCiphertext = encryptCredential(encodeMimoStudioCredential(creds));
-            oauthExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-            effectiveSecret = encodeMimoStudioCredential(creds);
             oauthHasRefreshToken = true;
           } else {
             const parts = parsePastedOAuthCredential(trimmed);

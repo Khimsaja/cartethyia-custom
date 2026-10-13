@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { TtlCache } from "../../../persistence/ttl-cache";
-import type { FetchLike, ProviderQuotaResult, ProviderQuotaWindow } from "../../runtime/quota/quota-contracts";
-import { authCredential, getJson, percentWindow, record, text, number } from "../../runtime/quota/quota-contracts";
-import { parseQuotaWindows } from "../../runtime/quota/quota-window-parser";
-import { parseLimitWindows } from "../../runtime/quota/quota-limit-windows";
+import type { FetchLike, ProviderQuotaResult, ProviderQuotaWindow } from "../../quota/quota-contracts";
+import { authCredential, getJson, percentWindow, record, text, number } from "../../quota/quota-contracts";
+import { parseQuotaWindows } from "../../quota/quota-window-parser";
+import { parseLimitWindows } from "../../quota/quota-limit-windows";
 import { CLAUDE_CODE_USER_AGENT } from "./claude-fingerprint";
 
 export const claudeCodeOAuthBetas = [

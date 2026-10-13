@@ -1,23 +1,20 @@
 /**
- * Rebuilds the offline models.dev snapshot at
+ * Rebuilds the single generated models.dev catalog at
  * `src/providers/discovery/base-models.json`.
  *
  * Run manually when the catalog should be refreshed — never at server runtime.
  * `models-dev-catalog.ts` reads only the committed snapshot (no live `fetch`),
  * so the server never makes an outbound call to models.dev.
  *
- *   bun run scripts/models-dev-snapshot.ts
+ *   bun run scripts/generate/models-dev-snapshot.ts
  *
- * The snapshot is pruned to the fields the resolver reads (limits, modalities,
- * capabilities, cost) and flattened to one row per `provider:model`, which
- * keeps it small enough to commit while the raw upstream payload (~5 MB) is
- * not. `cost` is kept because pricing is the one thing models.dev is
- * authoritative for here — a model's own upstream `/models` response rarely
- * states a price.
+ * The snapshot is pruned to the fields the resolver reads and includes
+ * generated lookup indexes. It is the only checked-in copy of this data;
+ * neither the upstream payload nor an intermediate compact snapshot is kept.
  */
 import path from "node:path";
 
-const SNAPSHOT_PATH = path.join(import.meta.dir, "../src/providers/discovery/base-models.json");
+const SNAPSHOT_PATH = path.join(import.meta.dir, "../../src/providers/discovery/base-models.json");
 const SOURCE_URL = "https://models.dev/api.json";
 
 interface RawCost {
@@ -49,6 +46,28 @@ interface SnapshotRow {
   readonly reasoning: boolean;
   readonly toolCall: boolean;
   readonly cost: RawCost;
+}
+
+type CompactRow = readonly [
+  number,
+  string,
+  string,
+  number,
+  number,
+  number,
+  number,
+  number,
+  RawCost,
+];
+
+interface CompiledCatalog {
+  readonly source: "models.dev";
+  readonly fetchedAt: string;
+  readonly providers: readonly string[];
+  readonly modalities: readonly string[];
+  readonly rows: readonly CompactRow[];
+  readonly bareOrder: readonly number[];
+  readonly globalCosts: Readonly<Record<string, number>>;
 }
 
 /** Trims a numeric field to a finite, positive integer or `null`. */
@@ -86,6 +105,7 @@ for (const [provider, providerValue] of Object.entries(payload as Record<string,
     const model = modelValue as RawModel;
     const id = typeof model.id === "string" && model.id.length > 0 ? model.id : undefined;
     if (id === undefined) continue;
+    if (isExcludedModel(id, model.name)) continue;
     rows.push({
       provider,
       id,
@@ -101,43 +121,157 @@ for (const [provider, providerValue] of Object.entries(payload as Record<string,
   }
 }
 
-rows.sort((a, b) => (a.provider === b.provider ? a.id.localeCompare(b.id) : a.provider.localeCompare(b.provider)));
+const originalOrder = [...rows].sort((a, b) =>
+  a.provider === b.provider ? a.id.localeCompare(b.id) : a.provider.localeCompare(b.provider),
+);
+const providers = [...new Set(rows.map((row) => row.provider.trim().toLowerCase()))].sort(compareText);
+const providerIndex = new Map(providers.map((provider, index) => [provider, index]));
+const modalities = ["text", "image", "pdf", "video", "audio"];
+const indexedRows = originalOrder.map((row, originalIndex) => ({
+  originalIndex,
+  row,
+  normalizedProvider: row.provider.trim().toLowerCase(),
+  normalizedId: row.id.trim().toLowerCase(),
+}));
+indexedRows.sort((a, b) =>
+  compareText(a.normalizedProvider, b.normalizedProvider) ||
+  compareText(a.normalizedId, b.normalizedId) ||
+  a.originalIndex - b.originalIndex,
+);
 
-const snapshot = { source: "models.dev", fetchedAt: new Date().toISOString(), models: rows };
-// Minified: this is a machine-read data file, and pretty-printing it roughly
-// triples the bytes that ship in the binary for no reader's benefit.
+const compactRows: CompactRow[] = indexedRows.map(({ row }) => {
+  const index = providerIndex.get(row.provider.trim().toLowerCase());
+  if (index === undefined) throw new Error(`Missing provider index for ${row.provider}`);
+  return [
+    index,
+    row.id,
+    row.name ?? "",
+    row.context ?? 0,
+    row.output ?? 0,
+    modalityMask(row.input, modalities),
+    modalityMask(row.outputModalities, modalities),
+    (row.reasoning ? 1 : 0) | (row.toolCall ? 2 : 0),
+    row.cost,
+  ];
+});
+const bareOrder = compactRows
+  .map((_, index) => index)
+  .sort((left, right) => {
+    const leftRow = compactRows[left];
+    const rightRow = compactRows[right];
+    if (leftRow === undefined || rightRow === undefined) {
+      throw new Error("Invalid compact row index while sorting bare ids");
+    }
+    const leftId = bareId(leftRow[1]);
+    const rightId = bareId(rightRow[1]);
+    return compareText(leftId, rightId) || left - right;
+  });
+const globalCosts = buildGlobalCosts(originalOrder, indexedRows);
+
+const snapshot: CompiledCatalog = {
+  source: "models.dev",
+  fetchedAt: new Date().toISOString(),
+  providers,
+  modalities,
+  rows: compactRows,
+  bareOrder,
+  globalCosts,
+};
 await Bun.write(SNAPSHOT_PATH, `${JSON.stringify(snapshot)}\n`);
-await Bun.write(
-  path.join(import.meta.dir, "../src/providers/discovery/base-models.compact.json"),
-  `${JSON.stringify(compactRows(rows))}\n`,
-);
 console.log(
-  `Wrote ${rows.length} rows across ${new Set(rows.map((r) => r.provider)).size} providers to ${SNAPSHOT_PATH}`,
+  `Wrote ${compactRows.length} rows across ${providers.length} providers to ${SNAPSHOT_PATH}`,
 );
 
-function compactRows(source: readonly SnapshotRow[]): {
-  providers: string[];
-  modalities: string[];
-  rows: Array<[number, string, string, number, number, number, number, number, RawCost]>;
-} {
-  const providers = [...new Set(source.map((row) => row.provider))];
-  const providerIndex = new Map(providers.map((provider, index) => [provider, index]));
-  const modalities = ["text", "image", "pdf", "video", "audio"];
-  return {
-    providers,
-    modalities,
-    rows: source.map((row) => [
-      providerIndex.get(row.provider) ?? 0,
-      row.id,
-      row.name ?? "",
-      row.context ?? 0,
-      row.output ?? 0,
-      modalityMask(row.input, modalities),
-      modalityMask(row.outputModalities, modalities),
-      (row.reasoning ? 1 : 0) | (row.toolCall ? 2 : 0),
-      row.cost,
-    ]),
-  };
+function buildGlobalCosts(
+  orderedRows: readonly SnapshotRow[],
+  compiledRows: readonly {
+    readonly originalIndex: number;
+  }[],
+): Record<string, number> {
+  const rowIndexByOriginalIndex = new Map(
+    compiledRows.map(({ originalIndex }, index) => [originalIndex, index]),
+  );
+  const votes = new Map<
+    string,
+    Map<string, { rowIndex: number; count: number; detail: number; total: number }>
+  >();
+  for (const [originalIndex, row] of orderedRows.entries()) {
+    if (typeof row.cost.input !== "number" || typeof row.cost.output !== "number") continue;
+    const id = bareId(row.id);
+    let idVotes = votes.get(id);
+    if (idVotes === undefined) {
+      idVotes = new Map();
+      votes.set(id, idVotes);
+    }
+    const signature = `${row.cost.input}/${row.cost.output}`;
+    const rowIndex = rowIndexByOriginalIndex.get(originalIndex);
+    if (rowIndex === undefined) throw new Error(`Missing compiled row for ${row.provider}:${row.id}`);
+    const existing = idVotes.get(signature);
+    const detail = rateCompleteness(row.cost);
+    if (existing) {
+      existing.count += 1;
+      if (detail > existing.detail) {
+        existing.rowIndex = rowIndex;
+        existing.detail = detail;
+      }
+    } else {
+      idVotes.set(signature, {
+        rowIndex,
+        count: 1,
+        detail,
+        total: row.cost.input + row.cost.output,
+      });
+    }
+  }
+
+  const result = new Map<string, number>();
+  for (const [id, idVotes] of votes) {
+    let winner: { rowIndex: number; count: number; total: number } | undefined;
+    for (const vote of idVotes.values()) {
+      if (
+        winner === undefined ||
+        vote.count > winner.count ||
+        (vote.count === winner.count && vote.total > winner.total)
+      ) {
+        winner = { rowIndex: vote.rowIndex, count: vote.count, total: vote.total };
+      }
+    }
+    if (winner !== undefined) result.set(id, winner.rowIndex);
+  }
+
+  for (const [id, rowIndex] of result) {
+    const undated = stripDateSuffix(id);
+    if (undated !== id && !result.has(undated)) result.set(undated, rowIndex);
+  }
+  return Object.fromEntries(result);
+}
+
+function rateCompleteness(cost: RawCost): number {
+  let score = 0;
+  if (typeof cost.cache_read === "number") score += 1;
+  if (typeof cost.cache_write === "number") score += 1;
+  if (typeof cost.reasoning === "number") score += 1;
+  return score;
+}
+
+function bareId(modelId: string): string {
+  const normalized = modelId.trim().toLowerCase();
+  return normalized.includes("/") ? normalized.slice(normalized.indexOf("/") + 1) : normalized;
+}
+
+function compareText(left: string, right: string): number {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
+function stripDateSuffix(modelId: string): string {
+  return modelId.replace(/-\d{4}-\d{2}-\d{2}$/, "").replace(/-\d{8}$/, "");
+}
+
+function isExcludedModel(id: string, name: unknown): boolean {
+  return /\bgpt[- ]?6[- ]?astra\b/i.test(id) ||
+    (typeof name === "string" && /\bgpt[- ]?6[- ]?astra\b/i.test(name));
 }
 
 function modalityMask(values: readonly string[], modalities: readonly string[]): number {

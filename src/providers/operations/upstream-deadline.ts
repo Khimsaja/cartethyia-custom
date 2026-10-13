@@ -1,5 +1,5 @@
 import { GatewayError } from "../../protocol/gateway-error";
-import type { ProviderDispatchContext } from "../core/contracts";
+import type { ProviderDispatchContext } from "../provider-contracts";
 
 export interface UpstreamDeadlineLifecycle {
   readonly signal: AbortSignal;

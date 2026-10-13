@@ -89,8 +89,8 @@ export type { AccountHealthEventRecord } from "../../../src/providers/operations
  * schema cannot drift: `auto` is a member, and it means "send no reasoning
  * intent" rather than a specific effort.
  */
-export { PROBE_REASONING_EFFORTS } from "../../../src/providers/runtime/discovery/discovery-types";
-export type { ProbeReasoningEffort } from "../../../src/providers/runtime/discovery/discovery-types";
+export { PROBE_REASONING_EFFORTS } from "../../../src/providers/discovery/discovery-types";
+export type { ProbeReasoningEffort } from "../../../src/providers/discovery/discovery-types";
 
 /**
  * The `model(level)` naming rule, re-exported from the backend parser so the

@@ -12,8 +12,8 @@
  * `google-generate` wire, which this gateway does not implement; routing them
  * onto chat would post to an endpoint Factory does not serve rather than say so.
  */
-import { defineModel } from "../../core/model-definition";
-import type { ModelDefinition } from "../../core/model-definition";
+import { defineModel } from "../../provider-model-definition";
+import type { ModelDefinition } from "../../provider-model-definition";
 import type { WireFamily } from "../../../protocol/canonical-model";
 
 export const FACTORY_PROVIDER_ID = "factory" as const;

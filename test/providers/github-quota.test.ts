@@ -3,7 +3,7 @@ import {
   fetchGithubQuota,
   parseGithubQuota,
 } from "../../src/providers/integrations/github/github-quota";
-import { totalRemainingCredit } from "../../src/providers/runtime/quota/quota-contracts";
+import { totalRemainingCredit } from "../../src/providers/quota/quota-contracts";
 
 describe("GitHub Copilot quota", () => {
   test("parses the Copilot usage snapshot response", () => {

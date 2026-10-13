@@ -118,7 +118,7 @@ item. Empty reasoning is preserved. It is not invented.
 
 ## Providers
 
-`src/providers/core/registry.ts` is the registry. `default-registry.ts` registers the
+`src/providers/provider-registry.ts` is the registry. `default-registry.ts` registers the
 bundled adapters. `registerByokProviders` adds rows an operator created, and the
 upstream host list used for SSRF is live: a provider added after boot is bound
 on the next request, not at the next process start.

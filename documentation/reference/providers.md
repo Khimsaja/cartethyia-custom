@@ -15,8 +15,8 @@ Neither is duplicated here.
 
 ```mermaid
 flowchart LR
-  meta["core/metadata.ts<br/>identity + defaults"] --> mods["default-registry.ts<br/>capability composition"]
-  mods --> reg["core/registry.ts<br/>lazy loader cache"]
+  meta["provider-metadata.ts<br/>identity + defaults"] --> mods["default-registry.ts<br/>capability composition"]
+  mods --> reg["provider-registry.ts<br/>lazy loader cache"]
   reg --> adapt["adapter<br/>wire bytes"]
   spec["flat API-key specs + complex integrations/<br/>adapter + catalog + auth + quota"] -.dynamic import.-> adapt
   db[("providers / models rows")] --> byok["BYOK registration"]
@@ -25,15 +25,15 @@ flowchart LR
 
 | Layer | Owns | File |
 | --- | --- | --- |
-| Metadata | Identity, base URL, default wire family, service kinds, whether an account is required, JWT verification defaults | `src/providers/core/metadata.ts` |
+| Metadata | Identity, base URL, default wire family, service kinds, whether an account is required, JWT verification defaults | `src/providers/provider-metadata.ts` |
 | Spec | Typed provider declarations for compatible API-key contracts | `src/providers/configured-provider.ts`, `src/providers/configured-openai-providers.ts` |
-| Registry | One registration authority; lazy loader cache for adapter, auth, quota, and discovery | `src/providers/core/registry.ts` |
+| Registry | One registration authority; lazy loader cache for adapter, auth, quota, and discovery | `src/providers/provider-registry.ts` |
 | Registration source | Central provider-specific rows plus typed groups for repeated capability shapes | `src/providers/default-registry.ts` |
-| Adapter | Provider wire bytes | `src/providers/runtime/adapters/base-adapter.ts`, `src/providers/runtime/adapters/compatible-adapter.ts` |
+| Adapter | Provider wire bytes | `src/providers/adapters/base-adapter.ts`, `src/providers/adapters/compatible-adapter.ts` |
 | Integration | Per-provider adapter, catalog, OAuth client, quota collector | `src/providers/integrations/<family>/` |
-| Discovery | Live model listing and one-shot probes | `src/providers/runtime/discovery/` |
+| Discovery | Live model listing and one-shot probes | `src/providers/discovery/` |
 | Operations | Seeding, BYOK wiring, account health, CLI identity, versions | `src/providers/operations/` |
-| Quota | Provider billing windows | `src/providers/runtime/quota/` |
+| Quota | Provider billing windows | `src/providers/quota/` |
 
 The split matters because a provider is reached through *dynamic* `import()`.
 `PROVIDER_CAPABILITIES` (`src/providers/default-registry.ts`) holds no
@@ -44,13 +44,13 @@ dispatched to, probed, or refreshed. That is why a protobuf-heavy family costs
 nothing at boot — and why "grep finds no static import of this module" is not
 evidence that it is dead.
 
-Provider core contracts and generic runtime machinery live under `core/` and
-`runtime/`. Ordinary API-key specs and shared discovery-backed declarations
-stay as flat files directly under `src/providers/`; only substantial
-provider-specific integrations get folders. Buddy's four lazy capability rows
-live beside the regional integrations in `integrations/buddy/capabilities.ts`.
-The central registry remains the composition root for provider-specific
-behavior.
+Provider contracts, registry, metadata, and shared runtime machinery are
+directly under `src/providers/`, grouped by descriptive filenames. Ordinary
+API-key integration files stay directly under `integrations/`; provider-specific
+subfolders are for families with multiple related modules. Buddy's modules are
+grouped one level under `integrations/buddy/` by product (`codebuddy/` and
+`workbuddy/`), with separate regional provider files. The central registry
+remains the composition root for provider-specific behavior.
 
 ## Boot, and bundled vs BYOK
 
@@ -76,8 +76,8 @@ behavior.
    static catalogs into `models` (`:126`, `provider-catalog-seeder.ts:8`).
 
 **Bundled** means the id is in `RAW_BUNDLED_PROVIDER_METADATA`
-(`src/providers/core/metadata.ts`). That is the whole test:
-`isBundledProviderId` (`src/providers/core/contracts.ts`) answers from that list.
+(`src/providers/provider-metadata.ts`). That is the whole test:
+`isBundledProviderId` (`src/providers/provider-contracts.ts`) answers from that list.
 A bundled provider has a `ProviderModule` row composed from metadata and a
 `PROVIDER_CAPABILITIES` entry, and `BUNDLED_PROVIDER_MODULES`
 (`default-registry.ts:474`) throws at module load if an id has metadata but no
@@ -101,7 +101,7 @@ behavior without a restart.
 ## Credentials and auth
 
 `CredentialKind` is a closed union: `none`, `api_key`, `oauth`,
-`scoped_access_token`, `workload_identity` (`src/providers/core/contracts.ts`).
+`scoped_access_token`, `workload_identity` (`src/providers/provider-contracts.ts`).
 The storage enum is narrower — `api_key`, `oauth`, `none`
 (`src/persistence/schema.ts:106`).
 
@@ -115,16 +115,16 @@ The storage enum is narrower — `api_key`, `oauth`, `none`
 `provider_accounts.auth_state` (`schema.ts:195`) holds non-secret per-account
 upstream configuration — region, profile ARN, OAuth client id, token endpoint.
 It travels beside the secret in `ResolvedCredential.auth_state`
-(`src/providers/core/contracts.ts`) because a single opaque credential string
+(`src/providers/provider-contracts.ts`) because a single opaque credential string
 cannot express both, and the request an adapter builds depends on both.
 
-Selection is `CredentialResolver` (`src/providers/core/credential-resolver.ts`):
+Selection is `CredentialResolver` (`src/providers/provider-credential-resolver.ts`):
 the first usable alternative in operator order. Decryption and caching live in
 `src/providers/operations/provider-credential-service.ts`, with a 5 s TTL keyed
 on `providerId:accountId` (the provider must be in the key — a routing candidate
 can reuse another provider's account id).
 
-`TokenEnvelope` (`src/providers/core/credential-envelope.ts`) strips one explicitly
+`TokenEnvelope` (`src/providers/provider-credential-envelope.ts`) strips one explicitly
 identified prefix — `Bearer `, `OAuth `, `provider:` — so an adapter never emits
 `Bearer Bearer`. It is a separate module because adapters consume it and the
 registry imports adapters; the reverse edge would be a cycle.
@@ -133,9 +133,9 @@ Three auth client shapes exist:
 
 | Shape | Base class | Family examples |
 | --- | --- | --- |
-| Browser PKCE | `OAuthClient.buildAuthorizeUrl`/`exchangeCode` (`src/providers/runtime/authentication/oauth-client.ts`) | claude, antigravity, kiro, codex, mimodesktop, mimostudio, openrouter, zcode |
-| Device code (RFC 8628) | `OAuthDeviceFlow` (`src/providers/runtime/authentication/oauth-device-flow.ts`) | codex, github, cursor, grok, xai, kimi, cline, kiro, kilo, muse, qoder, factory |
-| No OAuth | plain key path; `probeApiKeyConnectivity` is the account test (`src/providers/runtime/quota/quota-support.ts`) | openai, anthropic, mistral, meta, most compatible API-key providers |
+| Browser PKCE | `OAuthClient.buildAuthorizeUrl`/`exchangeCode` (`src/providers/authentication/oauth-client.ts`) | claude, antigravity, kiro, codex, mimodesktop, openrouter, zcode |
+| Device code (RFC 8628) | `OAuthDeviceFlow` (`src/providers/authentication/oauth-device-flow.ts`) | codex, github, cursor, grok, xai, kimi, cline, kiro, kilo, muse, qoder, factory |
+| No OAuth | plain key path; `probeApiKeyConnectivity` is the account test (`src/providers/quota/quota-support.ts`) | openai, anthropic, mistral, meta, most compatible API-key providers |
 
 Whether a refresher is registered is per-family and deliberate. A family whose
 grant is absent or dead registers no refresher, because a refresh call that
@@ -156,32 +156,37 @@ A model becomes routable when a `models` row exists with `enabled = true` and
 its provider row is enabled and not retired. Two writers produce those rows.
 
 **Static catalogs.** Each bundled module declares `loadModels`, usually a module
-constant built with `defineModel` (`src/providers/core/model-definition.ts`).
+constant built with `defineModel` (`src/providers/provider-model-definition.ts`).
 `defineModel` resolves limits and pricing against the offline base catalog and
 leaves capability flags to the caller — capability does not fall back, because
-an invented default is worse than a stated false. The offline catalog is
-`src/providers/runtime/discovery/base-models.json` (~2 MB, `source: models.dev`,
+an invented default is worse than a stated false. The offline catalog is the single generated file
+`src/providers/discovery/base-models.json` (`source: models.dev`,
 `fetchedAt` in the file header), read by
-`src/providers/runtime/discovery/models-dev-catalog.ts`. Provider ids that differ from
-models.dev's spelling are remapped in `MODELS_DEV_PROVIDER_IDS` (`:139`).
+`src/providers/discovery/models-dev-catalog.ts`. It contains compact model rows
+and precomputed lookup indexes; there is no separate raw or compact copy.
+Refresh it with `bun run scripts/generate/models-dev-snapshot.ts`. Provider ids
+that differ from models.dev's spelling are remapped in
+`MODELS_DEV_PROVIDER_IDS` (`:139`). GPT-6 Astra is intentionally excluded from
+the offline metadata snapshot and the shared CodeBuddy/WorkBuddy international
+roster.
 `seedBundledModels` (`src/providers/operations/provider-catalog-seeder.ts:8`)
 writes these rows as `source: 'builtin'`, prunes `(model, endpoint)` pairs the
 catalog no longer declares, and reconciles capability drift on conflict while
 leaving operator-owned `enabled` alone.
 
 **Live discovery.** A module's `loadModelDiscovery` is a
-`ProviderModelDiscovery` (`src/providers/runtime/discovery/discovery-types.ts`) taking
+`ProviderModelDiscovery` (`src/providers/discovery/discovery-types.ts`) taking
 `baseUrl`, `credential`, optional `fetcher`, and optional `authState`. Most
 OpenAI-compatible providers reuse `fetchOpenAICompatibleModels`
-(`src/providers/runtime/discovery/openai-model-discovery.ts`). Per-account catalogs
+(`src/providers/discovery/openai-model-discovery.ts`). Per-account catalogs
 declare `modelDiscoveryRequiresCredential: true` — Kiro's list answers with what the credential's plan reaches, so the
 static rows are only an offline seed. Persisted rows get `source: 'discovered'`
-or `'auto_free'` (`src/providers/runtime/discovery/probing-service.ts`), which keeps
+or `'auto_free'` (`src/providers/discovery/probing-service.ts`), which keeps
 a free-tier row distinguishable at the only point it is still known.
 
 Whether the dashboard offers the "Fetch models" control is
 `supportsModelDiscovery`, which asks `registry.hasModelDiscovery(providerId)`
-(`src/providers/core/registry.ts`) — does a resolver exist for this provider — not
+(`src/providers/provider-registry.ts`) — does a resolver exist for this provider — not
 whether it is a custom provider. A bundled provider that registers no resolver
 (`gmi`, `nvidia`, `fireworks`) still reports `false` and has no button; a BYOK row
 reports `true` regardless.
@@ -192,7 +197,7 @@ proof that a model answers. `/v1/models` reads the same rows.
 
 ## Quota and health
 
-`QuotaFetcher` (`src/providers/runtime/quota/quota-support.ts`) is a per-provider
+`QuotaFetcher` (`src/providers/quota/quota-support.ts`) is a per-provider
 callback returning `ProviderQuotaResult` (`quota-contracts.ts:17`): a plan label
 and a list of windows with percentages and reset times. Registered collectors are
 resolved lazily through the registry (`:67`). Each window is explicitly marked
@@ -238,11 +243,11 @@ protocol instead of going through a canonical codec (`metadata.ts:316`).
 | qoder | Device flow whose refresh endpoint answers 403; no refresher (`default-registry.ts:369`). |
 | cline | Discovery reads only `recommended` + `free` — asking for the pass roster would write subscription rows an operator's account can only 401 on (`default-registry.ts:314-324`). |
 | openrouter / zcode | PKCE ends by minting a **durable API key**, not an access token, so no refresher is registered (`:387`, `:421`). |
-| xiaomi-mimo | Four ids: `xiaomipg`, `xiaomitp` (both key-based), `mimodesktop` (OAuth), `mimostudio` (browser cookies pasted from a signed-in session, `metadata.ts:182`). |
+| xiaomi-mimo | Three ids: `xiaomipg`, `xiaomitp` (both key-based), and `mimodesktop` (OAuth imports the signed-in desktop app session). MiMo Studio browser-cookie login is not supported. |
 | cb / cbcn / workbuddy / workbuddycn | One billing system, so `BUDDY_PROVIDER_IDS` names the family for health, request prep, and daily check-in. WorkBuddy CN mirrors WorkBuddy's contract on `www.workbuddy.cn` and also carries the recent CN model additions published by CodeBuddy CN. The runtime directory and desktop `/v3/config` snapshot are different surfaces; see the [catalog-fetch procedure](../../.skills/cartethyia-provider-catalog/SKILL.md#fetch-a-buddy-model-catalog), [captured catalogs](../../data/provider-catalogs/buddy-live-model-catalogs-2026-10-12.json), and [Buddy media-generation status](../features/buddy-media-generation.md). |
 | opencodeft | `requires_account: false` and `ipScopedRateLimit: true` (`metadata.ts:124`): rate limits follow the egress address, so a 429 cools the pool, not the account. |
 | exa / parallel | `serviceKinds: ["websearch"]` only; served by `/v1/search`, never by the chat pipeline. Their route ids are `exa` and `parallel`. No account uses the public MCP; a stored API key uses the provider's higher-limit HTTP API. |
-| deepseek | Bundled API-key provider. Dispatch uses the Anthropic Messages adapter at `/anthropic/v1/messages`; its OpenAI-compatible `/v1/models` discovery remains separate. The dedicated catalog is `integrations/deepseek/provider.ts`. See [BYOK base URLs and DeepSeek](../fix-byok-base-url-path.md) for the related endpoint-normalization context. |
+| deepseek | Bundled API-key provider. Dispatch uses the Anthropic Messages adapter at `/anthropic/v1/messages`; its OpenAI-compatible `/v1/models` discovery remains separate. The dedicated catalog is `deepseek.ts`. See [BYOK base URLs and DeepSeek](../fix-byok-base-url-path.md) for the related endpoint-normalization context. |
 | mistral, fireworks, nvidia, gmi, ollamacloud | Shared configured OpenAI-compatible spec rows; DeepSeek has a dedicated Messages integration. |
 | factory | WorkOS device code against a proxy that multiplexes four wires by model family, so `dispatch` branches on `wire_family` rather than declaring one path (`factory.ts:1-30`). The credential is `{accessToken, orgId}` — the org id is the JWT's `external_org_id` claim and is sent as `X-Factory-Org-Id` — and the host comes from the account's residency region, not from metadata. A real refresh grant exists (`refresh` re-posts to the same WorkOS endpoint), and the token request is issued in the client rather than through `pollGenericDeviceAuth` because the shared helper drops `refresh_token` from the response. |
 | cloudflareai | A gateway, not a model host: the account and gateway slugs are path segments of the base URL (`https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic`) and are stored with the token, so the base URL is built at dispatch time. Auth is `cf-aig-authorization`, not `Authorization` or `x-api-key` (`cloudflareai.ts:11-19`). Messages wire only. No refresh grant. |
@@ -255,18 +260,18 @@ protocol instead of going through a canonical codec (`metadata.ts:316`).
 | Change | Start here |
 | --- | --- |
 | New provider, family, or catalog row | [Provider-catalog skill](../../.skills/cartethyia-provider-catalog/SKILL.md) |
-| Provider identity, base URL, default wire, service kinds | `src/providers/core/metadata.ts` |
+| Provider identity, base URL, default wire, service kinds | `src/providers/provider-metadata.ts` |
 | Wire a bundled provider's adapter/auth/quota/discovery | `src/providers/default-registry.ts:82` |
-| Behavior of one provider's wire | its module under `src/providers/integrations/<family>/` or `src/providers/runtime/adapters/` |
+| Behavior of one provider's wire | its module under `src/providers/integrations/<family>/` or `src/providers/adapters/` |
 | A provider that speaks standard OpenAI chat/responses | add an `ApiKeyProviderSpec`, not an adapter (`configured-provider.ts`) |
 | A provider whose base URL carries per-account state (a plan region, a residency host) | the spec's `resolveBaseUrl`, which overrides `base_url` at transport time from the decoded credential (`compatible-adapter.ts:45`) |
-| Shared HTTP/SSE adapter behavior | `src/providers/runtime/adapters/compatible-adapter.ts`, `base-adapter.ts` |
-| Provider registration, caching, lazy loading | `src/providers/core/registry.ts` |
+| Shared HTTP/SSE adapter behavior | `src/providers/adapters/compatible-adapter.ts`, `base-adapter.ts` |
+| Provider registration, caching, lazy loading | `src/providers/provider-registry.ts` |
 | BYOK wire/header derivation | `src/providers/operations/byok-wire-profile.ts:55` |
 | BYOK registration and SSRF binding | `src/providers/operations/provider-catalog-service.ts:182` |
 | Static catalog seeding and drift | `src/providers/operations/provider-catalog-seeder.ts:8` |
-| Offline limits and pricing | `src/providers/runtime/discovery/base-models.json`, `models-dev-catalog.ts` |
+| Offline limits and pricing | `src/providers/discovery/base-models.json`, `models-dev-catalog.ts` |
 | Live model listing | the family's `loadModelDiscovery`, or `discovery/openai-model-discovery.ts:25` |
-| Quota windows | the family's `*-quota.ts` collector, plus `src/providers/runtime/quota/quota-contracts.ts` |
-| OAuth login, refresh, device flow | `src/providers/runtime/authentication/`, then the family's `*-oauth.ts` |
+| Quota windows | the family's `*-quota.ts` collector, plus `src/providers/quota/quota-contracts.ts` |
+| OAuth login, refresh, device flow | `src/providers/authentication/`, then the family's `*-oauth.ts` |
 | Account health, cooldowns, pool selection | [Health-routing skill](../../.skills/cartethyia-health-routing/SKILL.md) |

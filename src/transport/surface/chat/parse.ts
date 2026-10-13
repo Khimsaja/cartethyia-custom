@@ -4,7 +4,7 @@ import { isRecord } from "../../../protocol/codecs";
 import { textPart, normalizeInlineFile } from "../content-parts";
 import { SERVICE_TIERS } from "../dialects";
 import { readNumber, readString } from "../../../protocol/codecs";
-import type { OpenAiUsage } from "../../../providers/core/usage";
+import type { OpenAiUsage } from "../../../providers/provider-usage";
 
 export interface ChatEncodeOptions {
   response_id?: string;

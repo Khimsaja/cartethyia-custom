@@ -1,10 +1,10 @@
 import { completeRequiredSchema } from "../../../protocol/codecs";
-import type { ModelDefinition } from "../../core/model-definition";
+import type { ModelDefinition } from "../../provider-model-definition";
 import type { CanonicalRequest, ToolDefinition } from "../../../protocol/canonical-model";
 import { isRecord } from "../../../protocol/codecs";
-import type { ProviderDispatchContext } from "../../core/contracts";
-import { PROVIDER_COMPATIBILITY_PROFILES } from "../../core/metadata";
-import { defineModel } from "../../core/model-definition";
+import type { ProviderDispatchContext } from "../../provider-contracts";
+import { PROVIDER_COMPATIBILITY_PROFILES } from "../../provider-metadata";
+import { defineModel } from "../../provider-model-definition";
 import type { ApiKeyProviderSpec } from "../../configured-provider";
 import { buildOpenCodeHeaders } from "./fingerprint";
 /**
@@ -213,7 +213,7 @@ export async function discoverOpenCodeFreeModels(options: {
   readonly baseUrl: string;
   readonly fetcher?: typeof fetch;
 }): Promise<readonly ModelDefinition[] | null> {
-  const { fetchOpenAICompatibleModels } = await import("../../runtime/discovery/openai-model-discovery");
+  const { fetchOpenAICompatibleModels } = await import("../../discovery/openai-model-discovery");
   const listed = await fetchOpenAICompatibleModels({
     baseUrl: options.baseUrl,
     providerId: "opencodeft",

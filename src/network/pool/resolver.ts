@@ -22,7 +22,7 @@ import WebSocket, { type ClientOptions, type RawData } from "ws";
 import { isProxyAgentPair, createHttpProxyAgent, createSocks5Agent, PoolBindingError } from "./agent";
 import { Agent as HttpsAgent } from "node:https";
 import { parseAgentConfig, ProxyConfigError, type AgentConfig } from "../types";
-import type { ProviderWebSocketSession, ValidatedOutboundWebSocket } from "../../providers/core/contracts";
+import type { ProviderWebSocketSession, ValidatedOutboundWebSocket } from "../../providers/provider-contracts";
 
 /** Idle time after which an unused pool agent is destroyed. */
 const POOL_AGENT_IDLE_MS = 10 * 60_000;

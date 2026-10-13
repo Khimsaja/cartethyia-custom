@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type {
   ProviderDispatchContext,
   ProviderDispatchTarget,
-} from "../../src/providers/core/contracts";
+} from "../../src/providers/provider-contracts";
 import {
   GITHUB_AUTO_MODEL_TIERS,
   githubAdapter,

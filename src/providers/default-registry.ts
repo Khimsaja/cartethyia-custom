@@ -6,12 +6,12 @@ import { createApiKeyAdapter } from "./configured-provider";
 import type { ApiKeyProviderSpec } from "./configured-provider";
 import { oauthCapability, quotaCapability, type ProviderModuleCapabilities } from "./provider-capabilities";
 import { BUDDY_PROVIDER_CAPABILITIES } from "./integrations/buddy/capabilities";
-import { ProviderRegistry, toRegistration, type ProviderModule } from "./core/registry";
-import { BUNDLED_PROVIDER_METADATA, PROVIDER_COMPATIBILITY_PROFILES, providerBaseUrl, providerRequiresAccount, providerUpstreamHost, providerDefaultWireFamily, type BundledProviderId } from "./core/metadata";
-import { createAnthropicCompatibleAdapter } from "./integrations/anthropic/anthropic";
-import { defineModel } from "./core/model-definition";
-import type { ProviderModelDiscovery } from "./runtime/discovery/discovery-types";
-import type { ProviderDispatchContext } from "./core/contracts";
+import { ProviderRegistry, toRegistration, type ProviderModule } from "./provider-registry";
+import { BUNDLED_PROVIDER_METADATA, PROVIDER_COMPATIBILITY_PROFILES, providerBaseUrl, providerRequiresAccount, providerUpstreamHost, providerDefaultWireFamily, type BundledProviderId } from "./provider-metadata";
+import { createAnthropicCompatibleAdapter } from "./integrations/anthropic";
+import { defineModel } from "./provider-model-definition";
+import type { ProviderModelDiscovery } from "./discovery/discovery-types";
+import type { ProviderDispatchContext } from "./provider-contracts";
 import type { WireFamily } from "../protocol/canonical-model";
 import type { CanonicalRequest } from "../protocol/canonical-model";
 
@@ -66,7 +66,7 @@ function openAIModelDiscovery(
   },
 ): () => Promise<ProviderModelDiscovery> {
   return async () => async ({ baseUrl, credential, fetcher }) => {
-    const { fetchOpenAICompatibleModels } = await import("./runtime/discovery/openai-model-discovery");
+    const { fetchOpenAICompatibleModels } = await import("./discovery/openai-model-discovery");
     return fetchOpenAICompatibleModels({
       baseUrl: options?.transformBaseUrl?.(baseUrl) ?? baseUrl,
       providerId,
@@ -82,22 +82,22 @@ function openAIModelDiscovery(
  * Adapter and model references use dynamic `import()` so a provider's module
  * graph — including bespoke protobuf adapters and their large generated
  * declarations — is evaluated on first use rather than at startup. Model
- * catalogs are declared inline in each `api-key/` provider module, so a
- * catalog load evaluates the same module the adapter uses; the dynamic import
- * still keeps that evaluation off the startup path.
+ * catalogs are declared inline in flat API-key modules or complex
+ * integrations, so a catalog load evaluates the same module the adapter uses;
+ * the dynamic import still keeps that evaluation off the startup path.
  */
 export const PROVIDER_CAPABILITIES = {
   ...BUDDY_PROVIDER_CAPABILITIES,
   openai: {
     endpointPathsByWireFamily: { chat: "/v1/chat/completions", responses: "/v1/responses" },
-    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/openai/provider")).OPENAI_SPEC),
-    loadModels: async () => (await import("./integrations/openai/provider")).OPENAI_MODELS,
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/openai")).OPENAI_SPEC),
+    loadModels: async () => (await import("./integrations/openai")).OPENAI_MODELS,
     loadModelDiscovery: openAIModelDiscovery("openai", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
   },
   anthropic: {
     endpointPathsByWireFamily: { messages: "/v1/messages" },
-    loadAdapter: async () => (await import("./integrations/anthropic/anthropic")).createAnthropicAdapter(),
-    loadModels: async () => (await import("./integrations/anthropic/anthropic")).ANTHROPIC_MODELS,
+    loadAdapter: async () => (await import("./integrations/anthropic")).createAnthropicAdapter(),
+    loadModels: async () => (await import("./integrations/anthropic")).ANTHROPIC_MODELS,
     loadModelDiscovery: openAIModelDiscovery("anthropic", { headers: (credential) => ({ "x-api-key": credential, "anthropic-version": "2023-06-01" }) }),
   },
   claude: {
@@ -172,8 +172,8 @@ export const PROVIDER_CAPABILITIES = {
     loadQuotaCollector: quotaCapability(() => import("./integrations/muse/muse-quota"), "fetchMuseQuota"),
   },
   meta: {
-    loadAdapter: async () => (await import("./integrations/meta/meta")).metaAdapter,
-    loadModels: async () => (await import("./integrations/meta/meta")).META_MODELS,
+    loadAdapter: async () => (await import("./integrations/meta")).metaAdapter,
+    loadModels: async () => (await import("./integrations/meta")).META_MODELS,
     // No `loadAuthentication`: the Model API is a plain API key pasted from the
     // Meta developer dashboard, so the default key-only credential path applies
     // and `probeApiKeyConnectivity` is the account test.
@@ -203,14 +203,14 @@ export const PROVIDER_CAPABILITIES = {
   },
   cerebras: {
     endpointPathsByWireFamily: { chat: "/chat/completions" },
-    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/cerebras/provider")).CEREBRAS_SPEC),
-    loadModels: async () => (await import("./integrations/cerebras/provider")).CEREBRAS_MODELS,
-    loadQuotaCollector: quotaCapability(() => import("./integrations/cerebras/provider"), "fetchCerebrasQuota"),
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/cerebras")).CEREBRAS_SPEC),
+    loadModels: async () => (await import("./integrations/cerebras")).CEREBRAS_MODELS,
+    loadQuotaCollector: quotaCapability(() => import("./integrations/cerebras"), "fetchCerebrasQuota"),
     loadModelDiscovery: openAIModelDiscovery("cerebras", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
   },
   mistral: configuredProvider(
     "mistral",
-    async () => (await import("./integrations/mistral/provider")).MISTRAL_MODELS,
+    async () => (await import("./integrations/mistral")).MISTRAL_MODELS,
   ),
   fireworks: configuredProvider("fireworks"),
   nvidia: configuredProvider("nvidia"),
@@ -221,8 +221,8 @@ export const PROVIDER_CAPABILITIES = {
     // discovery stays on the OpenAI-compatible host. The two surfaces are
     // separate upstreams on one provider.
     endpointPathsByWireFamily: { messages: "/v1/messages" },
-    loadAdapter: async () => (await import("./integrations/anthropic/anthropic")).createDeepseekAnthropicAdapter(),
-    loadModels: async () => (await import("./integrations/deepseek/provider")).DEEPSEEK_MODELS,
+    loadAdapter: async () => (await import("./integrations/anthropic")).createDeepseekAnthropicAdapter(),
+    loadModels: async () => (await import("./integrations/deepseek")).DEEPSEEK_MODELS,
     loadModelDiscovery: openAIModelDiscovery("deepseek", {
       headers: (credential) => ({ authorization: `Bearer ${credential}` }),
     }),
@@ -277,27 +277,27 @@ export const PROVIDER_CAPABILITIES = {
     loadModels: async () => (await import("./integrations/agentrouter/agentrouter")).AGENTROUTER_MODELS,
   },
   gemini: {
-    loadAdapter: async () => (await import("./integrations/gemini/gemini")).createGeminiAdapter(),
+    loadAdapter: async () => (await import("./integrations/gemini")).createGeminiAdapter(),
     loadModels: async () => {
-      const gemini = await import("./integrations/gemini/gemini");
+      const gemini = await import("./integrations/gemini");
       // One module, two catalog halves: the chat rows and the Google Search
       // grounding rows are the same Gemini models on two service kinds, and
       // importing the module twice would load it twice.
       return [...gemini.GEMINI_MODELS, ...gemini.GEMINI_SEARCH_MODELS];
     },
-    loadModelDiscovery: async () => async ({ credential }) => (await import("./integrations/gemini/gemini")).discoverGeminiModels({ credential }),
+    loadModelDiscovery: async () => async ({ credential }) => (await import("./integrations/gemini")).discoverGeminiModels({ credential }),
   },
   aihubmix: {
-    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/aihubmix/provider")).AIHUBMIX_SPEC),
-    loadModels: async () => (await import("./integrations/aihubmix/provider")).AIHUBMIX_FALLBACK_MODELS,
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/aihubmix")).AIHUBMIX_SPEC),
+    loadModels: async () => (await import("./integrations/aihubmix")).AIHUBMIX_FALLBACK_MODELS,
   },
   bai: {
-    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/bai/provider")).BAI_SPEC),
-    loadModels: async () => (await import("./integrations/bai/provider")).BAI_FALLBACK_MODELS,
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/bai")).BAI_SPEC),
+    loadModels: async () => (await import("./integrations/bai")).BAI_FALLBACK_MODELS,
   },
   tokenharbor: {
-    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/tokenharbor/provider")).TOKENHARBOR_SPEC),
-    loadModels: async () => (await import("./integrations/tokenharbor/provider")).TOKENHARBOR_FALLBACK_MODELS,
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/tokenharbor")).TOKENHARBOR_SPEC),
+    loadModels: async () => (await import("./integrations/tokenharbor")).TOKENHARBOR_FALLBACK_MODELS,
   },
   cline: {
     loadAdapter: async () => (await import("./integrations/cline/cline")).createClineAdapter(),
@@ -342,13 +342,13 @@ export const PROVIDER_CAPABILITIES = {
     loadAuthentication: oauthCapability(() => import("./integrations/qoder/qoder-oauth"), "qoderOAuthClient"),
   },
   inferhub: {
-    loadAdapter: async () => (await import("./integrations/inferhub/inferhub")).createInferhubAdapter(),
-    loadModels: async () => (await import("./integrations/inferhub/inferhub")).INFERHUB_MODELS,
-    loadQuotaCollector: quotaCapability(() => import("./integrations/inferhub/inferhub"), "fetchInferhubQuota"),
+    loadAdapter: async () => (await import("./integrations/inferhub")).createInferhubAdapter(),
+    loadModels: async () => (await import("./integrations/inferhub")).INFERHUB_MODELS,
+    loadQuotaCollector: quotaCapability(() => import("./integrations/inferhub"), "fetchInferhubQuota"),
   },
   hermes: {
-    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/hermes/provider")).HERMES_SPEC),
-    loadModels: async () => (await import("./integrations/hermes/provider")).HERMES_MODELS,
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/hermes")).HERMES_SPEC),
+    loadModels: async () => (await import("./integrations/hermes")).HERMES_MODELS,
   },
   openrouter: {
     loadAdapter: async () => createApiKeyAdapter((await import("./integrations/openrouter/provider")).OPENROUTER_SPEC),
@@ -390,12 +390,6 @@ export const PROVIDER_CAPABILITIES = {
     loadModels: async () => (await import("./integrations/xiaomi-mimo/mimodesktop")).MIMODESKTOP_MODELS,
     loadAuthentication: oauthCapability(() => import("./integrations/xiaomi-mimo/mimodesktop-oauth"), "mimoDesktopOAuthClient", { withRefresher: true }),
     loadQuotaCollector: quotaCapability(() => import("./integrations/xiaomi-mimo/mimodesktop-quota"), "fetchMimoDesktopQuota"),
-  },
-  mimostudio: {
-    loadAdapter: async () => (await import("./integrations/xiaomi-mimo/mimostudio")).createMimoStudioAdapter(),
-    loadModels: async () => (await import("./integrations/xiaomi-mimo/mimostudio")).MIMOSTUDIO_MODELS,
-    loadAuthentication: oauthCapability(() => import("./integrations/xiaomi-mimo/mimostudio-oauth"), "mimoStudioOAuthClient", { withRefresher: true }),
-    loadQuotaCollector: quotaCapability(() => import("./integrations/xiaomi-mimo/mimostudio-quota"), "fetchMimoStudioQuota"),
   },
   zcode: {
     loadAdapter: async () => createApiKeyAdapter((await import("./integrations/zcode/provider")).ZCODE_SPEC),
@@ -457,8 +451,8 @@ export const PROVIDER_CAPABILITIES = {
       (await import("./integrations/alibabacp/alibabacp-models")).ALIBABACP_MODELS,
   },
   perplexity: {
-    loadAdapter: async () => (await import("./integrations/perplexity/perplexity")).createPerplexityAdapter(),
-    loadModels: async () => (await import("./integrations/perplexity/perplexity")).PERPLEXITY_MODELS,
+    loadAdapter: async () => (await import("./integrations/perplexity")).createPerplexityAdapter(),
+    loadModels: async () => (await import("./integrations/perplexity")).PERPLEXITY_MODELS,
   },
   // Web-search providers: a `createSearchAdapter` over their spec, and a single
   // `serviceKind: "websearch"` catalog row served by the `/v1/search` route.
@@ -506,7 +500,7 @@ export const PROVIDER_CAPABILITIES = {
       responses: "/responses",
     },
     loadAdapter: async () => createApiKeyAdapter(GENERIC_API_KEY_SPECS.ollamacloud),
-    loadQuotaCollector: quotaCapability(() => import("./integrations/ollamacloud/quota"), "fetchOllamaQuota"),
+    loadQuotaCollector: quotaCapability(() => import("./integrations/ollamacloud-quota"), "fetchOllamaQuota"),
     loadModelDiscovery: openAIModelDiscovery("ollamacloud", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
   },
 

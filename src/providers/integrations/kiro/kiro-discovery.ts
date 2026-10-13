@@ -9,9 +9,9 @@
 // not the agent's chat call, and the upstream validates the User-Agent's shape
 // rather than ignoring it.
 
-import type { FetchLike } from "../../runtime/quota/quota-contracts";
-import type { ModelDefinition } from "../../core/model-definition";
-import { defineModel } from "../../core/model-definition";
+import type { FetchLike } from "../../quota/quota-contracts";
+import type { ModelDefinition } from "../../provider-model-definition";
+import { defineModel } from "../../provider-model-definition";
 import {
   buildKiroAmzUserAgent,
   buildKiroRuntimeUserAgent,

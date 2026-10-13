@@ -25,7 +25,7 @@ import {
   type WebSearchBridgeResult,
 } from "../../src/transport/dispatch/websearch-bridge";
 import type { CanonicalEvent, CanonicalRequest } from "../../src/protocol/canonical-model";
-import type { WebSearchOutcome } from "../../src/providers/core/contracts";
+import type { WebSearchOutcome } from "../../src/providers/provider-contracts";
 
 /** The id a hosted-search client actually sends. */
 const CLIENT_CALL_ID = "toolu_01ArealClientCallId";

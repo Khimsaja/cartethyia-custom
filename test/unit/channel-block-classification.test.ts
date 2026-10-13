@@ -90,7 +90,7 @@ describe("buddy credit exhaustion 14018", () => {
  *
  * This block was a flat 6h here and 24h for the sibling `11140` content block,
  * both applied on the first observation. Both codes are ambiguous from the
- * response alone: `workbuddy-shared.ts` records that the wrong desktop
+ * response alone: `workbuddy/shared.ts` records that the wrong desktop
  * `User-Agent` brand also answers `11140`, and a channel rejection is purely
  * about the calling channel we built — neither says anything about the
  * credential being unusable for a day.

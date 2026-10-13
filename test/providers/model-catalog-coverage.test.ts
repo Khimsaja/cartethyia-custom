@@ -7,9 +7,9 @@
  * having three unrelated causes.
  */
 import { describe, expect, test } from "bun:test";
-import { modelsDevCatalog } from "../../src/providers/runtime/discovery/models-dev-catalog";
+import { modelsDevCatalog } from "../../src/providers/discovery/models-dev-catalog";
 import { PROVIDER_CAPABILITIES } from "../../src/providers/default-registry";
-import type { ModelDefinition } from "../../src/providers/core/model-definition";
+import type { ModelDefinition } from "../../src/providers/provider-model-definition";
 
 async function catalogFor(providerId: string): Promise<readonly ModelDefinition[]> {
   const capabilities = (PROVIDER_CAPABILITIES as Record<
@@ -51,6 +51,33 @@ describe("reseller-suffixed model ids", () => {
   test("an ordinary id is untouched by the stripping", () => {
     const plain = modelsDevCatalog.resolve("openai", "gpt-5");
     expect(plain).toBeDefined();
+  });
+});
+
+describe("generated catalog indexes", () => {
+  test("GPT-6 Astra is excluded from model metadata and global pricing", () => {
+    expect(modelsDevCatalog.resolve("302ai", "gpt-6-astra")).toBeUndefined();
+    expect(modelsDevCatalog.costFor("unmapped-gateway", "gpt-6-astra")).toEqual({
+      input: null,
+      output: null,
+      pricing_model: "unknown",
+    });
+  });
+
+  test("global pricing falls back for providers absent from models.dev", () => {
+    expect(modelsDevCatalog.costFor("unmapped-gateway", "gpt-5")).toEqual({
+      input: 1.25,
+      output: 10,
+      cache_read: 0.125,
+      pricing_model: "pay-per-use",
+    });
+  });
+
+  test("majority limits use the precomputed bare-id ordering", () => {
+    expect(modelsDevCatalog.majorityFor("claude-opus-5")).toEqual({
+      contextLimit: 1_000_000,
+      outputLimit: 128_000,
+    });
   });
 });
 

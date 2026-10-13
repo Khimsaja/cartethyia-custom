@@ -28,7 +28,7 @@ import { firstUserText } from "../../../protocol/canonical-model";
 import { decodeSseEvents } from "../../../protocol/sse-decoder";
 import { geminiInlineImages, imageAspectRatio, imageCreatedSeconds, imagePrompt } from "../../../protocol/image-generation";
 import { mapUpstreamHttpError } from "../../../transport/failure-policy";
-import { usageFromProvider } from "../../core/usage";
+import { usageFromProvider } from "../../provider-usage";
 import { isRecord } from "../../../protocol/codecs";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { buildGeminiPayload } from "../../../protocol/request/gemini";
@@ -45,16 +45,16 @@ import {
   getAntigravityUserAgent,
   loadAntigravityProject,
 } from "./antigravity-protocol";
-import type { ImageGenerationOutcome, ProviderDispatchTarget, ProviderAdapter, ProviderDispatchContext, WebSearchOutcome, WebSearchResult } from "../../core/contracts";
-import { providerBaseUrl } from "../../core/metadata";
+import type { ImageGenerationOutcome, ProviderDispatchTarget, ProviderAdapter, ProviderDispatchContext, WebSearchOutcome, WebSearchResult } from "../../provider-contracts";
+import { providerBaseUrl } from "../../provider-metadata";
 import { abortGatewayError, createUpstreamDeadlineLifecycle } from "../../operations/upstream-deadline";
 
 export const ANTIGRAVITY_PROVIDER_ID = "antigravity" as const;
 export const ANTIGRAVITY_BASE_URL = providerBaseUrl("antigravity");
 /** Cloud Code Assist accepts `/v1internal:generateContent` for the same body Gemini's v1beta accepts. */
 const GENERATE_PATH = "/v1internal:generateContent" as const;
-import { defineModel } from "../../core/model-definition";
-import type { ModelDefinition } from "../../core/model-definition";
+import { defineModel } from "../../provider-model-definition";
+import type { ModelDefinition } from "../../provider-model-definition";
 
 const antigravityModel = (
   modelId: string,

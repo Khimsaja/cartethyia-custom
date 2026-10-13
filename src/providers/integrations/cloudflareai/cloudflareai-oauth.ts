@@ -23,9 +23,9 @@ import type {
   OAuthImportInput,
   OAuthLoginClient,
   OAuthLoginField,
-} from "../../runtime/authentication/oauth-flow-store";
-import { readJsonResponse } from "../../runtime/authentication/oauth-flow-store";
-import type { FetchLike } from "../../runtime/authentication/oauth-client";
+} from "../../authentication/oauth-flow-store";
+import { readJsonResponse } from "../../authentication/oauth-flow-store";
+import type { FetchLike } from "../../authentication/oauth-client";
 import {
   encodeCloudflareAiGatewayCredential,
   type CloudflareAiGatewayEnvelope,

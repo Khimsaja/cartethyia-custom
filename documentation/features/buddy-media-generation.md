@@ -2,7 +2,7 @@
 
 Cartethyia routes image and video generation for the Buddy provider family
 through the shared adapter in
-[`media.ts`](../../src/providers/integrations/buddy/shared/media.ts).
+[`buddy-media.ts`](../../src/providers/integrations/buddy/buddy-media.ts).
 CodeBuddy's native image API and WorkBuddy's chat-carried image path are
 different contracts; do not assume the provider variants share every endpoint.
 
@@ -51,11 +51,11 @@ Follow the procedure in
 ## Where to change what
 
 - Provider request construction and response parsing:
-  [`src/providers/integrations/buddy/shared/media.ts`](../../src/providers/integrations/buddy/shared/media.ts)
+  [`src/providers/integrations/buddy/buddy-media.ts`](../../src/providers/integrations/buddy/buddy-media.ts)
 - Reusable media CLI:
   [`scripts/media.ts`](../../scripts/media.ts)
 - Provider model paths and metadata:
-  [`src/providers/integrations/buddy/shared/catalog.ts`](../../src/providers/integrations/buddy/shared/catalog.ts)
+  [`src/providers/integrations/buddy/buddy-catalog-shared.ts`](../../src/providers/integrations/buddy/buddy-catalog-shared.ts)
 - Adapter regression tests:
   [`test/providers/buddy-media.test.ts`](../../test/providers/buddy-media.test.ts)
 

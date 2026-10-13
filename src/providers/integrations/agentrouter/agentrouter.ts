@@ -13,8 +13,8 @@
 // at this call site instead.
 import { GatewayError } from "../../../protocol/gateway-error";
 import type { CanonicalEvent, CanonicalRequest } from "../../../protocol/canonical-model";
-import { readCredentialSecret, type ProviderDispatchTarget, type ProviderAdapter, type ProviderDispatchContext } from "../../core/contracts";
-import { providerBaseUrl } from "../../core/metadata";
+import { readCredentialSecret, type ProviderDispatchTarget, type ProviderAdapter, type ProviderDispatchContext } from "../../provider-contracts";
+import { providerBaseUrl } from "../../provider-metadata";
 import { buildClaudeMessagesRequest } from "../shared/claude-messages";
 import { sendClaudeMessagesRequest } from "../../../protocol/upstream/send-claude-messages";
 
@@ -50,8 +50,8 @@ function agentRouterFingerprintHeaders(stream: boolean): Record<string, string> 
 
 // AgentRouter model catalog.
 
-import { defineModel } from "../../core/model-definition";
-import type { ModelDefinition } from "../../core/model-definition";
+import { defineModel } from "../../provider-model-definition";
+import type { ModelDefinition } from "../../provider-model-definition";
 
 export const AGENTROUTER_MODELS: readonly ModelDefinition[] = [
   defineModel({

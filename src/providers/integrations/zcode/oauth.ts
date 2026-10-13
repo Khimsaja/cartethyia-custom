@@ -26,13 +26,13 @@ import {
   nonEmptyTrimmedString,
   readJsonResponse,
   record,
-} from "../../runtime/authentication/oauth-flow-store";
+} from "../../authentication/oauth-flow-store";
 import type {
   OAuthAuthorizeRequest,
   OAuthExchangeResult,
-} from "../../runtime/authentication/oauth-flow-store";
-import { OAuthClient } from "../../runtime/authentication/oauth-client";
-import type { FetchLike } from "../../runtime/authentication/oauth-client";
+} from "../../authentication/oauth-flow-store";
+import { OAuthClient } from "../../authentication/oauth-client";
+import type { FetchLike } from "../../authentication/oauth-client";
 import { GatewayError } from "../../../protocol/gateway-error";
 
 export const ZCODE_AUTHORIZE_URL = "https://chat.z.ai/api/oauth/authorize" as const;

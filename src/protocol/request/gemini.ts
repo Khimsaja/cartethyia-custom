@@ -14,7 +14,7 @@ import {
   splitDataUrl,
   type RewriteWalk,
 } from "../codecs";
-import { geminiThinkingOutputFloor } from "../../providers/core/reasoning";
+import { geminiThinkingOutputFloor } from "../../providers/provider-reasoning";
 
 export function geminiModelUrl(base: string, model: string, action: string): string {
   return `${base}/models/${encodeURIComponent(model)}:${action}`;

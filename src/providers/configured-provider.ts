@@ -1,8 +1,8 @@
-import type { ProviderDispatchTarget, ProviderId, ProviderAdapter, ProviderDispatchContext } from "./core/contracts";
+import type { ProviderDispatchTarget, ProviderId, ProviderAdapter, ProviderDispatchContext } from "./provider-contracts";
 import type { CanonicalRequest, WireFamily } from "../protocol/canonical-model";
 import { GatewayError } from "../protocol/gateway-error";
-import { OpenAICompatibleAdapter, withBearerAuthentication } from "./runtime/adapters/compatible-adapter";
-import { providerBaseUrl } from "./core/metadata";
+import { OpenAICompatibleAdapter, withBearerAuthentication } from "./adapters/compatible-adapter";
+import { providerBaseUrl } from "./provider-metadata";
 
 export function ensurePayloadModel(
   payload: Record<string, unknown>,

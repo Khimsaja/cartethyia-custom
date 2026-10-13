@@ -11,7 +11,7 @@
  */
 import { GatewayError } from "../gateway-error";
 import { type CanonicalEvent, type CanonicalRequest, type CanonicalStopReason } from "../canonical-model";
-import { usageFromProvider, readResponsesReasoningDelta } from '../../providers/core/usage';
+import { usageFromProvider, readResponsesReasoningDelta } from '../../providers/provider-usage';
 import { canonicalTerminal, decodeCodexToolCallId, isRecord, readOutputIndex } from '../codecs';
 import { gatewayErrorFromStreamError } from '../stream-error-frames';
 

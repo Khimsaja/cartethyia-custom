@@ -3,7 +3,7 @@ import type { CanonicalRequest } from "../../../src/protocol/canonical-model";
 import { encodeWireRequest } from "../../../src/protocol/registry";
 import { canonicalToChatPayload } from "../../../src/protocol/request/chat";
 import { canonicalToResponsesPayload } from "../../../src/protocol/request/responses";
-import type { ProviderDispatchContext } from "../../../src/providers/core/contracts";
+import type { ProviderDispatchContext } from "../../../src/providers/provider-contracts";
 import { lookupKimiPromptCacheKey } from "../../../src/providers/integrations/kimi/kimi";
 import {
   resolveInboundSessionId,

@@ -16,12 +16,12 @@
  * Code publishes (`/api/openrouter/chat/completions`) and it is not derivable
  * from an origin plus a wire-family suffix.
  */
-import { defineModel } from "../../core/model-definition";
-import type { ModelDefinition } from "../../core/model-definition";
-import type { ProviderAdapter, ProviderDispatchContext, ProviderDispatchTarget } from "../../core/contracts";
+import { defineModel } from "../../provider-model-definition";
+import type { ModelDefinition } from "../../provider-model-definition";
+import type { ProviderAdapter, ProviderDispatchContext, ProviderDispatchTarget } from "../../provider-contracts";
 import type { CanonicalRequest } from "../../../protocol/canonical-model";
-import { OpenAICompatibleAdapter, withBearerAuthentication } from "../../runtime/adapters/compatible-adapter";
-import { providerBaseUrl } from "../../core/metadata";
+import { OpenAICompatibleAdapter, withBearerAuthentication } from "../../adapters/compatible-adapter";
+import { providerBaseUrl } from "../../provider-metadata";
 import { decodeKiloCredential } from "../../../security/credential-codec";
 
 export const KILO_PROVIDER_ID = "kilo" as const;

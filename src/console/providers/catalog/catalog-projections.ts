@@ -8,11 +8,11 @@
  * provider's base path stripped so a versioned root cannot double a `/v1`
  * segment. `mapProviderRow` is the single `providers` row projection.
  */
-import { isBundledProviderId } from "../../../providers/core/contracts";
+import { isBundledProviderId } from "../../../providers/provider-contracts";
 
-import { providerDisplayName, providerServiceKinds, providerSupportsWebSearch } from "../../../providers/core/metadata";
-import type { CompatibilityProfile } from "../../../providers/core/metadata";
-import { supportedWireFamiliesForProvider } from "../../../providers/runtime/discovery/probe-wire";
+import { providerDisplayName, providerServiceKinds, providerSupportsWebSearch } from "../../../providers/provider-metadata";
+import type { CompatibilityProfile } from "../../../providers/provider-metadata";
+import { supportedWireFamiliesForProvider } from "../../../providers/discovery/probe-wire";
 import { providers } from "../../../persistence/schema";
 import type { WireFamily } from "../../../protocol/canonical-model";
 import type { ProviderRecord } from "./contracts";

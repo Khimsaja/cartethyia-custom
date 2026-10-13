@@ -10,7 +10,7 @@
 import type { CanonicalMessage, CanonicalRequest, ContentPart } from "../canonical-model";
 import { canContainToolResult, toolResultParts } from "../canonical-model";
 import { isWebSearchTool } from "../../transport/translation/search";
-import { reasoningEffortFromIntent } from "../../providers/core/reasoning";
+import { reasoningEffortFromIntent } from "../../providers/provider-reasoning";
 import {
   decodeCodexToolCallId,
   encodeCodexToolCallId,

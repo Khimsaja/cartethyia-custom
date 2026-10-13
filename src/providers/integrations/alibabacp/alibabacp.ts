@@ -15,7 +15,7 @@ import type {
   ProviderAdapter,
   ProviderDispatchContext,
   ProviderDispatchTarget,
-} from "../../core/contracts";
+} from "../../provider-contracts";
 import type { CanonicalEvent, CanonicalRequest } from "../../../protocol/canonical-model";
 import { GatewayError } from "../../../protocol/gateway-error";
 import { decodeAlibabaCodingPlanCredential } from "../../../security/credential-codec";

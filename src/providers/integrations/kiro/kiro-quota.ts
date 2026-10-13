@@ -18,7 +18,7 @@ import type {
   FetchLike,
   ProviderQuotaResult,
   ProviderQuotaWindow,
-} from "../../runtime/quota/quota-contracts";
+} from "../../quota/quota-contracts";
 import {
   isoDate,
   number,
@@ -26,8 +26,8 @@ import {
   quotaRecord,
   record,
   text,
-} from "../../runtime/quota/quota-contracts";
-import type { QuotaCollectionContext } from "../../runtime/quota/quota-support";
+} from "../../quota/quota-contracts";
+import type { QuotaCollectionContext } from "../../quota/quota-support";
 import {
   buildKiroAmzUserAgent,
   buildKiroRuntimeUserAgent,

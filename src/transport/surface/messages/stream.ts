@@ -17,7 +17,7 @@ import {
   mapStopReason,
   requireMessagesToolName,
 } from "./encode";
-import { usageToMessagesWire } from "../../../providers/core/usage";
+import { usageToMessagesWire } from "../../../providers/provider-usage";
 import type { ToolCallState } from "../../../protocol/tool-identity";
 import { SurfaceStreamEncoder } from "../stream-frame";
 /**

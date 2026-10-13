@@ -15,7 +15,7 @@ import { createDefaultProviderRegistry } from "../../src/providers/default-regis
 import type {
   ProviderDispatchContext,
   ProviderDispatchTarget,
-} from "../../src/providers/core/contracts";
+} from "../../src/providers/provider-contracts";
 import type { CanonicalRequest } from "../../src/protocol/canonical-model";
 
 const registry = createDefaultProviderRegistry();

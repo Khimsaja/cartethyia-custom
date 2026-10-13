@@ -1,4 +1,4 @@
-import type { CredentialKind } from "../../core/contracts";
+import type { CredentialKind } from "../../provider-contracts";
 import type { CanonicalRequest } from "../../../protocol/canonical-model";
 import { allParts, hasExtension, hasKind, hasOpaqueReasoning } from "../../../protocol/canonical-model";
 import { capabilityUnsupported } from "../../../protocol/gateway-error";

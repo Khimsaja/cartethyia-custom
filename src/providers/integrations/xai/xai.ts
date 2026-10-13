@@ -13,13 +13,13 @@
  * needed: the shared `OpenAICompatibleAdapter` serializes it and only the base
  * URL, the `/v1` endpoint paths, and the effort mapping below are xAI-specific.
  */
-import { OpenAICompatibleAdapter, withBearerAuthentication } from "../../runtime/adapters/compatible-adapter";
+import { OpenAICompatibleAdapter, withBearerAuthentication } from "../../adapters/compatible-adapter";
 import type { CanonicalRequest } from "../../../protocol/canonical-model";
-import type { ProviderAdapter, ProviderDispatchContext } from "../../core/contracts";
-import { providerBaseUrl } from "../../core/metadata";
+import type { ProviderAdapter, ProviderDispatchContext } from "../../provider-contracts";
+import { providerBaseUrl } from "../../provider-metadata";
 import { getGrokVersion } from "../../operations/client-versions";
-import { defineModel } from "../../core/model-definition";
-import type { ModelDefinition } from "../../core/model-definition";
+import { defineModel } from "../../provider-model-definition";
+import type { ModelDefinition } from "../../provider-model-definition";
 
 export const XAI_PROVIDER_ID = "xai" as const;
 export const XAI_BASE_URL = providerBaseUrl("xai");

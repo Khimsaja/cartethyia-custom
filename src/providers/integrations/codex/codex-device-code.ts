@@ -1,4 +1,4 @@
-import type { FetchLike } from "../../runtime/authentication/oauth-client";
+import type { FetchLike } from "../../authentication/oauth-client";
 
 export const CODEX_DEVICE_USERCODE_URL = "https://auth.openai.com/api/accounts/deviceauth/usercode";
 export const CODEX_DEVICE_TOKEN_URL = "https://auth.openai.com/api/accounts/deviceauth/token";

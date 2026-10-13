@@ -14,12 +14,12 @@
  * to `/sign-up` that preserves the query string, so the flow survives a login
  * that happens after the authorize URL was opened.
  */
-import { nonEmptyTrimmedString, readJsonResponse, record } from "../../runtime/authentication/oauth-flow-store";
+import { nonEmptyTrimmedString, readJsonResponse, record } from "../../authentication/oauth-flow-store";
 import type {
   OAuthAuthorizeRequest,
   OAuthExchangeResult,
-} from "../../runtime/authentication/oauth-flow-store";
-import { OAuthClient } from "../../runtime/authentication/oauth-client";
+} from "../../authentication/oauth-flow-store";
+import { OAuthClient } from "../../authentication/oauth-client";
 
 export const OPENROUTER_AUTHORIZE_URL = "https://openrouter.ai/auth" as const;
 export const OPENROUTER_KEY_EXCHANGE_URL = "https://openrouter.ai/api/v1/auth/keys" as const;

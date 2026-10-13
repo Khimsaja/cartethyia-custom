@@ -4,7 +4,7 @@ import { affectedRows, pruneExpiredCooldowns } from "../../persistence/dialect";
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import { isRecord } from "../../protocol/codecs";
 import { GatewayError } from "../../protocol/gateway-error";
-import { BUDDY_PROVIDER_IDS } from "../core/metadata";
+import { BUDDY_PROVIDER_IDS } from "../provider-metadata";
 import { healthEvents, providerAccounts } from "../../persistence/schema";
 
 import { parseProviderResetDuration, parseUpstreamBackoff } from "../../transport/failure-policy";
@@ -63,7 +63,7 @@ const GROK_QUOTA_COOLDOWN_MS = 24 * 60 * 60 * 1000;
  * to be two constants, 24h for the content block and 6h for the channel one,
  * both applied on the first observation. That was wrong in the direction that
  * costs most: `11140` is also what a wrong desktop `User-Agent` brand answers
- * (`workbuddy-shared.ts`), so after we fixed a header regression every buddy
+ * (`workbuddy/shared.ts`), so after we fixed a header regression every buddy
  * account stayed dead for up to a further day, and one prompt that failed a
  * safety review cost a whole account a day. As a base it escalates through the
  * consecutive-failure ladder, which tells the two causes apart by what they do

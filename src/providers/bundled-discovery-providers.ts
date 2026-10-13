@@ -1,4 +1,4 @@
-import type { ProviderModule } from "./core/registry";
+import type { ProviderModule } from "./provider-registry";
 import {
   GENERIC_API_KEY_SPECS,
   VERSIONED_ROOT_API_KEY_SPECS,

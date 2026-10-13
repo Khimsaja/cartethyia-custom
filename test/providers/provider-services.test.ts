@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { BUNDLED_PROVIDER_METADATA, providerServiceKinds, providerSupportsWebSearch } from "../../src/providers/core/metadata";
+import { BUNDLED_PROVIDER_METADATA, providerServiceKinds, providerSupportsWebSearch } from "../../src/providers/provider-metadata";
 import { sanitizeProviderResponse } from "../../src/console/providers/catalog/provider-operations";
 import { createDefaultProviderRegistry } from "../../src/providers/default-registry";
 

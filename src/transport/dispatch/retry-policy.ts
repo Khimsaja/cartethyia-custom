@@ -10,7 +10,7 @@
  * cooldown eligibility (here).
  */
 import { GatewayError } from "../../protocol/gateway-error";
-import { providerRateLimitIsIpScoped } from "../../providers/core/metadata";
+import { providerRateLimitIsIpScoped } from "../../providers/provider-metadata";
 
 /**
  * Returns true only when an upstream failure is evidence that the OAuth

@@ -1,8 +1,8 @@
-import { nonEmptyString as nonEmpty, readJsonResponse } from "../../runtime/authentication/oauth-flow-store";
-import { postJsonTokenRequest } from "../../runtime/authentication/oauth-flow-store";
-import type { OAuthExchangeResult } from "../../runtime/authentication/oauth-flow-store";
-import type { OAuthTokenRefreshResult } from "../../runtime/authentication/oauth-refresh-service";
-import { OAuthClient, type FetchLike } from "../../runtime/authentication/oauth-client";
+import { nonEmptyString as nonEmpty, readJsonResponse } from "../../authentication/oauth-flow-store";
+import { postJsonTokenRequest } from "../../authentication/oauth-flow-store";
+import type { OAuthExchangeResult } from "../../authentication/oauth-flow-store";
+import type { OAuthTokenRefreshResult } from "../../authentication/oauth-refresh-service";
+import { OAuthClient, type FetchLike } from "../../authentication/oauth-client";
 import { getClaudeCliVersion, getClaudeSdkVersion } from "../../operations/client-versions";
 
 const CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";

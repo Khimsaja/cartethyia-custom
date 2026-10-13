@@ -8,7 +8,7 @@ import { canonicalTerminal } from "../codecs";
 import { GatewayError } from "../gateway-error";
 import { type CanonicalEvent, type CanonicalRequest, type CanonicalStopReason, type ContentPart, type UsageRecord } from "../canonical-model";
 import { decodeSseEvents } from "../sse-decoder";
-import { usageFromProvider } from '../../providers/core/usage';
+import { usageFromProvider } from '../../providers/provider-usage';
 import { mapClaudeStreamError } from '../messages-errors';
 import {
   finiteNumber,

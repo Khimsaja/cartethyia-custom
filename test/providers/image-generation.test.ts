@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createGeminiAdapter } from "../../src/providers/integrations/gemini/gemini";
+import { createGeminiAdapter } from "../../src/providers/integrations/gemini";
 import { createAntigravityAdapter } from "../../src/providers/integrations/antigravity/antigravity";
 import { createCodexAdapter } from "../../src/providers/integrations/codex/codex";
 import type {
@@ -7,7 +7,7 @@ import type {
   ProviderDispatchTarget,
   ResolvedCredential,
   ValidatedOutboundFetch,
-} from "../../src/providers/core/contracts";
+} from "../../src/providers/provider-contracts";
 
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 

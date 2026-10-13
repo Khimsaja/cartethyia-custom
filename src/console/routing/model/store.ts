@@ -20,7 +20,7 @@ import type {
   ModelComboRow,
   ModelRoutingStore,
 } from "./contracts";
-import { modelsDevCatalog } from "../../../providers/runtime/discovery/models-dev-catalog";
+import { modelsDevCatalog } from "../../../providers/discovery/models-dev-catalog";
 function mapAliasRow(row: ModelAlias): ModelAliasRow {
   const meta = modelsDevCatalog.resolve("", row.targetModel);
   return {

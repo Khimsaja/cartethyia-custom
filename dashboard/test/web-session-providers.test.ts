@@ -20,7 +20,7 @@ describe("web session provider section", () => {
     expect(oauthAt).toBeGreaterThan(webAt);
     expect(wellKnownAt).toBeGreaterThan(oauthAt);
     expect(otherAt).toBeGreaterThan(wellKnownAt);
-    expect(source).toContain('const WEB_LLM_IDS = new Set(["mimodesktop", "mimostudio"])');
+    expect(source).toContain('const WEB_LLM_IDS = new Set(["mimodesktop"])');
     expect(source).toContain('  "alibabacp",');
     expect(source).toContain("function hasInteractiveOAuth(provider: ProviderResponse): boolean");
     expect(source).toContain("hasInteractiveOAuth(p)");

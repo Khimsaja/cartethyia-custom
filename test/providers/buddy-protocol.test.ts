@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { buddyPrePayloadCommon } from "../../src/providers/integrations/buddy/shared/chat";
-import { readBuddyDeviceToken, workbuddyHeaders } from "../../src/providers/integrations/buddy/intl/workbuddy/headers";
-import { fetchTencentBillingQuota } from "../../src/providers/integrations/buddy/shared/quota";
-import { fetchWorkBuddyCnQuota } from "../../src/providers/integrations/buddy/intl/workbuddy/quota";
+import { buddyPrePayloadCommon } from "../../src/providers/integrations/buddy/buddy-chat-shared";
+import { readBuddyDeviceToken, workbuddyHeaders } from "../../src/providers/integrations/buddy/workbuddy/shared";
+import { fetchTencentBillingQuota } from "../../src/providers/integrations/buddy/buddy-quota-shared";
+import { fetchWorkBuddyCnQuota } from "../../src/providers/integrations/buddy/workbuddy/quota";
 import { parseDsmlToolCalls } from "../../src/protocol/response/dsml";
 import { parseChatResponseToEvents } from "../../src/protocol/response/chat";
 import type { CanonicalRequest } from "../../src/protocol/canonical-model";
-import type { ProviderDispatchContext } from "../../src/providers/core/contracts";
+import type { ProviderDispatchContext } from "../../src/providers/provider-contracts";
 
 const request = { model: "glm-5.2", messages: [] } as unknown as CanonicalRequest;
 const context = {

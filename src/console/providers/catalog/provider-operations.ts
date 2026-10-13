@@ -17,11 +17,11 @@ import {
   requireTenantAnyScope,
 } from "../../shared/errors";
 import type { AccessDecision } from "../../../security/access-control";
-import { isBundledProviderId } from "../../../providers/core/contracts";
-import type { ProviderRegistry } from "../../../providers/core/registry";
+import { isBundledProviderId } from "../../../providers/provider-contracts";
+import type { ProviderRegistry } from "../../../providers/provider-registry";
 import { getProviderClientVersion, getRouteIdentityVersions } from "../../../providers/operations/client-versions";
-import type { OAuthLoginField } from "../../../providers/runtime/authentication/oauth-flow-store";
-import { providerCredentialHint, providerCredentialUrl, providerDisplayName, providerHasAdapterUserAgent, providerOperatorNotice, providerServiceKinds, providerSupportsWebSearch, type CompatibilityProfile } from "../../../providers/core/metadata";
+import type { OAuthLoginField } from "../../../providers/authentication/oauth-flow-store";
+import { providerCredentialHint, providerCredentialUrl, providerDisplayName, providerHasAdapterUserAgent, providerOperatorNotice, providerServiceKinds, providerSupportsWebSearch, type CompatibilityProfile } from "../../../providers/provider-metadata";
 import type { AccountHealthEventRecord } from "../../../providers/operations/account-health-service";
 import { CREDENTIAL_MODES, PROVIDER_READ_SCOPES, PROVIDER_WRITE_SCOPES } from "./contracts";
 import {

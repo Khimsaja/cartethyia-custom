@@ -2,8 +2,8 @@ import type {
   FetchLike,
   ProviderQuotaResult,
   ProviderQuotaWindow,
-} from "../../runtime/quota/quota-contracts";
-import { getJson, isoDate, number, percentWindow, record } from "../../runtime/quota/quota-contracts";
+} from "../../quota/quota-contracts";
+import { getJson, isoDate, number, percentWindow, record } from "../../quota/quota-contracts";
 import {
   MUSE_CODE_API_VERSION,
   MUSE_CODE_KEY_URL,
