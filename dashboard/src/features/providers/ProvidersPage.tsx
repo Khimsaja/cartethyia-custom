@@ -36,7 +36,6 @@ import type {
   ProviderAccountResponse,
   ProviderResponse,
 } from "../../data/contracts";
-import { useRuntimeSettings, useUpdateRuntimeSettings } from "../../hooks/settings";
 import {
   useCreateProvider,
   useCreateProviderAccount,
@@ -923,22 +922,6 @@ function compareConfiguredProviders(a: ProviderResponse, b: ProviderResponse): n
 }
 const COLLAPSED_SECTIONS_KEY = "cartethyia.providerSectionsCollapsed";
 
-function ForceSearchProvidersToggle(): ReactNode {
-  const settings = useRuntimeSettings();
-  const update = useUpdateRuntimeSettings();
-  return (
-    <div className="ml-auto flex items-center gap-4">
-      <span className="text-micro font-semibold text-text-tertiary">FORCE ALL SEARCH PROVIDERS</span>
-      <Switch
-        checked={settings.data?.forceSearchProviders === true}
-        disabled={settings.isPending || update.isPending}
-        onChange={(checked) => update.mutate({ forceSearchProviders: checked })}
-        aria-label="Force all search providers"
-      />
-    </div>
-  );
-}
-
 function readCollapsedSections(): ReadonlySet<string> {
   try {
     const raw = window.localStorage.getItem(COLLAPSED_SECTIONS_KEY);
@@ -1113,11 +1096,13 @@ export default function Providers(): ReactNode {
             </button>
           ))}
         </div>
-        {tab === "search" ? <ForceSearchProvidersToggle /> : (
-          <span className="ml-auto text-micro text-text-tertiary">
-            {tab === "media" ? "Image and video generation" : "Connected pinned first · A–Z"}
-          </span>
-        )}
+        <span className="ml-auto text-micro text-text-tertiary">
+          {tab === "search"
+            ? "Fallback runs only when the model invokes Websearch"
+            : tab === "media"
+              ? "Image and video generation"
+              : "Connected pinned first · A–Z"}
+        </span>
       </div>
       
       {tab === "llm" ? (

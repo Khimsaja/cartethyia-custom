@@ -154,14 +154,13 @@ Released 2026-10-12.
 
 **Web search**
 
-- A chat web-search query routes through the selected model first. A route whose
-  *provider* serves hosted search keeps its native tool; a route that cannot serve
-  it runs the query on an operator-configured search provider and continues on the
-  selected route with the results injected as a user context turn. The direct
-  `POST /v1/search` API is unchanged.
+- Declaring a web-search tool no longer affects chat route selection or request
+  shaping. The gateway resolves a configured fallback provider only after the
+  selected model emits a `web_search` function call, then continues the model
+  turn with the result. The direct `POST /v1/search` API is unchanged.
 - Web-search capability is a property of the provider rather than a column on the
-  model row. A discovery gap could previously filter a capable route out of
-  native search.
+  model row and is consulted only when resolving a tool invocation, not when
+  planning a chat request.
 - Hosted search tools are translated per wire instead of forwarded verbatim —
   Codex receives `{"type":"web_search"}`, an OpenAI wire receives
   `web_search_preview`, and a bare `web_search` declaration on

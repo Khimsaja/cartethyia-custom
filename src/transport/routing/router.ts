@@ -383,7 +383,10 @@ export class RoutingEngine {
     }
     return result;
   }
-  private searchFallbackCandidates(
+  /**
+   * Resolves configured search providers after a model emits a search call.
+   */
+  webSearchFallbackCandidates(
     snapshot: RouteSnapshot,
     tenantId: string | null,
   ): RouteCandidate[] {
@@ -413,7 +416,7 @@ export class RoutingEngine {
       snapshot,
       tenantId,
     );
-    return ordered.map((candidate) => ({ ...candidate, search_route: "fallback" as const }));
+    return ordered;
   }
 
   /**
@@ -461,7 +464,6 @@ export class RoutingEngine {
     requiredCapabilities?: readonly RequiredCapability[],
     allowCliMappings = false,
     keyId?: string,
-    webSearch = false,
   ): Promise<RoutePlan> {
     const tid = tenantId ?? null;
     const { resolved, matching, unmatchedMembers } = this.resolveMatchingCandidates(
@@ -567,18 +569,6 @@ export class RoutingEngine {
       eligible = [
         ...eligible.filter((candidate) => !cooling.has(candidate)),
         ...eligible.filter((candidate) => cooling.has(candidate)),
-      ];
-    }
-    if (webSearch) {
-      const searchCandidates = eligible.map((candidate) =>
-        (candidate.service_kind ?? "llm") === "llm" &&
-        candidate.capability_profile.webSearch === true
-          ? { ...candidate, search_route: "native" as const }
-          : candidate,
-      );
-      eligible = [
-        ...searchCandidates,
-        ...this.searchFallbackCandidates(snapshot, tid),
       ];
     }
     const chosen = eligible[0]!;

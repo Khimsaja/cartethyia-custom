@@ -19,11 +19,11 @@
  */
 import { describe, expect, test } from "bun:test";
 import {
+  pendingWebSearchToolCall,
   servedSearchEvents,
-  withServedWebSearch,
+  withAnsweredWebSearchToolCall,
   type WebSearchBridgeResult,
 } from "../../src/transport/dispatch/websearch-bridge";
-import { extractWebSearchInvocation } from "../../src/transport/translation/search";
 import type { CanonicalEvent, CanonicalRequest } from "../../src/protocol/canonical-model";
 import type { WebSearchOutcome } from "../../src/providers/contracts";
 
@@ -104,20 +104,37 @@ function toolUseBlock(events: readonly CanonicalEvent[]) {
   return searchBlocks(events, "server_tool_use")[0];
 }
 
-describe("extractWebSearchInvocation — the client's call id survives extraction", () => {
-  test("carries the pending call's id through", () => {
-    // The whole fix rests on this: the id was read off the part and then dropped.
-    expect(extractWebSearchInvocation(requestWithHostedCall())?.callId).toBe(CLIENT_CALL_ID);
+describe("pendingWebSearchToolCall", () => {
+  test("returns search parameters after the model emits a completed function call", () => {
+    const events: CanonicalEvent[] = [
+      { type: "message_start", sequence_number: 0, model: "m" },
+      {
+        type: "tool_call_delta",
+        sequence_number: 1,
+        call_id: CLIENT_CALL_ID,
+        name: "web_search",
+        arguments_delta: JSON.stringify({ query: "one" }),
+      },
+      { type: "terminal", sequence_number: 2, state: "complete", stop_reason: "tool_use" },
+    ];
+    expect(pendingWebSearchToolCall(events)).toEqual({
+      callId: CLIENT_CALL_ID,
+      name: "web_search",
+      query: "one",
+    });
   });
 
-  test("a prose query carries no call id", () => {
-    // Nothing to pair with, so the gateway mints its own — and says so by
-    // leaving this absent rather than inventing an id a client never sent.
-    const prose = {
-      source_surface: "messages",
-      messages: [{ role: "user", content: [{ kind: "text", text: "who is risuncode" }] }],
-    } as unknown as CanonicalRequest;
-    expect(extractWebSearchInvocation(prose)?.callId).toBeUndefined();
+  test("does not request fallback for an ordinary response", () => {
+    const events: CanonicalEvent[] = [
+      { type: "message_start", sequence_number: 0, model: "m" },
+      {
+        type: "content_delta",
+        sequence_number: 1,
+        content: { kind: "text", text: "ordinary answer" },
+      },
+      { type: "terminal", sequence_number: 2, state: "complete", stop_reason: "stop" },
+    ];
+    expect(pendingWebSearchToolCall(events)).toBeUndefined();
   });
 });
 
@@ -160,19 +177,26 @@ describe("servedSearchEvents — two rounds in one conversation do not share an 
   });
 });
 
-describe("withServedWebSearch — the upstream injection uses the same id", () => {
-  test("the injected tool round is addressed to the client's call", () => {
-    const projected = withServedWebSearch(requestWithHostedCall(), served({ callId: CLIENT_CALL_ID }));
-    const round = projected.messages
+describe("withAnsweredWebSearchToolCall — continuation preserves the model's call id", () => {
+  test("the appended tool result is addressed to the model's call", () => {
+    const continued = withAnsweredWebSearchToolCall(
+      requestWithHostedCall(),
+      { callId: CLIENT_CALL_ID, name: "web_search", query: "one" },
+      served({ callId: CLIENT_CALL_ID }),
+    );
+    const round = continued.messages
       .flatMap((message) => message.content)
       .find((part) => part.kind === "toolResult");
     expect(part_idOf(round)).toBe(CLIENT_CALL_ID);
   });
 
-  test("the client's original call is preserved untouched", () => {
-    // The round must still contain the call the client made, not a replacement.
-    const projected = withServedWebSearch(requestWithHostedCall(), served({ callId: CLIENT_CALL_ID }));
-    const calls = projected.messages
+  test("the model's original tool call stays in the conversation", () => {
+    const continued = withAnsweredWebSearchToolCall(
+      requestWithHostedCall(),
+      { callId: CLIENT_CALL_ID, name: "web_search", query: "one" },
+      served({ callId: CLIENT_CALL_ID }),
+    );
+    const calls = continued.messages
       .flatMap((message) => message.content)
       .filter((part) => part.kind === "toolCall");
     expect(calls.map((part) => part_idOf(part))).toContain(CLIENT_CALL_ID);

@@ -32,7 +32,6 @@ import {
   terminalFailure,
 } from "./attempt-finalize";
 import { runAttemptLoop } from "./attempt-loop";
-import { responseShowsWebSearch } from "../translation/search";
 import { projectForRoute, routeCapabilitiesFor } from "../translation/capabilities";
 import { dispatchStreamingAttempt } from "./streaming/stream";
 import {
@@ -41,7 +40,6 @@ import {
   servedSearchEvents,
   pendingWebSearchToolCall,
   withAnsweredWebSearchToolCall,
-  withServedWebSearch,
 } from "./websearch-bridge";
 import type { WebSearchBridgeResult } from "./websearch-bridge";
 
@@ -118,80 +116,38 @@ export async function handleProviderProxyRequest(
   const canonicalRequest = await applyTenantPreferences(prepared, deps.db);
   const candidates =
     prepared.eligibleRouteCandidates.length > 0 ? prepared.eligibleRouteCandidates : [prepared.candidate];
-  // Configured search fallbacks are not chat routes: they run once, inside the
-  // bridge, and must never be dialed as a chat candidate — their adapter
-  // serves `/v1/search`, not a chat wire. The primary route stays authoritative.
-  const chatCandidates = candidates.filter(
-    (candidate) => candidate.search_route !== "fallback",
-  );
-  const attemptCandidates = chatCandidates.length > 0 ? chatCandidates : [prepared.candidate];
-  const searchCandidates = candidates.filter((candidate) => candidate.search_route === "fallback");
+  const attemptCandidates = candidates;
   const bridgeDeps = {
     db: deps.db,
     ...(deps.resolveProviderAdapter ? { resolveProviderAdapter: deps.resolveProviderAdapter } : {}),
     ...(deps.providerAdapters ? { providerAdapters: deps.providerAdapters } : {}),
     ...(deps.networkBindingFactory ? { networkBindingFactory: deps.networkBindingFactory } : {}),
   };
-  /**
-   * Runs the configured search fallback over `request` and returns the request
-   * rewritten with the hits in context, or `undefined` when no configured
-   * provider could serve it. An unanswered search must never break the turn,
-   * so callers keep the original request on `undefined`.
-   */
-  const runBridge = async (
-    request: CanonicalRequest,
-  ): Promise<{ request: CanonicalRequest; served: WebSearchBridgeResult } | undefined> => {
-    if (prepared.webSearch !== true || searchCandidates.length === 0) return undefined;
-    const served = await runWebSearchBridge({
-      state,
-      deps: bridgeDeps,
-      request,
-      candidates: searchCandidates,
-    });
-    return served === undefined ? undefined : { request: withServedWebSearch(request, served), served };
+  const resolveSearchCandidates = async (): Promise<readonly RouteCandidate[]> => {
+    if (!deps.snapshotService) return [];
+    const snapshot = await deps.snapshotService.getSnapshot();
+    return prepared.routingEngine.webSearchFallbackCandidates(
+      snapshot,
+      prepared.authorization.tenantId,
+    );
   };
-  // A non-native route is pre-searched only for an explicit invocation or an
-  // operator-forced search. A hosted-tool declaration alone is availability,
-  // not a request to search.
-  //
-  // A native route stays authoritative. The callback only bridges when the
-  // request explicitly forces fallback search; a missing citation is not an
-  // implicit request to search.
-  const nativeSearch = prepared.candidate.search_route === "native" && canonicalRequest.provider_options?.force_search_providers !== true;
-  const forceSearch = canonicalRequest.provider_options?.force_search_providers === true;
-  const fallbackIntent =
-    !nativeSearch &&
-    prepared.webSearch === true &&
-    searchCandidates.length > 0 &&
-    forceSearch;
-  let dispatchRequest = canonicalRequest;
+  const dispatchRequest = canonicalRequest;
   let servedSearch: WebSearchBridgeResult | undefined;
-  if (fallbackIntent) {
-    const bridged = await runBridge(canonicalRequest);
-    if (bridged !== undefined) {
-      dispatchRequest = bridged.request;
-      servedSearch = bridged.served;
-    }
-  }
-  // Search is no longer pre-injected for Buddy routes: that made every
-  // Model Lab turn search, even a plain "ow gitu yah". Instead the model
-  // decides when to call the `web_search` function, and the loop below runs
-  // the search and hands the hits back for the summary.
+  // Resolve search providers only after the selected model emits a tool call;
+  // search availability never participates in chat route selection.
   const runSearchToolLoop = async (
     request: CanonicalRequest,
     events: readonly CanonicalEvent[],
     dispatch: (input: CanonicalRequest) => Promise<{ events: CanonicalEvent[] }>,
     routeCandidate: RouteCandidate,
   ): Promise<{ events: readonly CanonicalEvent[]; served: boolean }> => {
-    if (nativeSearch || fallbackIntent || prepared.webSearch !== true || searchCandidates.length === 0) {
-      return { events, served: false };
-    }
     const searchCall = pendingWebSearchToolCall(events);
     if (searchCall === undefined) return { events, served: false };
+    const searchCandidates = await resolveSearchCandidates();
+    if (searchCandidates.length === 0) return { events, served: false };
     const served = await runWebSearchBridge({
       state,
       deps: bridgeDeps,
-      request,
       invocation: {
         query: searchCall.query,
         callId: searchCall.callId,
@@ -211,10 +167,6 @@ export async function handleProviderProxyRequest(
       served: true,
     };
   };
-  // Allowlisted once per request, forwarded to every candidate attempt.
-  // Guards the grounding-rejection re-dispatch: at most one retry per request,
-  // so a route that legitimately answers without citing anything cannot loop.
-  let retriedWithoutGrounding = false;
   const inboundHeaders = forwardedRequestHeaders(request);
   // Stable per-conversation affinity for every attempt on every wire: caller
   // key first, then inbound session headers, then a hash of the opening turn.
@@ -352,16 +304,11 @@ export async function handleProviderProxyRequest(
           ...(servedSearch === undefined
             ? {}
             : { servedSearch: servedSearchEvents(servedSearch, dispatchRequest.source_surface) }),
-          ...(nativeSearch || fallbackIntent || prepared.webSearch !== true
-            ? {}
-            : {
-                searchLoop: {
-                  run: async (request, events) => {
-                    const looped = await runSearchToolLoop(request, events, streamDispatch, candidate);
-                    return looped;
-                  },
-                },
-              }),
+          searchLoop: {
+            run: async (request, events) => {
+              return runSearchToolLoop(request, events, streamDispatch, candidate);
+            },
+          },
           retainLeases: context.retainLeases,
           ttfbFields,
         });
@@ -392,69 +339,35 @@ export async function handleProviderProxyRequest(
       };
       state.upstreamDispatchStartedAtMs = Date.now();
       let { events, firstContentDeltaAtMs } = await dispatch(attemptRequest);
-      // Grounding rejection: a `native` route is trusted to run the hosted
-      // search itself, but the declaration is a capability claim, not a
-      // guarantee. When its answer carries no search evidence at all, the
-      // model answered from its own weights — which a client reports as
-      // "Did 0 searches". Only an explicitly forced fallback reaches this
-      // branch; ordinary hosted-tool availability is not search intent.
-      if (
-        nativeSearch &&
-        !retriedWithoutGrounding &&
-        !responseShowsWebSearch(events) &&
-        events.find((event) => event.type === "terminal" && event.state === "complete") !== undefined
-      ) {
-        const bridged = await runBridge(canonicalRequest);
-        if (bridged !== undefined) {
-          retriedWithoutGrounding = true;
-          servedSearch = bridged.served;
-          const retryRequest = projectForRoute(
-            bridged.request.model === dispatchRequest.model
-              ? bridged.request
-              : { ...bridged.request, model: dispatchRequest.model },
-            routeCapabilitiesFor(candidate),
-          );
-          ({ events, firstContentDeltaAtMs } = await dispatch(retryRequest));
-          const retryTerminal = events.find((event) => event.type === "terminal");
-          if (retryTerminal === undefined) throw terminalFailure(undefined);
-          const retryError = terminalFailure(retryTerminal);
-          if (retryError !== undefined) throw retryError;
-        }
-      }
       if (servedSearch !== undefined) {
         events = appendEventsAfter(servedSearchEvents(servedSearch, dispatchRequest.source_surface), events);
       }
-      // Function-tool loop: a non-native route (e.g. Buddy family) calls the
-      // `web_search` function the gateway declared for it. The gateway runs
-      // the search fallback here and re-dispatches with the hits as a tool
-      // result, so the model writes its summary instead of ending on
-      // `finish_reason: tool_calls` with no answer. Bounded to a few rounds
-      // so a model cannot request search forever.
-      if (!nativeSearch && !fallbackIntent) {
-        for (let round = 0; round < 4; round += 1) {
-          const searchCall = pendingWebSearchToolCall(events);
-          if (searchCall === undefined) break;
-          const served = await runWebSearchBridge({
-            state,
-            deps: bridgeDeps,
-            request: dispatchRequest,
-            invocation: {
-              query: searchCall.query,
-              callId: searchCall.callId,
-              maxResults: 10,
-            },
-            candidates: searchCandidates,
-          });
-          if (served === undefined) break;
-          servedSearch = served;
-          const continued = projectForRoute(
-            withAnsweredWebSearchToolCall(dispatchRequest, searchCall, served),
-            routeCapabilitiesFor(candidate),
-          );
-          ({ events, firstContentDeltaAtMs } = await dispatch(continued));
-          if (servedSearch !== undefined) {
-            events = appendEventsAfter(servedSearchEvents(servedSearch, dispatchRequest.source_surface), events);
-          }
+      // Only a completed model tool call starts a search round. Limit repeated
+      // model requests so a provider cannot keep the turn in a search loop.
+      for (let round = 0; round < 4; round += 1) {
+        const searchCall = pendingWebSearchToolCall(events);
+        if (searchCall === undefined) break;
+        const searchCandidates = await resolveSearchCandidates();
+        if (searchCandidates.length === 0) break;
+        const served = await runWebSearchBridge({
+          state,
+          deps: bridgeDeps,
+          invocation: {
+            query: searchCall.query,
+            callId: searchCall.callId,
+            maxResults: 10,
+          },
+          candidates: searchCandidates,
+        });
+        if (served === undefined) break;
+        servedSearch = served;
+        const continued = projectForRoute(
+          withAnsweredWebSearchToolCall(dispatchRequest, searchCall, served),
+          routeCapabilitiesFor(candidate),
+        );
+        ({ events, firstContentDeltaAtMs } = await dispatch(continued));
+        if (servedSearch !== undefined) {
+          events = appendEventsAfter(servedSearchEvents(servedSearch, dispatchRequest.source_surface), events);
         }
       }
       const terminal = events.find((event) => event.type === "terminal");

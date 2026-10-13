@@ -1,11 +1,9 @@
 /**
  * The routed web-search fallback bridge.
  *
- * A chat client (Claude Code, Codex CLI, …) may declare a hosted `web_search`
- * tool without invoking it. The bridge runs only for an explicit invocation
- * (or an operator-forced search); when the selected route cannot serve that
- * request natively, the normalized hits are injected as a completed tool
- * round so the selected model still writes the answer with real sources.
+ * The bridge runs only after the selected model emits a `web_search` function
+ * call. Normalized hits are injected as a completed tool round so the model
+ * can continue with an answer grounded in those results.
  *
  * This module never answers the client: it only produces the search results
  * and the canonical turns that carry them. Dispatch, encoding, accounting, and
@@ -15,7 +13,7 @@ import { GatewayError } from "../../protocol/gateway-error";
 import { log } from "../../observability/logger";
 import type { CanonicalEvent, CanonicalRequest, SourceSurface } from "../../protocol/canonical-model";
 import type { RouteCandidate } from "../routing/route-model";
-import { extractWebSearchInvocation, isWebSearchTool, isWebSearchToolName } from "../translation/search";
+import { isWebSearchTool, isWebSearchToolName } from "../translation/search";
 import type { WebSearchInvocation } from "../translation/search";
 import type { ProviderAdapter, ProviderDispatchTarget, WebSearchOutcome } from "../../providers/contracts";
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
@@ -49,9 +47,8 @@ export interface WebSearchBridgeDeps {
 export interface WebSearchBridgeInput {
   readonly state: ProxyRequestState;
   readonly deps: WebSearchBridgeDeps;
-  readonly request: CanonicalRequest;
-  /** A tool invocation emitted by the selected model during this turn. */
-  readonly invocation?: WebSearchInvocation;
+  /** The web-search tool invocation emitted by the selected model. */
+  readonly invocation: WebSearchInvocation;
   /** Ordered configured search candidates; the first one that answers wins. */
   readonly candidates: readonly RouteCandidate[];
 }
@@ -84,8 +81,7 @@ export function appendEventsAfter(
 export async function runWebSearchBridge(
   input: WebSearchBridgeInput,
 ): Promise<WebSearchBridgeResult | undefined> {
-  const invocation = input.invocation ?? extractWebSearchInvocation(input.request);
-  if (invocation === undefined) return undefined;
+  const { invocation } = input;
   if (input.candidates.length === 0) return undefined;
   const { state } = input;
   let lastError: unknown;
@@ -367,87 +363,6 @@ export function withAnsweredWebSearchToolCall(
       {
         role: "tool",
         content: [{ kind: "toolResult", call_id: call.callId, content: formatSearchResults(result) }],
-      },
-    ],
-  };
-}
-
-/**
- * Rewrites the request as one whose web-search round already completed, so the
- * selected model answers from the injected results instead of declaring it
- * cannot browse. The hosted search tool itself is removed: the search already
- * ran, and leaving it declared invites the model to call it a second time
- * against a route that cannot serve it.
- */
-export function withServedWebSearch(
-  request: CanonicalRequest,
-  result: WebSearchBridgeResult,
-): CanonicalRequest {
-  // The hosted search tool itself is removed: the search already ran, and
-  // leaving it declared invites the model to call it a second time against a
-  // route that cannot serve it.
-  const { tools: declaredTools, ...rest } = request;
-  const remainingTools = declaredTools?.filter(
-    (tool) => !isWebSearchTool(tool) && !isWebSearchToolName(tool.name),
-  );
-  const toolChoice =
-    request.tool_choice !== undefined &&
-    typeof request.tool_choice === "object" &&
-    "name" in request.tool_choice &&
-    isWebSearchToolName(request.tool_choice.name)
-      ? "auto"
-      : request.tool_choice;
-  // Replayed as a completed assistant tool-call + tool-result round, which is
-  // what the client's own transcript expects: Claude Code counts a search by
-  // the `web_search_tool_result` block in the response, so injecting the hits
-  // as plain user text reported "Did 0 searches" next to a correctly sourced
-  // answer.
-  //
-  // That plain-text shape was tried first to stop DeepSeek-class models from
-  // replying in raw DSML tool-call syntax — but the real cause was the tool
-  // declaration still reaching the upstream, which is fixed at the source.
-  // With the declaration gone, a finished round leaves no pattern to imitate.
-  // The upstream injection is the other half of the same round, so it must carry
-  // the same id the client is waiting on — a round whose two halves disagree
-  // about the id is the loop.
-  const callId = servedSearchWireId(result);
-  const searchToolName = declaredTools?.find(isWebSearchTool)?.name ?? "web_search";
-  const hasPendingCall = request.messages.some((message) =>
-    message.content.some(
-      (part) =>
-        part.kind === "toolCall" &&
-        part.call_id === callId &&
-        isWebSearchToolName(part.name),
-    ),
-  );
-  return {
-    ...rest,
-    ...(remainingTools !== undefined && remainingTools.length > 0
-      ? { tools: remainingTools }
-      : {}),
-    ...(toolChoice === undefined ? {} : { tool_choice: toolChoice }),
-    messages: [
-      ...request.messages,
-      ...(hasPendingCall
-        ? []
-        : [
-            {
-              role: "assistant" as const,
-              content: [
-                {
-                  kind: "toolCall" as const,
-                  call_id: callId,
-                  name: searchToolName,
-                  arguments: { query: result.query },
-                },
-              ],
-            },
-          ]),
-      {
-        role: "user",
-        content: [
-          { kind: "toolResult", call_id: callId, content: [{ kind: "text", text: formatSearchResults(result) }] },
-        ],
       },
     ],
   };

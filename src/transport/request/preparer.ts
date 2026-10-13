@@ -5,7 +5,6 @@ import type { ApiKeyAdmissionService } from "../../security/admission/service";
 import type { RouteCandidate as RouteCandidate, InMemoryRouteSnapshotService, RoutePlan } from "../routing/route-model";
 import { resolveAliasTarget, type RoutingEngine } from "../routing/router";
 import { projectForRoute, routeCapabilitiesFor } from "../translation/capabilities";
-import { requestUsesWebSearch } from "../translation/search";
 import type { RequiredCapability } from "../translation/capabilities";
 import { isModelAllowed, type ResolvedApiKey } from "../../security/api-key-auth";
 import { allowsCliToolMappings } from "../../security/cli-client-fingerprint";
@@ -44,8 +43,6 @@ export interface PreparedProxyRequest {
   readonly degradedCapabilities?: readonly RequiredCapability[];
   /** Snapshot-consistent plan used to reserve each individual attempt. */
   readonly plan: RoutePlan;
-  /** True when the caller asked for a web-search tool, enabling routed fallback. */
-  readonly webSearch?: boolean;
   readonly estimatedInputTokens: number;
   readonly estimatedOutputTokens: number;
   readonly deadlineMs: number;
@@ -171,7 +168,6 @@ export class ProxyRequestPreparer {
         degraded = ["reasoning.encrypted_content"];
       }
     }
-    const searchRouting = requestUsesWebSearch(variantRequest);
     for (const variant of degradedRequestVariants(variantRequest)) {
       try {
         plan = await this.deps.routingEngine.plan(
@@ -181,7 +177,6 @@ export class ProxyRequestPreparer {
           variant.required,
           allowCliMappings,
           authorization.cliMappingOwnerId ?? authorization.id,
-          searchRouting,
         );
       } catch (error) {
         if (error instanceof GatewayError && error.code === "capability_unsupported") continue;
@@ -219,12 +214,7 @@ export class ProxyRequestPreparer {
     // endpoint (upstream 400). The reverse direction is guarded by the native
     // route's own kind filter.
     const llmCandidates = plan.candidates.filter(
-      (candidate) =>
-        (candidate.service_kind ?? "llm") === "llm" ||
-        // A configured search fallback rides the same chat request to run the
-        // search tool on the caller's behalf; only the dispatcher uses it.
-        (candidate.service_kind === "websearch" &&
-          candidate.search_route === "fallback"),
+      (candidate) => (candidate.service_kind ?? "llm") === "llm",
     );
     if (llmCandidates.length === 0) {
       // Name the actual kind so the message stays correct as more native
@@ -314,7 +304,6 @@ export class ProxyRequestPreparer {
       eligibleRouteCandidates: eligible,
       degradedCapabilities: degraded,
       plan,
-      ...(searchRouting ? { webSearch: true } : {}),
       estimatedInputTokens,
       estimatedOutputTokens,
       deadlineMs: input.deadlineMs,

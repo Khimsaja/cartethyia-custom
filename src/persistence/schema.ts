@@ -888,8 +888,6 @@ export interface ConsoleSettingsPreferences {
    */
   telemetryPayloadDepth?: "minimum" | "moderate" | "maximum";
   privacyMode?: "masked" | "full";
-  /** Forces chat web search through configured search providers before the selected model answers. */
-  forceSearchProviders?: boolean;
 }
 
 export const consoleSettings = pgTable("console_settings", {

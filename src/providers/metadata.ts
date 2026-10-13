@@ -346,10 +346,10 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
  * Search capability is a property of the *provider*, not of a model row: the
  * adapter either frames a hosted `web_search` tool or it does not, and every
  * model it serves inherits that. Membership is manual and only for a provider
- * whose hosted search has been proven. An untested provider is not native:
- * its chat route runs the configured search fallback.
+ * whose hosted search has been proven. The list is consulted only when a model
+ * invokes search, not while planning the chat route.
  *
- * Membership here is what marks a route `search_route: "native"`.
+ * Membership only ranks providers that can execute a model-requested search.
  */
 const WEB_SEARCH_CAPABLE_PROVIDER_IDS: Readonly<Record<string, true>> = {
   // Codex Responses hosted search, proven through the search fallback path.

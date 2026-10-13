@@ -1,17 +1,14 @@
 /**
  * Routed web-search fallback for chat clients.
  *
- * Declaring a hosted `web_search` tool makes search available; it does not
- * invoke it. Explicit calls are served natively when possible or by a
- * configured fallback provider, which injects results for the selected model
- * to summarize.
+ * Declaring a hosted `web_search` tool does not affect chat routing. Only an
+ * actual model function call can dispatch a configured fallback provider.
  *
  * These are the three contracts that matter to a client and are each easy to
  * break in the wrong direction:
  *
- * - a search-capable selected route stays first and keeps its native tool;
- * - an incapable selected route receives the configured provider's results,
- *   and the chat adapter still sees the selected route's model;
+ * - search providers stay outside chat route planning;
+ * - an actual model function call can use a configured fallback provider;
  * - a configured provider that fails advances to the next configured one, and
  *   an exhausted fallback never fails the chat turn.
  */
@@ -22,11 +19,7 @@ import { dbDescribe, getTestPool } from "../helpers/database";
 import { RoutingEngine } from "../../src/transport/routing/router";
 import { GatewayError } from "../../src/protocol/gateway-error";
 import type { CanonicalEvent, CanonicalRequest } from "../../src/protocol/canonical-model";
-import {
-  extractWebSearchInvocation,
-  isWebSearchTool,
-  isWebSearchToolName,
-} from "../../src/transport/translation/search";
+import { isWebSearchTool, isWebSearchToolName } from "../../src/transport/translation/search";
 import type { RouteCandidate, RouteSnapshot } from "../../src/transport/routing/route-model";
 
 /** A Messages request that declares Anthropic's hosted web-search tool. */
@@ -104,10 +97,10 @@ function snapshot(candidates: readonly RouteCandidate[]): RouteSnapshot {
   return { revision: 1, candidates, aliases: {}, combos: {}, created_at: Date.now() };
 }
 
-describe("RoutingEngine web-search planning", () => {
+describe("RoutingEngine chat planning and model-requested search", () => {
   const engine = new RoutingEngine();
 
-  test("a search-capable selected route is marked native and stays first", async () => {
+  test("chat route planning ignores search capability and search providers", async () => {
     const capable = candidate({
       provider_id: "claude",
       model_id: "claude-opus-5",
@@ -119,36 +112,19 @@ describe("RoutingEngine web-search planning", () => {
       service_kind: "websearch",
       capability_profile: { webSearch: true },
     });
-    const plan = await engine.plan("claude/claude-opus-5", snapshot([capable, fallback]), null, [], false, undefined, true);
-    expect(plan.candidates[0]?.provider_id).toBe("claude");
-    expect(plan.candidates[0]?.search_route).toBe("native");
-    expect(plan.candidates[1]?.search_route).toBe("fallback");
+    const plan = await engine.plan("claude/claude-opus-5", snapshot([capable, fallback]));
+    expect(plan.candidates.map((item) => item.provider_id)).toEqual(["claude"]);
   });
 
-  test("an incapable selected route stays first and gets configured fallbacks", async () => {
-    const incapable = candidate({ provider_id: "p", model_id: "m", capability_profile: { tools: true } });
+  test("fallback providers are resolved separately for model-requested search", () => {
     const exa = candidate({
       provider_id: "exa",
       model_id: "exa",
       service_kind: "websearch",
       capability_profile: { webSearch: true },
     });
-    const codex = candidate({
-      provider_id: "codex",
-      model_id: "gpt-5.6-luna",
-      service_kind: "websearch",
-      capability_profile: { webSearch: true },
-    });
-    const plan = await engine.plan("p/m", snapshot([incapable, codex, exa]), null, [], false, undefined, true);
-    expect(plan.candidates[0]?.provider_id).toBe("p");
-    expect(plan.candidates[0]?.search_route).toBeUndefined();
-    expect(plan.candidates.slice(1).map((item) => item.provider_id).sort()).toEqual(["codex", "exa"]);
-  });
-
-  test("no configured provider leaves the request on its original route", async () => {
-    const incapable = candidate({ provider_id: "p", model_id: "m", capability_profile: { tools: true } });
-    const plan = await engine.plan("p/m", snapshot([incapable]), null, [], false, undefined, true);
-    expect(plan.candidates.map((item) => item.provider_id)).toEqual(["p"]);
+    expect(engine.webSearchFallbackCandidates(snapshot([exa]), null).map((item) => item.provider_id))
+      .toEqual(["exa"]);
   });
 });
 
@@ -599,140 +575,7 @@ dbDescribe("web-search fallback dispatch", () => {
   });
 });
 
-describe("search query extraction", () => {
-  test("does not treat a hosted tool declaration as a search invocation", () => {
-    const request = {
-      model: "m",
-      source_surface: "messages",
-      generation_controls: {},
-      tools: [{ name: "web_search", native_type: "web_search_20250305" }],
-      messages: [{ role: "user", content: [{ kind: "text", text: "loveuuu!" }] }],
-    } as unknown as CanonicalRequest;
-    expect(extractWebSearchInvocation(request)).toBeUndefined();
-  });
-
-  test("does not repeat a search call that already has a tool result", () => {
-    const request = {
-      model: "m",
-      source_surface: "messages",
-      generation_controls: {},
-      tools: [{ name: "web_search", native_type: "web_search_20250305" }],
-      messages: [
-        {
-          role: "assistant",
-          content: [{ kind: "toolCall", call_id: "c1", name: "web_search", arguments: { query: "old query" } }],
-        },
-        {
-          role: "user",
-          content: [{ kind: "toolResult", call_id: "c1", content: "old result" }],
-        },
-        { role: "user", content: [{ kind: "text", text: "loveuuu!" }] },
-      ],
-    } as unknown as CanonicalRequest;
-    expect(extractWebSearchInvocation(request)).toBeUndefined();
-  });
-
-  test("strips injected system-reminder scaffolding from a derived query", () => {
-    // Reproduces a production failure: Claude Code appended its CLAUDE.md
-    // (about CodeGraph) to the operator's turn, the whole turn became the
-    // search query, and Exa returned pages about CodeGraph instead of the
-    // subject the operator actually asked about.
-    const request = {
-      model: "m",
-      source_surface: "messages",
-      generation_controls: {},
-      provider_options: { force_search_providers: true },
-      tools: [{ name: "web_search", native_type: "web_search_20250305" }],
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              kind: "text",
-              text:
-                "coba kau websearch siapa itu risuncode\n" +
-                "<system-reminder>\n" +
-                "As you answer, you must use the codegraph tool.\n" +
-                "# CLAUDE.md\n" +
-                "Contents of CLAUDE.md about CodeGraph and AGENTS.md.\n" +
-                "</system-reminder>",
-            },
-          ],
-        },
-      ],
-    } as unknown as CanonicalRequest;
-    const invocation = extractWebSearchInvocation(request);
-    expect(invocation?.query).toBe("coba kau websearch siapa itu risuncode");
-    // None of the injected prose survives into the query.
-    expect(invocation?.query ?? "").not.toContain("system-reminder");
-    expect(invocation?.query ?? "").not.toContain("CodeGraph");
-    expect(invocation?.query ?? "").not.toContain("CLAUDE.md");
-  });
-
-  test("leaves user-typed markup alone", () => {
-    // The reason this trims rather than strips: a blanket tag-strip would
-    // destroy a legitimate question about markup or config.
-    const request = {
-      model: "m",
-      source_surface: "messages",
-      generation_controls: {},
-      provider_options: { force_search_providers: true },
-      tools: [{ name: "web_search", native_type: "web_search_20250305" }],
-      messages: [
-        {
-          role: "user",
-          content: [{ kind: "text", text: "how do I center a <div> with flexbox in <main>" }],
-        },
-      ],
-    } as unknown as CanonicalRequest;
-    expect(extractWebSearchInvocation(request)?.query).toBe(
-      "how do I center a <div> with flexbox in <main>",
-    );
-  });
-
-  test("bounds an oversized query", () => {
-    const request = {
-      model: "m",
-      source_surface: "messages",
-      generation_controls: {},
-      provider_options: { force_search_providers: true },
-      tools: [{ name: "web_search", native_type: "web_search_20250305" }],
-      messages: [
-        {
-          role: "user",
-          content: [{ kind: "text", text: "who is risuncode " + "noise ".repeat(400) }],
-        },
-      ],
-    } as unknown as CanonicalRequest;
-    const query = extractWebSearchInvocation(request)?.query ?? "";
-    expect(query.length).toBeLessThanOrEqual(512);
-    expect(query.startsWith("who is risuncode")).toBe(true);
-  });
-
-  test("passes a model-authored tool query through untouched", () => {
-    const request = {
-      model: "m",
-      source_surface: "messages",
-      generation_controls: {},
-      tools: [{ name: "web_search", native_type: "web_search_20250305" }],
-      messages: [
-        { role: "user", content: [{ kind: "text", text: "anything" }] },
-        {
-          role: "assistant",
-          content: [
-            {
-              kind: "toolCall",
-              call_id: "c1",
-              name: "web_search",
-              arguments: { query: "risuncode github profile" },
-            },
-          ],
-        },
-      ],
-    } as unknown as CanonicalRequest;
-    expect(extractWebSearchInvocation(request)?.query).toBe("risuncode github profile");
-  });
-
+describe("web-search tool identity", () => {
   test("keeps a client-side WebSearch tool instead of consuming it", () => {
     // executes locally, with no hosted type marker. Treating it as hosted ran
     // the fallback bridge and stripped the declaration, so the upstream model
@@ -744,9 +587,6 @@ describe("search query extraction", () => {
     expect(isWebSearchTool(clientSide as never)).toBe(false);
     expect(isWebSearchTool(hosted as never)).toBe(true);
     expect(isWebSearchTool(wireHosted as never)).toBe(true);
-
-    // A model invoking that client-side tool by name is still asking for
-    // search, so the invocation check stays name-based.
     expect(isWebSearchToolName("WebSearch")).toBe(true);
   });
 });
