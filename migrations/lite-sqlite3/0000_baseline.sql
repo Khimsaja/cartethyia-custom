@@ -128,7 +128,7 @@ CREATE TABLE "network_pools" (
   "bytes_sent_total" bigint DEFAULT 0 NOT NULL,
   "bytes_received_total" bigint DEFAULT 0 NOT NULL,
   "family" text,
-  CONSTRAINT "network_pools_kind_enum_check" CHECK ("kind" IS NULL OR "kind" IN ('http', 'socks5', 'bridge')),
+  CONSTRAINT "network_pools_kind_enum_check" CHECK ("kind" IS NULL OR "kind" IN ('http', 'https', 'socks5')),
   CONSTRAINT "network_pools_status_enum_check" CHECK ("status" IS NULL OR "status" IN ('active', 'cooldown', 'disabled')),
   CONSTRAINT "network_pools_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE cascade
 );
@@ -190,7 +190,7 @@ CREATE TABLE "provider_routing_settings" (
   "usage_floor" integer,
   "usage_floor_unit" text DEFAULT 'percent' NOT NULL,
   "enabled" integer DEFAULT false NOT NULL CHECK ("enabled" IN (0, 1)),
-  "user_agent" text DEFAULT 'codex_cli_rs/0.156.1' NOT NULL,
+  "user_agent" text DEFAULT 'claude-cli/2.1.293 (external, cli)' NOT NULL,
   "skip_proxy" integer DEFAULT false NOT NULL CHECK ("skip_proxy" IN (0, 1)),
   CONSTRAINT "provider_routing_settings_provider_id_providers_id_fk" FOREIGN KEY ("provider_id") REFERENCES "providers"("id") ON DELETE cascade,
   CONSTRAINT "provider_routing_settings_strategy_enum_check" CHECK ("strategy" IS NULL OR "strategy" IN ('fallback', 'round_robin')),
@@ -535,22 +535,6 @@ CREATE TABLE "share_links" (
   "last_viewed_at" text,
   CONSTRAINT "share_links_kind_check" CHECK ("kind" IN ('enroll', 'handoff'))
 );
---> statement-breakpoint
-
-CREATE TABLE "studio_sessions" (
-  "id" text PRIMARY KEY NOT NULL,
-  "tenant_id" text NOT NULL REFERENCES "tenants"("id") ON DELETE CASCADE,
-  "title" text NOT NULL DEFAULT 'New session',
-  "model" text NOT NULL DEFAULT '',
-  "system_prompt" text NOT NULL DEFAULT '',
-  "messages_json" text NOT NULL DEFAULT '[]',
-  "media_json" text NOT NULL DEFAULT '[]',
-  "created_at" text NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  "updated_at" text NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-);
---> statement-breakpoint
-
-CREATE INDEX "studio_sessions_tenant_updated_idx" ON "studio_sessions" ("tenant_id", "updated_at");
 --> statement-breakpoint
 
 CREATE UNIQUE INDEX "share_links_token_hash_idx" ON "share_links" ("token_hash");

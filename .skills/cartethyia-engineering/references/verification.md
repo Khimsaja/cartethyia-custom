@@ -56,9 +56,10 @@ procedure is in the `cartethyia-trace-replay` skill.
 
 ## Schema changes
 
-Exercise a new migration against an isolated database when available. Keep the
-runtime schema, baseline, forward migration, and readers/writers aligned. Never
-edit a migration that has already been recorded.
+Exercise the fresh baseline and legacy backup mappings. Keep the runtime
+schema, both baselines, and readers/writers aligned. Existing databases with
+retired migration history are restored into a fresh database; never test that
+recovery against development or production data.
 
 ## Completion
 

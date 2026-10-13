@@ -29,13 +29,11 @@ function migratedDatabase(): Database {
   return db;
 }
 
-test("every PostgreSQL migration has a same-named SQLite file", () => {
+test("each backend ships only its baseline migration", () => {
   const postgres = readdirSync(resolve(process.cwd(), "migrations", "full-postgres")).filter((name) => name.endsWith(".sql")).sort();
   const sqlite = readdirSync(resolve(process.cwd(), "migrations", "lite-sqlite3")).filter((name) => name.endsWith(".sql")).sort();
-  // Both runners apply every file in their own folder and record it by
-  // filename. A PostgreSQL file with no twin is a change an existing SQLite
-  // database never receives, and the baseline's parity check cannot see it.
-  expect(sqlite).toEqual(postgres);
+  expect(postgres).toEqual(["0000_baseline.sql"]);
+  expect(sqlite).toEqual(["0000_baseline.sql"]);
 });
 
 test("the committed SQLite baseline matches the generator output", () => {
@@ -46,7 +44,8 @@ test("the committed SQLite baseline matches the generator output", () => {
 test("the derived baseline builds and enforces the PostgreSQL constraints", () => {
   const db = migratedDatabase();
   const tables = db.prepare("SELECT count(*) AS c FROM sqlite_master WHERE type = 'table'").get() as { c: number };
-  expect(tables.c).toBe(27);
+  expect(tables.c).toBe(26);
+  expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'studio_sessions'").get()).toBeNull();
 
   db.exec("INSERT INTO tenants (id, name, status) VALUES ('t1', 'A', 'active')");
   expect(() => db.exec("INSERT INTO tenants (id, name, status) VALUES ('t2', 'A', 'nope')")).toThrow();

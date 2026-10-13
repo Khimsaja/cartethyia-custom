@@ -119,6 +119,60 @@ describe("legacy dropped columns on restore", () => {
     }
   });
 
+  test("maps pre-baseline routing and network-pool values during restore", () => {
+    const payload = {
+      app: "cartethyia",
+      version: 1,
+      exportedAt: "2026-10-01T00:00:00.000Z",
+      sections: {
+        config: {
+          provider_routing_settings: [
+            { provider_id: "openai", bypass_proxy: true, user_agent: "codex_cli_rs/0.156.1" },
+            { provider_id: "cline", bypass_proxy: false },
+          ],
+          network_pools: [
+            {
+              id: "00000000-0000-0000-0000-000000000003",
+              kind: "bridge",
+              endpoint_config: { endpoint: "relay.example.com" },
+              tenant_id: "00000000-0000-0000-0000-000000000004",
+            },
+          ],
+          model_combos: [{ name: "legacy-fusion", members: ["judge", "alpha"], strategy: "fusion" }],
+        },
+      },
+    };
+    const result = validateRestorePayload(payload, "00000000-0000-0000-0000-000000000005");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const settings = result.value.tables.get(
+      tablesForSection("config").find((table) => tableName(table) === "provider_routing_settings")!,
+    )?.rows;
+    expect(settings).toEqual([
+      {
+        provider_id: "openai",
+        skip_proxy: true,
+        user_agent: "claude-cli/2.1.293 (external, cli)",
+        tenant_id: "00000000-0000-0000-0000-000000000005",
+      },
+      { provider_id: "cline", skip_proxy: true, tenant_id: "00000000-0000-0000-0000-000000000005" },
+    ]);
+
+    const pools = result.value.tables.get(
+      tablesForSection("config").find((table) => tableName(table) === "network_pools")!,
+    )?.rows;
+    expect(pools?.[0]).toMatchObject({
+      kind: "https",
+      tenant_id: "00000000-0000-0000-0000-000000000005",
+    });
+
+    const combos = result.value.tables.get(
+      tablesForSection("config").find((table) => tableName(table) === "model_combos")!,
+    )?.rows;
+    expect(combos?.[0]).toMatchObject({ strategy: "fallback" });
+  });
+
 });
 
 describe("partial restore of an old backup", () => {

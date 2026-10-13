@@ -6,7 +6,7 @@ CREATE TYPE "public"."health_entity_kind" AS ENUM('account', 'pool');
 --> statement-breakpoint
 CREATE TYPE "public"."health_status" AS ENUM('active', 'cooldown', 'disabled');
 --> statement-breakpoint
-CREATE TYPE "public"."network_pool_kind" AS ENUM('http', 'socks5', 'bridge');
+CREATE TYPE "public"."network_pool_kind" AS ENUM('http', 'https', 'socks5');
 --> statement-breakpoint
 CREATE TYPE "public"."pool_routing_strategy" AS ENUM('least_loaded', 'round_robin');
 --> statement-breakpoint
@@ -186,7 +186,7 @@ CREATE TABLE "provider_routing_settings" (
   "usage_floor" integer,
   "usage_floor_unit" text DEFAULT 'percent' NOT NULL,
   "enabled" boolean DEFAULT false NOT NULL,
-  "user_agent" text DEFAULT 'codex_cli_rs/0.156.1' NOT NULL,
+  "user_agent" text DEFAULT 'claude-cli/2.1.293 (external, cli)' NOT NULL,
   "skip_proxy" boolean DEFAULT false NOT NULL,
   CONSTRAINT "provider_routing_settings_provider_id_providers_id_fk" FOREIGN KEY ("provider_id") REFERENCES "providers"("id") ON DELETE cascade,
   CONSTRAINT "provider_routing_settings_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE cascade
@@ -491,20 +491,6 @@ CREATE TABLE "share_links" (
   "last_viewed_at" timestamptz,
   CONSTRAINT "share_links_kind_check" CHECK ("kind" IN ('enroll', 'handoff'))
 );
---> statement-breakpoint
-CREATE TABLE "studio_sessions" (
-  "id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-  "tenant_id" uuid NOT NULL REFERENCES "tenants"("id") ON DELETE CASCADE,
-  "title" text NOT NULL DEFAULT 'New session',
-  "model" text NOT NULL DEFAULT '',
-  "system_prompt" text NOT NULL DEFAULT '',
-  "messages_json" jsonb NOT NULL DEFAULT '[]'::jsonb,
-  "media_json" jsonb NOT NULL DEFAULT '[]'::jsonb,
-  "created_at" timestamptz NOT NULL DEFAULT NOW(),
-  "updated_at" timestamptz NOT NULL DEFAULT NOW()
-);
---> statement-breakpoint
-CREATE INDEX "studio_sessions_tenant_updated_idx" ON "studio_sessions" ("tenant_id", "updated_at");
 --> statement-breakpoint
 CREATE UNIQUE INDEX "share_links_token_hash_idx" ON "share_links" USING btree ("token_hash");
 --> statement-breakpoint

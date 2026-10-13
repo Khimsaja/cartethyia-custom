@@ -8,8 +8,7 @@ import { dirname } from "node:path";
 import { resolvePackagePath } from "../config/package-paths";
 import { fullSchema, type DatabaseHandle } from "./db-handle";
 import {
-  BASELINE_MIGRATION_ID,
-  baselineAlreadySatisfied,
+  assertMigrationHistorySupported,
   MIGRATION_LEDGER_TABLE,
   migrationFiles,
   migrationIdFor,
@@ -433,14 +432,14 @@ export async function applySqliteMigrations(
   const tenants = sqlite
     .prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'tenants'")
     .get() as { present: number } | null;
-  if (baselineAlreadySatisfied(applied, tenants !== null)) {
-    sqlite
-      .prepare(`INSERT INTO ${MIGRATION_LEDGER_TABLE} (migration_id) VALUES (?) ON CONFLICT DO NOTHING`)
-      .run(BASELINE_MIGRATION_ID);
-    applied.add(BASELINE_MIGRATION_ID);
-  }
+  const files = migrationFiles(folder);
+  assertMigrationHistorySupported(
+    applied,
+    files.map(migrationIdFor),
+    tenants !== null,
+  );
 
-  for (const file of migrationFiles(folder)) {
+  for (const file of files) {
     const migrationId = migrationIdFor(file);
     if (applied.has(migrationId)) continue;
     const source = readFileSync(file, "utf8");
@@ -455,36 +454,6 @@ export async function applySqliteMigrations(
           // rejects both, so only text that still contains SQL is sent.
           const sql = statement.replace(/--[^\n]*/g, "").trim();
           if (sql.length === 0) continue;
-          // `ADD COLUMN IF NOT EXISTS` is not accepted by this SQLite build, so
-          // a forward file spells a column add as `ADD COLUMN`. Skip it when
-          // the column is already there: a fresh baseline has it, an older
-          // file does not.
-          const addColumn = /^ALTER TABLE "(\w+)" ADD COLUMN "(\w+)" /i.exec(sql);
-          if (addColumn) {
-            const table = addColumn[1];
-            const column = addColumn[2];
-            const present = column === undefined
-              ? null
-              : sqlite
-                  .prepare(`SELECT 1 AS present FROM pragma_table_info('${table}') WHERE name = ?`)
-                  .get(column) as { present: number } | null;
-            if (present !== null) continue;
-          }
-          // Same idempotency rule for a rename: the baseline already carries the
-          // new name, so a fresh database reaches this forward file with nothing
-          // left to rename. Skip when the target column is present, so a fresh
-          // install and an upgraded one converge on the same schema.
-          const renameColumn = /^ALTER TABLE "?(\w+)"? RENAME COLUMN "?(\w+)"? TO "?(\w+)"?/i.exec(sql);
-          if (renameColumn) {
-            const table = renameColumn[1];
-            const target = renameColumn[3];
-            const present = table === undefined || target === undefined
-              ? null
-              : sqlite
-                  .prepare(`SELECT 1 AS present FROM pragma_table_info('${table}') WHERE name = ?`)
-                  .get(target) as { present: number } | null;
-            if (present !== null) continue;
-          }
           sqlite.exec(sql);
         }
         record.run(migrationId);

@@ -73,8 +73,8 @@ serverless host that cannot answer CONNECT at all — `isRelayHost` recognizes
 `*.vercel.app`, `*.workers.dev`, `*.netlify.app`, `*.deno.dev` — carries a
 `relayEndpoint` instead, and `src/network/outbound-fetch.ts` sends the
 `x-relay-target`/`x-relay-path` contract to it. carte-bridge, the retired
-`bridge` kind with its own `x-bridge-*` contract, is gone; `0012_network_pool_https.sql`
-folds any row it left behind to `https`.
+`bridge` kind with its own `x-bridge-*` contract, is gone; backup restore maps
+any legacy `bridge` pool to `https`.
 
 An SSRF policy check runs on every dial. `src/network/ssrf.ts` rejects
 destinations the policy does not allow; custom provider hosts go through the

@@ -169,8 +169,7 @@ export const providers = pgTable(
 // `tenant_id` null means the account is shared pool-wide; populated means
 // tenant-owned/BYOK. The concurrency ceiling lives in provider routing
 // (`provider_routing_settings.max_inflight`) and network pools
-// (`network_pools.max_inflight`); the per-account override that once sat here
-// was retired by `0001_converge_schema.sql`.
+// (`network_pools.max_inflight`); the per-account override no longer exists.
 export const providerAccounts = pgTable("provider_accounts", {
   id: uuid("id").primaryKey().defaultRandom(),
   providerId: text("provider_id")
@@ -454,7 +453,7 @@ export const modelAliases = pgTable(
     tenantId: tenantRefRequired(),
     alias: text("alias").notNull(),
     targetModel: text("target_model").notNull(),
-    /** Explicit list position; see `0019_list_sort_index.sql`. */
+    /** Explicit list position. */
     sortIndex: integer("sort_index").notNull().default(0),
     ...timestampColumns(),
   },
@@ -470,7 +469,7 @@ export const modelCombos = pgTable(
     name: text("name").notNull(),
     members: jsonb("members").notNull().$type<string[]>(),
     strategy: modelComboStrategy("strategy").notNull().default("fallback"),
-    /** Explicit list position; see `0019_list_sort_index.sql`. */
+    /** Explicit list position. */
     sortIndex: integer("sort_index").notNull().default(0),
     ...timestampColumns(),
   },
@@ -613,7 +612,7 @@ export const apiKeys = pgTable(
     notesTitle: text("notes_title"),
     notesSubtitle: text("notes_subtitle"),
     notesBody: text("notes_body"),
-    /** Explicit list position; see `0019_list_sort_index.sql`. */
+    /** Explicit list position. */
     sortIndex: integer("sort_index").notNull().default(0),
     requestsPerMinute: integer("requests_per_minute"),
     dailyTokenLimit: bigint("daily_token_limit", { mode: "number" }),

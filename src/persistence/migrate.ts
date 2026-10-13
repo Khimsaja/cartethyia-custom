@@ -35,21 +35,32 @@ export function migrationIdFor(file: string): string {
   return basename(file);
 }
 
-/** The file a fresh database builds from. An older database already has its tables. */
+/** The only migration file a fresh database builds from. */
 export const BASELINE_MIGRATION_ID = "0000_baseline.sql";
 
 /**
- * True when this database was built by a baseline this release no longer ships.
- *
- * The ledger names that file, and `tenants` exists, so the current baseline must
- * be recorded rather than executed: executing it would try to create tables the
- * database already has. The numbered files after it converge the old shape.
+ * Rejects databases whose schema was created by retired migration files or
+ * which have tables but no record of the current baseline.
  */
-export function baselineAlreadySatisfied(
+export function assertMigrationHistorySupported(
   applied: ReadonlySet<string>,
+  expected: readonly string[],
   hasTenants: boolean,
-): boolean {
-  return hasTenants && !applied.has(BASELINE_MIGRATION_ID);
+): void {
+  const supported = new Set(expected);
+  const retired = [...applied].filter((migrationId) => !supported.has(migrationId));
+  if (retired.length > 0) {
+    throw new Error(
+      `Database contains retired migration history (${retired.join(", ")}). ` +
+      "Create a fresh database and restore from a backup; in-place upgrades are no longer supported.",
+    );
+  }
+  if (hasTenants && !applied.has(BASELINE_MIGRATION_ID)) {
+    throw new Error(
+      "Database contains an unversioned schema. Create a fresh database and restore from a backup; " +
+      "in-place upgrades are no longer supported.",
+    );
+  }
 }
 
 /**
@@ -97,5 +108,4 @@ export async function readMigrationLedgerStatus(
   const pending = expected.filter((migrationId) => !applied.has(migrationId));
   return { expected, pending, applied: pending.length === 0 };
 }
-
 

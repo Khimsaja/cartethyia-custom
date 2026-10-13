@@ -29,12 +29,11 @@ state, and availability each have their own owner.
 Find every producer, validator, store, reader, and dashboard mirror. A schema
 change updates `src/persistence/schema.ts`, `migrations/full-postgres/0000_baseline.sql`,
 regenerates the SQLite baseline with `bun scripts/generate/sqlite-ddl.ts`, and
-adds the next forward file in both `migrations/full-postgres/` and
-`migrations/lite-sqlite3/` under the same name. The number is the next one
-after the highest file already in `migrations/full-postgres/` — read the
-directory, do not carry a remembered count. Do not edit or delete a file a
-database has recorded. The procedure and the SQLite dialect differences are in
-the `cartethyia-schema-telemetry` skill. Dashboard contracts stay browser-safe.
+updates backup validation/mapping for legacy rows. Each migration directory
+contains only `0000_baseline.sql`; do not add numbered forward migrations.
+Existing databases with retired migration history are recreated and restored
+from backup, not upgraded in place. The procedure is in the
+`cartethyia-schema-telemetry` skill. Dashboard contracts stay browser-safe.
 
 ## Removal
 

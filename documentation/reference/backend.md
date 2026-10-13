@@ -176,15 +176,13 @@ exactly one row matches. Two tenants sharing a username do not guess.
 ## Persistence
 
 `src/persistence/schema.ts` is the Drizzle source. `migrations/full-postgres/0000_baseline.sql`
-must match it. Forward files are only:
-
-| File | What an old database gains |
-| --- | --- |
-| `0001_converge_schema.sql` | Current columns, folded enums, model access, OAuth, CLI key scope |
-| `0002_share_popups_and_usernames.sql` | Popup rows copied off `api_keys`, username unique per tenant |
-| `0003_drop_fusion_and_minimum_balance.sql` | Fusion combos become fallback, floor columns dropped |
-| `0004_api_keys_is_default.sql` | `api_keys.is_default` marks the key created for a new tenant |
-| `0005_payload_jsonl_storage.sql` | Telemetry payloads move to `jsonl-file`/`jsonb-file` storage |
+must match it. Both migration directories contain only `0000_baseline.sql`;
+SQLite's file is generated from the PostgreSQL baseline. Do not add numbered
+forward migrations. Existing databases with retired migration history must be
+recreated from this baseline and recovered through the backup/restore flow.
+That flow maps legacy routing names and values (`bypass_proxy`, `bridge`, the
+old provider User-Agent default, Cline's skip-proxy default, and `fusion`) before
+inserting rows.
 
 Stores live in `src/persistence/stores/` and under the console domain that owns
 the table. `tenant-scope.ts` holds `globalOrOwnedBy`. A `NULL` tenant id is a
@@ -272,4 +270,4 @@ composition root's database handle; it does not open a second pool.
 | New provider | `specs/`, adapter, registry, discovery catalog |
 | Routing rule | `router.ts` and `route-model.ts`, then the snapshot builder |
 | Console resource | the domain under `src/console/`, then the dashboard hook that calls it |
-| Schema | `schema.ts`, `0000_baseline.sql`, and the next unused number in `migrations/` |
+| Schema | `schema.ts`, `migrations/full-postgres/0000_baseline.sql`, then regenerate SQLite with `scripts/generate/sqlite-ddl.ts` |

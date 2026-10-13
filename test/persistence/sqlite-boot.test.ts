@@ -80,22 +80,35 @@ test("a fresh file migrates, serves a query, and a second boot applies nothing",
   }
 });
 
-test("a database that already has its tables records the baseline instead of replaying it", async () => {
+test("an unversioned database with existing tables requires backup and restore", async () => {
   const dir = freshDir();
+  const sqlite = createSqliteDatabase(join(dir, "cartethyia.sqlite"));
   try {
-    const sqlite = createSqliteDatabase(join(dir, "cartethyia.sqlite"));
     await applySqliteMigrations(sqlite);
-    // Forget the ledger, keep the tables: the state of a database built by a
-    // baseline this release no longer ships.
     sqlite.exec("DELETE FROM cartethyia_schema_migrations");
 
-    await applySqliteMigrations(sqlite);
-    const recorded = sqlite
-      .prepare("SELECT migration_id FROM cartethyia_schema_migrations")
-      .all() as { migration_id: string }[];
-    expect(recorded.map((row) => row.migration_id)).toContain("0000_baseline.sql");
-    sqlite.close();
+    await expect(applySqliteMigrations(sqlite)).rejects.toThrow(
+      /unversioned schema.*fresh database and restore from a backup/i,
+    );
   } finally {
+    sqlite.close();
+    removeDir(dir);
+  }
+});
+
+test("a database with retired migration history requires backup and restore", async () => {
+  const dir = freshDir();
+  const sqlite = createSqliteDatabase(join(dir, "cartethyia.sqlite"));
+  try {
+    await applySqliteMigrations(sqlite);
+    sqlite
+      .prepare("INSERT INTO cartethyia_schema_migrations (migration_id) VALUES (?)")
+      .run("0007_rename_bypass_proxy_to_skip_proxy.sql");
+    await expect(applySqliteMigrations(sqlite)).rejects.toThrow(
+      /retired migration history.*fresh database and restore from a backup/i,
+    );
+  } finally {
+    sqlite.close();
     removeDir(dir);
   }
 });

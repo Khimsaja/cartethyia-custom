@@ -432,20 +432,15 @@ export function columnNames(table: Table): ReadonlySet<string> {
 /**
  * Columns a backup may still name even though the schema dropped them.
  *
- * A backup is versioned, but a column can be dropped without bumping
- * {@link BACKUP_VERSION}: migrations apply forward over the same table, and the
- * export/restore round-trip is expected to survive across them. An older export
- * therefore legitimately carries columns that no longer exist — the per-account
- * `provider_accounts.max_inflight` (0029) and several retired `api_keys.*`
- * fields (0005/0016/0017/0018). Validation must not reject those: it skips them,
- * so a stale backup still restores rather than failing on a column that is, by
- * definition, no longer read. The value is dropped, not migrated — each retired
- * column's replacement lives elsewhere in the schema, and importing a dead
- * number back would be worse than omitting it.
+ * A backup is versioned, but old exports may carry columns the current schema
+ * no longer has. Validation accepts known retired fields and skips them rather
+ * than rejecting the whole backup. Fields with a current equivalent are
+ * normalized before this list is applied; these remaining values have no
+ * replacement in the schema.
  */
 const LEGACY_DROPPED_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   provider_accounts: ["max_inflight", "min_credit_balance", "last_remaining_credit", "last_remaining_percent"],
-  provider_routing_settings: ["credit_floor", "credit_limit", "credit_limit_enabled", "bypass_proxy"],
+  provider_routing_settings: ["credit_floor", "credit_limit", "credit_limit_enabled"],
   share_links: ["used_at"],
   api_keys: [
     "share_popup_enabled",

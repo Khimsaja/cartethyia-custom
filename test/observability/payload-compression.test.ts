@@ -2,9 +2,7 @@
  * Payload frames are gzipped on write and named `jsonl-file`.
  *
  * A frame written before compression existed is plain JSON named `jsonb-file`,
- * and a database that recorded an earlier migration still has the check that
- * only allowed that name. Both must keep working: the reader resolves an old
- * frame, and the forward migration accepts a new row.
+ * and the baseline accepts both storage names so older rows remain readable.
  */
 import { expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
@@ -104,7 +102,7 @@ test("a compressed frame still inside its window keeps the file", async () => {
   expect(deleted).toBe(0);
 });
 
-test("the forward migration lets a compressed frame's row be stored", async () => {
+test("the baseline accepts old and compressed payload frame rows", async () => {
   const dir = mkdtempSync(join(tmpdir(), "cartethyia-migrate-"));
   const file = join(dir, "cartethyia.sqlite");
   const sqlite = createSqliteDatabase(file);
@@ -124,35 +122,5 @@ test("the forward migration lets a compressed frame's row be stored", async () =
   // Nothing was lost or doubled: the rebuild keeps one row per insert.
   const count = sqlite.prepare("SELECT count(*) AS c FROM telemetry_payloads").get() as { c: number };
   expect(count.c).toBe(2);
-  sqlite.close();
-});
-
-test("the forward migration keeps rows written before compression", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "cartethyia-migrate-"));
-  const sqlite = createSqliteDatabase(join(dir, "cartethyia.sqlite"));
-  await applySqliteMigrations(sqlite);
-
-  sqlite.exec("INSERT INTO tenants (id, name, status) VALUES ('t1', 'A', 'active')");
-  sqlite.exec(
-    "INSERT INTO telemetry_payloads (id, tenant_id, captured_at, expires_at, storage, file, offset, length, checksum, version) " +
-      "VALUES ('old', 't1', '2026-01-01T00:00:00.000Z', '2026-01-01T00:15:00.000Z', 'jsonb-file', 'old.jsonb', 0, 8, 'abcd', 1)",
-  );
-
-  // Run the rebuild a second time. It has to be idempotent: a fresh baseline
-  // already widened the check, and the forward file still runs there.
-  const source = await Bun.file("migrations/lite-sqlite3/0005_payload_jsonl_storage.sql").text();
-  sqlite.transaction(() => {
-    for (const part of source.split(/--> statement-breakpoint/g)) {
-      const statement = part.replace(/--[^\n]*/g, "").trim();
-      if (statement.length > 0) sqlite.exec(statement);
-    }
-  })();
-
-  const row = sqlite.prepare("SELECT storage, file, length FROM telemetry_payloads WHERE id = 'old'").get() as {
-    storage: string;
-    file: string;
-    length: number;
-  };
-  expect(row).toEqual({ storage: "jsonb-file", file: "old.jsonb", length: 8 });
   sqlite.close();
 });

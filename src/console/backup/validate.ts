@@ -34,7 +34,17 @@ import {
   type ValidatedRestore,
   type ValidatedTable,
 } from "./contracts";
-import { apiKeys, shareLinks } from "../../persistence/schema";
+import {
+  apiKeys,
+  modelCombos,
+  networkPools,
+  providerRoutingSettings,
+  shareLinks,
+} from "../../persistence/schema";
+
+const LEGACY_PROVIDER_USER_AGENT = "codex_cli_rs/0.156.1";
+const CURRENT_PROVIDER_USER_AGENT = "claude-cli/2.1.293 (external, cli)";
+
 function legacyModelList(value: unknown): readonly string[] | undefined {
   if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) return undefined;
   return value;
@@ -49,6 +59,30 @@ function normalizeLegacyApiKeyPolicy(row: Record<string, unknown>): Record<strin
   }
   if (allowlist !== undefined) {
     return { ...row, model_access_mode: "whitelist", model_list: allowlist };
+  }
+  return row;
+}
+
+function normalizeLegacyRow(table: Table, row: Record<string, unknown>): Record<string, unknown> {
+  if (table === providerRoutingSettings) {
+    const { bypass_proxy: legacySkipProxy, ...current } = row;
+    let normalized = current;
+    if (normalized["skip_proxy"] === undefined && legacySkipProxy !== undefined) {
+      normalized = { ...normalized, skip_proxy: legacySkipProxy };
+    }
+    if (normalized["provider_id"] === "cline") {
+      normalized = { ...normalized, skip_proxy: true };
+    }
+    if (normalized["user_agent"] === LEGACY_PROVIDER_USER_AGENT) {
+      normalized = { ...normalized, user_agent: CURRENT_PROVIDER_USER_AGENT };
+    }
+    return normalized;
+  }
+  if (table === networkPools && row["kind"] === "bridge") {
+    return { ...row, kind: "https" };
+  }
+  if (table === modelCombos && row["strategy"] === "fusion") {
+    return { ...row, strategy: "fallback" };
   }
   return row;
 }
@@ -251,7 +285,10 @@ export function validateRestorePayload(payload: unknown, tenantId: string): Rest
         }
         // Older v1 backups used separate allow/deny columns. Convert them to
         // the current single policy before dropping retired column names.
-        const sourceRow = table === apiKeys ? normalizeLegacyApiKeyPolicy(row) : row;
+        const sourceRow = normalizeLegacyRow(
+          table,
+          table === apiKeys ? normalizeLegacyApiKeyPolicy(row) : row,
+        );
         // A stale backup may still carry columns the schema has since dropped.
         // Those are accepted but removed here, so they never reach the store
         // (which would reject them as unknown) and the rest of the row restores.

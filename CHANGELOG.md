@@ -3,7 +3,8 @@
 All notable changes to Cartethyia are recorded here. Entries are written for the
 operator who reads them, not for the contributor who wrote the diff: what
 changed, and what it means for an install. Migration numbers refer to files
-under `migrations/full-postgres/` and their same-named SQLite twins.
+that shipped at the time of the change; both backend directories now retain
+only the current baseline.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
@@ -13,6 +14,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 - Usage now includes average routing/preparation delay and period-bound P50,
   P95, and P99 request latency in its summary cards.
+
+### Changed
+
+- PostgreSQL and SQLite now ship only a complete baseline. Existing databases
+  with retired migration history must be recreated and recovered through
+  backup/restore; startup rejects in-place upgrades. Restore maps retired
+  routing and pool fields/values into the current schema.
 
 ### Fixed
 

@@ -17,14 +17,13 @@ it only has to resolve to one that does.
 | `model_combos` | unique `(tenant_id, name)` | `members` (`text[]`), `strategy`, `sort_index` |
 
 `strategy` is `fallback` or `round_robin`. There is no fusion strategy — it was
-dropped in `0003_drop_fusion_and_minimum_balance.sql`, and existing rows became
-`fallback`. The dashboard's option list is
+dropped, and legacy backups map its rows to `fallback`. The dashboard's option list is
 `dashboard/src/features/routing/combo-strategy.ts`, which is typed against the
 canonical union so adding a strategy fails typecheck until an option is
 provided.
 
-`sort_index` is explicit list position (`0019_list_sort_index.sql`), not a
-creation-time ordering — reorder is a real write.
+`sort_index` is explicit list position, not a creation-time ordering — reorder
+is a real write.
 
 ## Resolution
 

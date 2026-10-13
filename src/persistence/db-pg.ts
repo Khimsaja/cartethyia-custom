@@ -13,8 +13,7 @@ import { fullSchema, type CartethyiaDatabase, type DatabaseHandle } from "./db-h
 import {
   LEDGER_DDL,
   MIGRATION_LEDGER_TABLE,
-  BASELINE_MIGRATION_ID,
-  baselineAlreadySatisfied,
+  assertMigrationHistorySupported,
   migrationFiles,
   resolveMigrationsFolder,
 } from "./migrate";
@@ -166,13 +165,11 @@ export async function applySqlMigrations(
     const tenants = await client.query<{ present: boolean }>(
       `SELECT to_regclass('public.tenants') IS NOT NULL AS present`,
     );
-    if (baselineAlreadySatisfied(applied, tenants.rows[0]?.present === true)) {
-      await client.query(
-        `INSERT INTO ${MIGRATION_LEDGER_TABLE} (migration_id) VALUES ($1) ON CONFLICT DO NOTHING`,
-        [BASELINE_MIGRATION_ID],
-      );
-      applied.add(BASELINE_MIGRATION_ID);
-    }
+    assertMigrationHistorySupported(
+      applied,
+      files.map((file) => basename(file)),
+      tenants.rows[0]?.present === true,
+    );
 
     for (const file of files) {
       const migrationId = basename(file);

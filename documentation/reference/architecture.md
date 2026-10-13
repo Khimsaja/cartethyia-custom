@@ -133,9 +133,12 @@ Two database modes share one schema:
 | Full | external PostgreSQL | Redis when `REDIS_URL` is set, else memory |
 
 `migrations/full-postgres/0000_baseline.sql` is the current schema for a new database. Lite builds from `migrations/lite-sqlite3/0000_baseline.sql`, derived from it.
-`0001` through `0005` converge a database built from an older baseline.
-A database whose ledger names a baseline this release no longer ships records
-`0000_baseline.sql` without executing it, then runs the five files.
+Each backend ships only this baseline; older numbered migrations are retired.
+An existing database with retired migration history, or tables without the
+current baseline ledger entry, is rejected at startup rather than upgraded
+in-place. Create a fresh database and restore a backup. Restore maps the retired
+`bypass_proxy` name, `bridge` pool kind, old provider User-Agent default, and
+legacy Cline/fusion values to the current schema.
 
 ## Console and dashboard
 
