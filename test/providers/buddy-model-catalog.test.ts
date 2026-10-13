@@ -20,6 +20,12 @@ function luna(rows: readonly ModelDefinition[]) {
 }
 
 describe("live Buddy CLI models on the shared roster", () => {
+  test("omits DeepSeek V4 Pro from both international catalogs", () => {
+    for (const rows of [CODEBUDDY_MODELS, WORKBUDDY_MODELS]) {
+      expect(rows.some((model) => model.modelId === "deepseek-v4-pro")).toBe(false);
+    }
+  });
+
   test("publishes upstream CLI ids with their captured metadata on both sites", () => {
     const capturedRows = [
       ["balanced-model", 256_000, 32_000, true],
