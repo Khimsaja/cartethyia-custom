@@ -183,9 +183,19 @@ restore it, see it pass. A test that passes both ways proves nothing.
 
 ## Hygiene
 
-- Never print, log, or write a credential to a file, and never put one in a
-  commit. A credential given in a message is fine; `AGENTS.md` "Safety and git"
-  is the owner of the rest.
+- A credential may be echoed and reused when the user explicitly asks; a
+  throwaway debug credential is disposable and secret-handling ceremony must
+  not block the replay. The one absolute is **git**: never in source, env
+  files, commits, logs, reports, or telemetry. `AGENTS.md` "Git, data, and
+  credentials" is the owner.
+- **Re-state the credential in the command that uses it.** An exported shell
+  variable does not survive between tool calls, so `curl` sends an empty
+  `Authorization` header and returns `000` with exit 43. That looks like "host
+  unreachable" and ends the investigation before the failure is reproduced.
+- **Diagnose `000` before believing it.** Run `curl -v` once with no credential:
+  a `401` proves the host answered and only the key was missing, while `000`
+  with no response means DNS, TLS, or egress. Do not report a host as
+  unreachable on a single `000`.
 - Work in a scratch directory outside the repo; delete it when done. Leave no
   replay scripts or captured payloads in the tree.
 - Send the same `user-agent` as the failing client so the gateway takes the same

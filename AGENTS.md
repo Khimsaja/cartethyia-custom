@@ -204,11 +204,24 @@ details that belong in code or tests.
 - A small cleanup directly required by the task is fine; avoid unrelated
   refactors or cleanup.
 - Do not request, use, echo, or send credentials by default. If the user
-  explicitly asks you to use a credential for a specific authorized operation,
-  handle it as required for that operation and send it only to the intended
-  service. Do not repeat the raw value in chat or tool output unless the user
-  explicitly asks for that, and never persist it in source, environment files,
-  scratch files, commits, logs, reports, or telemetry.
+  explicitly asks for a credential to be used or shown, that request wins:
+  echo it, reuse it, and send it to the intended service. The hard rule is the
+  next one, not the echo.
+- **Never let a credential reach git.** That is the only absolute: no source
+  file, no env file (`.env`, `.env.*`), no commit, no diff, no log, no report,
+  no telemetry. A credential for a throwaway debug environment is disposable
+  and safe to print; the same value in a commit is not reusable but permanent.
+  Verify with `git status`/`git diff` before committing, and prefer a scratch
+  directory outside the repo for replay artefacts.
+- A replay needs the credential to survive between tool calls; an exported
+  shell variable does not. `curl` then sends an empty header and returns
+  `000`/exit 43, which reads as "host unreachable" and can end the
+  investigation before the failure is reproduced. Re-state the value in the
+  command that uses it instead of relying on a variable from an earlier call.
+- Before concluding a host is unreachable, distinguish a transport failure from
+  an authorization failure: run `curl -v` and read the status line. A `401`
+  means the host answered and only the credential was missing; `000` with no
+  response means DNS, TLS, or egress.
 - Prefer reversible steps for database and environment operations. Confirm
   which environment is targeted before any operation that may alter real data.
 

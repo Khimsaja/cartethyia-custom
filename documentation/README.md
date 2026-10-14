@@ -19,6 +19,9 @@ How the system is built — [reference/](reference/README.md), one page per laye
   persistence.
 - [Protocol and translation](reference/protocol-and-translation.md) — wire
   families, the canonical model, and where a provider's dialect is applied.
+- [Model name forms](reference/model-name-forms.md) — requested vs canonical vs
+  routed vs displayed; why the effort suffix gains a space in Request Detail and
+  why the combo prefix is stripped before dispatch.
 - [Providers](reference/providers.md) — the provider layers, credentials,
   discovery, and what makes each family non-standard.
 - [Console API](reference/console-api.md) — the admin/operator surface: domains,
