@@ -370,11 +370,15 @@ export function ChatBubble({
                 {live ? <span className="ml-1 inline-block text-accent animate-stream-caret" aria-hidden="true">▋</span> : null}
               </div>
             ) : null}
-      {toolCalls.length > 0 ? (
+      {toolCalls.length > 0 && !live ? (
         <div className="flex flex-col gap-3 items-start w-full max-w-280 text-text-tertiary font-sans text-caption">
           {toolCalls.map((call) => (
             // Collapsed this is a pill sized to the tool's name; expanded it
             // grows to fit the arguments instead of stretching the column.
+            // Rendered only once the turn settles: while it is still running the
+            // arguments are the planner's own draft, and showing them mid-flight
+            // leaked a half-formed prompt into the transcript before the call
+            // had even been made. "Running <tool>…" covers that window.
             <details
               key={call.id}
               className="w-fit max-w-full border border-inner-border rounded-control bg-surface-2"
