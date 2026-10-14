@@ -409,7 +409,6 @@ function QuotaCard({
                 title={account.health?.sanitizedMessage ?? undefined}
               >
                 {healthStatus}
-                {account.health?.lastErrorCategory ? ` · ${account.health.lastErrorCategory}` : ""}
               </Badge>
             ) : null}
           </div>
@@ -450,6 +449,16 @@ function QuotaCard({
               )}
             </div>
           )}
+          {account.health?.lastErrorCategory !== null &&
+          account.health?.lastErrorCategory !== undefined ? (
+            <div
+              className="truncate text-micro text-text-tertiary"
+              title={account.health?.sanitizedMessage ?? undefined}
+            >
+              {account.health.lastErrorCategory}
+              {account.health?.sanitizedMessage ? ` — ${account.health.sanitizedMessage}` : ""}
+            </div>
+          ) : null}
           {canCheckin && (
             <>
               <div title="Daily growth state: manual pass result, else the sweep ledger for today"
