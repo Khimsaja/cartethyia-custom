@@ -94,6 +94,46 @@ function calculateEstimatedCost(basis: UsageCostBasis, rawCost: unknown): number
   ) / 1_000_000;
 }
 
+/**
+ * WorkBuddy glm bridge double-count correction.
+ *
+ * Verified live 2026-10-14 against `bansos/glm-5.3-flash` through the gateway:
+ * with a 56,064-token prompt the upstream reported `prompt_tokens = 112,147`
+ * (exactly 2×) and `cached_tokens = 56,064` — the cached subset is counted
+ * twice inside the all-in prompt total, so every cache-aware display reads a
+ * constant ~50% "hit rate" and cost doubles on the uncached side. The bridge
+ * does this only when the cache reported a read (`cached_tokens > 0`); a
+ * no-read turn reports honest counts.
+ *
+ * The corrector rebuilds the all-in total as `fresh + cached` where fresh is
+ * the reported prompt minus the double-counted cached share
+ * (`reported - 2×cached`), so downstream hit-rate and cost math see one cached
+ * copy. Scoped to WorkBuddy GLM models — other bridges report honest totals.
+ */
+function correctBuddyGlmInflatedPrompt(
+  providerId: string,
+  modelId: string,
+  usage: UsageRecord,
+): UsageRecord {
+  if (providerId !== "workbuddy" && providerId !== "workbuddycn") return usage;
+  // Routing aliases may leave a `<route>/` prefix on the id (`bansos/glm-5.3-flash`);
+  // the family check keys on the bare upstream model name.
+  const bare = modelId.includes("/") ? modelId.slice(modelId.lastIndexOf("/") + 1) : modelId;
+  if (!/^glm/i.test(bare)) return usage;
+  const cached = usage.cached_input_tokens;
+  if (typeof cached !== "number" || cached <= 0) return usage;
+  const reported = usage.input_tokens;
+  const fresh = reported - 2 * cached;
+  if (fresh < 0 || fresh > cached) return usage;
+  return {
+    ...usage,
+    input_tokens: fresh + cached,
+    ...(typeof usage.uncached_input_tokens === "number"
+      ? { uncached_input_tokens: Math.min(usage.uncached_input_tokens, fresh) }
+      : {}),
+  };
+}
+
 /** Reprices canonical usage using the routed model's persisted/catalog price. */
 export function repriceUsage(
   usage: UsageRecord,
@@ -101,6 +141,7 @@ export function repriceUsage(
   modelId: string,
   catalogCost?: unknown,
 ): UsageRecord {
+  usage = correctBuddyGlmInflatedPrompt(providerId, modelId, usage);
   // `costFor`, not `resolve`: pricing falls back to the model's own global rate
   // when the routed provider published none of its own, so a reseller gateway
   // is billed for the model it served instead of recording `$0.00`.

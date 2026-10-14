@@ -33,6 +33,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   normalizeUsage,
+  repriceUsage,
   usageFromProvider,
   usageToChatWire,
   usageToMessagesWire,
@@ -545,5 +546,78 @@ describe("the round trip through a wire builder keeps the canonical totals", () 
     expect(chat.prompt_tokens).toBe(130);
     expect(responses["input_tokens"]).toBe(130);
     expect(messagesTotal).toBe(130);
+  });
+});
+
+describe("repriceUsage: WorkBuddy glm double-counted cache correction", () => {
+  const base = {
+    cache_write_tokens: "unavailable" as const,
+    output_tokens: 12,
+    reasoning_tokens: "unavailable" as const,
+    estimated_cost: null,
+  };
+
+  test("halves the inflated prompt when cached is exactly half", () => {
+    // Live repro 2026-10-14: 56,064-token prompt reported as 112,147 with
+    // cached 56,064 — the bridge counts the cached subset twice.
+    const fixed = repriceUsage(
+      { ...base, input_tokens: 112_147, cached_input_tokens: 56_064, uncached_input_tokens: 56_083 },
+      "workbuddy",
+      "glm-5.3-flash",
+      0,
+    );
+    expect(fixed.input_tokens).toBe(56_083);
+    expect(fixed.cached_input_tokens).toBe(56_064);
+    expect(fixed.uncached_input_tokens).toBe(19);
+  });
+
+  test("strips a routing alias prefix before the family check", () => {
+    const fixed = repriceUsage(
+      { ...base, input_tokens: 112_147, cached_input_tokens: 56_064, uncached_input_tokens: 56_083 },
+      "workbuddy",
+      "bansos/glm-5.3-flash",
+      0,
+    );
+    expect(fixed.input_tokens).toBe(56_083);
+  });
+
+  test("leaves a no-cache-read turn untouched", () => {
+    const fixed = repriceUsage(
+      { ...base, input_tokens: 56_101, cached_input_tokens: 0, uncached_input_tokens: 56_101 },
+      "workbuddy",
+      "glm-5.3-flash",
+      0,
+    );
+    expect(fixed.input_tokens).toBe(56_101);
+  });
+
+  test("leaves non-glm models and non-buddy providers untouched", () => {
+    const glmOther = repriceUsage(
+      { ...base, input_tokens: 100, cached_input_tokens: 50, uncached_input_tokens: 50 },
+      "cb",
+      "glm-5.3-flash",
+      0,
+    );
+    expect(glmOther.input_tokens).toBe(100);
+    const buddyOther = repriceUsage(
+      { ...base, input_tokens: 100, cached_input_tokens: 50, uncached_input_tokens: 50 },
+      "workbuddy",
+      "deepseek-v4.1-flash",
+      0,
+    );
+    expect(buddyOther.input_tokens).toBe(100);
+  });
+
+  test("leaves numbers the 2x pattern does not fit untouched", () => {
+    // Cached is more than half the prompt: the correction would produce a
+    // fresh share larger than cached, so the double-count pattern does not
+    // hold — keep the upstream numbers rather than guess.
+    const fixed = repriceUsage(
+      { ...base, input_tokens: 120, cached_input_tokens: 80, uncached_input_tokens: 40 },
+      "workbuddy",
+      "glm-5.3-flash",
+      0,
+    );
+    expect(fixed.input_tokens).toBe(120);
   });
 });
