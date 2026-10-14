@@ -449,16 +449,6 @@ function QuotaCard({
               )}
             </div>
           )}
-          {account.health?.lastErrorCategory !== null &&
-          account.health?.lastErrorCategory !== undefined ? (
-            <div
-              className="truncate text-micro text-text-tertiary"
-              title={account.health?.sanitizedMessage ?? undefined}
-            >
-              {account.health.lastErrorCategory}
-              {account.health?.sanitizedMessage ? ` — ${account.health.sanitizedMessage}` : ""}
-            </div>
-          ) : null}
           {canCheckin && (
             <>
               <div title="Daily growth state: manual pass result, else the sweep ledger for today"
@@ -531,8 +521,18 @@ function QuotaCard({
           <Button
             variant="ghost"
             size="sm"
-            title="Health & Error Log"
-            aria-label={`Health log for ${account.name}`}
+            // With an error on the row this is the way to read it, so say so:
+            // the card shows the status, not the upstream's own payload.
+            title={
+              account.health?.lastErrorCategory
+                ? "Provider error — Inspect account health details"
+                : "Health & Error Log"
+            }
+            aria-label={
+              account.health?.lastErrorCategory
+                ? `Inspect account health details for ${account.name}`
+                : `Health log for ${account.name}`
+            }
             disabled={busy}
             onClick={() => onShowHealth(account)}
             icon={<Activity size={12} />}
