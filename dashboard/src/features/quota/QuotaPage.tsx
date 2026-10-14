@@ -382,7 +382,7 @@ function QuotaCard({
   const healthStatus = account.health?.status ?? "unknown";
 
   return (
-    <Card className="overflow-hidden" aria-busy={busy}>
+    <Card className="flex h-full flex-col overflow-hidden" aria-busy={busy}>
       {/* Header: icon + provider name + plan + account hint + actions */}
       <div className="flex flex-wrap items-center gap-5 px-7 py-4">
         <ProviderIcon icon={account.providerIcon} name={account.providerName} size={32} />
@@ -570,7 +570,7 @@ function QuotaCard({
       {/* Quota progress bars */}
       {quota?.windows.length ? (
         <div
-          className="quota-window-list flex flex-col gap-4 border-t border-inner-border px-7 py-4.5"
+          className="quota-window-list flex flex-1 flex-col gap-4 border-t border-inner-border px-7 py-4.5"
         >
           <div className="quota-window-section-label text-micro font-bold tracking-label text-text-tertiary">
             QUOTA WINDOWS
@@ -643,7 +643,7 @@ function QuotaCard({
           {pagination.pageCount > 1 && (
             <nav
               aria-label={`Quota windows for ${account.name}`}
-              className="quota-window-pagination flex items-center justify-between gap-4 border-t border-inner-border pt-4 max-small:flex-wrap"
+              className="quota-window-pagination mt-auto flex items-center justify-between gap-4 border-t border-inner-border pt-4 max-small:flex-wrap"
             >
               <span
                 aria-live="polite"
