@@ -114,6 +114,33 @@ binaryType: "arraybuffer", input_protocol, openSocket, connectToken
 
 Do not add it to the dispatch fingerprint.
 
+### The free-tier base URL is not `/zen/v1`
+
+Neither the 2.0.29 desktop builds nor the installed 2.0.26 CLI
+(`~/.opencode/bin/opencode.exe`, 208,963,624 B) contain the string `zen/v1`,
+and neither hard-codes a model endpoint. The base URL is fetched at runtime
+from **`https://models.opencode.ai/api.json`** (HTTP 200, 229 providers), which
+declares:
+
+```
+opencode      -> https://opencode.ai/inference/v1
+opencode-go   -> https://opencode.ai/inference/go/v1
+```
+
+Verified live against `https://opencode.ai/inference/v1`:
+
+| Probe | Result |
+| --- | --- |
+| `POST /inference/v1/responses` free model | **403** `FreeTierError` |
+| `POST /inference/v1/chat/completions` free model | **403** `FreeTierError` |
+| `POST /inference/v1/responses` paid `muse-spark-1.3` | **401** `AuthError: Missing API key` |
+| `GET /inference/v1/models` | **404** (endpoint serves dispatches, not the catalog) |
+| `POST /inference/go/v1/responses` free model | **400** `Model is unavailable` |
+
+So `/inference/v1` is a real, live dispatch lane — the adapter's `/zen/v1`
+prefix is stale for this build. This is a concrete, independently actionable
+finding even though the free tier still refuses us.
+
 ### The desktop app never calls `/zen/v1`
 
 Scanning every bundle and both binaries: all `opencode.ai` URLs are theme,
@@ -198,6 +225,11 @@ Nothing here justifies a fingerprint change as a *fix* for the 403.
 These are real mismatches against 2.0.29 / `opencode2api`, worth fixing on
 their own merits:
 
+0. **The dispatch base URL is stale.** `provider.ts` builds
+   `${ZEN_PATH_PREFIX}/responses` (i.e. `/zen/v1/...`). The models API this
+   build fetches declares `https://opencode.ai/inference/v1` instead, and that
+   lane answers (401 for paid, 403 for free) while `/inference/v1/models` 404s.
+   Confirm the endpoints against a live dispatch before shipping a change.
 1. **Session counter is unbounded.** `fingerprint.ts` increments
    `sequenceCounter` with no cap, so the inverted time part drifts outside the
    documented counter window (1–63). Clamp it.
@@ -217,6 +249,7 @@ their own merits:
 | `x-opencode-request` absent in 2.0.29 | CLI cluster + Linux bundles | static-confirmed |
 | `x-opencode-ticket` = local PTY | PTY paths in both builds + probes | static-confirmed |
 | Desktop app never calls `/zen/v1` | full bundle/binary URL scan | static-confirmed |
+| Base URL is `opencode.ai/inference/v1` | `models.opencode.ai/api.json` + live probes | runtime-confirmed |
 | All `-free` models 403 with valid tools | live probes | runtime-confirmed |
 | Paid model 401, chat-free 400 | live probes | runtime-confirmed |
 | `Bearer public` inert | live probe | runtime-confirmed |
