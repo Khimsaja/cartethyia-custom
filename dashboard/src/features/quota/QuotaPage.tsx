@@ -256,10 +256,10 @@ function DailyGrowthActions({
 
   return (
     <div
-      className="flex min-w-0 shrink-0 items-center gap-2.5"
+      className="flex min-w-0 flex-wrap items-center gap-2.5"
       aria-label="Daily growth actions"
     >
-      <div className="min-w-0 w-67.5">
+      <div className="min-w-0 w-full max-w-67.5">
         <Select
           aria-label="Provider for the daily growth pass"
           value={activeId}
@@ -803,12 +803,12 @@ export default function QuotaPage(): ReactNode {
       <Card>
         <CardBody className="flex flex-col gap-5">
       <div className="flex flex-wrap items-center justify-between gap-5">
-        <div className="flex flex-wrap items-center gap-4">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-4">
           <Select
             aria-label="Filter quota by provider"
             value={providerFilter}
             onValueChange={setProviderFilter}
-            className="w-80 h-16"
+            className="w-full h-16 max-small:w-80"
             options={[
               { value: "all", label: "All Providers" },
               ...providers.map((provider) => ({ value: provider.id, label: provider.name })),
@@ -818,7 +818,7 @@ export default function QuotaPage(): ReactNode {
             aria-label="Filter quota by account"
             value={accountFilter}
             onValueChange={setAccountFilter}
-            className="w-67.5 h-16"
+            className="w-full h-16 max-small:w-67.5"
             options={[
               { value: "all", label: "With quota" },
               { value: "active", label: "Active" },
@@ -859,12 +859,12 @@ export default function QuotaPage(): ReactNode {
           </Button>
         </div>
       </div>
-      <div className="flex items-center justify-between gap-4 border-t border-inner-border pt-5">
+      <div className="flex flex-wrap items-center justify-between gap-4 border-t border-inner-border pt-5">
         <span className="text-badge text-text-tertiary">
           {filteredAccounts.length} shown
           {emptyCount > 0 ? ` · ${emptyCount} empty` : ""}
         </span>
-        <span className="flex items-center gap-5 text-badge text-text-tertiary">
+        <span className="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-3 text-badge text-text-tertiary">
           {refreshingCount > 0
             ? `Refreshing ${refreshingCount} account${refreshingCount === 1 ? "" : "s"}…`
             : `Auto-refresh 60s · ${lastUpdated}`}
