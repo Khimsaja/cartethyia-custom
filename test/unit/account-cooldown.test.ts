@@ -255,6 +255,68 @@ describe("recordAccountFailure — the streak counts every throttle", () => {
   });
 });
 
+/**
+ * A provider frequency window is a verdict on one (account, model) pair: the
+ * upstream says the pair is throttled until a named reset *and* tells the caller
+ * to use a different model. Parking the whole account made that advice
+ * useless — every sibling model went dark with the throttled one, and the
+ * account read COOLDOWN / quota_exhausted while only one pair was affected.
+ */
+describe("recordAccountFailure — a frequency window cools the model, not the account", () => {
+  function buddyFrequencyWindow(modelId?: string): AccountFailureEvidence {
+    return {
+      origin: "upstream",
+      scope: "provider",
+      statusCode: 429,
+      providerCode: "6004",
+      ...(modelId === undefined ? {} : { modelId }),
+    };
+  }
+
+  const message =
+    "usage exceeds frequency limit, but don't worry, your usage will reset at " +
+    "2026-10-15 03:04:16 UTC+8, alternatively, you can switch to the other models " +
+    "to continue using it.";
+
+  test("writes modelCooldowns and leaves the account's own status alone", async () => {
+    const account = coolingAccount();
+    account["status"] = "active";
+    account["cooldownUntil"] = null;
+    account["consecutiveFailures"] = 0;
+    const { db, captured } = dbDouble(account);
+    await recordAccountFailure(db, "acc-1", new Error(message), buddyFrequencyWindow("hy4-preview-f"));
+
+    const payload = onlyUpdate(captured);
+    // The whole point: no account-wide status change, so sibling models stay
+    // routable and the badge keeps reading Active.
+    expect(payload.status).toBeUndefined();
+    expect(payload.cooldownUntil).toBeUndefined();
+    const written = payload.modelCooldowns as Record<string, string>;
+    expect(Object.keys(written)).toEqual(["hy4-preview-f"]);
+    // The provider named the reset, so the pair rests until that instant
+    // rather than until one of this module's fallback constants.
+    expect(new Date(written["hy4-preview-f"]!).getTime()).toBeGreaterThan(Date.now() + 60_000);
+  });
+
+  test("an account-wide quota exhaustion is still account-wide", async () => {
+    // The carve-out: genuine quota exhaustion says nothing about other models,
+    // so it must keep cooling the whole account.
+    const account = coolingAccount();
+    account["status"] = "active";
+    account["cooldownUntil"] = null;
+    const { db, captured } = dbDouble(account);
+    await recordAccountFailure(
+      db,
+      "acc-1",
+      new Error("insufficient_quota: you exceeded your current quota"),
+      { origin: "upstream", scope: "account", statusCode: 429, providerCode: "insufficient_quota" },
+    );
+    const payload = onlyUpdate(captured);
+    expect(payload.status).toBe("cooldown");
+    expect(payload.modelCooldowns).toBeUndefined();
+  });
+});
+
 describe("recordAccountFailure — an auth rejection writes a cooldown, not a disable", () => {
   test("an expired OAuth token cools the account", async () => {
     // `disabled` is the one state no sweep recovers, and an expiry is the

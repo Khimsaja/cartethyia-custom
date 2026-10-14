@@ -63,15 +63,18 @@ describe("account error diagnostics", () => {
   });
 
   /**
-   * CodeBuddy/WorkBuddy park an account for a whole window and name the refill:
+   * CodeBuddy/WorkBuddy park a *model* for a whole window and name the refill:
    * `{"code":"6004","msg":"usage exceeds frequency limit ... your usage will
-   * reset at <stamp> UTC+8"}`. That is not transient. Classifying it
-   * `rate_limit_transient` left it out of `HARD_COOLDOWN_CATEGORIES`, so the
-   * evaluator kept it eligible and re-picked it for every request inside the
-   * window the provider had stated — the "stuck on the same account" report.
-   * `quota_exhausted` is the category that table treats as hard.
+   * reset at <stamp> UTC+8, alternatively, you can switch to the other models
+   * to continue using it."}`.
+   *
+   * The provider names the remedy itself — use a different model — which only
+   * works if the account still serves every other model. Taken account-wide it
+   * parked the whole account until the reset, so the switch the upstream
+   * offered was refused by our own gateway and every sibling model went dark
+   * with it. `rate_limit_transient` is what scopes the write to the model.
    */
-  test("a buddy rate limit naming a refill parks the account as quota exhausted", () => {
+  test("a buddy frequency window parks the model, not the account", () => {
     const reset = "2026-10-15 07:45:46 UTC+8";
     const message =
       `usage exceeds frequency limit, but don't worry, your usage will reset at ${reset}, ` +
@@ -81,12 +84,22 @@ describe("account error diagnostics", () => {
       { origin: "upstream", scope: "provider", providerCode: "6004", statusCode: 429 },
     );
 
-    expect(classification.category).toBe("quota_exhausted");
+    expect(classification.category).toBe("rate_limit_transient");
     expect(classification.mutatesAccount).toBe(true);
     // The provider stated the window, so the cooldown is its number rather
     // than one of this module's fallback constants.
     expect(classification.providerStated).toBe(true);
     expect(classification.cooldownMs).toBeGreaterThan(0);
+  });
+
+  test("a buddy 6004 with no model remedy stays account-wide quota", () => {
+    // Narrow on purpose: a bare 6004 is not evidence that other models work, so
+    // it must keep the account-wide hard cooldown it always had.
+    const classification = classifyAccountError(
+      { message: "usage exceeds frequency limit", status: 429 },
+      { origin: "upstream", scope: "provider", providerCode: "6004", statusCode: 429 },
+    );
+    expect(classification.category).toBe("quota_exhausted");
   });
 
   test("an unnamed 429 stays transient so a healthy account is not parked", () => {

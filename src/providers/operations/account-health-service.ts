@@ -337,6 +337,40 @@ export function classifyAccountError(
   if (deploymentInfraError) {
     return result("server_error", "cooldown", 60_000, null, `Proxy deployment error: ${message.slice(0, 160)}`, false);
   }
+  // A (CodeBuddy/WorkBuddy) *frequency* window is a verdict on one
+  // (account, model) pair, not on the account: `{"code":"6004","msg":"usage
+  // exceeds frequency limit ... your usage will reset at <stamp> UTC+8,
+  // alternatively, you can switch to the other models to continue using it."}`.
+  // The provider names the remedy itself — use a different model — which is
+  // only a remedy if the account still serves every other model. Taken as
+  // account-wide `quota_exhausted` it parked the whole account until the reset,
+  // so the switch the upstream offered was refused by our own gateway and every
+  // sibling model went dark with it; the account also read COOLDOWN /
+  // quota_exhausted while only that pair was throttled.
+  //
+  // Classified `rate_limit_transient` so the writer scopes it to the model:
+  // `recordAccountFailure` writes `modelCooldowns[modelId]` and leaves the
+  // account's own status alone. Kept ahead of `quotaSignal`, which matches the
+  // same `6004` code and would otherwise claim it first. Narrow on purpose —
+  // the code alone stays account-wide, because a bare 6004 with no such message
+  // is not evidence that the other models still work.
+  const modelFrequencyWindow =
+    lower.includes("frequency limit") && lower.includes("switch to the other models");
+  if (modelFrequencyWindow) {
+    const cooldownMs = messageCooldown ?? headerCooldown ?? DEFAULT_QUOTA_COOLDOWN_MS();
+    return result(
+      "rate_limit_transient",
+      "cooldown",
+      cooldownMs,
+      new Date(Date.now() + cooldownMs),
+      reason("Provider frequency limit for this model"),
+      // Provider-scoped evidence still has to reach the writer: a stream frame
+      // carries no credential detail, so `canMutate` is false and without this
+      // the pair would be retried for the whole window it was closed for.
+      origin === "upstream" && scope === "provider",
+    );
+  }
+
   // Quota-shaped provider codes/messages (e.g. xAI's
   const quotaSignal =
     !priceRefusal &&
