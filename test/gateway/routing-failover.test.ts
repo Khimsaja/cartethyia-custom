@@ -185,6 +185,69 @@ describe("RoutingEngine.plan cooldown classes", () => {
     }
   });
 
+  /**
+   * A usage-floor exclusion whose window states a refill is the same shape as a
+   * hard cooldown: the account is resting until a named instant, not broken. It
+   * used to fall through to 503, which reached the client as "the model is
+   * DOWN" while every account serving it was merely waiting for its window.
+   */
+  test("a usage floor with a stated refill answers 429, not 503", async () => {
+    const reset = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString();
+    const spent = candidate({ provider_account_id: "spent" });
+    await setCachedQuota("global", "spent", {
+      source: "test",
+      plan: null,
+      error: null,
+      windows: [{ kind: "credit", label: "credit", accounting: "pooled", usedPercent: 100, remainingPercent: 0, resetsAt: reset, limit: 100, remaining: 0 }],
+    }, undefined);
+    try {
+      await expect(engine.plan(qualified, snapshot([spent]))).rejects.toMatchObject({
+        code: "accounts_rate_limited",
+        status: 429,
+      });
+    } finally {
+      clearQuotaCacheForTests();
+    }
+  });
+
+  test("the usage-floor 429 reports the window's refill in retry-after", async () => {
+    const reset = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString();
+    const spent = candidate({ provider_account_id: "spent" });
+    await setCachedQuota("global", "spent", {
+      source: "test",
+      plan: null,
+      error: null,
+      windows: [{ kind: "credit", label: "credit", accounting: "pooled", usedPercent: 100, remainingPercent: 0, resetsAt: reset, limit: 100, remaining: 0 }],
+    }, undefined);
+    try {
+      const error = await engine.plan(qualified, snapshot([spent])).catch((thrown: unknown) => thrown);
+      expect(error).toBeInstanceOf(GatewayError);
+      expect((error as GatewayError).details.retryAfterMs).toBeGreaterThan(0);
+    } finally {
+      clearQuotaCacheForTests();
+    }
+  });
+
+  test("a usage floor with no stated refill stays unavailable", async () => {
+    // No reset means nothing to retry against yet, so 503 is the honest answer
+    // rather than a 429 quoting a deadline nobody measured.
+    const spent = candidate({ provider_account_id: "spent" });
+    await setCachedQuota("global", "spent", {
+      source: "test",
+      plan: null,
+      error: null,
+      windows: [{ kind: "credit", label: "credit", accounting: "pooled", usedPercent: 100, remainingPercent: 0, resetsAt: null, limit: 100, remaining: 0 }],
+    }, undefined);
+    try {
+      await expect(engine.plan(qualified, snapshot([spent]))).rejects.toMatchObject({
+        code: "accounts_unavailable",
+        status: 503,
+      });
+    } finally {
+      clearQuotaCacheForTests();
+    }
+  });
+
   test("cached Buddy billing windows still aggregate refill and bonus balances", async () => {
     const account = candidate({
       provider_id: "cb",

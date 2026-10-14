@@ -346,12 +346,21 @@ export function classifyAccountError(
       providerCode === "quota_exceeded" ||
       providerCode === "subscription:free-usage-exhausted" ||
       providerCode === "14018" ||
+      // CodeBuddy/WorkBuddy rate limit: `{"code":"6004","msg":"usage exceeds
+      // frequency limit ... your usage will reset at <stamp> UTC+8"}`. The
+      // message names a reset, so this is a parked window, not a transient
+      // 429 — without it the account fell through to `unknown` with
+      // `mutates=false`, stayed in rotation, and was re-picked for every
+      // request inside the window the provider had actually named.
+      providerCode === "6004" ||
       lower.includes("insufficient_quota") ||
       lower.includes("quota_exceeded") ||
       lower.includes("usage_limit_reached") ||
       lower.includes("usage-exhausted") ||
       lower.includes("usage_exhausted") ||
       lower.includes("usage exhausted") ||
+      lower.includes("usage exceeds") ||
+      lower.includes("frequency limit") ||
       lower.includes("free-usage") ||
       lower.includes("free usage") ||
       lower.includes("exceeded your current quota") ||

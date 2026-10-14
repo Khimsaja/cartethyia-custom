@@ -228,6 +228,35 @@ function spreadDeadline(cooldownUntil: number | undefined): { cooldown_until?: n
 }
 
 /**
+ * The soonest moment a quota window the caller is blocked on refills.
+ *
+ * A usage-floor exclusion is time-bounded by construction — the floor compares
+ * the *remaining* allowance, and the window states when that allowance resets —
+ * but the exclusion used to carry no deadline, so `plan()` could not tell a
+ * client how long to wait and `earliestResetMs` reported nothing. The minimum
+ * across windows, for the same reason `earliestResetMs` takes it: the account
+ * can serve again as soon as its first window refills, so quoting the slowest
+ * would hold the client off longer than necessary.
+ *
+ * `undefined` when no window states a reset, which is the honest answer and
+ * keeps the reason a plain 503 rather than a 429 with an unknown retry-after.
+ */
+function earliestWindowResetMs(
+  windows: readonly ProviderQuotaWindow[] | undefined,
+  nowMs: number,
+): number | undefined {
+  if (windows === undefined) return undefined;
+  let earliest: number | undefined;
+  for (const window of windows) {
+    if (typeof window.resetsAt !== "string" || window.resetsAt.length === 0) continue;
+    const at = Date.parse(window.resetsAt);
+    if (!Number.isFinite(at) || at <= nowMs) continue;
+    if (earliest === undefined || at < earliest) earliest = at;
+  }
+  return earliest;
+}
+
+/**
  * The earliest instant any cooling candidate recovers, in epoch ms.
  *
  * `undefined` when no decision carries a deadline — which is the honest answer
@@ -272,7 +301,12 @@ export class EligibilityEvaluator {
     // its floor still won the route. An account with no reading is left
     // eligible — a missing quota fetch is not proof the allowance is gone.
     if (belowUsageFloor(state))
-      return { eligible: false, reason: "quota_exhausted", candidate };
+      return {
+        eligible: false,
+        reason: "quota_exhausted",
+        candidate,
+        ...spreadDeadline(earliestWindowResetMs(state.quota_windows, Date.now())),
+      };
     if (state.health_status === "cooldown")
       return { eligible: true, reason: "cooldown", candidate, ...spreadDeadline(state.cooldown_until) };
     return { eligible: true, reason: "healthy", candidate };
@@ -492,7 +526,17 @@ export class RoutingEngine {
       // while the model is allowed" report — and 503 invites a client to give
       // up or fail a health check, where 429 says retry later.
       const rateLimited = decisions.some(
-        (d) => d.reason === "cooldown_hard" || d.reason === "model_cooldown",
+        (d) =>
+          d.reason === "cooldown_hard" ||
+          d.reason === "model_cooldown" ||
+          // A usage-floor exclusion whose window states a reset is the same
+          // shape as the two above: the account is resting until a named
+          // instant, not broken. It used to fall through to 503, which told
+          // the client the model was down while every account serving it was
+          // merely waiting for its window to refill — the "503 DOWN while the
+          // model is allowed" report again. Only a floor with *no* stated
+          // reset stays unavailable: there is nothing to retry against yet.
+          (d.reason === "quota_exhausted" && typeof d.cooldown_until === "number"),
       );
       if (rateLimited) {
         throw accountsRateLimitedError(requestedModel, resolved.model, earliestResetMs(decisions));

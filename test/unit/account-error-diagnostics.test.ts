@@ -61,4 +61,42 @@ describe("account error diagnostics", () => {
     expect(classification.reason).toContain(providerError.requestId);
     expect(classification.reason).toContain("retry_policy");
   });
+
+  /**
+   * CodeBuddy/WorkBuddy park an account for a whole window and name the refill:
+   * `{"code":"6004","msg":"usage exceeds frequency limit ... your usage will
+   * reset at <stamp> UTC+8"}`. That is not transient. Classifying it
+   * `rate_limit_transient` left it out of `HARD_COOLDOWN_CATEGORIES`, so the
+   * evaluator kept it eligible and re-picked it for every request inside the
+   * window the provider had stated — the "stuck on the same account" report.
+   * `quota_exhausted` is the category that table treats as hard.
+   */
+  test("a buddy rate limit naming a refill parks the account as quota exhausted", () => {
+    const reset = "2026-10-15 07:45:46 UTC+8";
+    const message =
+      `usage exceeds frequency limit, but don't worry, your usage will reset at ${reset}, ` +
+      "alternatively, you can switch to the other models to continue using it.";
+    const classification = classifyAccountError(
+      { message, status: 429 },
+      { origin: "upstream", scope: "provider", providerCode: "6004", statusCode: 429 },
+    );
+
+    expect(classification.category).toBe("quota_exhausted");
+    expect(classification.mutatesAccount).toBe(true);
+    // The provider stated the window, so the cooldown is its number rather
+    // than one of this module's fallback constants.
+    expect(classification.providerStated).toBe(true);
+    expect(classification.cooldownMs).toBeGreaterThan(0);
+  });
+
+  test("an unnamed 429 stays transient so a healthy account is not parked", () => {
+    // Not every 429 is a window: a burst is worth retrying, and parking the
+    // account for hours over one would take a healthy credential out of
+    // rotation. Only the quota-shaped phrasing escalates.
+    const classification = classifyAccountError(
+      { message: "Too many requests", status: 429 },
+      { origin: "upstream", scope: "provider", providerCode: "rate_limit_exceeded", statusCode: 429 },
+    );
+    expect(classification.category).toBe("rate_limit_transient");
+  });
 });

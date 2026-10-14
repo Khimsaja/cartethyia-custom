@@ -181,6 +181,55 @@ describe("EligibilityEvaluator", () => {
     ).toMatchObject({ eligible: false, reason: "quota_exhausted" });
   });
 
+  test("a usage-floor exclusion carries the window's reset as its deadline", () => {
+    // The floor compares the *remaining* allowance, and the window states when
+    // that refills, so the exclusion is time-bounded by construction. Carrying
+    // the reset is what lets `plan()` answer 429 with a real retry-after
+    // instead of 503 with nothing.
+    const reset = new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString();
+    const decision = evaluator.evaluate(candidate({
+      quota_windows: [{
+        kind: "quota:weekly",
+        label: "Weekly",
+        accounting: "independent",
+        usedPercent: 100,
+        remainingPercent: 0,
+        resetsAt: reset,
+      }],
+    }));
+    expect(decision).toMatchObject({ eligible: false, reason: "quota_exhausted" });
+    expect(decision.cooldown_until).toBe(Date.parse(reset));
+  });
+
+  test("a usage-floor exclusion with no stated reset carries no deadline", () => {
+    // An unknown refill time must read as "unavailable", not as a 429 quoting
+    // a reset nobody measured.
+    const decision = evaluator.evaluate(candidate({
+      quota_windows: [{
+        kind: "quota:weekly",
+        label: "Weekly",
+        accounting: "independent",
+        usedPercent: 100,
+        remainingPercent: 0,
+        resetsAt: null,
+      }],
+    }));
+    expect(decision).toMatchObject({ eligible: false, reason: "quota_exhausted" });
+    expect(decision.cooldown_until).toBeUndefined();
+  });
+
+  test("a usage-floor exclusion reports the earliest refill, not the slowest", () => {
+    const soon = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+    const later = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString();
+    const decision = evaluator.evaluate(candidate({
+      quota_windows: [
+        { kind: "quota:weekly", label: "Weekly", accounting: "independent", usedPercent: 100, remainingPercent: 0, resetsAt: later },
+        { kind: "quota:daily", label: "Daily", accounting: "independent", usedPercent: 100, remainingPercent: 0, resetsAt: soon },
+      ],
+    }));
+    expect(decision.cooldown_until).toBe(Date.parse(soon));
+  });
+
   test("an absent health status is treated as healthy", () => {
     // Every pre-existing catalog row has no `health_status`; treating absence as
     // unhealthy would take the whole fleet out of service on deploy.
