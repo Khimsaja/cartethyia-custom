@@ -156,6 +156,32 @@ function isValidAnthropicToolCallId(id: string): boolean {
   return ANTHROPIC_ID_RE.test(id);
 }
 
+/**
+ * Clamps a tool call id to a wire's length limit while keeping it recognisable.
+ *
+ * OpenCode Zen rejects a Responses `call_id` longer than 64 characters:
+ * `` `input[5].call_id` The length of the value must be `<= 64` ``. The ids
+ * that trip it come from the client (signature-style ids run to 156 chars), so
+ * forwarding one verbatim fails a request the caller had no way to know was
+ * oversized — and fails it on every replay, because the transcript keeps the
+ * long id.
+ *
+ * Unlike {@link normalizeAnthropicToolCallId} this does not rewrite the id into
+ * another provider's shape: only the length is a wire constraint here, so the
+ * caller's alphabet is preserved. Truncation alone would collide — the ids
+ * share a long common prefix — so the tail is replaced with a hash of the
+ * original, which keeps distinct ids distinct.
+ *
+ * Returns the input unchanged when it already fits.
+ */
+export function clampToolCallId(raw: string, limit = 64): string {
+  if (raw.length <= limit) return raw;
+  const hash = hashId(raw);
+  const suffix = `_${hash}`;
+  if (suffix.length >= limit) return raw.slice(0, limit);
+  return `${raw.slice(0, limit - suffix.length)}${suffix}`;
+}
+
 function fallbackAnthropicToolCallId(original: string): string {
   return `toolu_${hashId(original)}`;
 }

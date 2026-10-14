@@ -2,7 +2,7 @@
  * [OpenAI]-compatible /v1/responses request encoder: canonical → wire body.
  */
 import type { CanonicalRequest } from "../canonical-model";
-import { isRecord } from "../codecs";
+import { clampToolCallId, isRecord } from "../codecs";
 import { markLatestBreakpoint } from "../../transport/translation/cache-controls";
 import { pickWireSupportedControls } from "../../transport/translation/capabilities";
 import { normalizeGenerationControls } from "../../transport/translation/normalize";
@@ -103,16 +103,21 @@ export function canonicalToResponsesPayload(
     for (const p of m.content) {
       if (p.kind === "toolCall") {
         flushMessage();
+        // Clamped here and in the result branch by the same helper, so a call
+        // and its output keep matching: OpenCode Zen rejects a `call_id` over
+        // 64 characters, and ids longer than that arrive from the client on
+        // every replay of the transcript.
+        const callId = clampToolCallId(p.call_id);
         if (p.call_kind === "computer") {
           const actions =
             isRecord(p.arguments) && Array.isArray(p.arguments["actions"])
               ? p.arguments["actions"]
               : [];
-          const checks = pendingSafetyChecks(p.call_id);
+          const checks = pendingSafetyChecks(callId);
           input.push({
             type: "computer_call",
             ...(p.item_id === undefined ? {} : { id: p.item_id }),
-            call_id: p.call_id,
+            call_id: callId,
             actions,
             ...(checks === undefined ? {} : { pending_safety_checks: checks }),
             status: "completed",
@@ -121,7 +126,7 @@ export function canonicalToResponsesPayload(
           input.push({
             type: "function_call",
             ...(p.item_id === undefined ? {} : { id: p.item_id }),
-            call_id: p.call_id,
+            call_id: callId,
             name: p.name,
             arguments:
               typeof p.arguments === "string" ? p.arguments : JSON.stringify(p.arguments),
@@ -134,11 +139,12 @@ export function canonicalToResponsesPayload(
         // bare message — that is what made a Messages-session tool loop lose its
         // results when the target provider ran on the Responses wire.
         flushMessage();
+        const callId = clampToolCallId(p.call_id);
         if (p.call_kind === "computer") {
           input.push({
             type: "computer_call_output",
             ...(p.item_id === undefined ? {} : { id: p.item_id }),
-            call_id: p.call_id,
+            call_id: callId,
             output: computerOutputForWire(p.content),
             status: "completed",
           });
@@ -146,7 +152,7 @@ export function canonicalToResponsesPayload(
           input.push({
             type: "function_call_output",
             ...(p.item_id === undefined ? {} : { id: p.item_id }),
-            call_id: p.call_id,
+            call_id: callId,
             output: typeof p.content === "string" ? p.content : JSON.stringify(p.content),
           });
         }
