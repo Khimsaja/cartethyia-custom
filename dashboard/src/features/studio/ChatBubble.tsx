@@ -582,7 +582,7 @@ export function ChatBubble({
           ) : null}
         </div>
       ) : null}
-      {metrics.length > 0 || (!mine && message.text.length > 0) ? (
+      {showStats && !mine && !live && (metrics.length > 0 || message.text.length > 0) ? (
         <div className="inline-flex items-center h-8 rounded-tiny bg-surface-muted text-text-tertiary overflow-hidden [&>span]:inline-flex [&>span]:items-center [&>span]:gap-1 [&>span]:h-8 [&>span]:px-2.5 [&>span]:border-0 [&>span]:border-r [&>span]:border-r-inner-border [&>span]:bg-transparent [&>span]:text-inherit [&>span]:font-sans [&>span]:text-micro [&>span]:leading-none [&>span]:tabular-nums [&>span:last-child]:border-r-0 [&_svg]:flex-none [&>button]:cursor-pointer">
           {metrics.map((item) => (
             <span key={item.label} title={item.label}>
@@ -590,7 +590,7 @@ export function ChatBubble({
               <span>{item.value}</span>
             </span>
           ))}
-          {!mine && message.text.length > 0 ? (
+          {message.text.length > 0 ? (
             <button type="button" aria-label="Copy message" title="Copy" onClick={() => void copy()}>
               {copied ? <Check size={10} /> : <Copy size={10} />}
             </button>
