@@ -111,7 +111,11 @@ export function buildOpenCodeHeaders(
     "x-opencode-session-id": sessionId,
     "x-session-affinity": sessionId,
     "x-session-id": sessionId,
-    "x-opencode-request": generateOpenCodeRequestId(),
+    // No `x-opencode-request`: the current client no longer sends it, and
+    // sending it now makes the free-tier gate refuse the dispatch (verified
+    // live 2026-10-14 — identical request returns 403 with it, 200 without).
+    // `generateOpenCodeRequestId` stays exported for callers that still need
+    // the id shape; it is simply not part of the dispatch identity anymore.
     "x-opencode-project": projectId ?? "global",
     "user-agent": `opencode/latest/${version}/cli`,
     ...createTraceHeaders(),

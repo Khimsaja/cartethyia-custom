@@ -88,32 +88,61 @@ export function isFreeTierZenModel(modelId: string): boolean {
   return modelId.endsWith("-free") || KNOWN_FREE_ZEN_IDS.includes(modelId);
 }
 
+/**
+ * The anonymous credential the free tier accepts.
+ *
+ * Captured from a real client dispatch and confirmed live 2026-10-14: without
+ * it a free-model request is refused with 403 `FreeTierError` even when every
+ * other field is byte-exact, and with it the same request returns 200. It is a
+ * sentinel the upstream recognizes, not a secret — but it is a credential
+ * value, so it lives here rather than in the shared fingerprint.
+ */
+const ANONYMOUS_ZEN_BEARER = "public";
+
 function opencodeDesktopHeaders(
   context: ProviderDispatchContext,
   request?: CanonicalRequest,
 ): Record<string, string> {
+  const freeModel = request !== undefined && isFreeTierZenModel(request.model);
   return {
     ...buildOpenCodeHeaders(
       undefined,
       context.conversation_affinity,
       context.request_headers?.["x-opencode-project"],
     ),
+    // The gate reads the anonymous sentinel: a free dispatch with no
+    // Authorization is refused regardless of headers, tools, or session shape.
+    ...(freeModel ? { authorization: `Bearer ${ANONYMOUS_ZEN_BEARER}` } : {}),
     // The free-tier gate refuses non-streaming dispatches with 403
     // FreeTierError, so free models always advertise SSE regardless of the
     // client's own Accept; billed models keep the JSON default.
-    ...(request && isFreeTierZenModel(request.model)
-      ? { accept: "text/event-stream" }
-      : {}),
+    ...(freeModel ? { accept: "text/event-stream" } : {}),
   };
 }
-/** Canonical agent-tool fingerprint OpenCode Free requires on every dispatch.
- * Upstream rejects tool-less or non-agent requests with `FreeTierError`
- * (upstream 403), so the adapter backfills exactly these two built-in tools
- * when the caller did not declare them. They are plain `ToolDefinition`s —
- * every wire codec serializes them, no per-wire payload patching needed. */
+/**
+ * Canonical agent-tool fingerprint the OpenCode free tier requires on every
+ * dispatch, captured verbatim from a real 2.0.26 client dispatch.
+ *
+ * Upstream rejects tool-less or *partially* agent-shaped requests with
+ * `FreeTierError` (upstream 403). Verified live 2026-10-14: all eleven here
+ * return 200, and so do ten (`execute` dropped), while a five-tool subset
+ * (`bash, edit, glob, grep, read`) — and any smaller set — still returns 403.
+ * The gate reads the tool set, not any single name, so backfilling "the core
+ * tools" is not enough: backfill the whole set. They are plain
+ * `ToolDefinition`s — every wire codec serializes them, no per-wire patching.
+ */
 const FREE_AGENT_TOOLS: readonly { readonly name: string; readonly description: string }[] = [
+  { name: "edit", description: "Edit a file. Do not call unless the user explicitly asks for a file edit." },
+  { name: "glob", description: "Find files by pattern. Do not call unless the user explicitly asks to search files." },
+  { name: "grep", description: "Search file contents. Do not call unless the user explicitly asks to search contents." },
   { name: "read", description: "Read a file. Do not call unless the user explicitly asks for a file read." },
-  { name: "bash", description: "Run a shell command. Do not call unless the user explicitly asks to run a command." },
+  { name: "shell", description: "Run a shell command. Do not call unless the user explicitly asks to run a command." },
+  { name: "skill", description: "Run a named skill. Do not call unless the user explicitly asks to run a skill." },
+  { name: "subagent", description: "Delegate work to a subagent. Do not call unless the user explicitly asks to delegate." },
+  { name: "webfetch", description: "Fetch a URL. Do not call unless the user explicitly asks to fetch a URL." },
+  { name: "websearch", description: "Search the web. Do not call unless the user explicitly asks to search the web." },
+  { name: "write", description: "Write a file. Do not call unless the user explicitly asks for a file write." },
+  { name: "execute", description: "Execute a command. Do not call unless the user explicitly asks to execute a command." },
 ];
 
 function ensureFreeAgentRequest(request: CanonicalRequest): CanonicalRequest {

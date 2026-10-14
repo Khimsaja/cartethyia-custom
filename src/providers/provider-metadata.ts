@@ -540,15 +540,15 @@ export function providerBaseUrl(providerId: string): string {
 export const PROVIDER_COMPATIBILITY_PROFILES: Record<string, CompatibilityProfile> = {
   opencodeft: {
     endpoint_paths_by_wire_family: {
-      chat: "/zen/v1/chat/completions",
-      responses: "/zen/v1/responses",
+      chat: "/inference/v1/chat/completions",
+      responses: "/inference/v1/responses",
     },
     model_wire_families: [{ pattern: "^muse-spark", wire_family: "responses" }],
   },
   opencodezen: {
     endpoint_paths_by_wire_family: {
-      chat: "/zen/v1/chat/completions",
-      responses: "/zen/v1/responses",
+      chat: "/inference/v1/chat/completions",
+      responses: "/inference/v1/responses",
     },
     model_wire_families: [{ pattern: "^muse-spark", wire_family: "responses" }],
   },

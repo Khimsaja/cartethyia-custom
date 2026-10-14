@@ -37,10 +37,12 @@ describe("OpenCode request fingerprint", () => {
     expect(b3).toMatch(/^[0-9a-f]{32}-[0-9a-f]{16}-1-[0-9a-f]{16}$/);
     const [, traceId, spanId] = traceparent.split("-");
     expect(b3).toStartWith(`${traceId}-${spanId}-1-`);
-    // The request id is required by the free-tier gate (2026-10-14) and is
-    // fresh per dispatch; the session id stays stable per conversation.
-    expect(first["x-opencode-request"]).toMatch(/^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
-    expect(first["x-opencode-request"]).not.toBe(second["x-opencode-request"]);
+    // The request id is NOT sent: the current client dropped it, and an
+    // identical dispatch returns 403 with it and 200 without (live 2026-10-14).
+    // Asserting its absence is the whole point — a re-add would silently
+    // break every free-tier dispatch again.
+    expect(first["x-opencode-request"]).toBeUndefined();
+    expect(second["x-opencode-request"]).toBeUndefined();
     // The session hex must decode to a plausible inverted-millisecond
     // timestamp: the gate rejects arbitrary hash hex. The production jitter
     // buckets to 6-hour boundaries up to 42h back, so decode and check the
