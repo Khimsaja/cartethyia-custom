@@ -298,6 +298,7 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
       const latencies: number[] = [];
       let latencySum = 0;
       let inputTokens = 0;
+      let cachedTokens = 0;
       let outputTokens = 0;
       let tokensPerSecSum = 0;
       let tokensPerSecCount = 0;
@@ -310,6 +311,7 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
         }
         if (event.cachedInputTokens !== null) {
           inputTokens += event.inputTokens ?? 0;
+          cachedTokens += event.cachedInputTokens ?? 0;
           outputTokens += event.outputTokens ?? 0;
         }
         if (event.tokensPerSec !== null) {
@@ -321,10 +323,11 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
       avg = latencies.length > 0 ? Math.round(latencySum / latencies.length) : 0;
       p95 = percentile(latencies, 0.95);
       p99 = percentile(latencies, 0.99);
-      // Prompt share of all tokens: the operator-facing cache column now
-      // leads with input, so a cached/input ratio would read a constant 100%.
-      const tokenTotal = inputTokens + outputTokens;
-      cacheHitRate = tokenTotal > 0 ? Math.round((inputTokens / tokenTotal) * 10000) / 100 : 0;
+      // Cached share of the prompt: cached/input, the same honest definition
+      // usageSummary uses, so the health card and the Usage page cannot
+      // disagree. (This used to be prompt-share input/(input+output), which
+      // read ~99% and was mislabeled a cache hit rate.)
+      cacheHitRate = inputTokens > 0 ? Math.round((cachedTokens / inputTokens) * 10000) / 100 : 0;
       avgTokensPerSec = tokensPerSecCount > 0 ? tokensPerSecSum / tokensPerSecCount : 0;
     } catch {
       databaseHealthy = false;
@@ -532,8 +535,7 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
         total: bucket.input + bucket.output,
         errors: bucket.errors,
         costUsd: bucket.cost,
-        cacheHitRate:
-          bucket.input + bucket.output > 0 ? (bucket.input / (bucket.input + bucket.output)) * 100 : 0,
+        cacheHitRate: bucket.input > 0 ? (bucket.cached / bucket.input) * 100 : 0,
         avgTokensPerSec: bucket.rateCount > 0 ? bucket.rateSum / bucket.rateCount : 0,
       }))
       .sort((a, b) => b.requests - a.requests)
@@ -609,13 +611,14 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
       cachedTokens += event.cachedInputTokens ?? 0;
       outputTokens += event.outputTokens ?? 0;
     }
-    const tokenTotal = inputTokens + outputTokens;
     return {
       period,
       inputTokens,
       cachedTokens,
       cacheWriteTokens: 0,
-      hitRate: tokenTotal > 0 ? (cachedTokens / tokenTotal) * 100 : 0,
+      // Honest cache hit rate: the cached share of the prompt. (This used to
+      // divide by input+output, mixing completion tokens into the denominator.)
+      hitRate: inputTokens > 0 ? (cachedTokens / inputTokens) * 100 : 0,
     };
   }
 
