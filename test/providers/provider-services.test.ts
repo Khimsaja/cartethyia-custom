@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { BUNDLED_PROVIDER_METADATA, providerServiceKinds, providerSupportsWebSearch } from "../../src/providers/provider-metadata";
+import { BUNDLED_PROVIDER_METADATA, providerServiceKinds } from "../../src/providers/provider-metadata";
+import { buildCapabilityProfile } from "../../src/transport/routing/route-catalog";
+import { RoutingEngine } from "../../src/transport/routing/router";
+import type { RouteSnapshot } from "../../src/transport/routing/route-model";
 import { sanitizeProviderResponse } from "../../src/console/providers/catalog/provider-operations";
 import { createDefaultProviderRegistry } from "../../src/providers/default-registry";
 
@@ -43,20 +46,39 @@ describe("provider service taxonomy", () => {
     expect(authentication?.refresher).toBeDefined();
     expect(quotaCollector).toBeDefined();
   });
-  // Web search is a provider capability, not a per-model flag: the adapter
-  // either frames a hosted search tool or it does not.
-  test("search-capable providers are declared at the provider level", () => {
-    expect(providerSupportsWebSearch("codex")).toBe(true);
-    // Untested chat providers stay on the configured search fallback.
-    expect(providerSupportsWebSearch("claude")).toBe(false);
-    expect(providerSupportsWebSearch("anthropic")).toBe(false);
-    expect(providerSupportsWebSearch("gemini")).toBe(false);
-    expect(providerSupportsWebSearch("antigravity")).toBe(false);
-    expect(providerSupportsWebSearch("grok")).toBe(false);
-    expect(providerSupportsWebSearch("cb")).toBe(false);
-    // A pure search provider answers `/v1/search`, never a chat turn.
-    expect(providerSupportsWebSearch("exa")).toBe(false);
-    expect(providerSupportsWebSearch("parallel")).toBe(false);
+  // A provider-level search list used to exist (`providerSupportsWebSearch`).
+  // It is gone: whether a provider is a *fallback source* is now decided only
+  // by its catalog declaring `serviceKind: "websearch"`. Asserted on the
+  // router's fallback resolver, which is what actually picks the source.
+  test("only a declared websearch row is a fallback source", () => {
+    const engine = new RoutingEngine();
+    const snap = {
+      revision: 1,
+      candidates: [
+        // A real search route: a declared `websearch` row.
+        { provider_id: "exa", model_id: "exa", service_kind: "websearch", endpoint: "/search", wire_family: "chat", capability_profile: {} },
+        // An ordinary chat row from a provider whose adapter *can* search.
+        // It must not be treated as a fallback source.
+        { provider_id: "codex", model_id: "gpt-5", service_kind: "llm", endpoint: "/responses", wire_family: "responses", capability_profile: {} },
+        { provider_id: "antigravity", model_id: "claude-sonnet-4-5", service_kind: "llm", endpoint: "/v1/messages", wire_family: "messages", capability_profile: {} },
+      ],
+      aliases: {},
+      combos: {},
+      created_at: Date.now(),
+    } as unknown as RouteSnapshot;
+    const providers = engine
+      .webSearchFallbackCandidates(snap, null)
+      .map((candidate) => candidate.provider_id);
+    expect(providers).toEqual(["exa"]);
+  });
+
+  test("a chat model never advertises search", () => {
+    expect(buildCapabilityProfile({
+      modalities: undefined,
+      reasoning: true,
+      toolCall: true,
+      providerId: "codex",
+    }).webSearch).toBe(false);
   });
 
   test("sanitized custom provider responses never expose an all category", () => {

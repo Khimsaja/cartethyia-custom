@@ -13,7 +13,6 @@ import { and, eq, isNull, or } from "drizzle-orm";
 import type { CartethyiaDatabase } from "../../../persistence/db-handle";
 import { modelAliases, modelCombos, models, providerAccounts, providers } from "../../../persistence/schema";
 import { isModelAllowed, listIncludes, type ApiKeyAuthorizationSnapshot } from "../../../security/api-key-auth";
-import { providerSupportsWebSearch } from "../../../providers/provider-metadata";
 import { modelsDevCatalog } from "../../../providers/discovery/models-dev-catalog";
 
 export interface AllowedModelEntry {
@@ -548,7 +547,9 @@ export class PublicModelCatalogStore {
         modalities: row.modalities,
         reasoning: row.reasoning,
         toolCall: row.toolCall,
-        webSearch: providerSupportsWebSearch(row.providerId),
+        // No model advertises search; a search round is served by the
+        // fallback route. See the note in provider-metadata.ts.
+        webSearch: false,
         cost: row.cost,
       } satisfies ModelMetadata;
       out.set(`${row.providerId}/${row.modelId}`, metadata);

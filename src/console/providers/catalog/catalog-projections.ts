@@ -10,7 +10,7 @@
  */
 import { isBundledProviderId } from "../../../providers/provider-contracts";
 
-import { providerDisplayName, providerServiceKinds, providerSupportsWebSearch } from "../../../providers/provider-metadata";
+import { providerDisplayName, providerServiceKinds } from "../../../providers/provider-metadata";
 import type { CompatibilityProfile } from "../../../providers/provider-metadata";
 import { supportedWireFamiliesForProvider } from "../../../providers/discovery/probe-wire";
 import { providers } from "../../../persistence/schema";
@@ -87,7 +87,8 @@ export function mapProviderRow(
     configured: false,
     requiresAccount: row.requiresAccount,
     serviceKinds: providerServiceKinds(row.id),
-    supportsWebSearch: providerSupportsWebSearch(row.id),
+    // No model advertises search; see the note in provider-metadata.ts.
+    supportsWebSearch: false,
     supportsModelDiscovery:
       registry.hasModelDiscovery(row.id) || !isBundledProviderId(row.id),
     ...(supportedWireFamilies ? { supportedWireFamilies } : {}),

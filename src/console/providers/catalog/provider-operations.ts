@@ -21,7 +21,7 @@ import { isBundledProviderId } from "../../../providers/provider-contracts";
 import type { ProviderRegistry } from "../../../providers/provider-registry";
 import { getProviderClientVersion, getRouteIdentityVersions } from "../../../providers/operations/client-versions";
 import type { OAuthLoginField } from "../../../providers/authentication/oauth-flow-store";
-import { providerCredentialHint, providerCredentialUrl, providerDisplayName, providerHasAdapterUserAgent, providerOperatorNotice, providerServiceKinds, providerSupportsWebSearch, type CompatibilityProfile } from "../../../providers/provider-metadata";
+import { providerCredentialHint, providerCredentialUrl, providerDisplayName, providerHasAdapterUserAgent, providerOperatorNotice, providerServiceKinds, type CompatibilityProfile } from "../../../providers/provider-metadata";
 import type { AccountHealthEventRecord } from "../../../providers/operations/account-health-service";
 import { CREDENTIAL_MODES, PROVIDER_READ_SCOPES, PROVIDER_WRITE_SCOPES } from "./contracts";
 import {
@@ -68,7 +68,8 @@ export function sanitizeProviderResponse(
     isBuiltIn: (p.isBuiltIn as boolean | undefined) ?? false,
     requiresAccount: (p.requiresAccount as boolean | undefined) ?? true,
     hasAdapterUserAgent: providerHasAdapterUserAgent(p.providerId),
-    supportsWebSearch: providerSupportsWebSearch(p.providerId),
+    // No model advertises search; see the note in provider-metadata.ts.
+    supportsWebSearch: false,
     ...(credentialUrl === undefined ? {} : { credentialUrl }),
     ...(credentialHint === undefined ? {} : { credentialHint }),
     ...(operatorNotice === undefined ? {} : { operatorNotice }),
@@ -253,7 +254,8 @@ export function createProviderCatalogOperations(config: ProviderCatalogConfig) {
           providerId: request.providerId,
           displayName: providerDisplayName(request.providerId),
           serviceKinds: ["llm"],
-          supportsWebSearch: providerSupportsWebSearch(request.providerId),
+          // No model advertises search; see the note in provider-metadata.ts.
+          supportsWebSearch: false,
           tenantId: a.tenantId,
           enabled: request.enabled ?? true,
           isBuiltIn: false,

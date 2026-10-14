@@ -31,7 +31,7 @@ import { DEFAULT_PROXY_SKIP_PROVIDER_IDS } from "../../providers/provider-metada
 import { buildClaudeCliUserAgent } from "../../providers/operations/custom-cli-headers";
 import { isBundledProviderId } from "../../providers/provider-contracts";
 import type { ServiceKind, WireFamily } from "../../protocol/canonical-model";
-import { providerHasAdapterUserAgent, providerSupportsWebSearch, providerUsesBespokeWire } from "../../providers/provider-metadata";
+import { providerHasAdapterUserAgent, providerUsesBespokeWire } from "../../providers/provider-metadata";
 
 const CLAUDE_MODEL_FAMILIES = new Set(["opus", "sonnet", "haiku", "fable", "mythos"]);
 
@@ -140,10 +140,9 @@ export function buildCapabilityProfile(row: {
     parallelToolCalls: true,
     reasoning: true,
     reasoningEncryptedContent: true,
-    // Search capability is the provider's, not the model row's: the adapter
-    // either frames a hosted search tool or it does not, and every model it
-    // serves inherits that. See `providerSupportsWebSearch`.
-    webSearch: providerSupportsWebSearch(row.providerId),
+    // No model advertises search: a search round is always served by the
+    // fallback route, never by a provider-side hosted tool on a chat row.
+    webSearch: false,
     responseJsonObject: true,
     responseJsonSchema: true,
     promptCaching: true,

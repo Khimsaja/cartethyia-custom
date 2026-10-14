@@ -181,8 +181,8 @@ export function routeCapabilitiesFor(candidate: CapabilityProfileHolder): RouteC
     reasoningEncryptedContent: profile.reasoningEncryptedContent === true,
     responseJsonObject: profile.responseJsonObject !== false,
     responseJsonSchema: profile.responseJsonSchema !== false,
-    // Search capability is the provider's (see `providerSupportsWebSearch`),
-    // carried on the snapshot profile the router sees.
+    // Always false: no model advertises search, so a search round is served by
+    // the fallback route rather than by a provider-side hosted tool.
     webSearch: profile.webSearch === true,
     promptCaching: profile.promptCaching !== false,
     // A bespoke route has no codec, so no wire matrix applies: the adapter

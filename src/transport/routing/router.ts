@@ -23,7 +23,6 @@ import {
 import { InMemoryAdmissionController } from "./admission";
 import { ReservationManager } from "./reservations";
 import { getOrCreateRoundRobin, RoundRobinState } from "./round-robin";
-import { providerSupportsWebSearch } from "../../providers/provider-metadata";
 import { totalRemainingCredit, totalRemainingPercent, type ProviderQuotaWindow } from "../../providers/quota/quota-contracts";
 import { getCachedQuotaEntry, quotaLens } from "../../console/quota/cache";
 import type { RedisClient } from "../../persistence/redis";
@@ -427,8 +426,11 @@ export class RoutingEngine {
     const ranked = snapshot.candidates
       .filter(
         (candidate) =>
-          (candidate.service_kind === "websearch" ||
-            ((candidate.service_kind ?? "llm") === "llm" && providerSupportsWebSearch(candidate.provider_id))) &&
+          // A fallback source is a *search route*: a catalog row whose declared
+          // service kind is `websearch`. An `llm` row is never one, regardless
+          // of what its adapter can do — letting `llm` rows in here is what
+          // made an ordinary chat model double as a search route.
+          candidate.service_kind === "websearch" &&
           (candidate.tenant_id == null || candidate.tenant_id === tenantId),
       )
       .sort((left, right) => searchModelPreference(left.model_id) - searchModelPreference(right.model_id));

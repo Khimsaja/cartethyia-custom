@@ -339,33 +339,24 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
 ] as const;
 
 /**
- * Providers whose adapter drives a provider-side web-search tool itself.
+ * Web search is served by the fallback route only, never as a model capability.
  *
- * Search capability is a property of the *provider*, not of a model row: the
- * adapter either frames a hosted `web_search` tool or it does not, and every
- * model it serves inherits that. Membership is manual and only for a provider
- * whose hosted search has been proven. The list is consulted only when a model
- * invokes search, not while planning the chat route.
+ * There used to be a manual list of providers "whose hosted search had been
+ * proven", and a `providerSupportsWebSearch` helper that consulted it. Both are
+ * gone. A model row no longer advertises search, and a provider is a fallback
+ * source purely by declaring a `serviceKind: "websearch"` catalog row — which
+ * is what Exa, Parallel, and Gemini do.
  *
- * Membership only ranks providers that can execute a model-requested search.
+ * The reason is that the flag was never a capability gate: `deriveRequiredCapabilities`
+ * deliberately does not derive `web_search`, so no chat request was ever
+ * filtered or degraded by it. Its only real effect was to smuggle `llm` rows
+ * (Codex, Antigravity) into the fallback candidate list as if they were search
+ * routes, and to show a badge in the console. The Buddy family framed a hosted
+ * search as an ordinary `web_search` function, which made the gateway execute
+ * it; that was declared supported but behaved inconsistently, so it is not
+ * special-cased either — those requests now take the fallback like everyone
+ * else.
  */
-const WEB_SEARCH_CAPABLE_PROVIDER_IDS: Readonly<Record<string, true>> = {
-  // Codex Responses hosted search, proven through the search fallback path.
-  codex: true,
-};
-
-/**
- * True when this provider serves a proven provider-side web-search tool.
- *
- * A provider that is *only* a search provider (`serviceKinds: ["websearch"]`,
- * e.g. Exa) answers `POST /v1/search` but never a chat turn, so it is not a
- * native chat search route — it is a fallback source instead. A chat provider
- * is native only when it is named above. Service kinds do not grant it.
- */
-export function providerSupportsWebSearch(providerId: string): boolean {
-  return WEB_SEARCH_CAPABLE_PROVIDER_IDS[providerId.toLowerCase()] === true;
-}
-
 export type BundledProviderId = (typeof RAW_BUNDLED_PROVIDER_METADATA)[number]["id"];
 
 /**

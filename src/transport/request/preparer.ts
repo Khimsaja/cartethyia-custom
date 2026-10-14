@@ -1,6 +1,5 @@
 import { GatewayError } from "../../protocol/gateway-error";
 import type { CanonicalRequest, ServiceKind } from "../../protocol/canonical-model";
-import { providerSupportsWebSearch } from "../../providers/provider-metadata";
 import type { ApiKeyAdmissionService } from "../../security/admission/service";
 import type { RouteCandidate as RouteCandidate, InMemoryRouteSnapshotService, RoutePlan } from "../routing/route-model";
 import { resolveAliasTarget, type RoutingEngine } from "../routing/router";
@@ -442,10 +441,11 @@ export class ProxyRequestPreparer {
       ...(input.clientUserAgent === undefined ? {} : { clientUserAgent: input.clientUserAgent }),
       eligible: (candidate) => {
         const kind = candidate.service_kind ?? "llm";
-        if (kind === input.serviceKind) return true;
-        // Search providers serve their ordinary models. The adapter chooses
-        // the upstream model; no fabricated `*-search` catalog row is needed.
-        return input.serviceKind === "websearch" && kind === "llm" && providerSupportsWebSearch(candidate.provider_id);
+        // A service route is served by a row that declares that service kind.
+        // An `llm` row never is one, so `/v1/search` is answered only by a
+        // `service_kind: "websearch"` row (Exa, Parallel, Gemini) — the same
+        // set the chat fallback draws from.
+        return kind === input.serviceKind;
       },
       emptyMessage: `no eligible route serves the '${input.serviceKind}' service for this model`,
     });
