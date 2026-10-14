@@ -63,9 +63,9 @@ in practice:
 | One failure shape | Disabled, exhausted, cooling down, missing model, and a dead pool are distinct answers, not all 502 |
 | Opaque | Bounded, redacted capture of all four surfaces of a request |
 
-## Capabilities that only exist here
+## Custom-built capabilities
 
-These are the parts someone reimplementing this would not think to build:
+These are implemented here from scratch, shaped by operating this gateway — not inherited from another project. A few of them (the background-discovered version headers, the per-model cooldown, the CLI config injection) we have not seen done this way elsewhere; the rest are our own take on known ideas (aliasing, sharing, quota floors), built to fit how this gateway routes, accounts, and observes traffic:
 
 - **Auto-updating client version headers.**
   [`src/providers/operations/client-versions.ts`](../src/providers/operations/client-versions.ts)
