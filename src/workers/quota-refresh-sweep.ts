@@ -375,9 +375,10 @@ export async function quotaRefreshSweep(deps: QuotaRefreshSweepDeps): Promise<vo
         if (outcome.failure === "missing_credential") return;
       }
       // Daily growth ride-along: the same item's freshly resolved credential,
-      // check-in claim first and then the growth-activity report. Bounded per
-      // pass, and skipped for providers without the billing route — a day
-      // marker makes this a no-op on every pass after the first of the day.
+      // growth-activity report first and then the check-in claim (see
+      // `attemptDailyGrowthPass`). Bounded per pass, and skipped for providers
+      // without the billing route — a day marker makes this a no-op on every
+      // pass after the first of the day.
       //
       // The provider filter comes *before* the slot is consumed. The batch is
       // oldest-first across every provider, so checking the cap first spent the

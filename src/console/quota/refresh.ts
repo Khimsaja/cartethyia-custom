@@ -88,12 +88,17 @@ export function timeoutSignal(requestSignal: AbortSignal, ms: number): AbortSign
 }
 
 /**
- * Records a manual account-test outcome on the account row so the dashboard's
- * "Last check" reflects what the test actually found. Success stamps
+ * Records one quota-refresh outcome on the account row so the dashboard's
+ * "Last check" reflects what the fetch actually found. Success stamps
  * `lastSuccessAt` and clears the error fields; failure stamps the error
- * fields and keeps the last success. Never touches `status` or
- * `consecutiveFailures` — the dispatch health state machine owns those, a
- * manual check only reports.
+ * fields and keeps the last success.
+ *
+ * A *counted* failure also advances `consecutiveFailures`, and once an account
+ * has `QUOTA_FAILURE_PARK_THRESHOLD` of them in a row it is parked — this is
+ * the one place a quota result may move `status`, because a quota surface that
+ * refuses three times is an account problem rather than a transient one. A
+ * transient timeout is annotated but never counted, so it cannot park
+ * (see `isTransientTimeout`).
  *
  * The error fields are written only while the account is `active`, because for
  * a parked account (cooldown/disabled) those fields carry the reason
@@ -150,10 +155,11 @@ export async function recordAccountCheck(
     return;
   }
   const transient = isTransientTimeout(outcome.error);
-  // Count the failure in the same statement. A quota endpoint that keeps
-  // refusing is an account problem, and the row has to say so: the dashboard
-  // reads `consecutiveFailures` for the pill, and a check that only wrote the
-  // error text left the account looking healthy while every refresh failed.
+  // Count the failure in the same statement — unless it is a transient
+  // timeout (see below). A quota endpoint that keeps refusing is an account
+  // problem, and the row has to say so: the dashboard reads
+  // `consecutiveFailures` for the pill, and a check that only wrote the error
+  // text left the account looking healthy while every refresh failed.
   //
   // A timeout is annotated but NOT counted: it is evidence about the network,
   // not the credential, and letting it advance the streak is what parked

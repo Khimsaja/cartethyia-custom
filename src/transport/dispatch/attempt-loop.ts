@@ -60,19 +60,29 @@ function comboMemberKey(candidate: RouteCandidate): string {
   return `${candidate.provider_id}:${candidate.model_id}:${candidate.endpoint}`;
 }
 
-/** Zero-based position of `candidate`'s member in the flattened candidate list. */
-function memberIndexOf(
+/**
+ * One member's ordinal, resolved by *identity* rather than by position.
+ *
+ * Deliberately not a run-length scan. `plan()` reorders the eligible list — its
+ * cooling partition emits every healthy candidate before every cooling one — so
+ * one member's accounts can be non-contiguous and even interleaved with another
+ * member's. A run-length scan then reports more "members" than actually exist:
+ * `[cb, wb, cb, wb]` counts four, which pushed each member's skip threshold to
+ * `cap * 4` — well past the whole budget — and silently disabled the cap on
+ * exactly the degraded lists it exists for.
+ *
+ * Keyed off the same string the member count is derived from, so the two can
+ * never disagree.
+ */
+function buildMemberOrdinals(
   candidates: readonly RouteCandidate[],
-  candidate: RouteCandidate,
-  index: number,
-): number {
-  const members: string[] = [];
-  for (let i = 0; i < candidates.length; i += 1) {
-    const key = comboMemberKey(candidates[i]!);
-    if (members[members.length - 1] !== key) members.push(key);
-    if (i === index) return members.length - 1;
+): ReadonlyMap<string, number> {
+  const ordinals = new Map<string, number>();
+  for (const candidate of candidates) {
+    const key = comboMemberKey(candidate);
+    if (!ordinals.has(key)) ordinals.set(key, ordinals.size);
   }
-  return members.indexOf(comboMemberKey(candidate));
+  return ordinals;
 }
 
 /** Route-specific preconditions resolved for one candidate before its leases are taken. */
@@ -158,22 +168,29 @@ export async function runAttemptLoop<TResult, TAdapter>(
   // of [cb, wb] stayed stuck on cb while wb sat idle, because cb's twelve
   // accounts exhausted all eight attempts before the list reached wb.
   //
-  // Each member gets an equal share of the budget, and a member that used less
-  // than its share releases the remainder to the members behind it: the first
-  // member is capped at `ceil(maxAttempts / members)` and the rest of the
-  // budget stays available, so a healthy later member is always reached.
-  const memberCount = new Set(candidates.map(comboMemberKey)).size;
+  // Each member gets an equal share of the budget, counted **per member** — not
+  // as a cumulative watermark over total attempts, or one member that over-runs
+  // silently steals the tail's share. The share is a ceiling, not a reservation:
+  // a member that used less than its share simply never reaches it, and the
+  // unused budget stays available to the members behind it.
+  const memberOrdinals = buildMemberOrdinals(candidates);
+  const memberCount = memberOrdinals.size;
   const perMemberCap =
     memberCount > 1 ? Math.max(1, Math.ceil(maxAttempts / memberCount)) : maxAttempts;
+  const attemptsByMember = new Map<string, number>();
   let index = 0;
   let attempts = 0;
   while (index < candidates.length && attempts < maxAttempts) {
     const candidate = candidates[index];
     if (!candidate) break;
+    const memberKey = comboMemberKey(candidate);
     // A member that has spent its share is skipped: the loop advances past the
     // rest of its accounts to the next member instead of burning the budget
     // they would have consumed.
-    if (memberCount > 1 && attempts >= perMemberCap * (memberIndexOf(candidates, candidate, index) + 1)) {
+    if (
+      memberCount > 1 &&
+      (attemptsByMember.get(memberKey) ?? 0) >= perMemberCap
+    ) {
       index += 1;
       continue;
     }
@@ -342,6 +359,9 @@ export async function runAttemptLoop<TResult, TAdapter>(
         await releaseAttemptLeases({ lease, reservation, proxySlot }, leaseSource.routingEngine);
     }
     attempts += 1;
+    // Charged to the member that spent it, so one member's own attempts are
+    // what exhaust its share — not the running total across every member.
+    attemptsByMember.set(memberKey, (attemptsByMember.get(memberKey) ?? 0) + 1);
     if (retryDelayMs > 0) {
       try {
         await sleep(retryDelayMs, state.abortController.signal);

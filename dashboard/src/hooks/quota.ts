@@ -310,11 +310,15 @@ export interface AccountActivityReportResult {
   };
 }
 
-/** Result of one manual growth pass: check-in claim + activity report. */
+/** Result of one manual growth pass: activity report + check-in claim. */
 export interface AccountGrowthPassResult {
   /** Human summary covering both steps, e.g. what happened per step. */
   readonly message: string;
-  /** True only when both steps succeeded. */
+  /**
+   * True when the report leg landed. The report is the reliable one — the
+   * check-in is often simply not open on a free plan — so a pass is a success
+   * when the account got its streak, whether or not a credit was claimable.
+   */
   readonly ok: boolean;
   readonly checkin: AccountCheckinResult;
   readonly report: AccountActivityReportResult;

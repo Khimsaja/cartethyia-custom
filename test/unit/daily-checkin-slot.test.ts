@@ -206,9 +206,9 @@ describe("attemptDailyGrowthPass — the report leg and the day slot", () => {
   }
 
   test("an unavailable check-in still attempts the activity report", async () => {
-    // The report is the second method, and it works when the check-in hit does
-    // not. Returning early here meant an account whose check-in was
-    // unavailable got neither daily action, every day.
+    // The report is the first leg, and it is the one that works when the
+    // check-in hit does not. Letting the claim go first meant an account whose
+    // check-in was unavailable got neither daily action, every day.
     const redis = fakeRedis();
     const pass = await attemptDailyGrowthPass({
       db: undefined,

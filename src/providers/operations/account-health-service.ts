@@ -350,10 +350,11 @@ export function classifyAccountError(
   //
   // Classified `rate_limit_transient` so the writer scopes it to the model:
   // `recordAccountFailure` writes `modelCooldowns[modelId]` and leaves the
-  // account's own status alone. Kept ahead of `quotaSignal`, which matches the
-  // same `6004` code and would otherwise claim it first. Narrow on purpose —
-  // the code alone stays account-wide, because a bare 6004 with no such message
-  // is not evidence that the other models still work.
+  // account's own status alone. Kept ahead of `quotaSignal`, which matches a
+  // *broader* slice of the same wording (`usage exceeds` + `frequency limit`)
+  // and would otherwise claim this message as an account-wide quota window.
+  // Narrow on purpose — the extra phrase is what says the other models still
+  // work; without it the failure stays account-wide.
   const modelFrequencyWindow =
     lower.includes("frequency limit") && lower.includes("switch to the other models");
   if (modelFrequencyWindow) {

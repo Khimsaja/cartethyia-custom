@@ -60,25 +60,6 @@ function isOpenCodeSessionId(value: string | undefined): value is string {
   return value !== undefined && /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/.test(value);
 }
 
-/**
- * Generate a valid OpenCode request identifier: `msg_` + 12-char hex
- * (ascending millisecond timestamp * 4096 + seq) + 14-char base62.
- *
- * The free-tier gate checks this header's presence and shape (verified live
- * 2026-10-14: requests without it are refused with 403 FreeTierError while
- * identical requests carrying it pass). Unlike the session id the request id
- * is NOT bitwise-inverted — the observed CLI sends it ascending.
- */
-export function generateOpenCodeRequestId(now = Date.now()): string {
-  const num = BigInt(now) * 0x1000n + 1n;
-  const hex = Array.from({ length: 6 }, (_, i) =>
-    Number((num >> BigInt(40 - 8 * i)) & 0xffn).toString(16).padStart(2, "0"),
-  ).join("");
-  const rand = crypto.getRandomValues(new Uint8Array(14));
-  const suffix = Array.from(rand, (byte) => SESSION_ID_ALPHABET[byte % 62]).join("");
-  return `msg_${hex}${suffix}`;
-}
-
 function createTraceHeaders(): Record<string, string> {
   const traceId = randomBytes(16).toString("hex");
   const spanId = randomBytes(8).toString("hex");
@@ -114,8 +95,8 @@ export function buildOpenCodeHeaders(
     // No `x-opencode-request`: the current client no longer sends it, and
     // sending it now makes the free-tier gate refuse the dispatch (verified
     // live 2026-10-14 — identical request returns 403 with it, 200 without).
-    // `generateOpenCodeRequestId` stays exported for callers that still need
-    // the id shape; it is simply not part of the dispatch identity anymore.
+    // The id generator was removed with it; this header is simply not part of
+    // the dispatch identity anymore.
     "x-opencode-project": projectId ?? "global",
     "user-agent": `opencode/latest/${version}/cli`,
     ...createTraceHeaders(),

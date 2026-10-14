@@ -394,7 +394,7 @@ endpoint `POST https://opencode.ai/zen/v1/responses`.
 | `msg_` request id, ascending and descending | **403** both |
 | `+ x-opencode-request`, `+ x-opencode-project`, `+ x-opencode-directory` | **403** |
 | `+ x-opencode-ticket` (16 hex / 32 hex / `tkt_`) | **403** |
-| `+ Authorization: Bearer public` | **403** — inert, ignore |
+| `+ Authorization: Bearer public` | **403** — see below; read as "inert" at the time, which was wrong |
 | UA `2.0.26` / `2.0.28` / `2.0.29` / `opencode/1.18.31` | **403** all |
 | ± tools (2, 4, and the 5 core tools) | **403** |
 | ± `store:false`, `instructions`, `tool_choice:auto`, `parallel_tool_calls`, `reasoning`, `max_output_tokens`, `prompt_cache_key`, `stream_options` | **403** |
@@ -468,7 +468,7 @@ four are **required** for a 200; each alone leaves the request at 403.
 | Replay of that exact shape still 403 | live probes (incl. 3 requests/session) | runtime-confirmed |
 | All `-free` models 403 with valid tools | live probes | runtime-confirmed |
 | Paid model 401, chat-free 400 | live probes | runtime-confirmed |
-| `Bearer public` inert | live probe | runtime-confirmed |
+| `Bearer public` inert | live probe | **refuted** — required, not inert (see above) |
 | Cause of the gate | — | **unknown** |
 
 ## Next evidence needed (in order)
