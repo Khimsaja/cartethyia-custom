@@ -828,6 +828,38 @@ describe("joinUrl", () => {
   test("an empty base yields the path", () => {
     expect(joinUrl("", "/y")).toBe("/y");
   });
+
+  test("a base already ending at a version does not double that version", () => {
+    // A custom provider whose base is `…/v1` plus the default `/v1/chat/completions`
+    // path used to become `…/v1/v1/chat/completions` and 404.
+    expect(joinUrl("https://carte2.up.railway.app/v1", "/v1/chat/completions")).toBe(
+      "https://carte2.up.railway.app/v1/chat/completions",
+    );
+    expect(joinUrl("https://carte2.up.railway.app/v1/", "/v1/messages")).toBe(
+      "https://carte2.up.railway.app/v1/messages",
+    );
+    expect(joinUrl("https://x.com/openai/v1", "/v1/responses")).toBe(
+      "https://x.com/openai/v1/responses",
+    );
+  });
+
+  test("a base that is already the full endpoint is kept", () => {
+    expect(joinUrl("https://x.com/v1/chat/completions", "/v1/chat/completions")).toBe(
+      "https://x.com/v1/chat/completions",
+    );
+  });
+
+  test("a different version is not stripped", () => {
+    expect(joinUrl("https://x.com/v2", "/v1/chat/completions")).toBe(
+      "https://x.com/v2/v1/chat/completions",
+    );
+  });
+
+  test("a bare host still gets the path", () => {
+    expect(joinUrl("https://api.openai.com", "/v1/chat/completions")).toBe(
+      "https://api.openai.com/v1/chat/completions",
+    );
+  });
 });
 
 describe("toAsciiJsonString", () => {

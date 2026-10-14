@@ -853,8 +853,21 @@ export function resolveImageSource(payload: unknown): ResolvedImageSource | unde
 }
 
 export function joinUrl(base: string, path: string): string {
-  const normalizedBase = base.endsWith("/") ? base.slice(0, -1) : base;
+  const normalizedBase = base.replace(/\/+$/, "");
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  // A base that already ends at a version segment (`…/v1`) plus a path that
+  // starts with the same segment (`/v1/chat/completions`) would otherwise
+  // produce `…/v1/v1/chat/completions` and 404. Drop the duplicated prefix.
+  const baseVersion = normalizedBase.match(/\/(v\d+)$/);
+  const version = baseVersion?.[1];
+  if (version !== undefined && normalizedPath.startsWith(`/${version}/`)) {
+    return `${normalizedBase}${normalizedPath.slice(version.length + 1)}`;
+  }
+  // A base that already is the full endpoint (`…/v1/chat/completions`) plus a
+  // path that is that same endpoint is valid as-is — keep the base.
+  if (normalizedPath !== "/" && normalizedBase.endsWith(normalizedPath)) {
+    return normalizedBase;
+  }
   return `${normalizedBase}${normalizedPath}`;
 }
 
