@@ -396,21 +396,6 @@ function QuotaCard({
                 {quota.plan}
               </span>
             )}
-            {healthStatus !== "active" ? (
-              <Badge
-                tone={
-                  healthStatus === "disabled"
-                    ? "disabled"
-                    : healthStatus === "unknown"
-                      ? "default"
-                      : "warn"
-                }
-                dot
-                title={account.health?.sanitizedMessage ?? undefined}
-              >
-                {healthStatus}
-              </Badge>
-            ) : null}
           </div>
           <div className="truncate text-badge text-text-secondary">
             {identity.primary}
@@ -521,17 +506,18 @@ function QuotaCard({
           <Button
             variant="ghost"
             size="sm"
-            // With an error on the row this is the way to read it, so say so:
-            // the card shows the status, not the upstream's own payload.
+            // The card no longer carries a status pill, so this is where the
+            // status is read: the account's own state, then where to inspect it.
+            // A healthy account still just says "Health & Error Log".
             title={
-              account.health?.lastErrorCategory
-                ? "Provider error — Inspect account health details"
-                : "Health & Error Log"
+              healthStatus === "active"
+                ? "Health & Error Log"
+                : `${healthStatus} — Inspect account health details`
             }
             aria-label={
-              account.health?.lastErrorCategory
-                ? `Inspect account health details for ${account.name}`
-                : `Health log for ${account.name}`
+              healthStatus === "active"
+                ? `Health log for ${account.name}`
+                : `Account is ${healthStatus} — inspect health details for ${account.name}`
             }
             disabled={busy}
             onClick={() => onShowHealth(account)}
