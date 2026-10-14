@@ -23,10 +23,12 @@ import {
   type QuotaRefreshFailureCode,
 } from "./refresh";
 import { selectAccountTestEgress } from "./account-test-egress";
+import type { ValidatedFetch } from "../../network/outbound-fetch";
 import type { ProviderId } from "../../providers/provider-contracts";
 import {
   DAILY_CHECKIN_PROVIDER_IDS,
   checkinDayKey,
+  dailyCheckinEgressForPass,
   ledgerKey,
 } from "../../workers/daily-checkin";
 import { dailyCheckinLedger } from "../../persistence/schema";
@@ -72,6 +74,93 @@ async function runAccountCheckin(
     fetcher: globalThis.fetch,
     ...(forceClaim ? { forceClaim } : {}),
   });
+}
+
+/** Bound on accounts one manual daily-growth batch may cover. */
+const DAILY_GROWTH_MAX_IDS = 100;
+/** Concurrent accounts inside one manual daily-growth batch. */
+const DAILY_GROWTH_CONCURRENCY = 3;
+
+/**
+ * One account's daily growth pass, report first then claim.
+ *
+ * The report goes first because it is the leg that lands on a free plan; the
+ * claim is attempted after it regardless of how the report went. Each leg
+ * reports its own outcome so the operator can see which one failed.
+ *
+ * `rotator` supplies the per-account egress the sweep uses; without one the
+ * request leaves through direct egress, which is what the single-account routes
+ * do.
+ */
+async function runDailyGrowthForAccount(
+  providerId: ProviderId,
+  account: { readonly id: string; readonly tenantId: string | null },
+  refreshDeps: QuotaRefreshDeps,
+  rotator: ((accountId: string, tenantId?: string | null) => Promise<ValidatedFetch>) | undefined,
+): Promise<{
+  readonly report: { readonly ok: boolean; readonly message: string };
+  readonly checkin: { readonly ok: boolean; readonly message: string };
+}> {
+  const fetcher = rotator
+    ? ((await rotator(account.id, account.tenantId)) as unknown as typeof fetch)
+    : globalThis.fetch;
+  let credential: string;
+  try {
+    credential = await refreshDeps.resolveCredential(providerId, account.id);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unable to resolve the credential.";
+    return {
+      report: { ok: false, message },
+      checkin: { ok: false, message },
+    };
+  }
+
+  // Report leg: needs a uid, which only a JWT carries, so an opaque API key
+  // fails closed instead of reporting under another account's identity.
+  const userId = buddyAccountUid(credential);
+  let report: { ok: boolean; message: string };
+  if (userId === undefined || userId.length === 0) {
+    report = { ok: false, message: "Report needs an OAuth account (no uid in this credential)" };
+  } else {
+    try {
+      const result = await fetchBuddyActivityReport({
+        providerId,
+        accountId: account.id,
+        credential,
+        userId,
+        fetcher,
+      });
+      report = result.state === "error"
+        ? { ok: false, message: result.error ?? "Activity report failed" }
+        : { ok: true, message: "Report sent — login streak lit for today" };
+    } catch (error) {
+      report = {
+        ok: false,
+        message: error instanceof Error ? error.message : "Activity report failed",
+      };
+    }
+  }
+
+  let checkin: { ok: boolean; message: string };
+  try {
+    const result = await fetchDailyCheckin({
+      providerId,
+      accountId: account.id,
+      credential,
+      forceClaim: true,
+      fetcher,
+    });
+    checkin =
+      result.state === "error"
+        ? { ok: false, message: result.error ?? "Daily check-in failed" }
+        : { ok: true, message: checkinStateMessage(result) };
+  } catch (error) {
+    checkin = {
+      ok: false,
+      message: error instanceof Error ? error.message : "Daily check-in failed",
+    };
+  }
+  return { report, checkin };
 }
 
 /**
@@ -162,7 +251,15 @@ export function registerAccountQuotaTenantRoutes(
   deps: AccountQuotaRoutesDeps,
   refreshDeps: QuotaRefreshDeps,
 ): void {
-  const { db, accessResolver, redis, snapshotInvalidator, auditRecorder, providerRegistry } = deps;
+  const {
+    db,
+    accessResolver,
+    redis,
+    snapshotInvalidator,
+    auditRecorder,
+    providerRegistry,
+    networkBindingFactory,
+  } = deps;
   app
     .get("/quota/overview", async ({ request }) => {
       const access = requireTenantScope(accessResolver(request), "dashboard:read");
@@ -603,6 +700,119 @@ export function registerAccountQuotaTenantRoutes(
       });
       return { success: true };
     })
+    /**
+     * Runs the daily growth pass over a provider's accounts in one request:
+     * the growth-activity report first, then the check-in claim — the order the
+     * sweep uses — with egress rotated per account the same way the worker
+     * does, so a batch leaves from more than one address.
+     *
+     * A manual trigger is the operator asserting "try now", so it bypasses the
+     * sweep's once-per-day ledger; the upstream stays idempotent either way.
+     * Per-account outcomes are reported individually: a batch is not
+     * all-or-nothing, and one account's closed check-in must not hide the
+     * others' streaks.
+     */
+    .post(
+      "/quota/daily-growth",
+      {
+        body: t.Object({
+          providerId: t.String(),
+          accountIds: t.Optional(t.Array(t.String())),
+        }),
+      },
+      async ({ request, body, set }) => {
+        const access = requireTenantScope(accessResolver(request), "dashboard:write");
+        const providerId = body.providerId.trim().toLowerCase();
+        if (!supportsAccountCheckin(providerId)) {
+          set.status = 400;
+          return {
+            error: `Daily check-in is not supported for provider ${providerId}`,
+            code: "checkin_unsupported",
+          };
+        }
+        const wanted = body.accountIds?.filter((id) => id.trim().length > 0) ?? [];
+        const rows = await db
+          .select({
+            id: providerAccounts.id,
+            tenantId: providerAccounts.tenantId,
+            label: providerAccounts.label,
+          })
+          .from(providerAccounts)
+          .where(
+            and(
+              eq(providerAccounts.providerId, providerId),
+              globalOrOwnedBy(providerAccounts.tenantId, access.tenantId),
+              ...(wanted.length > 0 ? [inArray(providerAccounts.id, wanted)] : []),
+            ),
+          );
+        const accounts = wanted.length > 0
+          ? rows.filter((row) => wanted.includes(row.id))
+          : rows;
+        if (accounts.length === 0) {
+          set.status = 404;
+          return {
+            error: `No accounts for provider ${providerId} in this tenant`,
+            code: "not_found",
+          };
+        }
+        if (accounts.length > DAILY_GROWTH_MAX_IDS) {
+          set.status = 400;
+          return {
+            error: `accountIds exceeds the limit of ${DAILY_GROWTH_MAX_IDS}`,
+            code: "invalid_request",
+          };
+        }
+        // One egress rotator for the whole request, exactly as the sweep builds
+        // it, so consecutive accounts leave from consecutive pools.
+        const rotator =
+          networkBindingFactory !== undefined
+            ? dailyCheckinEgressForPass({ db, networkBindingFactory })
+            : undefined;
+
+        const results: {
+          readonly accountId: string;
+          readonly label: string;
+          readonly report: { readonly ok: boolean; readonly message: string };
+          readonly checkin: { readonly ok: boolean; readonly message: string };
+        }[] = [];
+
+        for (let offset = 0; offset < accounts.length; offset += DAILY_GROWTH_CONCURRENCY) {
+          const batch = accounts.slice(offset, offset + DAILY_GROWTH_CONCURRENCY);
+          const settled = await Promise.all(
+            batch.map(async (account) => {
+              const outcome = await runDailyGrowthForAccount(
+                providerId as ProviderId,
+                account,
+                refreshDeps,
+                rotator,
+              );
+              return { account, outcome };
+            }),
+          );
+          for (const { account, outcome } of settled) {
+            results.push({
+              accountId: account.id,
+              label: account.label || account.id,
+              report: outcome.report,
+              checkin: outcome.checkin,
+            });
+          }
+        }
+
+        // The ledger is shared with the sweep, so invalidate once at the end
+        // rather than per account — the page re-reads "attempted today" from it.
+        await snapshotInvalidator?.invalidate();
+        const reportsOk = results.filter((entry) => entry.report.ok).length;
+        const claimed = results.filter((entry) => entry.checkin.ok).length;
+        return {
+          ok: true,
+          status: 200,
+          providerId,
+          data: results,
+          message: `${results.length} account${results.length === 1 ? "" : "s"} · report ${reportsOk}/${results.length} · check-in ${claimed}/${results.length}`,
+        };
+      },
+    )
     .post("/accounts/:id/checkin", async ({ request, params, set }) => {
       const access = requireTenantScope(accessResolver(request), "dashboard:write");
       const rows = await db

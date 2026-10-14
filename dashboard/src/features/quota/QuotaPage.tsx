@@ -35,6 +35,7 @@ import {
   useRefreshAccountQuota,
   useRefreshAllQuotas,
   useTriggerGrowthPass,
+  useTriggerProviderDailyGrowth,
   useTriggerAccountReset,
   useAccountResets,
   useUpdateAccountActive,
@@ -211,6 +212,96 @@ function QuotaAccountResetModal({
         </Inline>
       </div>
     </Dialog>
+  );
+}
+
+/**
+ * Manual daily-growth pass for one buddy provider, at page level.
+ *
+ * The sweep already runs this, but an operator sometimes wants to trigger it
+ * now — and wants the whole provider's accounts done in one click rather than
+ * opening each card. One button runs the same order the worker uses: the
+ * activity report first, then the check-in claim, batched over every account of
+ * the selected provider with egress rotated per account.
+ *
+ * Only buddy providers are offered; the rest have no daily check-in and would
+ * be refused.
+ */
+function DailyGrowthActions({
+  accounts,
+}: {
+  readonly accounts: readonly QuotaEntry[];
+}): ReactNode {
+  const providers = useMemo(() => {
+    const seen = new Map<string, { id: string; label: string; count: number }>();
+    for (const account of accounts) {
+      if (!supportsAccountCheckin(account.provider)) continue;
+      const existing = seen.get(account.provider);
+      if (existing) existing.count += 1;
+      else
+        seen.set(account.provider, {
+          id: account.provider,
+          label: account.providerName || account.provider,
+          count: 1,
+        });
+    }
+    return [...seen.values()];
+  }, [accounts]);
+
+  const [providerId, setProviderId] = useState("");
+  const selected = providers.find((entry) => entry.id === providerId) ?? providers[0];
+  const activeId = selected?.id ?? "";
+  const batch = useTriggerProviderDailyGrowth(activeId);
+  const disabled = activeId.length === 0 || batch.isPending || providers.length === 0;
+
+  return (
+    <div
+      className="flex w-full min-w-0 flex-col gap-3 max-small:flex-row max-small:items-center max-small:gap-4"
+      aria-label="Daily growth actions"
+    >
+      <div className="min-w-0 flex-1 max-small:max-w-100">
+        <Select
+          aria-label="Provider for the daily growth pass"
+          value={activeId}
+          onValueChange={setProviderId}
+          className="w-full h-16"
+          options={
+            providers.length > 0
+              ? providers.map((entry) => ({
+                  value: entry.id,
+                  label: `${entry.label} · ${entry.count} account${entry.count === 1 ? "" : "s"}`,
+                }))
+              : [{ value: "", label: "No buddy providers" }]
+          }
+        />
+      </div>
+      <Button
+        variant="secondary"
+        size="sm"
+        title="Send the activity report, then claim the daily check-in, for every account of this provider"
+        aria-label="Run the daily growth pass for this provider"
+        disabled={disabled}
+        className="shrink-0"
+        icon={
+          batch.isPending ? <Loader2 size={13} className="animate-spin" /> : <CalendarCheck size={13} />
+        }
+        onClick={() =>
+          batch.mutate(undefined, {
+            onSuccess: (result) => {
+              const failed = result.data.filter((entry) => !entry.report.ok).length;
+              if (failed === 0) toast.success(result.message);
+              else
+                toast.error(
+                  `${result.message} — ${failed} report${failed === 1 ? "" : "s"} failed`,
+                );
+            },
+            onError: (err) => toast.error(getErrorMessage(err, "Unable to run the daily growth pass")),
+          })
+        }
+      >
+        Daily growth
+      </Button>
+    </div>
   );
 }
 
@@ -726,6 +817,9 @@ export default function QuotaPage(): ReactNode {
               { value: "untracked", label: "No quota" },
             ]}
           />
+        </div>
+        <div className="w-full">
+          <DailyGrowthActions accounts={accounts} />
         </div>
         <div className="flex flex-wrap items-center gap-4">
           <Button

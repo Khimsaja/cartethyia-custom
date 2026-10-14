@@ -299,6 +299,77 @@ export function useTriggerAccountCheckin(accountId: string) {
   });
 }
 
+/**
+ * Triggers one account's growth-activity report on its own.
+ *
+ * The report is the leg that actually lands on a free plan — the check-in is
+ * often simply not open — so an operator needs to be able to run it without
+ * also attempting a claim.
+ */
+export function useTriggerAccountReport(accountId: string) {
+  const queryClient = useQueryClient();
+  return useMutation<AccountActivityReportResult, ApiErrorShape, void>({
+    mutationFn: async () => {
+      return consoleRequest<AccountActivityReportResult>(
+        `/accounts/${encodeURIComponent(accountId)}/activity-report`,
+        {
+          method: "POST",
+        },
+      );
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.quota.all }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.providers.all }),
+      ]);
+    },
+  });
+}
+
+/** One account's outcome inside a provider-wide daily growth batch. */
+export interface ProviderDailyGrowthEntry {
+  readonly accountId: string;
+  readonly label: string;
+  readonly report: { readonly ok: boolean; readonly message: string };
+  readonly checkin: { readonly ok: boolean; readonly message: string };
+}
+
+/** Result of `POST /quota/daily-growth`. */
+export interface ProviderDailyGrowthResult {
+  readonly ok: boolean;
+  readonly status: number;
+  readonly providerId: string;
+  readonly data: readonly ProviderDailyGrowthEntry[];
+  readonly message: string;
+}
+
+/**
+ * Runs the daily growth pass over every account of one provider.
+ *
+ * Report first, then claim — the order the sweep uses — batched with per-account
+ * egress rotation, so a batch leaves from more than one address instead of
+ * hammering the upstream from one. Per-account outcomes come back individually:
+ * one account's closed check-in must not hide the others' streaks.
+ */
+export function useTriggerProviderDailyGrowth(providerId: string) {
+  const queryClient = useQueryClient();
+  return useMutation<ProviderDailyGrowthResult, ApiErrorShape, void>({
+    mutationFn: async (): Promise<ProviderDailyGrowthResult> => {
+      if (providerId.length === 0) throw new Error("Select a provider first");
+      return consoleRequest<ProviderDailyGrowthResult>("/quota/daily-growth", {
+        method: "POST",
+        body: JSON.stringify({ providerId }),
+      });
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.quota.all }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.providers.all }),
+      ]);
+    },
+  });
+}
+
 /** Result of one manual growth-activity report (`POST /accounts/:id/activity-report`). */
 export interface AccountActivityReportResult {
   readonly ok: boolean;
