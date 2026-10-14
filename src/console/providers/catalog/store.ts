@@ -5,6 +5,7 @@ import { parseCustomProviderId, isBundledProviderId } from "../../../providers/p
 import type { ModelDefinition } from "../../../providers/provider-model-definition";
 import type { ProviderRegistry } from "../../../providers/provider-registry";
 import { BUNDLED_PROVIDER_MODULES } from "../../../providers/default-registry";
+import { modelsDevCatalog } from "../../../providers/discovery/models-dev-catalog";
 import { globalOrOwnedBy, ownedByOnly } from "../../../persistence/tenant-scope";
 import { nextSortIndex, reorderSortIndex } from "../../../persistence/sort-order";
 import type { CartethyiaDatabase } from "../../../persistence/db-handle";
@@ -226,6 +227,11 @@ function mapModelRow(
     mediaGeneration: outputModalities.includes("image"),
     cost: row.cost as ModelCatalogEntry["cost"],
     source: row.source,
+    // Nothing filed this model, so whatever the row carries for limits came
+    // from the shared fallback rather than from a catalog entry.
+    ...(row.contextLimit === null && modelsDevCatalog.resolve(row.providerId, row.modelId) === undefined
+      ? { limitsEstimated: true }
+      : {}),
     sourceUpdatedAt: row.sourceUpdatedAt?.toISOString() ?? null,
   } satisfies ModelCatalogEntry;
 }

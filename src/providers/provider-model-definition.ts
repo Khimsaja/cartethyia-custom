@@ -71,7 +71,28 @@ export interface ModelDefinition {
    * so a hand-built definition correctly says nothing. Read it as `=== true`.
    */
   readonly freeTier?: boolean;
+  /**
+   * True when neither the row nor the catalog could state this model's limits,
+   * so `contextLimit`/`outputLimit` are the shared fallback rather than
+   * anything measured.
+   *
+   * A model nobody has filed — a brand-new id the catalog has not caught up
+   * with — must still be routable, and a hard number is what routing needs to
+   * size a request. But publishing that number as if it were the model's own
+   * turns a gap in our catalog into a claim about someone else's model.
+   */
+  readonly limitsEstimated?: boolean;
 }
+
+/**
+ * Limits assumed for a model the catalog has never filed.
+ *
+ * Fit comfortably rather than tightly: a fallback that is too small silently
+ * truncates a request that would have been fine, while one that is too large
+ * only costs an admission estimate no upstream enforces.
+ */
+const UNFILED_CONTEXT_LIMIT = 500_000;
+const UNFILED_OUTPUT_LIMIT = 128_000;
 
 /** Fields accepted by `defineModel`; every field except `id` falls back to the shared default. */
 export interface ModelHelperRow {
@@ -176,15 +197,20 @@ export function defineModel(row: ModelHelperRow): ModelDefinition {
   // at the default.
   const majority = fallback === undefined && row.id ? modelsDevCatalog.majorityFor(row.id) : undefined;
 
+  // Nothing filed this model: not the row, not the provider's catalog entry,
+  // not a majority across the catalog's other resellers. The fallback keeps it
+  // routable, and the marker keeps the number honest.
+  const limitsEstimated = row.ctx === undefined && fallback?.contextLimit === undefined && majority?.contextLimit === undefined;
+
   const contextLimit =
     row.ctx !== undefined
       ? row.ctx
-      : (fallback?.contextLimit ?? majority?.contextLimit ?? 200_000);
+      : (fallback?.contextLimit ?? majority?.contextLimit ?? UNFILED_CONTEXT_LIMIT);
 
   const declaredOutput =
     row.out !== undefined
       ? row.out
-      : (fallback?.outputLimit ?? majority?.outputLimit ?? 64_192);
+      : (fallback?.outputLimit ?? majority?.outputLimit ?? UNFILED_OUTPUT_LIMIT);
 
   // A maximum output above the context window is unsatisfiable: no request can
   // reserve more output tokens than the model accepts as input. The base
@@ -220,6 +246,7 @@ export function defineModel(row: ModelHelperRow): ModelDefinition {
     toolCall: row.toolCall ?? true,
     cost,
     ...(row.freeTier === undefined ? {} : { freeTier: row.freeTier }),
+    ...(limitsEstimated ? { limitsEstimated: true } : {}),
   };
 }
 

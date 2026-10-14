@@ -330,6 +330,12 @@ export interface ModelCatalogEntry {
   } | null;
   source: string | null;
   sourceUpdatedAt: string | null;
+  /**
+   * True when no catalog row filed this model, so `contextLimit`/`outputLimit`
+   * are a shared fallback rather than anything measured. The surface marks them
+   * so an operator can tell a measured window from a stand-in.
+   */
+  limitsEstimated?: boolean;
 }
 export interface FlatModelCatalogEntry {
   readonly providerId: string;

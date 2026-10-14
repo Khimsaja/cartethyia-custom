@@ -104,6 +104,18 @@ export const UNKNOWN_LIMITS_TOOLTIP =
   "Upstream provided no context metadata; limits are unavailable, not estimated.";
 
 /**
+ * Shown beside a limit the catalog could not file.
+ *
+ * Distinct from {@link UNKNOWN_LIMITS_TOOLTIP} on purpose. That one says the
+ * upstream told us nothing, so the row is genuinely blank. This one says *we*
+ * have no row, so the number on screen is a placeholder chosen to keep the
+ * model routable — a different claim, and one an operator has to be able to
+ * tell apart from a real measurement.
+ */
+export const ESTIMATED_LIMITS_TOOLTIP =
+  "No catalog row files this model, so these limits are a fallback (500k context, 128k output) to keep it routable — not a measurement of the model.";
+
+/**
  * A model limit as a card shows it: `400k`, `1.0M`.
  *
  * One owner for the two cards that draw these numbers — the provider catalog

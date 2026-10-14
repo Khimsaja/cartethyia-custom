@@ -14,6 +14,7 @@ import type { CartethyiaDatabase } from "../../../persistence/db-handle";
 import { modelAliases, modelCombos, models, providerAccounts, providers } from "../../../persistence/schema";
 import { isModelAllowed, listIncludes, type ApiKeyAuthorizationSnapshot } from "../../../security/api-key-auth";
 import { providerSupportsWebSearch } from "../../../providers/provider-metadata";
+import { modelsDevCatalog } from "../../../providers/discovery/models-dev-catalog";
 
 export interface AllowedModelEntry {
   id: string;
@@ -117,6 +118,12 @@ function matchesModelPrefix(
 export interface ModelMetadata {
   readonly contextLimit: number | null;
   readonly outputLimit: number | null;
+  /**
+   * True when the limits above are a placeholder because no catalog row filed
+   * this model. The surface marks them so an operator can tell a measured
+   * window from a stand-in.
+   */
+  readonly limitsEstimated?: boolean;
   readonly modalities: unknown;
   readonly reasoning: boolean;
   readonly toolCall: boolean;
@@ -185,6 +192,9 @@ export function advertisedMetadata(
   return {
     contextLimit: Math.min(...found.map((m) => m.contextLimit ?? DEFAULT_CONTEXT_LIMIT)),
     outputLimit: Math.min(...found.map((m) => m.outputLimit ?? DEFAULT_OUTPUT_LIMIT)),
+    // Estimated only when every target is unfiled: one measured target is
+    // enough to describe the alias.
+    ...(found.every((m) => m.limitsEstimated === true) ? { limitsEstimated: true } : {}),
     modalities: intersectModalities(found.map((m) => m.modalities).filter((m) => m != null)),
     // A pool may route to any member, so a capability is claimed only when
     // every member has it; a single member's rate is quoted only when all
@@ -525,9 +535,16 @@ export class PublicModelCatalogStore {
         ),
       );
     for (const row of rows) {
+      const filed =
+        row.contextLimit !== null ||
+        modelsDevCatalog.resolve(row.providerId, row.modelId) !== undefined ||
+        modelsDevCatalog.majorityFor(row.modelId) !== undefined;
       const metadata = {
         contextLimit: row.contextLimit,
         outputLimit: row.outputLimit,
+        // Nothing filed this model, so whatever the row carries came from the
+        // shared fallback rather than from a catalog entry.
+        ...(filed ? {} : { limitsEstimated: true }),
         modalities: row.modalities,
         reasoning: row.reasoning,
         toolCall: row.toolCall,
@@ -543,6 +560,9 @@ export class PublicModelCatalogStore {
         out.set(id, {
           contextLimit: Math.min(...found.map((entry) => entry.contextLimit ?? DEFAULT_CONTEXT_LIMIT)),
           outputLimit: Math.min(...found.map((entry) => entry.outputLimit ?? DEFAULT_OUTPUT_LIMIT)),
+          // Estimated only when no member brought a filed limit: one measured
+          // member is enough to describe the pool.
+          ...(found.every((entry) => entry.limitsEstimated === true) ? { limitsEstimated: true } : {}),
           modalities: intersectModalities(found.map((entry) => entry.modalities).filter((value) => value != null)),
           reasoning: found.every((entry) => entry.reasoning),
           toolCall: found.every((entry) => entry.toolCall),

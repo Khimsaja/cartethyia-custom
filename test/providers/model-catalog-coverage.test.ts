@@ -10,6 +10,7 @@ import { describe, expect, test } from "bun:test";
 import { modelsDevCatalog } from "../../src/providers/discovery/models-dev-catalog";
 import { PROVIDER_CAPABILITIES } from "../../src/providers/default-registry";
 import type { ModelDefinition } from "../../src/providers/provider-model-definition";
+import { defineModel } from "../../src/providers/provider-model-definition";
 
 async function catalogFor(providerId: string): Promise<readonly ModelDefinition[]> {
   const capabilities = (PROVIDER_CAPABILITIES as Record<
@@ -145,7 +146,8 @@ describe("deepseek catalog", () => {
   });
 
   test("no row falls back to the generic default limits", async () => {
-    // 200k/64k is `defineModel`'s fallback for an id the catalog cannot resolve.
+    // 500k/128k is `defineModel`'s fallback for an id the catalog cannot
+    // resolve, and a real row must beat it.
     for (const model of await catalogFor("deepseek")) {
       expect(model.contextLimit).toBeGreaterThan(200_000);
       expect(model.outputLimit).toBeGreaterThan(64_000);
@@ -176,5 +178,37 @@ describe("deepseek catalog", () => {
     expect(entry?.outputLimit).toBe(384_000);
     expect(entry?.modalities.input).toContain("image");
     expect(entry?.toolCall).toBe(true);
+  });
+});
+
+describe("unfiled model limits", () => {
+  test("an id no catalog row files gets the fallback and says so", () => {
+    // A brand-new id the catalog has not caught up with must still be
+    // routable, so it gets a number — and a marker saying the number is ours,
+    // not the model's.
+    const model = defineModel({ id: "totally-unfiled-model-xyz", providerId: "opencodeft" });
+    expect(model.contextLimit).toBe(500_000);
+    expect(model.outputLimit).toBe(128_000);
+    expect(model.limitsEstimated).toBe(true);
+  });
+
+  test("an explicit ctx wins and clears the marker", () => {
+    const model = defineModel({ id: "totally-unfiled-model-xyz", providerId: "opencodeft", ctx: 300_000, out: 64_000 });
+    expect(model.contextLimit).toBe(300_000);
+    expect(model.outputLimit).toBe(64_000);
+    expect(model.limitsEstimated).toBeUndefined();
+  });
+
+  test("a filed model keeps its catalog limits and carries no marker", () => {
+    const model = defineModel({ id: "big-pickle", providerId: "opencode" });
+    expect(model.contextLimit).toBe(200_000);
+    expect(model.limitsEstimated).toBeUndefined();
+  });
+
+  test("output never exceeds context even on the fallback", () => {
+    // The fallback pair is already consistent; this pins the clamp for any
+    // future change that raises one half alone.
+    const model = defineModel({ id: "totally-unfiled-model-xyz", providerId: "opencodeft" });
+    expect(model.outputLimit).toBeLessThanOrEqual(model.contextLimit as number);
   });
 });

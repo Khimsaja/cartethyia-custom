@@ -1,4 +1,5 @@
 import {
+  AlertCircle,
   AlertTriangle,
   Bot,
   Brain,
@@ -30,7 +31,7 @@ import {
   useRegisterProviderModels,
   useSetModelEnabled,
 } from "../../../hooks/providers";
-import { formatModelTokens, UNKNOWN_LIMITS_TOOLTIP } from "../../../lib/format/tokens";
+import { formatModelTokens, UNKNOWN_LIMITS_TOOLTIP, ESTIMATED_LIMITS_TOOLTIP } from "../../../lib/format/tokens";
 import { toast } from "../../../lib/toast";
 import { useTrackedTimeout } from "../../../hooks/use-timeout";
 import { PROBE_REASONING_EFFORTS, formatThinkingSuffix, type ModelCatalogEntry, type ProbeReasoningEffort } from "../../../data/contracts";
@@ -553,6 +554,16 @@ function ModelCard({
             ) : null}
           </span>
           <span className="whitespace-nowrap">
+            {model.limitsEstimated ? (
+              <span
+                title={ESTIMATED_LIMITS_TOOLTIP}
+                aria-label="Limits are a fallback estimate"
+                className="inline-flex items-center justify-center rounded-full border border-inner-border bg-surface-2 text-orange cursor-help mr-1 align-middle"
+                style={{ width: 13, height: 13 }}
+              >
+                <AlertCircle size={9} aria-hidden="true" />
+              </span>
+            ) : null}
             {model.contextLimit ? (
               `${formatModelTokens(model.contextLimit)} ctx`
             ) : (
