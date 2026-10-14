@@ -1,8 +1,10 @@
 // Manual account-test egress. A test must leave through the same proxy the
 // next real request would use: the tenant's active pools, the same
 // least-loaded / round-robin selector, and the validated pool binding.
-// Direct fetch is only allowed when the provider is configured to skip the
-// proxy. A required proxy that cannot be selected fails closed.
+// Direct fetch is used when the provider is configured to skip the proxy, and
+// when the tenant simply has no pool — the default deployment, which dispatch
+// already serves directly. A pool that exists but cannot be selected is a real
+// failure and still fails closed.
 import { and, eq, isNull, or } from "drizzle-orm";
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import { networkPools, poolRoutingSettings, providerRoutingSettings } from "../../persistence/schema";
@@ -96,13 +98,18 @@ export async function selectAccountTestEgress(
   ]);
   const active = pools as readonly ActivePool[];
   if (active.length === 0) {
-    throw new GatewayError(
-      "proxy_pool_unavailable",
-      503,
-      "No active proxy pool is configured for this tenant and provider. Add one, or route this provider through direct egress.",
-      { reason: "no_active_pool" },
-      "network",
-    );
+    // No pool configured at all is not a proxy failure — it is the default
+    // deployment, and dispatch already serves it through direct egress. Failing
+    // closed here made "Test" unusable unless the operator first added a pool or
+    // manually flipped the provider to direct, and the button then reported a
+    // deployment that routes perfectly well.
+    //
+    // Only a provider that *has* pools and cannot use one is a real failure;
+    // that still fails below.
+    return {
+      fetch: asFetchLike(deps.networkBindingFactory.fetch(), input.signal),
+      release: () => undefined,
+    };
   }
 
   const limits: Record<string, number> = {};

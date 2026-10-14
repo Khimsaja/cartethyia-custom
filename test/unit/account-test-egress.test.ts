@@ -3,9 +3,10 @@
  *
  * The button used to call global `fetch`, so a healthy proxy pool never saw
  * the probe and the 15-second direct dial died as "The operation timed out".
- * These tests pin the three decisions that keep that from coming back: an
- * active pool is selected and bound, a required proxy with no usable pool
- * fails closed, and only an explicit skip-proxy provider dials direct.
+ * These tests pin the decisions that keep that from coming back: an active pool
+ * is selected and bound, a deployment with no pool at all dials direct instead
+ * of failing, a pool that exists but cannot be selected fails closed, and only
+ * an explicit skip-proxy provider dials direct while pools exist.
  */
 import { describe, expect, test } from "bun:test";
 import { GatewayError } from "../../src/protocol/gateway-error";
@@ -99,6 +100,26 @@ describe("manual account-test egress", () => {
     expect(binding.bound).toEqual(["pool-a"]);
     egress.release();
     expect(released).toBe(true);
+  });
+
+  test("dials direct when the tenant has no pool at all", async () => {
+    // The default deployment. Dispatch serves it directly, so the test button
+    // must too: failing closed here made "Test" unusable until the operator
+    // added a pool or manually flipped the provider to direct.
+    const binding = bindingDouble();
+    const egress = await selectAccountTestEgress(
+      {
+        db: dbDouble({ pools: [] }),
+        poolSelector: selectorDouble({ poolId: "pool-a", release: () => undefined }),
+        networkBindingFactory: binding,
+      },
+      { tenantId: "tenant-1", providerId: "openai", signal },
+    );
+
+    expect(binding.bound).toEqual(["direct"]);
+    // Nothing was acquired, so releasing is a no-op rather than an error.
+    expect(() => egress.release()).not.toThrow();
+    await expect(egress.fetch("https://example.test")).resolves.toBeInstanceOf(Response);
   });
 
   test("uses the tenant round-robin strategy", async () => {
