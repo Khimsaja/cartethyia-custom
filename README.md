@@ -59,6 +59,11 @@ can answer, without reading upstream logs: what did the client send, what did
 Cartethyia translate, which account and pool were picked, what did the provider
 return, and what did the client finally get?
 
+**Why it exists, what is different, and which custom behaviors are only here:**
+[Why Cartethyia](documentation/why-cartethyia.md). It also covers the Bun +
+Elysia choice over Next.js, and the reverse-engineering method behind the
+provider gates.
+
 ## <img src="https://api.iconify.design/lucide/route.svg?color=%238b949e" width="20" height="20" alt=""> Routes
 
 

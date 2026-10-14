@@ -6,6 +6,10 @@ the owning code, guides, and procedures.
 
 Start here if you are installing or running Cartethyia:
 
+- [Why Cartethyia](why-cartethyia.md) — the problem it was built for, what is
+  different from other gateways, the custom capabilities that exist only here,
+  the Bun + Elysia choice, and the reverse-engineering method for provider
+  gates. Start here if you want the reasoning rather than the mechanics.
 - [Getting started](getting-started.md) — requirements, database mode, `bun setup`,
   encryption key, starting the stack, Docker, migrations, and verification.
 - [Installation](installation.md) — local / VPS / Docker, Lite and Full modes,
