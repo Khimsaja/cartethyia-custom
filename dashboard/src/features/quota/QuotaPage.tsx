@@ -256,12 +256,12 @@ function QuotaCard({
     ? lastCheckin.state === "claimed"
       ? `Checked in${lastCheckin.credit !== null ? ` +${lastCheckin.credit}` : ""}${lastCheckin.streakDays !== null ? ` · ${lastCheckin.streakDays}d streak` : ""}`
       : lastCheckin.state === "already_claimed"
-        ? "Already checked in"
+        ? "Check-in attempted · already claimed"
         : lastCheckin.state === "not_eligible"
-          ? "Not eligible"
+          ? "Check-in attempted · not eligible"
           : lastCheckin.state === "event_ended"
-            ? "Event ended"
-            : "Check-in unavailable"
+            ? "Check-in attempted · event ended"
+            : "Check-in attempted · unavailable"
     : attemptedToday
       ? "Check-in attempted today"
       : "Check-in due";

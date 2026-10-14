@@ -38,6 +38,7 @@ import {
 function sweepDeps(
   providerIds: readonly string[],
   maxCheckinsPerPass: number,
+  quotaError: string | null = null,
 ): QuotaRefreshSweepDeps {
   const targets: QuotaRefreshTarget[] = providerIds.map((providerId, index) => ({
     accountId: `acct-${index}`,
@@ -55,7 +56,7 @@ function sweepDeps(
         source: "stub",
         plan: null,
         windows: [],
-        error: null,
+        error: quotaError,
       }),
       resolveRefresher: async () => ({}),
     } as unknown as QuotaRefreshSweepDeps["providerRegistry"],
@@ -135,6 +136,22 @@ describe("quota sweep — the check-in budget is spent on buddy accounts only", 
     expect(await runPass(["cb", "cbcn", "workbuddy", "workbuddycn"], CAP)).toBe(4);
   });
 
+  test("a failed quota fetch still attempts the check-in", async () => {
+    // The regression: the ride-along returned early on any quota failure, so an
+    // account sitting at 0 credits — the one that most needs the daily grant —
+    // never had its check-in attempted and the page read "Check-in due" while
+    // the sweep believed it had done its job. The two legs are separate
+    // upstream calls on one resolved credential.
+    let checkins = 0;
+    await quotaRefreshSweep({
+      ...sweepDeps(["cbcn"], CAP, "quota unavailable"),
+      onTick: (result) => {
+        checkins = result.checkins;
+      },
+    });
+    expect(checkins).toBe(1);
+  });
+
   test("resolves credentials again on the next sweep pass", async () => {
     let resolutions = 0;
     const accountId = "quota-credential-refresh-regression";
@@ -177,7 +194,7 @@ function fakeRedis(): RedisClient & { readonly store: Map<string, string> } {
   return client as unknown as RedisClient & { readonly store: Map<string, string> };
 }
 
-describe("attemptDailyGrowthPass — a non-terminal check-in releases the day slot", () => {
+describe("attemptDailyGrowthPass — the report leg and the day slot", () => {
   const NOW = new Date("2026-07-08T03:00:00Z");
 
   function fetcherAnswering(body: unknown): typeof fetch {
@@ -188,12 +205,32 @@ describe("attemptDailyGrowthPass — a non-terminal check-in releases the day sl
       })) as unknown as typeof fetch;
   }
 
-  test("an unavailable status probe frees the slot so a later pass retries", async () => {
+  test("an unavailable check-in still attempts the activity report", async () => {
+    // The report is the second method, and it works when the check-in hit does
+    // not. Returning early here meant an account whose check-in was
+    // unavailable got neither daily action, every day.
     const redis = fakeRedis();
-    // The status endpoint answers 200 with an envelope the gateway cannot
-    // read as a check-in — the shape `fetchDailyCheckin` reports as
-    // `unavailable`. Holding the slot here meant the account was "done" for
-    // the day without anything having been claimed.
+    const pass = await attemptDailyGrowthPass({
+      db: undefined,
+      redis,
+      providerId: "cbcn",
+      accountId: "acct-1",
+      resolveCredential: async () => "credential",
+      fetcher: fetcherAnswering({ code: 0, data: {} }),
+      now: () => NOW,
+    });
+    expect(pass?.checkin.state).toBe("unavailable");
+    // Not "Skipped (check-in failed)." — the report leg actually ran.
+    expect(pass?.report.error).not.toContain("Skipped (check-in failed)");
+  });
+
+  test("an unavailable check-in keeps the slot, so the day is not retried forever", async () => {
+    const redis = fakeRedis();
+    // The status endpoint answers 200 with an envelope the gateway cannot read
+    // as a check-in — the shape `fetchDailyCheckin` reports as `unavailable`,
+    // i.e. no activity is running. Releasing the marker here both retried a
+    // closed door every pass *and* erased the evidence of the attempt, so the
+    // console read "Check-in due" forever.
     const first = await attemptDailyGrowthPass({
       db: undefined,
       redis,
@@ -204,9 +241,8 @@ describe("attemptDailyGrowthPass — a non-terminal check-in releases the day sl
       now: () => NOW,
     });
     expect(first?.checkin.state).toBe("unavailable");
-    expect(redis.store.has(ledgerKey(checkinDayKey(NOW), "acct-1"))).toBe(false);
+    expect(redis.store.has(ledgerKey(checkinDayKey(NOW), "acct-1"))).toBe(true);
 
-    // The next pass must be able to reserve the slot again.
     const second = await attemptDailyGrowthPass({
       db: undefined,
       redis,
@@ -216,7 +252,7 @@ describe("attemptDailyGrowthPass — a non-terminal check-in releases the day sl
       fetcher: fetcherAnswering({ code: 0, data: {} }),
       now: () => NOW,
     });
-    expect(second).not.toBeNull();
+    expect(second).toBeNull();
   });
 
   test("a settled claim keeps the slot, so the day is not re-attempted", async () => {

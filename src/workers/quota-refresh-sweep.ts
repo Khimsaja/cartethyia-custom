@@ -364,7 +364,15 @@ export async function quotaRefreshSweep(deps: QuotaRefreshSweepDeps): Promise<vo
       // recorded as one rather than silently counted.
       if (outcome.failure !== null) {
         failed += 1;
-        return;
+        // The check-in ride-along still runs: the daily credit grant is the
+        // *remedy* for an account that just reported an exhausted or unreadable
+        // quota, and it is a different upstream call that does not depend on the
+        // quota leg. Returning here meant an account sitting at 0 credits — the
+        // one that most needs the grant — never had its check-in attempted, so
+        // the Quota page read "Check-in due" while the sweep believed it had
+        // done its job. Only a credential we could not resolve at all rules the
+        // check-in out; that is the one input both legs share.
+        if (outcome.failure === "missing_credential") return;
       }
       // Daily growth ride-along: the same item's freshly resolved credential,
       // check-in claim first and then the growth-activity report. Bounded per

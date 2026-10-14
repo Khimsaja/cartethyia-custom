@@ -217,17 +217,21 @@ export async function attemptDailyGrowthPass(args: {
   }
 
   if (checkin.state === "error" || checkin.state === "unavailable") {
-    // Release the slot so a later pass today can retry. `error` is a transient
-    // failure (network, 5xx); `unavailable` is the status probe answering that
-    // no activity is running or the envelope could not be read — both are
-    // worth another attempt, and holding the slot until tomorrow is what made
-    // an account look "done" when nothing had been claimed. `already_claimed`,
-    // `not_eligible`, and `event_ended` are terminal for the day and keep it.
-    await releaseDaySlot(db, redis, dayKey, accountId);
-    return {
-      checkin,
-      report: { providerId, accountId, state: "error", error: "Skipped (check-in failed)." },
-    };
+    // The report leg is the second method, and it is the one that works when
+    // the check-in hit does not: it lights the login streak and scores the
+    // daily growth event without depending on the check-in activity being open.
+    // Skipping it here meant an account whose check-in was unavailable got
+    // *neither* daily action every single day.
+    //
+    // Only the transient `error` releases the slot so a later pass today can
+    // retry (network, 5xx). `unavailable` is the status probe answering that no
+    // activity is running — retrying that every pass spent the account's daily
+    // slot on a door the provider had closed, and releasing the marker was also
+    // what erased the evidence that anything had been attempted: the console
+    // then read "Check-in due" forever while the sweep retried once a minute.
+    // `already_claimed`, `not_eligible`, and `event_ended` are terminal for the
+    // day and keep the slot.
+    if (checkin.state === "error") await releaseDaySlot(db, redis, dayKey, accountId);
   }
 
   // The growth event scores by uid, and only a JWT carries one. An opaque API
