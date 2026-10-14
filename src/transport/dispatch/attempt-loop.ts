@@ -304,6 +304,45 @@ export async function runAttemptLoop<TResult, TAdapter>(
       }
     }
   }
+  // The loop can fall out with a retryable error still in hand (every attempt
+  // was retryable, so the terminal branch in the catch never fired). That used
+  // to throw with no completion: no telemetry row, no payload capture, and
+  // `state.completed` left clear — so a request that genuinely exhausted its
+  // attempts was invisible in Request Detail. Record it as terminal here.
+  if (!state.completed) {
+    const terminal = classifyTerminalOutcome(lastError, state.abortController.signal);
+    const lastCandidate = candidates[Math.min(index, candidates.length - 1)];
+    const terminalCapture = [...firedCaptures]
+      .reverse()
+      .find((capture) => capture.request !== null);
+    await completeAttempt(state, {
+      status: terminal.status,
+      providerId: lastCandidate?.provider_id ?? "",
+      ...(lastCandidate?.provider_account_id
+        ? { accountId: lastCandidate.provider_account_id }
+        : {}),
+      ...(lastCandidate?.provider_account_label
+        ? { accountLabel: lastCandidate.provider_account_label }
+        : {}),
+      errorCategory: terminal.errorCategory,
+      errorOrigin: terminal.errorOrigin,
+      ...(lastCandidate?.model_id === undefined ? {} : { modelId: lastCandidate.model_id }),
+      error: lastError,
+      terminal: true,
+      tenantId: input.tenantId,
+      ingressBody: state.ingressBody,
+      responseBody: null,
+      // The client receives the public error envelope on the wire — store it
+      // so the Client Response panel traces the failure as the client saw it.
+      ...(terminal.status === "cancelled"
+        ? {}
+        : { clientResponseText: errorClientResponseBody(lastError) }),
+      ...(terminalCapture === undefined ? {} : { providerCapture: terminalCapture }),
+      db: deps.db,
+      ...(deps.telemetryBuffer ? { telemetryBuffer: deps.telemetryBuffer } : {}),
+      ...(deps.snapshotService ? { snapshotService: deps.snapshotService } : {}),
+    });
+  }
   metrics.proxy_requests_total.inc(1, { status: "failed" });
   throw lastError;
 }
