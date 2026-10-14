@@ -98,7 +98,20 @@ export function toQuotaView(
   } = {},
 ): QuotaRefreshView {
   const fetchedAt = timestamps.fetchedAt ?? account.lastSuccessAt?.toISOString() ?? null;
-  const error = timestamps.refreshError ?? quota.error ?? null;
+  // A retained reading is a real answer, not a failure.
+  //
+  // `setCachedQuota` keeps the last successful reading and records a later
+  // failed attempt as `refreshError` — deliberately, so one transient timeout
+  // does not throw away a quota the provider actually reported. Reading
+  // `refreshError` as *the* error collapsed that distinction: an account whose
+  // quota is genuinely 0 (a perfectly valid free-plan answer) flipped to
+  // "quota unreachable" the moment any subsequent fetch timed out, and stayed
+  // there while the sweep retried.
+  //
+  // `refreshError` is still surfaced in its own field so the operator can see
+  // that the last attempt failed; only `quota.error` — no usable reading at
+  // all — makes the card an error.
+  const error = quota.error ?? null;
   return {
     source: quota.source,
     status: timestamps.status ?? (error !== null ? "error" : "ready"),
