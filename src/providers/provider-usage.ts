@@ -229,14 +229,13 @@ export function normalizeUsage(input: Record<string, unknown>): UsageRecord {
         : 0;
     if (ephemeral5m > 0 || ephemeral1h > 0) cache_write_tokens = ephemeral5m + ephemeral1h;
   }
-  // Derive uncached input and the canonical all-in total. Anthropic-shape
-  // input (marked by the cache_read_input_tokens field, which has no OpenAI
-  // equivalent) reports fresh tokens only in input_tokens, so the canonical
-  // total is fresh + read + written. Everything else reports an all-in total
-  // with the cached subset inside, so uncached is total minus cached. A lone
-  // cache_creation field without a read field is treated as an OpenAI-ish
-  // inclusive total: the creation count is the write volume, not extra input.
-  const hasAnthropicCacheShape = anthropic_cache_read !== null;
+  // Anthropic reports fresh input separately from cache. A bridge can reuse
+  // that cache field while already reporting an inclusive prompt total. Its
+  // total_tokens then equals input + output, so cache must not be added again.
+  const reportedTotal = typeof input.total_tokens === "number" ? input.total_tokens : null;
+  const inputAlreadyIncludesCache =
+    reportedTotal !== null && reportedTotal === input_tokens + output_tokens;
+  const hasAnthropicCacheShape = anthropic_cache_read !== null && !inputAlreadyIncludesCache;
   let uncached_input_tokens: number | "unavailable" = "unavailable";
   if (typeof cached_input_tokens === "number") {
     if (hasAnthropicCacheShape) {
@@ -248,7 +247,6 @@ export function normalizeUsage(input: Record<string, unknown>): UsageRecord {
       cached_input_tokens = Math.min(input_tokens, cached_input_tokens);
     }
   } else if (hasAnthropicCacheShape && typeof cache_write_tokens === "number") {
-    // Write-only report (no reads): fresh + written, nothing cached.
     input_tokens += cache_write_tokens;
   }
 
