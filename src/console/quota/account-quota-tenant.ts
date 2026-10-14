@@ -113,22 +113,32 @@ async function todayCheckinAttempted(
   }
 }
 
+/**
+ * Operator-facing sentence for one check-in outcome.
+ *
+ * Every non-claimed state says what happens next rather than only that the
+ * attempt happened. `unavailable` in particular is the normal case on a free
+ * plan — the check-in activity simply is not running — and reading as a bare
+ * "unavailable" looked like a failure, when the account had still done its
+ * daily report and will be credited on the next cycle. A claim that did land
+ * states the amount.
+ */
 function checkinStateMessage(result: DailyCheckinResult): string {
   switch (result.state) {
     case "claimed":
       return result.credit !== null
-        ? `Daily check-in claimed (+${result.credit} credits${result.streakDays !== null ? `, ${result.streakDays}-day streak` : ""})`
-        : "Daily check-in claimed";
+        ? `credited ${result.credit} credits${result.streakDays !== null ? ` (${result.streakDays}-day streak)` : ""}`
+        : "credited";
     case "already_claimed":
-      return "Already checked in today";
+      return "already claimed today — credited again tomorrow";
     case "not_eligible":
-      return "Account is not eligible for daily check-in";
+      return "not eligible on this account";
     case "event_ended":
-      return "Daily check-in event has ended";
+      return "event has ended";
     case "unavailable":
-      return result.error ?? "Daily check-in is unavailable";
+      return "not open right now — you'll be credited on the next cycle";
     case "error":
-      return result.error ?? "Daily check-in failed";
+      return result.error ?? "could not be completed";
   }
 }
 
@@ -696,7 +706,7 @@ export function registerAccountQuotaTenantRoutes(
           ok: true,
           status: 200,
           data: { id: account.id, state: "reported", alreadyToday: true },
-          message: "Activity already reported today",
+          message: "Report sent — login streak already lit for today",
         };
       }
       let result: BuddyActivityReportResult;
@@ -745,7 +755,7 @@ export function registerAccountQuotaTenantRoutes(
         ok: true,
         status: 200,
         data: { id: account.id, state: result.state, alreadyToday: false },
-        message: "Activity reported — login streak lit for today",
+        message: "Report sent — login streak lit for today",
       };
     })
     .get("/accounts/:id/resets", async ({ request, params, set }) => {

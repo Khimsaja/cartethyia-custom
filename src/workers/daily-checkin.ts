@@ -137,18 +137,23 @@ export type DailyGrowthPassResult = {
 };
 
 /**
- * Runs the full daily growth pass for one account: check-in claim first, then
- * (buddy only) the growth-activity report — same order as the dashboard's
- * growth button.
+ * Runs the full daily growth pass for one account, once per calendar day:
+ * the growth-activity report first, then the check-in claim.
+ *
+ * Report first because it is the leg that actually lands on a free plan — the
+ * check-in activity is often not running at all (`unavailable`), and letting
+ * the claim go first meant its state decided whether the report ran, so those
+ * accounts got neither daily action. Each leg runs once; neither is retried
+ * within the day.
  *
  * The day slot is reserved here, so a caller cannot double-claim. The report
  * leg exists only for the buddy family, so any other provider's pass is the
  * check-in alone and the report field carries a "not supported" marker rather
- * than a fabricated success. The report fires only when the check-in step does
- * not hard-fail — reporting activity for an account whose credential just died
- * is noise at best. A report-side failure never releases the day slot: the
- * credit grant is the valuable half, and a failed report retries tomorrow
- * rather than spinning every sweep pass today.
+ * than a fabricated success. It needs a uid, which only a JWT carries, so an
+ * opaque API key fails closed instead of reporting one account's activity under
+ * another's uid. A report-side failure never releases the day slot: the day's
+ * growth action was attempted, and spinning every sweep pass today buys
+ * nothing.
  *
  * Returns `null` when no slot could be reserved (already settled today).
  */
@@ -197,6 +202,48 @@ export async function attemptDailyGrowthPass(args: {
     };
   }
 
+  // The growth-activity report runs FIRST, then the check-in claim.
+  //
+  // The report is the leg that works when the check-in hit does not: it lights
+  // the login streak and scores the daily growth event without depending on the
+  // check-in activity being open. Running the claim first meant an account
+  // whose check-in was `unavailable` — the common case on a free plan — got
+  // *neither* daily action, because the claim's state decided whether the
+  // report ran at all. Putting the reliable leg first means the account always
+  // gets at least its streak, and the claim is attempted after it regardless of
+  // how the report went.
+  //
+  // The growth event scores by uid, and only a JWT carries one. An opaque API
+  // key fails closed here — the sweep must never report one account's activity
+  // under another account's uid.
+  const userId = buddyAccountUid(credential);
+  let report: BuddyActivityReportResult;
+  if (!userId) {
+    report = {
+      providerId,
+      accountId,
+      state: "error",
+      error: "Skipped (no uid in this credential).",
+    };
+  } else {
+    try {
+      report = await fetchBuddyActivityReport({
+        providerId,
+        accountId,
+        credential,
+        userId,
+        fetcher: args.fetcher ?? globalThis.fetch,
+      });
+    } catch (error) {
+      report = {
+        providerId,
+        accountId,
+        state: "error",
+        error: error instanceof Error ? error.message : "Activity report failed.",
+      };
+    }
+  }
+
   let checkin: DailyCheckinResult;
   try {
     checkin = await fetchDailyCheckin({
@@ -216,57 +263,18 @@ export async function attemptDailyGrowthPass(args: {
     };
   }
 
-  if (checkin.state === "error" || checkin.state === "unavailable") {
-    // The report leg is the second method, and it is the one that works when
-    // the check-in hit does not: it lights the login streak and scores the
-    // daily growth event without depending on the check-in activity being open.
-    // Skipping it here meant an account whose check-in was unavailable got
-    // *neither* daily action every single day.
-    //
-    // Only the transient `error` releases the slot so a later pass today can
-    // retry (network, 5xx). `unavailable` is the status probe answering that no
-    // activity is running — retrying that every pass spent the account's daily
-    // slot on a door the provider had closed, and releasing the marker was also
-    // what erased the evidence that anything had been attempted: the console
-    // then read "Check-in due" forever while the sweep retried once a minute.
-    // `already_claimed`, `not_eligible`, and `event_ended` are terminal for the
-    // day and keep the slot.
-    if (checkin.state === "error") await releaseDaySlot(db, redis, dayKey, accountId);
-  }
-
-  // The growth event scores by uid, and only a JWT carries one. An opaque API
-  // key fails closed here — the sweep must never report one account's activity
-  // under another account's uid.
-  const userId = buddyAccountUid(credential);
-  if (!userId) {
-    return {
-      checkin,
-      report: {
-        providerId,
-        accountId,
-        state: "error",
-        error: "Skipped (no uid in this credential).",
-      },
-    };
-  }
-
-  let report: BuddyActivityReportResult;
-  try {
-    report = await fetchBuddyActivityReport({
-      providerId,
-      accountId,
-      credential,
-      userId,
-      fetcher: args.fetcher ?? globalThis.fetch,
-    });
-  } catch (error) {
-    report = {
-      providerId,
-      accountId,
-      state: "error",
-      error: error instanceof Error ? error.message : "Activity report failed.",
-    };
-  }
+  // Only a transient `error` releases the slot so a later pass today can retry
+  // (network, 5xx). `unavailable` is the status probe answering that no
+  // activity is running — retrying that every pass spent the account's daily
+  // slot on a door the provider had closed, and releasing the marker was also
+  // what erased the evidence that anything had been attempted: the console then
+  // read "Check-in due" forever while the sweep retried once a minute.
+  // `already_claimed`, `not_eligible`, and `event_ended` are terminal for the
+  // day and keep the slot.
+  //
+  // A report-side failure never releases either: the day's growth action was
+  // attempted, and spinning every sweep pass today buys nothing.
+  if (checkin.state === "error") await releaseDaySlot(db, redis, dayKey, accountId);
   return { checkin, report };
 }
 

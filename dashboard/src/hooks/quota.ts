@@ -321,39 +321,37 @@ export interface AccountGrowthPassResult {
 }
 
 /**
- * Runs the full daily growth pass for one account: check-in claim first, then
- * the growth-activity report. Sequential — the report only fires when the
- * check-in step does not hard-fail, so one toast tells the whole story.
+ * Runs the daily growth pass for one account: the growth-activity report first,
+ * then the check-in claim — the order the sweep uses, so both surfaces agree.
+ *
+ * Report first because it is the leg that lands on a free plan. The check-in
+ * activity is often not running at all, and running the claim first meant its
+ * outcome decided whether the report fired, so those accounts got neither.
+ * Both legs now always run, and one toast tells the whole story.
  */
-/** Runs the full daily growth pass for one account: check-in claim first, then
- * the growth-activity report. */
 export function useTriggerGrowthPass(accountId: string) {
   const queryClient = useQueryClient();
   return useMutation<AccountGrowthPassResult, ApiErrorShape, void>({
     mutationFn: async (): Promise<AccountGrowthPassResult> => {
-      const checkin = await consoleRequest<AccountCheckinResult>(
-        `/accounts/${encodeURIComponent(accountId)}/checkin`,
-        { method: "POST" },
-      );
-      const checkinMsg = checkin.message ?? "Daily check-in done";
-      if (!checkin.ok) {
-        return {
-          ok: false,
-          message: `Check-in failed: ${checkinMsg}. Report skipped.`,
-          checkin,
-          report: { ok: false, message: "Skipped (check-in failed)" },
-        };
-      }
       const report = await consoleRequest<AccountActivityReportResult>(
         `/accounts/${encodeURIComponent(accountId)}/activity-report`,
         { method: "POST" },
       );
       const reportMsg = report.message ?? "Activity reported";
+      const checkin = await consoleRequest<AccountCheckinResult>(
+        `/accounts/${encodeURIComponent(accountId)}/checkin`,
+        { method: "POST" },
+      );
+      const checkinMsg = checkin.message ?? "Daily check-in done";
+      // Report is the reliable leg, so the pass succeeds when it landed. A
+      // check-in that is merely unavailable is the normal case on a free plan,
+      // not a failure — so it reads as a status, not an error, and says when
+      // the credit arrives.
       return {
         ok: report.ok,
         message: report.ok
-          ? `Check-in: ${checkinMsg} · Report: ${reportMsg}`
-          : `Check-in: ${checkinMsg} · Report failed: ${reportMsg}`,
+          ? `Report success · Check-in ${checkinMsg}`
+          : `Report failed: ${reportMsg} · Check-in ${checkinMsg}`,
         checkin,
         report,
       };
