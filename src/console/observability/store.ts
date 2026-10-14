@@ -249,6 +249,7 @@ interface BreakdownBucket {
   input: number;
   output: number;
   cached: number;
+  cacheInput: number;
   errors: number;
   cost: number | null;
   rateSum: number;
@@ -256,7 +257,7 @@ interface BreakdownBucket {
 }
 
 function emptyBreakdown(name: string): BreakdownBucket {
-  return { name, requests: 0, input: 0, output: 0, cached: 0, errors: 0, cost: null, rateSum: 0, rateCount: 0 };
+  return { name, requests: 0, input: 0, output: 0, cached: 0, cacheInput: 0, errors: 0, cost: null, rateSum: 0, rateCount: 0 };
 }
 
 /** Real Drizzle-backed observability repository used by the production console. */
@@ -424,6 +425,7 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
     let requests = 0;
     let inputTokens = 0;
     let cachedTokens = 0;
+    let cacheInputTokens = 0;
     let outputTokens = 0;
     let errors = 0;
     let cancelled = 0;
@@ -436,8 +438,11 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
     for (const event of events) {
       requests += 1;
       inputTokens += event.inputTokens ?? 0;
-      cachedTokens += event.cachedInputTokens ?? 0;
       outputTokens += event.outputTokens ?? 0;
+      if (event.cachedInputTokens !== null) {
+        cacheInputTokens += event.inputTokens ?? 0;
+        cachedTokens += event.cachedInputTokens;
+      }
       if (isGatewayError(event.status, event.httpStatus)) errors += 1;
       if (event.status === "cancelled") cancelled += 1;
       if (event.status === "truncated") truncated += 1;
@@ -464,7 +469,7 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
         ...performance,
         estimatedCostUsd,
         partial: unpriced > 0,
-        cacheHitRate: inputTokens > 0 ? (cachedTokens / inputTokens) * 100 : 0,
+        cacheHitRate: cacheInputTokens > 0 ? (cachedTokens / cacheInputTokens) * 100 : 0,
         avgTokensPerSec: tokensPerSecCount > 0 ? tokensPerSecSum / tokensPerSecCount : 0,
       },
     };
@@ -516,7 +521,10 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
       bucket.requests += 1;
       bucket.input += event.inputTokens ?? 0;
       bucket.output += event.outputTokens ?? 0;
-      bucket.cached += event.cachedInputTokens ?? 0;
+      if (event.cachedInputTokens !== null) {
+        bucket.cacheInput += event.inputTokens ?? 0;
+        bucket.cached += event.cachedInputTokens;
+      }
       if (isGatewayError(event.status, event.httpStatus)) bucket.errors += 1;
       if (event.estimatedCostUsd !== null) bucket.cost = (bucket.cost ?? 0) + event.estimatedCostUsd;
       if (event.tokensPerSec !== null) {
@@ -535,7 +543,7 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
         total: bucket.input + bucket.output,
         errors: bucket.errors,
         costUsd: bucket.cost,
-        cacheHitRate: bucket.input > 0 ? (bucket.cached / bucket.input) * 100 : 0,
+        cacheHitRate: bucket.cacheInput > 0 ? (bucket.cached / bucket.cacheInput) * 100 : 0,
         avgTokensPerSec: bucket.rateCount > 0 ? bucket.rateSum / bucket.rateCount : 0,
       }))
       .sort((a, b) => b.requests - a.requests)
@@ -571,7 +579,7 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
             existing.costUsd === null && row.costUsd === null
               ? null
               : (existing.costUsd ?? 0) + (row.costUsd ?? 0),
-          cacheHitRate: input > 0 ? (existing.cached + row.cached) / input * 100 : 0,
+          cacheHitRate: 0,
         });
       }
       return {
@@ -605,20 +613,24 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
     const events = await this.periodEvents(tenantId, period);
     let inputTokens = 0;
     let cachedTokens = 0;
+    let cacheInputTokens = 0;
     let outputTokens = 0;
     for (const event of events) {
       inputTokens += event.inputTokens ?? 0;
-      cachedTokens += event.cachedInputTokens ?? 0;
       outputTokens += event.outputTokens ?? 0;
+      if (event.cachedInputTokens !== null) {
+        cacheInputTokens += event.inputTokens ?? 0;
+        cachedTokens += event.cachedInputTokens;
+      }
     }
     return {
       period,
       inputTokens,
       cachedTokens,
       cacheWriteTokens: 0,
-      // Honest cache hit rate: the cached share of the prompt. (This used to
-      // divide by input+output, mixing completion tokens into the denominator.)
-      hitRate: inputTokens > 0 ? (cachedTokens / inputTokens) * 100 : 0,
+      // Cached share of prompts that reported a cache figure. A request with
+      // no cache field is not eligible and stays out of both sides.
+      hitRate: cacheInputTokens > 0 ? (cachedTokens / cacheInputTokens) * 100 : 0,
     };
   }
 

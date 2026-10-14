@@ -94,58 +94,6 @@ function calculateEstimatedCost(basis: UsageCostBasis, rawCost: unknown): number
   ) / 1_000_000;
 }
 
-/**
- * Buddy bridge cache-read correction.
- *
- * OpenAI's contract is that `prompt_tokens` is the all-in prompt and
- * `prompt_tokens_details.cached_tokens` is a subset of it. Anthropic's
- * contract is the inverse: `input_tokens` is fresh only, and the all-in total
- * is `input_tokens + cache_read + cache_creation`. The Buddy bridges report
- * the OpenAI field names with the Anthropic arithmetic: a cache read is added
- * on top of the all-in total, so `prompt_tokens = real_prompt + cached`.
- *
- * Verified live 2026-10-14 through the gateway, same prompt, fresh then
- * reread: glm-5.3-flash reported 56,099 then 112,163 with 56,064 cached;
- * deepseek-v4.1-flash reported 56,117 then 112,053 with 55,936 cached. In both
- * cases `reported - cached` recovered the fresh turn's honest total exactly.
- * A no-read turn reports honest counts and is left alone.
- *
- * The correction is `input = reported - cached`, which is the real all-in
- * prompt, so `cached / input` is the OpenAI hit rate the operator asked for.
- * It only fires when cached is at least half the reported total: below that
- * the additive pattern cannot hold, and guessing would corrupt an honest
- * partial hit.
- */
-function correctBuddyCacheReadTotal(
-  providerId: string,
-  modelId: string,
-  usage: UsageRecord,
-): UsageRecord {
-  if (
-    providerId !== "cb" &&
-    providerId !== "cbcn" &&
-    providerId !== "workbuddy" &&
-    providerId !== "workbuddycn"
-  ) {
-    return usage;
-  }
-  // Routing aliases may leave a `<route>/` prefix (`bansos/glm-5.3-flash`);
-  // the family check keys on the bare upstream model name.
-  const bare = modelId.includes("/") ? modelId.slice(modelId.lastIndexOf("/") + 1) : modelId;
-  if (!/^glm/i.test(bare) && !/^deepseek/i.test(bare)) return usage;
-  const cached = usage.cached_input_tokens;
-  if (typeof cached !== "number" || cached <= 0) return usage;
-  const reported = usage.input_tokens;
-  if (cached * 2 > reported) return usage;
-  const real = reported - cached;
-  return {
-    ...usage,
-    input_tokens: real,
-    ...(typeof usage.uncached_input_tokens === "number"
-      ? { uncached_input_tokens: Math.max(0, real - cached) }
-      : {}),
-  };
-}
 
 /** Reprices canonical usage using the routed model's persisted/catalog price. */
 export function repriceUsage(
@@ -154,7 +102,6 @@ export function repriceUsage(
   modelId: string,
   catalogCost?: unknown,
 ): UsageRecord {
-  usage = correctBuddyCacheReadTotal(providerId, modelId, usage);
   // `costFor`, not `resolve`: pricing falls back to the model's own global rate
   // when the routed provider published none of its own, so a reseller gateway
   // is billed for the model it served instead of recording `$0.00`.
