@@ -43,6 +43,21 @@ function toolSummary(call: { readonly name: string; readonly arguments: string }
     : "No action details";
 }
 
+/**
+ * Tool arguments for the expandable detail block.
+ *
+ * Pretty-printed so a long image prompt is readable instead of one unbroken
+ * line. Unparseable JSON is shown verbatim — the operator needs to see what the
+ * model actually sent, and reformatting it would hide the defect.
+ */
+function prettyArguments(raw: string): string {
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2);
+  } catch {
+    return raw;
+  }
+}
+
 function count(value: number | undefined): string | null {
   if (value === undefined || !Number.isFinite(value)) return null;
   return new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(value);
@@ -155,6 +170,10 @@ export function ChatBubble({
 }): ReactNode {
   const mine = message.role === "user";
   const thinking = thinkingText(message.reasoning ?? "");
+  // The final paint omits the flat list and carries the rounds instead, so a
+  // completed media turn would lose its tool detail. Derive it from the rounds
+  // whenever the flat one is absent — one source, whichever the writer used.
+  const toolCalls = message.toolCalls ?? message.toolRounds?.flatMap((round) => round.toolCalls) ?? [];
   const live = message.pending === true && message.error !== true;
   const waiting = live && message.text.length === 0 && thinking.length === 0 && message.mediaPending === undefined;
   const [editing, setEditing] = useState(false);
@@ -274,6 +293,89 @@ export function ChatBubble({
           </form>
         ) : (
           <>
+            {message.mediaPending !== undefined ? (
+              <div
+                role="status"
+                aria-label={
+                  message.mediaStage === "planning"
+                    ? `Calling generate_${message.mediaPending}`
+                    : `Generating ${message.mediaPending}`
+                }
+                className={`relative mb-3 grid w-full max-w-120 place-items-center overflow-hidden rounded-control border border-inner-border bg-surface-2 ${
+                  message.mediaPending === "image" ? "aspect-square" : "aspect-video"
+                }`}
+              >
+                <div className="absolute inset-0 animate-pulse bg-linear-to-r from-surface-2 via-hover to-surface-2 motion-reduce:animate-none" />
+                <div className="relative flex flex-col items-center gap-3 px-5 text-center text-caption text-text-secondary">
+                  <span className="h-3 w-3 rounded-full bg-accent animate-typing-bounce motion-reduce:animate-none" aria-hidden="true" />
+                  <span className="font-semibold">
+                    {message.mediaStage === "planning"
+                      ? `Calling generate_${message.mediaPending}…`
+                      : `Generating ${message.mediaPending}…`}
+                  </span>
+                  <span className="text-text-tertiary">
+                    {message.mediaStage === "planning"
+                      ? "The planner is preparing the worker request."
+                      : "Your preview will appear here when it’s ready."}
+                  </span>
+                </div>
+              </div>
+            ) : null}
+            {mine ? (
+              message.text.length > 0 ? message.text : null
+            ) : message.text.length > 0 ? (
+              <div className="min-w-0 font-sans text-body-lg leading-normal [&_p]:m-0 [&_p]:mb-4 [&_ul]:m-0 [&_ul]:mb-4 [&_ol]:m-0 [&_ol]:mb-4 [&_pre]:m-0 [&_pre]:mb-4 [&_p:last-child]:mb-0 [&_ul:last-child]:mb-0 [&_ol:last-child]:mb-0 [&_pre:last-child]:mb-0 [&_pre]:overflow-x-auto [&_pre]:px-6 [&_pre]:py-5 [&_pre]:rounded-control [&_pre]:bg-surface-muted [&_pre]:font-mono [&_pre]:text-caption [&_code]:font-mono [&_svg]:flex-none [&_svg]:mt-1.5">
+                {message.error === true ? <AlertCircle size={14} aria-hidden="true" /> : null}
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    pre: MarkdownPre,
+                    table: ({ children }) => (
+                      <div className="my-4 max-w-full overflow-x-auto rounded-control border border-inner-border">
+                        <table className="w-full border-collapse text-left text-caption">{children}</table>
+                      </div>
+                    ),
+                    th: ({ children }) => (
+                      <th className="border-b border-inner-border bg-surface-2 px-4 py-3 text-left font-semibold text-text-primary">
+                        {children}
+                      </th>
+                    ),
+                    td: ({ children }) => (
+                      <td className="border-b border-inner-border px-4 py-3 align-top text-text-secondary [&>p]:my-0">
+                        {children}
+                      </td>
+                    ),
+                  }}
+                >
+                  {message.text}
+                </ReactMarkdown>
+                {live ? <span className="ml-1 inline-block text-accent animate-stream-caret" aria-hidden="true">▋</span> : null}
+              </div>
+            ) : null}
+      {toolCalls.length > 0 ? (
+        <div className="flex flex-col gap-3 items-start w-full max-w-280 text-text-tertiary font-sans text-caption">
+          {toolCalls.map((call) => (
+            // Collapsed this is a pill sized to the tool's name; expanded it
+            // grows to fit the arguments instead of stretching the column.
+            <details
+              key={call.id}
+              className="w-fit max-w-full border border-inner-border rounded-control bg-surface-2"
+            >
+              <summary className="cursor-pointer select-none list-none flex items-center gap-2.5 h-12 px-4 text-text-secondary text-badge font-semibold hover:text-text-primary [&::-webkit-details-marker]:hidden">
+                <Wrench size={12} aria-hidden="true" className="text-accent flex-none" />
+                <span>Tool call · {call.name}</span>
+                <ChevronDown size={14} aria-hidden="true" className="flex-none [details[open]_&]:rotate-180" />
+              </summary>
+              <div className="px-5 pb-4 pt-1 flex flex-col gap-3 max-w-280">
+                <span className="text-micro uppercase tracking-label text-text-tertiary">Arguments</span>
+                <pre className="scroll-region overflow-auto max-h-80 px-5 py-4 border border-inner-border rounded-control bg-surface-1 text-text-secondary leading-normal select-text cursor-text whitespace-pre-wrap wrap-anywhere">
+                  {prettyArguments(call.arguments)}
+                </pre>
+              </div>
+            </details>
+          ))}
+        </div>
+      ) : null}
             {(message.images?.length ?? 0) > 0 ? (
               <div className="flex flex-wrap gap-2 mb-1">
                 {message.images?.map((image) => (
@@ -330,34 +432,6 @@ export function ChatBubble({
                 ))}
               </div>
             ) : null}
-            {message.mediaPending !== undefined ? (
-              <div
-                role="status"
-                aria-label={
-                  message.mediaStage === "planning"
-                    ? `Calling generate_${message.mediaPending}`
-                    : `Generating ${message.mediaPending}`
-                }
-                className={`relative mb-3 grid w-full max-w-120 place-items-center overflow-hidden rounded-control border border-inner-border bg-surface-2 ${
-                  message.mediaPending === "image" ? "aspect-square" : "aspect-video"
-                }`}
-              >
-                <div className="absolute inset-0 animate-pulse bg-linear-to-r from-surface-2 via-hover to-surface-2 motion-reduce:animate-none" />
-                <div className="relative flex flex-col items-center gap-3 px-5 text-center text-caption text-text-secondary">
-                  <span className="h-3 w-3 rounded-full bg-accent animate-typing-bounce motion-reduce:animate-none" aria-hidden="true" />
-                  <span className="font-semibold">
-                    {message.mediaStage === "planning"
-                      ? `Calling generate_${message.mediaPending}…`
-                      : `Generating ${message.mediaPending}…`}
-                  </span>
-                  <span className="text-text-tertiary">
-                    {message.mediaStage === "planning"
-                      ? "The planner is preparing the worker request."
-                      : "Your preview will appear here when it’s ready."}
-                  </span>
-                </div>
-              </div>
-            ) : null}
             {(message.workerModels?.length ?? 0) > 0 ? (
               <div className="flex flex-wrap gap-2 mb-3">
                 {message.workerModels?.map((worker) => (
@@ -365,47 +439,6 @@ export function ChatBubble({
                     Media worker · {worker}
                   </span>
                 ))}
-              </div>
-            ) : null}
-            {(message.tools?.length ?? 0) > 0 ? (
-              <div className="flex flex-wrap gap-3 mb-4">
-                {message.tools?.map((tool) => (
-                  <span key={tool} className="inline-flex items-center gap-2.5 h-12 px-4.5 border border-border-strong rounded-pill bg-surface-1 text-text-secondary text-badge leading-none whitespace-nowrap [&_svg]:text-accent">
-                    <Wrench size={11} aria-hidden="true" />
-                    <span>{tool}</span>
-                  </span>
-                ))}
-              </div>
-            ) : null}
-            {mine ? (
-              message.text.length > 0 ? message.text : null
-            ) : message.text.length > 0 ? (
-              <div className="min-w-0 font-sans text-body-lg leading-normal [&_p]:m-0 [&_p]:mb-4 [&_ul]:m-0 [&_ul]:mb-4 [&_ol]:m-0 [&_ol]:mb-4 [&_pre]:m-0 [&_pre]:mb-4 [&_p:last-child]:mb-0 [&_ul:last-child]:mb-0 [&_ol:last-child]:mb-0 [&_pre:last-child]:mb-0 [&_pre]:overflow-x-auto [&_pre]:px-6 [&_pre]:py-5 [&_pre]:rounded-control [&_pre]:bg-surface-muted [&_pre]:font-mono [&_pre]:text-caption [&_code]:font-mono [&_svg]:flex-none [&_svg]:mt-1.5">
-                {message.error === true ? <AlertCircle size={14} aria-hidden="true" /> : null}
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
-                  components={{
-                    pre: MarkdownPre,
-                    table: ({ children }) => (
-                      <div className="my-4 max-w-full overflow-x-auto rounded-control border border-inner-border">
-                        <table className="w-full border-collapse text-left text-caption">{children}</table>
-                      </div>
-                    ),
-                    th: ({ children }) => (
-                      <th className="border-b border-inner-border bg-surface-2 px-4 py-3 text-left font-semibold text-text-primary">
-                        {children}
-                      </th>
-                    ),
-                    td: ({ children }) => (
-                      <td className="border-b border-inner-border px-4 py-3 align-top text-text-secondary [&>p]:my-0">
-                        {children}
-                      </td>
-                    ),
-                  }}
-                >
-                  {message.text}
-                </ReactMarkdown>
-                {live ? <span className="ml-1 inline-block text-accent animate-stream-caret" aria-hidden="true">▋</span> : null}
               </div>
             ) : null}
           </>
