@@ -106,12 +106,15 @@ async function pinnedFetch(  url: URL,
 ): Promise<Response> {
   const request = url.protocol === "https:" ? httpsRequest : httpRequest;
   const headers = new Headers(init.headers);
+  // String/Buffer/Uint8Array bodies go direct: routing them through
+  // `new Response(body).arrayBuffer()` copied the whole body per request.
+  const rawBody = init.body;
   const body =
-    init.body === undefined || init.body === null
+    rawBody === undefined || rawBody === null
       ? undefined
-      : typeof init.body === "string"
-        ? init.body
-        : Buffer.from(await new Response(init.body).arrayBuffer());
+      : typeof rawBody === "string" || Buffer.isBuffer(rawBody) || rawBody instanceof Uint8Array
+        ? rawBody
+        : Buffer.from(await new Response(rawBody).arrayBuffer());
   const outboundHeaders: Record<string, string> = {};
   headers.forEach((value, key) => {
     outboundHeaders[key] = value;

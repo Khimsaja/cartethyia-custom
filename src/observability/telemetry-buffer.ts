@@ -320,10 +320,13 @@ export class TelemetryBatchBuffer {
     for (let attempt = 0; attempt < DRAIN_MAX_ATTEMPTS; attempt += 1) {
       if (attempt > 0) {
         // Backoff compounds with the outage streak so consecutive failed
-        // drains probe the database less and less often.
+        // drains probe the database less and less often. Unref'd so a
+        // mid-shutdown backoff cannot hold the event loop open.
         const { promise, resolve } = Promise.withResolvers<void>();
-        setTimeout(resolve, drainRetryDelayMs(this.drainFailureStreak + attempt - 1));
+        const backoff = setTimeout(resolve, drainRetryDelayMs(this.drainFailureStreak + attempt - 1));
+        if (typeof backoff.unref === "function") backoff.unref();
         await promise;
+        if (this.stopped) return;
       }
       try {
         await this.store.insertEvents(rows);

@@ -110,17 +110,22 @@ async function readBoundedBody(response: Response, maxBytes: number): Promise<st
   if (!response.body) return "";
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
-  let text = "";
+  // Collect decoded chunks and join once: `+=` per chunk reallocates the
+  // prefix (O(n^2)). Truncation stays at the same decoded-char boundary.
+  const parts: string[] = [];
+  let total = 0;
   try {
-    while (text.length < maxBytes) {
+    while (total < maxBytes) {
       const { done, value } = await reader.read();
       if (done) break;
       const chunk = decoder.decode(value, { stream: true });
-      if (text.length + chunk.length > maxBytes) {
-        text += chunk.slice(0, maxBytes - text.length);
+      if (total + chunk.length > maxBytes) {
+        parts.push(chunk.slice(0, maxBytes - total));
+        total = maxBytes;
         break;
       }
-      text += chunk;
+      parts.push(chunk);
+      total += chunk.length;
     }
   } catch {
     // Best-effort capture must never fail the request path.
@@ -131,7 +136,7 @@ async function readBoundedBody(response: Response, maxBytes: number): Promise<st
       // The clone branch is discarded either way.
     }
   }
-  return text;
+  return parts.join("");
 }
 
 export interface ProviderExchangeCapture {
@@ -242,11 +247,16 @@ async function resolvedProviderResponse(
   provider: ProviderExchangeCapture | undefined,
 ): Promise<unknown> {
   if (!provider) return null;
+  let timedOut = false;
   const settled = await Promise.race([
     provider.response,
-    new Promise<null>((resolve) => setTimeout(() => resolve(null), PROVIDER_CAPTURE_AWAIT_MS)),
+    new Promise<null>((resolve) => setTimeout(() => { timedOut = true; resolve(null); }, PROVIDER_CAPTURE_AWAIT_MS)),
   ]);
-  return settled ?? null;
+  if (settled === null || settled === undefined) {
+    // Distinguish "slow payload" from "no payload": a null used to mean both.
+    return timedOut ? { _truncated: true, _reason: "provider_capture_timeout" } : null;
+  }
+  return settled;
 }
 
 /**

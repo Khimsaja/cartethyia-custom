@@ -291,7 +291,18 @@ export async function runAttemptLoop<TResult, TAdapter>(
         await releaseAttemptLeases({ lease, reservation, proxySlot }, leaseSource.routingEngine);
     }
     attempts += 1;
-    if (retryDelayMs > 0) await sleep(retryDelayMs, state.abortController.signal);
+    if (retryDelayMs > 0) {
+      try {
+        await sleep(retryDelayMs, state.abortController.signal);
+      } catch {
+        // Abort during backoff used to escape as the sleep's own error with
+        // no counter increment: attempts already recorded their telemetry,
+        // but `proxy_requests_total` missed the request. Fail with the last
+        // attempt's error so the client sees the real cause, counted once.
+        metrics.proxy_requests_total.inc(1, { status: "cancelled" });
+        throw lastError;
+      }
+    }
   }
   metrics.proxy_requests_total.inc(1, { status: "failed" });
   throw lastError;

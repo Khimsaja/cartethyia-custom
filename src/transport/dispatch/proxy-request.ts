@@ -396,6 +396,9 @@ export async function handleProviderProxyRequest(
                   echo: dispatchRequest.generation_controls["extension:completion.echo"] === true,
                   suffix: dispatchRequest.generation_controls["extension:completion.suffix"],
                 });
+      // Single decode shared by both telemetry panels and the client bytes
+      // below; decoding twice doubled the copy on every non-stream response.
+      const decodedClientText = new TextDecoder().decode(output.bytes);
       await completeAttempt(state, {
         status: "completed",
         ...completionContext({
@@ -420,11 +423,10 @@ export async function handleProviderProxyRequest(
         // a byte-index map (`{"0":123,…}`) after redaction instead of the
         // response. The client receives the same text we parse here, so both
         // panels stay in sync.
-        responseBody: parseCapturedBody(new TextDecoder().decode(output.bytes)),
+        responseBody: parseCapturedBody(decodedClientText),
         // Non-stream: client receives the exact same bytes we just encoded —
         // keep Server and Client panels in sync so the drawer never shows “—”.
-        clientResponseText: new TextDecoder().decode(output.bytes),
-        ...(firstContentDeltaAtMs !== undefined ? { firstContentDeltaAtMs } : {}),
+        clientResponseText: decodedClientText,
       });
       metrics.proxy_requests_total.inc(1, { status: "completed" });
       return new Response(output.bytes as unknown as BodyInit, {

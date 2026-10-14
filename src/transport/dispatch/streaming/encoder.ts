@@ -57,14 +57,19 @@ export class StreamEventPipeline {
   firstContentDeltaAtMs: number | undefined;
   lastEventAtMs: number | undefined;
   private readonly eventTranscriptHead: Array<CanonicalEvent & { timestamp: number }> = [];
-  private readonly eventTranscriptTail: Array<CanonicalEvent & { timestamp: number }> = [];
+  private readonly eventTranscriptTail: Array<{ event: CanonicalEvent & { timestamp: number }; bytes: number }> = [];
+  private eventTranscriptTailStart = 0;
   private eventTranscriptHeadBytes = 0;
   private eventTranscriptTailBytes = 0;
   private totalEventCount = 0;
 
   private readonly recoverableResponsesPrelude: boolean;
   private clientVisibleEvent = false;
-  private clientResponseTextValue = "";
+  // Decoded chunks collected per event and joined once at finalize: `+=` on
+  // every chunk reallocates the whole prefix (O(n^2) up to the 512 KiB cap).
+  private readonly clientResponseChunks: string[] = [];
+  private clientResponseLength = 0;
+  private clientResponseTruncated = false;
   // One decoder per stream: `new TextDecoder()` per chunk would allocate
   // on every upstream event for the telemetry transcript copy.
   private readonly clientResponseDecoder = new TextDecoder();
@@ -91,14 +96,16 @@ export class StreamEventPipeline {
 
   /** The client-facing response transcript (decoded SSE/JSON) — distinct from the provider-side canonical events. */
   get clientResponseText(): string {
-    return this.clientResponseTextValue;
+    const text = this.clientResponseChunks.join("");
+    return this.clientResponseTruncated ? text.slice(0, CLIENT_RESPONSE_CAP) : text;
   }
 
   /** Bounded canonical-event transcript for telemetry; the wire stream is unaffected. */
   get telemetryEventTranscript():
     | readonly (CanonicalEvent & { timestamp: number })[]
     | TruncatedEventTranscript {
-    const events = [...this.eventTranscriptHead, ...this.eventTranscriptTail];
+    const tail = this.eventTranscriptTail.slice(this.eventTranscriptTailStart).map((entry) => entry.event);
+    const events = [...this.eventTranscriptHead, ...tail];
     const omittedEvents = this.totalEventCount - events.length;
     if (omittedEvents === 0) return events;
     const terminal = this.terminal;
@@ -123,6 +130,8 @@ export class StreamEventPipeline {
 
   private recordTelemetryEvent(event: CanonicalEvent & { timestamp: number }): void {
     this.totalEventCount += 1;
+    // Single serialization per event: the byte size is stored with the entry
+    // so eviction subtracts without re-serializing the removed event.
     const eventBytes = Buffer.byteLength(JSON.stringify(event), "utf8");
     if (this.eventTranscriptHeadBytes + eventBytes <= EVENT_TRANSCRIPT_HEAD_CAP) {
       this.eventTranscriptHead.push(event);
@@ -130,12 +139,19 @@ export class StreamEventPipeline {
       return;
     }
     if (eventBytes > EVENT_TRANSCRIPT_TAIL_CAP) return;
+    // Index-pointer queue: no O(N) shift() memmove per eviction. Compact the
+    // backing array once the dead prefix grows past the live window.
     while (this.eventTranscriptTailBytes + eventBytes > EVENT_TRANSCRIPT_TAIL_CAP) {
-      const removed = this.eventTranscriptTail.shift();
+      const removed = this.eventTranscriptTail[this.eventTranscriptTailStart];
       if (removed === undefined) break;
-      this.eventTranscriptTailBytes -= Buffer.byteLength(JSON.stringify(removed), "utf8");
+      this.eventTranscriptTailStart += 1;
+      this.eventTranscriptTailBytes -= removed.bytes;
     }
-    this.eventTranscriptTail.push(event);
+    if (this.eventTranscriptTailStart > 1024 && this.eventTranscriptTailStart > this.eventTranscriptTail.length / 2) {
+      this.eventTranscriptTail.splice(0, this.eventTranscriptTailStart);
+      this.eventTranscriptTailStart = 0;
+    }
+    this.eventTranscriptTail.push({ event, bytes: eventBytes });
     this.eventTranscriptTailBytes += eventBytes;
   }
 
@@ -153,10 +169,16 @@ export class StreamEventPipeline {
   }
 
   private appendClientResponse(bytes: Uint8Array): void {
-    if (this.clientResponseTextValue.length >= CLIENT_RESPONSE_CAP) return;
-    this.clientResponseTextValue += this.clientResponseDecoder.decode(bytes, { stream: true });
-    if (this.clientResponseTextValue.length > CLIENT_RESPONSE_CAP)
-      this.clientResponseTextValue = this.clientResponseTextValue.slice(0, CLIENT_RESPONSE_CAP);
+    if (this.clientResponseTruncated) return;
+    const chunk = this.clientResponseDecoder.decode(bytes, { stream: true });
+    if (this.clientResponseLength + chunk.length > CLIENT_RESPONSE_CAP) {
+      this.clientResponseChunks.push(chunk.slice(0, CLIENT_RESPONSE_CAP - this.clientResponseLength));
+      this.clientResponseLength = CLIENT_RESPONSE_CAP;
+      this.clientResponseTruncated = true;
+      return;
+    }
+    this.clientResponseChunks.push(chunk);
+    this.clientResponseLength += chunk.length;
   }
 
   private pushEncodedEvent(

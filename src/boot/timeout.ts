@@ -33,3 +33,16 @@ export function timeoutAfter(ms: number, message: string): Promise<never> {
     if (typeof timer.unref === "function") timer.unref();
   });
 }
+
+/**
+ * Cancellable variant of {@link timeoutAfter}: the loser timer is cleared
+ * when the raced operation wins, instead of firing later against nothing.
+ */
+export function cancellableTimeout(ms: number, message: string): { promise: Promise<never>; cancel: () => void } {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const promise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+    if (typeof timer.unref === "function") timer.unref();
+  });
+  return { promise, cancel: () => clearTimeout(timer) };
+}
