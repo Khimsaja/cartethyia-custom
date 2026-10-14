@@ -102,6 +102,38 @@ describe("account error diagnostics", () => {
     expect(classification.category).toBe("quota_exhausted");
   });
 
+  test("the 6004 code alone is not what matches — a reused code must not park an account", () => {
+    // `6004` is not unique to this surface (the artifact-release API reuses it).
+    // Keying on the code swept an unrelated failure into an hour-long quota
+    // cooldown, so the match is the message's own wording.
+    const classification = classifyAccountError(
+      { message: "artifact release not found", status: 429 },
+      { origin: "upstream", scope: "provider", providerCode: "6004", statusCode: 429 },
+    );
+    // What matters is that it is NOT the hour-long quota cooldown: an ordinary
+    // 429 reading as transient is correct, since nothing here named a window.
+    expect(classification.category).not.toBe("quota_exhausted");
+    // And it must not claim the provider stated a window it never stated.
+    expect(classification.providerStated).toBe(false);
+  });
+
+  test("the frequency window is recognised from the message with no provider code at all", () => {
+    // The reliable key is the phrase, so it must work even when no code was
+    // extracted (a frame the adapter could not parse for one).
+    const classification = classifyAccountError(
+      {
+        message:
+          "usage exceeds frequency limit, but don't worry, your usage will reset at " +
+          "2026-10-15 14:38:06 UTC+8, alternatively, you can switch to the other models " +
+          "to continue using it.",
+        status: 429,
+      },
+      { origin: "upstream", scope: "provider", statusCode: 429 },
+    );
+    expect(classification.category).toBe("rate_limit_transient");
+    expect(classification.mutatesAccount).toBe(true);
+  });
+
   test("an unnamed 429 stays transient so a healthy account is not parked", () => {
     // Not every 429 is a window: a burst is worth retrying, and parking the
     // account for hours over one would take a healthy credential out of

@@ -386,7 +386,13 @@ export function classifyAccountError(
       // 429 — without it the account fell through to `unknown` with
       // `mutates=false`, stayed in rotation, and was re-picked for every
       // request inside the window the provider had actually named.
-      providerCode === "6004" ||
+      //
+      // Matched on the message's own wording, not on the `6004` code: that code
+      // is not unique to this surface (the artifact-release API reuses it), so a
+      // code match would sweep an unrelated failure into a quota cooldown. The
+      // phrase is the reliable key, and `usage exceeds` + `frequency limit` is
+      // the pair this family actually prints.
+      (lower.includes("usage exceeds") && lower.includes("frequency limit")) ||
       lower.includes("insufficient_quota") ||
       lower.includes("quota_exceeded") ||
       lower.includes("usage_limit_reached") ||

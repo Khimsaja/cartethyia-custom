@@ -298,6 +298,27 @@ describe("recordAccountFailure — a frequency window cools the model, not the a
     expect(new Date(written["hy4-preview-f"]!).getTime()).toBeGreaterThan(Date.now() + 60_000);
   });
 
+  test("the deadline is the upstream's own reset, not a fallback constant", async () => {
+    // The provider printed `reset at 2026-10-15 03:04:16 UTC+8`. Parsing that
+    // absolute stamp is what lets the pair rest for exactly the window the
+    // upstream named — and `sweepExpiredCooldowns` prunes the key the moment it
+    // passes, so the pair returns by itself with no operator action.
+    const resetUtcMs = Date.parse("2026-10-15T03:04:16+08:00");
+    const account = coolingAccount();
+    account["status"] = "active";
+    account["cooldownUntil"] = null;
+    account["consecutiveFailures"] = 0;
+    const { db, captured } = dbDouble(account);
+    await recordAccountFailure(db, "acc-1", new Error(message), buddyFrequencyWindow("hy4-preview-f"));
+
+    const written = onlyUpdate(captured).modelCooldowns as Record<string, string>;
+    const writtenMs = new Date(written["hy4-preview-f"]!).getTime();
+    // A second of slack for the clock ticking between parse and write.
+    expect(Math.abs(writtenMs - resetUtcMs)).toBeLessThan(60_000);
+    // And it is not simply "now + the 1h quota fallback".
+    expect(writtenMs).toBeGreaterThan(Date.now() + 3_600_000);
+  });
+
   test("an account-wide quota exhaustion is still account-wide", async () => {
     // The carve-out: genuine quota exhaustion says nothing about other models,
     // so it must keep cooling the whole account.
