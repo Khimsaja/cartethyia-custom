@@ -1036,6 +1036,15 @@ export function StudioPage(): ReactNode {
                 <ChatBubble
                   key={message.id}
                   message={message}
+                  continuation={
+                    message.role === "assistant" &&
+                    draft.messages[index - 1]?.role === "assistant" &&
+                    draft.messages[index - 1]?.model === message.model
+                  }
+                  showStats={
+                    message.role === "assistant" &&
+                    (draft.messages[index + 1] === undefined || draft.messages[index + 1]?.role === "user")
+                  }
                   onRetry={
                     message.question !== undefined &&
                     message.selectedOption !== undefined &&

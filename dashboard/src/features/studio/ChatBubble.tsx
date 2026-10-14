@@ -22,10 +22,16 @@ function providerName(model: string | undefined): string {
   return slash === -1 ? "" : model.slice(0, slash);
 }
 
+
 function duration(ms: number | undefined): string | null {
-  if (ms === undefined || !Number.isFinite(ms) || ms <= 0) return null;
-  if (ms >= 1000) return `${Number((ms / 1000).toFixed(1))}s`;
-  return `${Math.round(ms)}ms`;
+  if (ms === undefined || !Number.isFinite(ms)) return null;
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`;
+}
+
+function count(value: number | undefined): string | null {
+  if (value === undefined || !Number.isFinite(value)) return null;
+  return new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(value);
 }
 
 function toolSummary(call: { readonly name: string; readonly arguments: string }): string {
@@ -58,10 +64,6 @@ function prettyArguments(raw: string): string {
   }
 }
 
-function count(value: number | undefined): string | null {
-  if (value === undefined || !Number.isFinite(value)) return null;
-  return new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(value);
-}
 
 function thinkingText(text: string): string {
   const trimmed = text.replace(/\r/g, "").trim();
@@ -158,6 +160,8 @@ export function ChatBubble({
   onToolApproval,
   retryDisabled = false,
   questionDisabled = false,
+  continuation = false,
+  showStats = false,
 }: {
   readonly message: LabMessage;
   readonly onEdit?: (text: string) => void;
@@ -167,6 +171,18 @@ export function ChatBubble({
   readonly onToolApproval?: (message: LabMessage, approved: boolean) => void;
   readonly retryDisabled?: boolean;
   readonly questionDisabled?: boolean;
+  /**
+   * This turn continues the assistant turn directly above it, so its model
+   * header is suppressed. A follow-up reply after generated media is still the
+   * same turn to the reader — repeating the model name made one answer look
+   * like two.
+   */
+  readonly continuation?: boolean;
+  /**
+   * This bubble ends the assistant's turn, so it carries the turn's usage
+   * figures. Only one bubble per turn shows them.
+   */
+  readonly showStats?: boolean;
 }): ReactNode {
   const mine = message.role === "user";
   const thinking = thinkingText(message.reasoning ?? "");
@@ -186,13 +202,16 @@ export function ChatBubble({
   const thinkingAtBottomRef = useRef(true);
   const name = modelName(message.model);
   const provider = providerName(message.model);
+  // Usage belongs to the turn, not to every bubble in it: a media turn renders
+  // a preview bubble and then the written answer, and repeating the figures
+  // under each made one answer look like several billed requests.
   const totalTokens = (message.usage?.inputTokens ?? 0) + (message.usage?.outputTokens ?? 0);
   const total = message.usage?.inputTokens === undefined && message.usage?.outputTokens === undefined ? null : count(totalTokens);
   const tokenSpeed =
     message.usage?.outputTokens !== undefined && message.usage?.completionMs !== undefined && message.usage.completionMs > 0
       ? `${Math.round(message.usage.outputTokens / (message.usage.completionMs / 1000))}/s`
       : null;
-  const metrics = mine
+  const metrics = mine || !showStats
     ? []
     : [
         duration(message.usage?.ttftMs) === null ? null : { icon: <Timer size={10} />, label: "Time to first token", value: duration(message.usage?.ttftMs) ?? "" },
@@ -203,7 +222,6 @@ export function ChatBubble({
         tokenSpeed === null ? null : { icon: <Gauge size={10} />, label: "Token speed", value: tokenSpeed },
         duration(message.usage?.completionMs) === null ? null : { icon: <Check size={10} />, label: "Done", value: duration(message.usage?.completionMs) ?? "" },
       ].filter((item) => item !== null);
-
   useEffect(() => {
     if (thinking.length > 0 && message.text.length === 0) setThinkingOpen(true);
     if (message.text.length > 0) setThinkingOpen(false);
@@ -227,7 +245,7 @@ export function ChatBubble({
 
   return (
     <div className={mine ? "mlab-turn flex flex-col w-full max-w-380 gap-2 items-end ml-auto animate-message-in motion-reduce:animate-none" : "mlab-turn flex flex-col w-full max-w-380 gap-2 items-start mr-auto animate-message-in motion-reduce:animate-none"}>
-      {mine ? null : (
+      {mine || continuation ? null : (
         <div className="flex items-center gap-3 min-h-12 text-text-tertiary text-caption">
           <span className="grid place-items-center w-11 h-11 rounded-control border border-inner-border bg-surface-2 text-text-secondary" aria-hidden="true">
             <Bot size={13} />
