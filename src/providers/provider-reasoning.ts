@@ -85,6 +85,56 @@ export function geminiThinkingOutputFloor(reasoning: CanonicalRequest["reasoning
   return undefined;
 }
 
+/**
+ * Minimum output budget for a caller who asked for `low` effort and got a
+ * higher one.
+ *
+ * A wire ladder can only serve levels the upstream accepts, so a request for
+ * `low` is clamped up to whatever that model offers — `hy4-preview-f` serves
+ * `high` and nothing else. Effort is not free: the higher level spends its
+ * budget on reasoning before it writes the answer, so an output limit the
+ * caller sized for `low` now has to cover both, and an answer that fits in
+ * 2048 tokens of visible text does not fit once the reasoning share is taken
+ * out of the same 2048.
+ *
+ * The symptom is a truncated answer that an agent retries from the top —
+ * reading as a loop ("let me do / let me go / let me do it") rather than as a
+ * short limit. Raising the ceiling is what keeps the raised effort usable.
+ *
+ * Only ever raises, and only to the model's own catalog limit: a caller who
+ * deliberately asked for a small answer still gets one when the effort was
+ * left alone, and no provider is asked for more output than it declares.
+ */
+export function raisedEffortOutputFloor(
+  requested: string | undefined,
+  applied: string | undefined,
+  modelOutputLimit: number | undefined,
+): number | undefined {
+  if (requested === undefined || applied === undefined) return undefined;
+  const from = BUDDY_LEVEL_RANK[requested.trim().toLowerCase()];
+  const to = BUDDY_LEVEL_RANK[applied.trim().toLowerCase()];
+  if (from === undefined || to === undefined || to <= from) return undefined;
+  if (modelOutputLimit === undefined || !Number.isFinite(modelOutputLimit) || modelOutputLimit <= 0)
+    return undefined;
+  // Leave headroom instead of claiming the whole catalog limit: the caller's
+  // number was a real preference about answer size, and the goal is to stop
+  // truncating, not to spend the model's ceiling on every turn.
+  return Math.max(RAISED_EFFORT_MIN_OUTPUT_TOKENS, Math.floor(modelOutputLimit / 2));
+}
+
+const RAISED_EFFORT_MIN_OUTPUT_TOKENS = 16_384;
+
+const BUDDY_LEVEL_RANK: Readonly<Record<string, number>> = {
+  off: 0,
+  none: 0,
+  minimal: 1,
+  low: 2,
+  medium: 3,
+  high: 4,
+  xhigh: 5,
+  max: 6,
+};
+
 /** Builds the Anthropic thinking block from canonical reasoning intent. */
 export function buildAnthropicThinkingPayload(reasoning: ReasoningIntent): Record<string, unknown> {
   const blockBinding =

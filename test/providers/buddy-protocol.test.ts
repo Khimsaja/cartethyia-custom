@@ -39,6 +39,58 @@ describe("Buddy upstream protocol alignment", () => {
     expect(payload["prompt_cache_key"]).toBe("client-key");
   });
 
+  test("raising the effort also lifts a max_tokens sized for the lower one", () => {
+    // `hy4-preview-f` serves only `high`. A caller who asked for `low` sized
+    // its answer for `low`, but the raised level spends part of the same
+    // budget on reasoning — so the answer truncates and an agent retries from
+    // the top, which reads as a loop rather than as a short limit.
+    const payload: Record<string, unknown> = {
+      model: "hy4-preview-f",
+      messages: [{ role: "user", content: "hi" }],
+      reasoning_effort: "low",
+      max_tokens: 2048,
+    };
+    buddyPrePayloadCommon(payload, request, "intl");
+    expect(payload["reasoning_effort"]).toBe("high");
+    expect(payload["max_tokens"]).toBe(32_000);
+  });
+
+  test("a supported effort leaves the caller's max_tokens alone", () => {
+    // Nothing was raised, so nothing is owed a bigger budget: a caller who
+    // deliberately asked for a small answer still gets one.
+    const payload: Record<string, unknown> = {
+      model: "hy4-preview-f",
+      messages: [{ role: "user", content: "hi" }],
+      reasoning_effort: "high",
+      max_tokens: 2048,
+    };
+    buddyPrePayloadCommon(payload, request, "intl");
+    expect(payload["reasoning_effort"]).toBe("high");
+    expect(payload["max_tokens"]).toBe(2048);
+  });
+
+  test("clamping an effort downward never raises the output budget", () => {
+    const payload: Record<string, unknown> = {
+      model: "glm-5.3",
+      messages: [{ role: "user", content: "hi" }],
+      reasoning_effort: "max",
+      max_tokens: 2048,
+    };
+    buddyPrePayloadCommon(payload, request, "intl");
+    expect(payload["max_tokens"]).toBe(2048);
+  });
+
+  test("a max_tokens already above the floor is not overwritten", () => {
+    const payload: Record<string, unknown> = {
+      model: "hy4-preview-f",
+      messages: [{ role: "user", content: "hi" }],
+      reasoning_effort: "low",
+      max_tokens: 60_000,
+    };
+    buddyPrePayloadCommon(payload, request, "intl");
+    expect(payload["max_tokens"]).toBe(60_000);
+  });
+
   test("uses the CN effort ladder for the same model", () => {
     const payload: Record<string, unknown> = {
       model: "deepseek-v4.1-flash",

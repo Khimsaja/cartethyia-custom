@@ -20,7 +20,8 @@
 import { completeRequiredSchema } from "../../../protocol/codecs";
 import type { CanonicalRequest } from "../../../protocol/canonical-model";
 import { isRecord } from "../../../protocol/codecs";
-import { applyDeepSeekReasoning, applyOpenAIReasoning, backfillDeepSeekReasoningContent } from "../../provider-reasoning";
+import { applyDeepSeekReasoning, applyOpenAIReasoning, backfillDeepSeekReasoningContent, raisedEffortOutputFloor } from "../../provider-reasoning";
+import { BUDDY_SHARED_RAW } from "./buddy-catalog-shared";
 
 const BUDDY_TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
 const INVALID_BUDDY_TOOL_NAME_CHARS = /[^a-zA-Z0-9_-]/g;
@@ -429,6 +430,38 @@ function clampBuddyReasoningEffort(payload: Record<string, unknown>, realm: "int
     ? below.reduce((best, entry) => (entry.rank > best.rank ? entry : best))
     : ranked.reduce((best, entry) => (entry.rank < best.rank ? entry : best));
   payload[key] = chosen.effort;
+  raiseOutputForRaisedEffort(payload, normalized, chosen.effort.trim().toLowerCase());
+}
+
+/**
+ * Lifts `max_tokens` when the ladder raised the caller's effort.
+ *
+ * `clampBuddyReasoningEffort` only ever *raises* an unsupported level, and a
+ * higher level spends part of the same output budget on reasoning — so a limit
+ * the caller sized for `low` can no longer hold the answer it would have held
+ * at `low`. The floor is half the model's catalog output limit (never more, and
+ * never below a usable minimum), so a deliberate small request is preserved
+ * while a truncated one is not.
+ */
+function raiseOutputForRaisedEffort(
+  payload: Record<string, unknown>,
+  requested: string,
+  applied: string,
+): void {
+  const model = typeof payload["model"] === "string" ? payload["model"].trim().toLowerCase() : "";
+  if (model.length === 0) return;
+  const floor = raisedEffortOutputFloor(requested, applied, buddyModelOutputLimit(model));
+  if (floor === undefined) return;
+  const current = payload["max_tokens"];
+  if (typeof current === "number" && Number.isFinite(current) && current >= floor) return;
+  payload["max_tokens"] = floor;
+}
+
+/** The catalog output limit for one buddy model id, when the catalog names it. */
+function buddyModelOutputLimit(model: string): number | undefined {
+  const row = BUDDY_SHARED_RAW.find((entry) => entry[0]?.toLowerCase() === model);
+  const out = row?.[5];
+  return typeof out === "number" && Number.isFinite(out) && out > 0 ? out : undefined;
 }
 
 function normalizeBuddyToolChoice(payload: Record<string, unknown>): void {
