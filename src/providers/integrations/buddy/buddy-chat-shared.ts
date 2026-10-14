@@ -20,7 +20,7 @@
 import { completeRequiredSchema } from "../../../protocol/codecs";
 import type { CanonicalRequest } from "../../../protocol/canonical-model";
 import { isRecord } from "../../../protocol/codecs";
-import { applyDeepSeekReasoning, applyOpenAIReasoning, backfillDeepSeekReasoningContent, raisedEffortOutputFloor } from "../../provider-reasoning";
+import { applyDeepSeekReasoning, applyOpenAIReasoning, backfillDeepSeekReasoningContent, clampedEffortOutputFloor } from "../../provider-reasoning";
 import { BUDDY_SHARED_RAW } from "./buddy-catalog-shared";
 
 const BUDDY_TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
@@ -450,7 +450,7 @@ function raiseOutputForRaisedEffort(
 ): void {
   const model = typeof payload["model"] === "string" ? payload["model"].trim().toLowerCase() : "";
   if (model.length === 0) return;
-  const floor = raisedEffortOutputFloor(requested, applied, buddyModelOutputLimit(model));
+  const floor = clampedEffortOutputFloor(requested, applied, buddyModelOutputLimit(model));
   if (floor === undefined) return;
   const current = payload["max_tokens"];
   if (typeof current === "number" && Number.isFinite(current) && current >= floor) return;

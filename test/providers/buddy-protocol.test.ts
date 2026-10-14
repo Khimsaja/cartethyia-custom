@@ -69,14 +69,30 @@ describe("Buddy upstream protocol alignment", () => {
     expect(payload["max_tokens"]).toBe(2048);
   });
 
-  test("clamping an effort downward never raises the output budget", () => {
+  test("clamping an effort downward also lifts the output budget", () => {
+    // International DeepSeek Flash serves only `high`, so a `max` request is
+    // clamped down to it. The applied level still reasons out of the caller's
+    // budget, so the same floor applies in this direction.
     const payload: Record<string, unknown> = {
-      model: "glm-5.3",
+      model: "deepseek-v4.1-flash",
       messages: [{ role: "user", content: "hi" }],
       reasoning_effort: "max",
       max_tokens: 2048,
     };
     buddyPrePayloadCommon(payload, request, "intl");
+    expect(payload["reasoning_effort"]).toBe("high");
+    expect(payload["max_tokens"]).toBe(192_000);
+  });
+
+  test("an effort the ladder serves as asked leaves max_tokens alone", () => {
+    const payload: Record<string, unknown> = {
+      model: "glm-5.3",
+      messages: [{ role: "user", content: "hi" }],
+      reasoning_effort: "low",
+      max_tokens: 2048,
+    };
+    buddyPrePayloadCommon(payload, request, "intl");
+    expect(payload["reasoning_effort"]).toBe("low");
     expect(payload["max_tokens"]).toBe(2048);
   });
 

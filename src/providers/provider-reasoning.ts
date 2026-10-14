@@ -86,26 +86,31 @@ export function geminiThinkingOutputFloor(reasoning: CanonicalRequest["reasoning
 }
 
 /**
- * Minimum output budget for a caller who asked for `low` effort and got a
- * higher one.
+ * Minimum output budget for a caller whose requested effort the ladder could
+ * not serve as asked.
  *
  * A wire ladder can only serve levels the upstream accepts, so a request for
- * `low` is clamped up to whatever that model offers — `hy4-preview-f` serves
- * `high` and nothing else. Effort is not free: the higher level spends its
- * budget on reasoning before it writes the answer, so an output limit the
- * caller sized for `low` now has to cover both, and an answer that fits in
- * 2048 tokens of visible text does not fit once the reasoning share is taken
- * out of the same 2048.
+ * `low` may be clamped up to whatever that model offers — `hy4-preview-f`
+ * serves `high` and nothing else — and a request for `max` may be clamped down
+ * to it. Either way the caller sized `max_tokens` for the effort it asked for,
+ * and effort is not free: the applied level spends its budget on reasoning
+ * before it writes the answer, so an answer that fit in 2048 tokens of visible
+ * text no longer fits once the reasoning share is taken out of the same 2048.
  *
- * The symptom is a truncated answer that an agent retries from the top —
- * reading as a loop ("let me do / let me go / let me do it") rather than as a
- * short limit. Raising the ceiling is what keeps the raised effort usable.
+ * Both directions need the floor, because the mismatch is what costs tokens,
+ * not its sign. A caller who asked for `max` with a 2048-token answer in mind
+ * is owed the same headroom as one who asked for `low`: the applied level is
+ * `high` either way, and `high` reasons out of that 2048 regardless.
  *
- * Only ever raises, and only to the model's own catalog limit: a caller who
- * deliberately asked for a small answer still gets one when the effort was
- * left alone, and no provider is asked for more output than it declares.
+ * The symptom this removes is a truncated answer that an agent retries from
+ * the top — reading as a loop ("let me do / let me go / let me do it") rather
+ * than as a short limit.
+ *
+ * Only ever raises, and only to the model's own catalog limit: a caller whose
+ * effort was served exactly as asked keeps its number, and no provider is
+ * asked for more output than it declares.
  */
-export function raisedEffortOutputFloor(
+export function clampedEffortOutputFloor(
   requested: string | undefined,
   applied: string | undefined,
   modelOutputLimit: number | undefined,
@@ -113,16 +118,16 @@ export function raisedEffortOutputFloor(
   if (requested === undefined || applied === undefined) return undefined;
   const from = BUDDY_LEVEL_RANK[requested.trim().toLowerCase()];
   const to = BUDDY_LEVEL_RANK[applied.trim().toLowerCase()];
-  if (from === undefined || to === undefined || to <= from) return undefined;
+  if (from === undefined || to === undefined || from === to) return undefined;
   if (modelOutputLimit === undefined || !Number.isFinite(modelOutputLimit) || modelOutputLimit <= 0)
     return undefined;
   // Leave headroom instead of claiming the whole catalog limit: the caller's
   // number was a real preference about answer size, and the goal is to stop
   // truncating, not to spend the model's ceiling on every turn.
-  return Math.max(RAISED_EFFORT_MIN_OUTPUT_TOKENS, Math.floor(modelOutputLimit / 2));
+  return Math.max(CLAMPED_EFFORT_MIN_OUTPUT_TOKENS, Math.floor(modelOutputLimit / 2));
 }
 
-const RAISED_EFFORT_MIN_OUTPUT_TOKENS = 16_384;
+const CLAMPED_EFFORT_MIN_OUTPUT_TOKENS = 16_384;
 
 const BUDDY_LEVEL_RANK: Readonly<Record<string, number>> = {
   off: 0,
