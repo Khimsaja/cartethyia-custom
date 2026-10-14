@@ -256,10 +256,10 @@ function DailyGrowthActions({
 
   return (
     <div
-      className="flex w-full min-w-0 flex-col gap-3 max-small:flex-row max-small:items-center max-small:gap-4"
+      className="flex min-w-0 shrink-0 items-center gap-2.5"
       aria-label="Daily growth actions"
     >
-      <div className="min-w-0 flex-1 max-small:max-w-100">
+      <div className="min-w-0 w-67.5">
         <Select
           aria-label="Provider for the daily growth pass"
           value={activeId}
@@ -269,7 +269,7 @@ function DailyGrowthActions({
             providers.length > 0
               ? providers.map((entry) => ({
                   value: entry.id,
-                  label: `${entry.label} · ${entry.count} account${entry.count === 1 ? "" : "s"}`,
+                  label: `${entry.label} · ${entry.count}`,
                 }))
               : [{ value: "", label: "No buddy providers" }]
           }
@@ -827,9 +827,6 @@ export default function QuotaPage(): ReactNode {
             ]}
           />
         </div>
-        <div className="w-full">
-          <DailyGrowthActions accounts={accounts} />
-        </div>
         <div className="flex flex-wrap items-center gap-4">
           <Button
             variant={expiringFirst ? "secondary" : "ghost"}
@@ -871,6 +868,7 @@ export default function QuotaPage(): ReactNode {
           {refreshingCount > 0
             ? `Refreshing ${refreshingCount} account${refreshingCount === 1 ? "" : "s"}…`
             : `Auto-refresh 60s · ${lastUpdated}`}
+          <DailyGrowthActions accounts={accounts} />
           <Button
             variant="secondary"
             size="sm"
