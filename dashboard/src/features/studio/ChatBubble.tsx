@@ -111,7 +111,7 @@ function MarkdownPre({ children }: { readonly children?: ReactNode }): ReactNode
           sandbox=""
           referrerPolicy="no-referrer"
           srcDoc={preview}
-          className="w-full h-80 max-h-[50vh] border border-inner-border rounded-control bg-surface-2"
+          className="w-full h-80 svg-preview-frame border border-inner-border rounded-control bg-surface-2"
         />
       )}
       <details>
@@ -234,7 +234,7 @@ export function ChatBubble({
                 const panel = event.currentTarget;
                 thinkingAtBottomRef.current = panel.scrollHeight - panel.scrollTop - panel.clientHeight <= 24;
               }}
-              className="scroll-region max-h-[calc(1.5em*5)] overflow-auto px-5 py-4 border border-inner-border rounded-control bg-surface-2 text-text-secondary leading-normal select-text cursor-text [&_p]:my-2 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_strong]:font-semibold"
+              className="scroll-region thinking-clamp overflow-auto px-5 py-4 border border-inner-border rounded-control bg-surface-2 text-text-secondary leading-normal select-text cursor-text [&_p]:my-2 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_strong]:font-semibold"
             >
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{thinking}</ReactMarkdown>
             </div>
@@ -244,10 +244,10 @@ export function ChatBubble({
       <div
         className={
           mine
-            ? "max-w-full max-medium:max-w-[88%] text-lead leading-[1.35] wrap-break-word px-7 py-4 border border-border-strong rounded-hero rounded-br-tiny bg-surface-active text-text-primary whitespace-pre-wrap"
+            ? "max-w-full max-medium:max-w-bubble-narrow text-lead leading-chat wrap-break-word px-7 py-4 border border-border-strong rounded-hero rounded-br-tiny bg-surface-active text-text-primary whitespace-pre-wrap"
             : message.error === true
-              ? "max-w-full max-medium:max-w-[88%] text-lead leading-[1.35] wrap-break-word py-1 pr-1 text-red"
-              : "max-w-full max-medium:max-w-[88%] text-lead leading-[1.35] wrap-break-word py-1 pr-1 text-text-primary"
+              ? "max-w-full max-medium:max-w-bubble-narrow text-lead leading-chat wrap-break-word py-1 pr-1 text-red"
+              : "max-w-full max-medium:max-w-bubble-narrow text-lead leading-chat wrap-break-word py-1 pr-1 text-text-primary"
         }
       >
         {waiting ? (
@@ -259,7 +259,7 @@ export function ChatBubble({
           </span>
         ) : editing ? (
           <form
-            className="flex flex-col gap-4 min-w-140 max-w-[70vw]"
+            className="flex flex-col gap-4 min-w-140 max-w-bubble-form"
             onSubmit={(event) => {
               event.preventDefault();
               onEdit?.(draft);
@@ -405,7 +405,7 @@ export function ChatBubble({
                 >
                   {message.text}
                 </ReactMarkdown>
-                {live ? <span className="ml-1 inline-block text-accent mlab-stream-caret" aria-hidden="true">▋</span> : null}
+                {live ? <span className="ml-1 inline-block text-accent animate-stream-caret" aria-hidden="true">▋</span> : null}
               </div>
             ) : null}
           </>
@@ -579,7 +579,7 @@ export function ChatBubble({
                 src={mediaPreview.src}
                 alt={mediaPreview.name}
                 referrerPolicy="no-referrer"
-                className="max-h-[calc(100dvh-16rem)] max-w-full w-auto h-auto object-contain"
+                className="media-preview-frame max-w-full w-auto h-auto object-contain"
               />
             ) : (
               <video
@@ -587,7 +587,7 @@ export function ChatBubble({
                 preload="metadata"
                 aria-label={mediaPreview.name}
                 src={mediaPreview.src}
-                className="max-h-[calc(100dvh-16rem)] max-w-full w-auto h-auto object-contain"
+                className="media-preview-frame max-w-full w-auto h-auto object-contain"
               />
             )}
           </div>

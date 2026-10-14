@@ -1272,16 +1272,25 @@ html[data-app="landing"] .landing-story-visual {
   from { opacity: 0; }
   to { opacity: 1; }
 }
-@keyframes mlab-stream-caret {
+@keyframes stream-caret {
   0%, 100% { opacity: 0.4; transform: translateY(0); }
   50% { opacity: 1; transform: translateY(-1px); }
-}
-.mlab-stream-caret {
-  animation: mlab-stream-caret 1.2s ease-in-out infinite;
 }
 @keyframes typing-bounce {
   0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
   30% { transform: translateY(-3px); opacity: 1; }
+}
+
+/* Fixed viewport-relative caps utilities cannot name: `max-h-*` has no theme
+   namespace, so these live as classes beside `.signal-grid`. */
+.thinking-clamp {
+  max-height: calc(1.5em * 5);
+}
+.media-preview-frame {
+  max-height: calc(100dvh - 16rem);
+}
+.svg-preview-frame {
+  max-height: 50vh;
 }
 @keyframes reset-credit-sheen {
   0% { background-position: -160% 0; }
@@ -1442,6 +1451,22 @@ html[data-app="landing"] .landing-story-visual {
    breakpoint gets one named class, beside `.metric-grid` and `.provider-grid`. */
 .signal-grid {
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 110px), 1fr));
+}
+
+/* Account row and bulk-menu caps utilities cannot name: `grid-cols-[…]` and
+   `max-w-[calc(100vw-…)]` smuggle whole functions through arbitrary values,
+   so they live as classes beside `.signal-grid`. */
+.account-row-grid {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+.popover-max {
+  max-width: calc(100vw - 2rem);
+}
+
+/* Estimated-limits badge: a fixed 13px dot grid the Button cannot size. */
+.estimate-dot {
+  width: 13px;
+  height: 13px;
 }
 
 /* Range input tracks and thumbs require browser-specific pseudo-elements. The

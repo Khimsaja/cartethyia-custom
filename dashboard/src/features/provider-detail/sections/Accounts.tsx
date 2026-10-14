@@ -3,6 +3,7 @@ import {
   ChevronDown,
   Download,
   FlaskConical,
+  KeyRound,
   Loader2,
   LockOpen,
   Pencil,
@@ -238,6 +239,96 @@ function trimNumber(value: number): string {
   return value.toLocaleString(undefined, { maximumFractionDigits: 1 });
 }
 
+/**
+ * Replaces one account's credential in place. Unlike `AddAccountModal` this
+ * never creates a row: it PATCHes `{ secret }` onto the existing account, so
+ * the account keeps its id, label, usage history, routing preferences, and
+ * quota rows. The server re-encrypts, re-fingerprints, clears failure state,
+ * and invalidates the credential cache on a secret patch.
+ */
+function EditAccountKeyModal({
+  providerId,
+  account,
+  onClose,
+}: {
+  readonly providerId: string;
+  readonly account: ProviderAccountResponse;
+  readonly onClose: () => void;
+}): ReactNode {
+  const update = useUpdateProviderAccount();
+  const [secret, setSecret] = useState("");
+  const shown = account.label || account.id.slice(0, 8);
+  const submitting = update.isPending;
+  const canSave = secret.trim().length > 0 && !submitting;
+
+  const handlePaste = async () => {
+    try {
+      setSecret(await navigator.clipboard.readText());
+    } catch {
+      toast.error("Clipboard access denied");
+    }
+  };
+
+  const handleSave = () => {
+    const next = secret.trim();
+    if (!next) return;
+    update.mutate(
+      { providerId, accountId: account.id, request: { secret: next } },
+      {
+        onSuccess: () => {
+          toast.success("API key replaced", shown);
+          onClose();
+        },
+        onError: (err) => {
+          const message = err instanceof Error ? err.message : "Unable to update account";
+          toast.error("Failed to replace key", message);
+        },
+      },
+    );
+  };
+
+  return (
+    <Dialog open={true} onClose={onClose} title={`Replace API key — ${shown}`} width={560} footer={
+      <>
+        <Button variant="secondary" size="sm" onClick={onClose} disabled={submitting}>Cancel</Button>
+        <Button size="sm" variant="primary" disabled={!canSave} onClick={handleSave}>
+          {submitting ? "Saving…" : "Replace key"}
+        </Button>
+      </>
+    }>
+      <div className="flex flex-col gap-5">
+        <p className="m-0 text-caption text-text-secondary">
+          Paste the new key for this account. The old key stops working immediately;
+          the account keeps its label, history, and routing.
+        </p>
+        <Stack gap="6px" className="min-w-0">
+          <label className="text-caption font-semibold text-text-secondary">
+            New API key
+          </label>
+          <textarea
+            value={secret}
+            onChange={(event) => setSecret(event.target.value)}
+            placeholder="Paste the replacement key…"
+            rows={4}
+            spellCheck={false}
+            autoFocus
+            className="font-mono tabular-nums w-full min-w-0 min-h-65 rounded-control border border-inner-border bg-input-bg px-6 py-5 text-caption text-text-primary resize-y box-border"
+          />
+          <Inline gap="8px" className="justify-end">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void handlePaste()}
+            >
+              Paste
+            </Button>
+          </Inline>
+        </Stack>
+      </div>
+    </Dialog>
+  );
+}
+
 function AccountRow({
   providerId,
   account,
@@ -263,6 +354,7 @@ function AccountRow({
   const hasActiveCooldown = Number.isFinite(cooldownUntilMs) && cooldownUntilMs > Date.now();
   const isRecoverable = account.status === "cooldown" || hasActiveCooldown;
   const [showHistory, setShowHistory] = useState(false);
+  const [editKeyOpen, setEditKeyOpen] = useState(false);
   const [, setTick] = useState(0);
   const [renaming, setRenaming] = useState(false);
   const [draftLabel, setDraftLabel] = useState("");
@@ -340,7 +432,7 @@ function AccountRow({
   return (
     <>
       <div
-        className={`account-row grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-5 px-5 py-4 border rounded-control bg-surface-2 ${selected ? "border-accent" : "border-inner-border"} hover:bg-hover`}
+        className={`account-row account-row-grid grid items-center gap-5 px-5 py-4 border rounded-control bg-surface-2 ${selected ? "border-accent" : "border-inner-border"} hover:bg-hover`}
         role="listitem"
         data-selected={selected ? "true" : undefined}
         style={{ opacity: disabled ? 0.62 : 1 }}
@@ -453,6 +545,15 @@ function AccountRow({
           <Button
             size="icon"
             variant="secondary"
+            icon={<KeyRound size={12} />}
+            label="Edit key"
+            aria-label={`Replace API key for ${label}`}
+            onClick={() => setEditKeyOpen(true)}
+            title="Replace API key"
+          />
+          <Button
+            size="icon"
+            variant="secondary"
             icon={disabled ? <LockOpen size={12} /> : <PowerOff size={12} />}
             label={disabled ? "Enable" : "Disable"}
             aria-label={disabled ? `Enable ${label}` : `Disable ${label}`}
@@ -498,6 +599,13 @@ function AccountRow({
             credentialMode: account.credentialMode,
           }}
           onClose={() => setShowHistory(false)}
+        />
+      )}
+      {editKeyOpen && (
+        <EditAccountKeyModal
+          providerId={providerId}
+          account={account}
+          onClose={() => setEditKeyOpen(false)}
         />
       )}
     </>
@@ -805,7 +913,7 @@ export function AccountsList({
                 <div
                   role="menu"
                   aria-label="Selected account actions"
-                  className="absolute left-0 top-full z-50 mt-1 flex w-64 max-w-[calc(100vw-2rem)] flex-col gap-1 rounded-control border border-inner-border bg-popover-bg p-2 shadow-popout sm:left-auto sm:right-0"
+                  className="absolute left-0 top-full z-50 mt-1 flex w-64 popover-max flex-col gap-1 rounded-control border border-inner-border bg-popover-bg p-2 shadow-popout sm:left-auto sm:right-0"
                 >
                   <Button
                     role="menuitem"

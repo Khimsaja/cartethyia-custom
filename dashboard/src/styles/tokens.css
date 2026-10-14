@@ -216,6 +216,10 @@
   --spacing: 2px;
   --animate-message-in: message-in 150ms ease-out both;
   --animate-typing-bounce: typing-bounce 1.2s ease-in-out infinite;
+  --animate-stream-caret: stream-caret 1.2s ease-in-out infinite;
+  --leading-chat: 1.35;
+  --container-bubble-narrow: 88%;
+  --container-bubble-form: 70vw;
   --height-route: calc(100dvh - 104px);
   --grid-template-columns-quota-window: minmax(120px, auto) minmax(0, 1fr) auto;
   --grid-template-columns-quota-account: repeat(auto-fill, minmax(min(420px, 100%), 1fr));

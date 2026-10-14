@@ -35,14 +35,6 @@
     "staticInline": 0,
     "arbitrary": 3
   },
-  "src/features/overview/OverviewPage.tsx": {
-    "staticInline": 0,
-    "arbitrary": 1
-  },
-  "src/features/provider-detail/sections/Accounts.tsx": {
-    "staticInline": 0,
-    "arbitrary": 1
-  },
   "src/features/provider-detail/sections/Models.tsx": {
     "staticInline": 0,
     "arbitrary": 4
@@ -53,15 +45,11 @@
   },
   "src/features/proxy/ProxyPage.tsx": {
     "staticInline": 0,
-    "arbitrary": 3
+    "arbitrary": 2
   },
   "src/features/quota/QuotaPage.tsx": {
     "staticInline": 0,
     "arbitrary": 1
-  },
-  "src/features/studio/ChatBubble.tsx": {
-    "staticInline": 0,
-    "arbitrary": 8
   },
   "src/features/usage/UsagePage.tsx": {
     "staticInline": 0,

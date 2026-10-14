@@ -558,8 +558,7 @@ function ModelCard({
               <span
                 title={ESTIMATED_LIMITS_TOOLTIP}
                 aria-label="Limits are a fallback estimate"
-                className="inline-flex items-center justify-center rounded-full border border-inner-border bg-surface-2 text-orange cursor-help mr-1 align-middle"
-                style={{ width: 13, height: 13 }}
+                className="estimate-dot inline-flex items-center justify-center rounded-full border border-inner-border bg-surface-2 text-orange cursor-help mr-1 align-middle"
               >
                 <AlertCircle size={9} aria-hidden="true" />
               </span>
