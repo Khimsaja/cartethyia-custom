@@ -34,13 +34,14 @@ function parseToolObject(item: Record<string, unknown>, dialect: ToolDialect): T
     const type = readString(item, "type");
     if (type !== undefined) name = type;
   }
-  const chatWrapper =
-    dialect === "chat"
-      ? isRecord(item["function"])
-        ? item["function"]
-        : isRecord(item["custom"])
-          ? item["custom"]
-          : undefined
+  // Both dialects accept a `function`/`custom` envelope. Reading it only on
+  // Chat meant a Chat-shaped tool on the Responses surface took its name from
+  // `type` ("function") instead of the tool's real name, and its schema from
+  // the whole tool object.
+  const chatWrapper = isRecord(item["function"])
+    ? item["function"]
+    : isRecord(item["custom"])
+      ? item["custom"]
       : undefined;
   if (chatWrapper !== undefined) {
     const wrapperName = readString(chatWrapper, "name");
@@ -71,10 +72,26 @@ function parseToolObject(item: Record<string, unknown>, dialect: ToolDialect): T
       const functionValue = item["function"];
       schema = isRecord(functionValue)
         ? functionValue["parameters"] ?? functionValue["jsonSchema"] ?? {}
-        : {};
+        : // The Responses flat spelling (`{type:"function", parameters:…}`) is
+          // common here too; without this a tool arrived with an empty schema
+          // and the upstream rejected it.
+          item["parameters"] ?? item["input_schema"] ?? {};
     }
   } else if (dialect === "responses") {
-    schema = item["input_schema"] ?? item["parameters"] ?? item;
+    // A Responses caller may still send the Chat-shaped envelope — the two
+    // spellings are interchangeable in the wild, and a client that posts
+    // `{"type":"function","function":{"parameters":…}}` here previously fell
+    // through to `schema = item`, which shipped the whole tool object upstream
+    // as the parameter schema and came back as
+    // `invalid_function_parameters` (CodeBuddy 11129). Unwrap it the way the
+    // Chat dialect does before falling back to the flat Responses spelling.
+    const wrapped = isRecord(item["function"]) ? item["function"] : undefined;
+    schema =
+      item["input_schema"] ??
+      item["parameters"] ??
+      (wrapped !== undefined
+        ? wrapped["parameters"] ?? wrapped["input_schema"] ?? wrapped["jsonSchema"] ?? {}
+        : item);
   } else {
     schema = item["input_schema"] ?? item["inputSchema"] ?? {};
   }

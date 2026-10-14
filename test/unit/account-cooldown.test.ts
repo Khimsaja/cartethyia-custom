@@ -273,9 +273,21 @@ describe("recordAccountFailure — a frequency window cools the model, not the a
     };
   }
 
+  /**
+   * The upstream's own reset stamp, always two hours out.
+   *
+   * Built from the clock rather than a fixed date: a hardcoded stamp silently
+   * became a *past* instant once that date passed, and the assertion below then
+   * compared a fresh deadline against a stale one.
+   */
+  const resetUtcMs = Date.now() + 2 * 60 * 60 * 1000;
+  const stamp = new Date(resetUtcMs + 8 * 60 * 60 * 1000)
+    .toISOString()
+    .replace("T", " ")
+    .slice(0, 19);
   const message =
     "usage exceeds frequency limit, but don't worry, your usage will reset at " +
-    "2026-10-15 03:04:16 UTC+8, alternatively, you can switch to the other models " +
+    `${stamp} UTC+8, alternatively, you can switch to the other models ` +
     "to continue using it.";
 
   test("writes modelCooldowns and leaves the account's own status alone", async () => {
@@ -303,7 +315,6 @@ describe("recordAccountFailure — a frequency window cools the model, not the a
     // absolute stamp is what lets the pair rest for exactly the window the
     // upstream named — and `sweepExpiredCooldowns` prunes the key the moment it
     // passes, so the pair returns by itself with no operator action.
-    const resetUtcMs = Date.parse("2026-10-15T03:04:16+08:00");
     const account = coolingAccount();
     account["status"] = "active";
     account["cooldownUntil"] = null;
@@ -313,7 +324,7 @@ describe("recordAccountFailure — a frequency window cools the model, not the a
 
     const written = onlyUpdate(captured).modelCooldowns as Record<string, string>;
     const writtenMs = new Date(written["hy4-preview-f"]!).getTime();
-    // A second of slack for the clock ticking between parse and write.
+    // A minute of slack for the clock ticking between parse and write.
     expect(Math.abs(writtenMs - resetUtcMs)).toBeLessThan(60_000);
     // And it is not simply "now + the 1h quota fallback".
     expect(writtenMs).toBeGreaterThan(Date.now() + 3_600_000);
