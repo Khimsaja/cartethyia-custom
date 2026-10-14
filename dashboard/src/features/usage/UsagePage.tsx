@@ -154,7 +154,7 @@ function usageHeadline(
 ): string {
   const label = periodLabel(period);
   if (pending || totals === undefined) return label;
-  const tokens = totals.inputTokens + totals.cachedTokens + totals.outputTokens;
+  const tokens = totals.inputTokens + totals.outputTokens;
   return `${label} · ${formatNumber(totals.requests)} calls · ${formatTokens(tokens)} tokens · avg ${formatDuration(totals.avgDurationMs)}`;
 }
 
@@ -1820,6 +1820,9 @@ export default function Usage(): ReactNode {
                       >
                         <span className="inline-flex items-center gap-2">
                           <Database size={10} aria-label="Cached tokens" /> CACHED {formatNumber(row.cachedTokens ?? 0)}
+                          {row.inputTokens !== undefined && row.inputTokens > 0 && row.cachedTokens !== undefined
+                            ? ` (${Math.round((row.cachedTokens / row.inputTokens) * 1000) / 10}%)`
+                            : ""}
                         </span>
                         <span className="inline-flex items-center gap-2">
                           <DollarSign size={10} aria-label="Estimated cost" /> COST {costText}

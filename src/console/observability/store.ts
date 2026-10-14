@@ -571,7 +571,7 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
             existing.costUsd === null && row.costUsd === null
               ? null
               : (existing.costUsd ?? 0) + (row.costUsd ?? 0),
-          cacheHitRate: input + output > 0 ? (input / (input + output)) * 100 : 0,
+          cacheHitRate: input > 0 ? (existing.cached + row.cached) / input * 100 : 0,
         });
       }
       return {

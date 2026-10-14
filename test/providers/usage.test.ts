@@ -549,7 +549,7 @@ describe("the round trip through a wire builder keeps the canonical totals", () 
   });
 });
 
-describe("repriceUsage: WorkBuddy glm double-counted cache correction", () => {
+describe("repriceUsage: Buddy cache-read total correction", () => {
   const base = {
     cache_write_tokens: "unavailable" as const,
     output_tokens: 12,
@@ -557,28 +557,42 @@ describe("repriceUsage: WorkBuddy glm double-counted cache correction", () => {
     estimated_cost: null,
   };
 
-  test("halves the inflated prompt when cached is exactly half", () => {
-    // Live repro 2026-10-14: 56,064-token prompt reported as 112,147 with
-    // cached 56,064 — the bridge counts the cached subset twice.
+  test("removes the extra cached copy so cached/input matches OpenAI", () => {
+    // Live repro 2026-10-14: fresh turn prompt=56,099 cached=0; the same
+    // prompt reread reported prompt=112,163 cached=56,064. reported - cached
+    // recovers the fresh turn exactly, and 56,064/56,099 is the real hit rate.
     const fixed = repriceUsage(
-      { ...base, input_tokens: 112_147, cached_input_tokens: 56_064, uncached_input_tokens: 56_083 },
+      { ...base, input_tokens: 112_163, cached_input_tokens: 56_064, uncached_input_tokens: 56_099 },
       "workbuddy",
       "glm-5.3-flash",
       0,
     );
-    expect(fixed.input_tokens).toBe(56_083);
+    expect(fixed.input_tokens).toBe(56_099);
     expect(fixed.cached_input_tokens).toBe(56_064);
-    expect(fixed.uncached_input_tokens).toBe(19);
+    expect(fixed.uncached_input_tokens).toBe(35);
   });
 
-  test("strips a routing alias prefix before the family check", () => {
+  test("corrects a partial cache read, not only a near-100% one", () => {
+    // Live: a two-block prompt reported 184,154 with 56,064 cached. The real
+    // all-in total is 128,090, so the hit rate is 43.8%, not 30.4%.
     const fixed = repriceUsage(
-      { ...base, input_tokens: 112_147, cached_input_tokens: 56_064, uncached_input_tokens: 56_083 },
-      "workbuddy",
-      "bansos/glm-5.3-flash",
+      { ...base, input_tokens: 184_154, cached_input_tokens: 56_064, uncached_input_tokens: 128_090 },
+      "cb",
+      "glm-5.3-flash",
       0,
     );
-    expect(fixed.input_tokens).toBe(56_083);
+    expect(fixed.input_tokens).toBe(128_090);
+    expect(fixed.uncached_input_tokens).toBe(72_026);
+  });
+
+  test("corrects deepseek and strips a routing alias prefix", () => {
+    const fixed = repriceUsage(
+      { ...base, input_tokens: 112_053, cached_input_tokens: 55_936, uncached_input_tokens: 56_117 },
+      "cbcn",
+      "bansos/deepseek-v4.1-flash",
+      0,
+    );
+    expect(fixed.input_tokens).toBe(56_117);
   });
 
   test("leaves a no-cache-read turn untouched", () => {
@@ -591,33 +605,32 @@ describe("repriceUsage: WorkBuddy glm double-counted cache correction", () => {
     expect(fixed.input_tokens).toBe(56_101);
   });
 
-  test("leaves non-glm models and non-buddy providers untouched", () => {
-    const glmOther = repriceUsage(
-      { ...base, input_tokens: 100, cached_input_tokens: 50, uncached_input_tokens: 50 },
-      "cb",
+  test("leaves honest models and non-buddy providers untouched", () => {
+    const honest = repriceUsage(
+      { ...base, input_tokens: 56_178, cached_input_tokens: 56_128, uncached_input_tokens: 50 },
+      "workbuddy",
+      "mimo-v2.6-flash",
+      0,
+    );
+    expect(honest.input_tokens).toBe(56_178);
+    const other = repriceUsage(
+      { ...base, input_tokens: 112_163, cached_input_tokens: 56_064, uncached_input_tokens: 56_099 },
+      "openai",
       "glm-5.3-flash",
       0,
     );
-    expect(glmOther.input_tokens).toBe(100);
-    const buddyOther = repriceUsage(
-      { ...base, input_tokens: 100, cached_input_tokens: 50, uncached_input_tokens: 50 },
-      "workbuddy",
-      "deepseek-v4.1-flash",
-      0,
-    );
-    expect(buddyOther.input_tokens).toBe(100);
+    expect(other.input_tokens).toBe(112_163);
   });
 
-  test("leaves numbers the 2x pattern does not fit untouched", () => {
-    // Cached is more than half the prompt: the correction would produce a
-    // fresh share larger than cached, so the double-count pattern does not
-    // hold — keep the upstream numbers rather than guess.
+  test("leaves a report where cached is under half the total untouched", () => {
+    // reported < 2*cached cannot be the additive pattern, so guessing would
+    // corrupt an honest partial hit.
     const fixed = repriceUsage(
-      { ...base, input_tokens: 120, cached_input_tokens: 80, uncached_input_tokens: 40 },
+      { ...base, input_tokens: 100, cached_input_tokens: 60, uncached_input_tokens: 40 },
       "workbuddy",
       "glm-5.3-flash",
       0,
     );
-    expect(fixed.input_tokens).toBe(120);
+    expect(fixed.input_tokens).toBe(100);
   });
 });
