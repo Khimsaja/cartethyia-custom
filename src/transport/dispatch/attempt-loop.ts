@@ -47,6 +47,34 @@ function comboCandidateKey(candidate: RouteCandidate): string {
   ].join(":");
 }
 
+/**
+ * Which combo member a candidate belongs to.
+ *
+ * A combo's members are distinct models (usually one per provider), so the
+ * model id is what separates them — the accounts of one member are siblings
+ * that share it. Used only to give each member its own share of the attempt
+ * budget; a candidate list that is not a combo collapses to one member, which
+ * keeps the ordinary single-model path untouched.
+ */
+function comboMemberKey(candidate: RouteCandidate): string {
+  return `${candidate.provider_id}:${candidate.model_id}:${candidate.endpoint}`;
+}
+
+/** Zero-based position of `candidate`'s member in the flattened candidate list. */
+function memberIndexOf(
+  candidates: readonly RouteCandidate[],
+  candidate: RouteCandidate,
+  index: number,
+): number {
+  const members: string[] = [];
+  for (let i = 0; i < candidates.length; i += 1) {
+    const key = comboMemberKey(candidates[i]!);
+    if (members[members.length - 1] !== key) members.push(key);
+    if (i === index) return members.length - 1;
+  }
+  return members.indexOf(comboMemberKey(candidate));
+}
+
 /** Route-specific preconditions resolved for one candidate before its leases are taken. */
 interface PreparedAttempt<TAdapter> {
   readonly credential: ResolvedCredential;
@@ -121,11 +149,34 @@ export async function runAttemptLoop<TResult, TAdapter>(
   // the terminal completion can fall back to the last one that has a request.
   const firedCaptures: ProviderExchangeCapture[] = [];
   const maxAttempts = resolveRouteMaxAttempts();
+  // One combo member must not be able to spend the whole budget.
+  //
+  // A combo's member list is flattened into this candidate list, so the first
+  // member's accounts occupy its head. With one member holding more accounts
+  // than `maxAttempts` (default 8), every attempt was spent inside that member
+  // and a later, perfectly healthy member was never dialed — a `deepseek` combo
+  // of [cb, wb] stayed stuck on cb while wb sat idle, because cb's twelve
+  // accounts exhausted all eight attempts before the list reached wb.
+  //
+  // Each member gets an equal share of the budget, and a member that used less
+  // than its share releases the remainder to the members behind it: the first
+  // member is capped at `ceil(maxAttempts / members)` and the rest of the
+  // budget stays available, so a healthy later member is always reached.
+  const memberCount = new Set(candidates.map(comboMemberKey)).size;
+  const perMemberCap =
+    memberCount > 1 ? Math.max(1, Math.ceil(maxAttempts / memberCount)) : maxAttempts;
   let index = 0;
   let attempts = 0;
   while (index < candidates.length && attempts < maxAttempts) {
     const candidate = candidates[index];
     if (!candidate) break;
+    // A member that has spent its share is skipped: the loop advances past the
+    // rest of its accounts to the next member instead of burning the budget
+    // they would have consumed.
+    if (memberCount > 1 && attempts >= perMemberCap * (memberIndexOf(candidates, candidate, index) + 1)) {
+      index += 1;
+      continue;
+    }
     let lease: AdmissionLease | undefined;
     let reservation: Reservation | undefined;
     let proxySlot: { poolId: string; release: () => void } | undefined;
