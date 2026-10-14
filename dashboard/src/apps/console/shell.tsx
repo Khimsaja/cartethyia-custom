@@ -333,12 +333,18 @@ function NotificationsPopover({ health }: { health?: SystemHealthResponse }) {
       </button>
       {open
         ? createPortal(
-            <div
-              ref={contentRef}
-              role="dialog"
-              aria-label="Notifications"
-              className="app-topbar-popover popout-enter glass rounded-sidebar border border-inner-border bg-popover-bg p-5 shadow-popout z-popover"
-            >
+            <>
+              <div
+                aria-hidden="true"
+                className="fixed inset-0 z-floating bg-overlay backdrop-blur-dialog"
+                onClick={() => setOpen(false)}
+              />
+              <div
+                ref={contentRef}
+                role="dialog"
+                aria-label="Notifications"
+                className="app-topbar-popover popout-enter glass rounded-sidebar border border-inner-border bg-popover-bg p-5 shadow-popout z-popover"
+              >
               <div
                 className="mb-3 flex shrink-0 items-center justify-between"
               >
@@ -418,7 +424,8 @@ function NotificationsPopover({ health }: { health?: SystemHealthResponse }) {
                   </div>
                 </div>
               </div>
-            </div>,
+            </div>
+            </>,
             document.body,
           )
         : null}

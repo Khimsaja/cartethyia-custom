@@ -303,11 +303,11 @@ function CliToolDetailBody({
       </Link>
 
       <Card>
-        <CardBody className="flex gap-7 items-start">
-          <ToolIcon toolId={tool.id} name={tool.name} color={tool.color} size={46} />
-          <div className="flex-1 min-w-0">
+        <CardBody className="flex flex-col gap-5">
+          <Inline gap="14px" align="flex-start" className="flex-wrap">
+            <ToolIcon toolId={tool.id} name={tool.name} color={tool.color} size={46} />
             <Inline gap="8px" className="flex-wrap">
-              <h1 className="text-title font-bold">{tool.name}</h1>
+              <h1 className="text-title font-bold m-0">{tool.name}</h1>
               {installed ? (
                 <Badge tone="ok">Installed</Badge>
               ) : (
@@ -316,37 +316,37 @@ function CliToolDetailBody({
               {configured ? <Badge tone="accent">Configured</Badge> : null}
               {tool.configType === "guide" ? <Badge tone="info">Guide</Badge> : null}
             </Inline>
-            <p className="mt-3 text-caption text-text-secondary">
-              {tool.description}
-            </p>
-            {tool.docsUrl ? (
-              <a
-                href={tool.docsUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-block mt-3 text-caption text-accent"
-              >
-                Official documentation →
-              </a>
-            ) : null}
+          </Inline>
+          <p className="m-0 text-caption text-text-secondary">
+            {tool.description}
+          </p>
+          {tool.docsUrl ? (
+            <a
+              href={tool.docsUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-block text-caption text-accent"
+            >
+              Official documentation →
+            </a>
+          ) : null}
 
-            {status?.settingsPath ? (
-              <div
-                className="font-mono tabular-nums mt-5 px-6 py-4 rounded-inset bg-surface-2 border border-inner-border text-badge text-text-secondary break-all"
-              >
-                Config file: {status.settingsPath}
-              </div>
-            ) : null}
+          {status?.settingsPath ? (
+            <div
+              className="font-mono tabular-nums px-6 py-4 rounded-inset bg-surface-2 border border-inner-border text-badge text-text-secondary break-all"
+            >
+              Config file: {status.settingsPath}
+            </div>
+          ) : null}
 
-            {status?.message ? (
-              <div
-                className={`mt-4 flex items-center gap-3 text-badge ${configured ? "text-green" : "text-orange"}`}
-              >
-                {configured ? <CheckCircle2 size={13} /> : <XCircle size={13} />}
-                {status.message}
-              </div>
-            ) : null}
-          </div>
+          {status?.message ? (
+            <div
+              className={`flex items-center gap-3 text-badge ${configured ? "text-green" : "text-orange"}`}
+            >
+              {configured ? <CheckCircle2 size={13} /> : <XCircle size={13} />}
+              {status.message}
+            </div>
+          ) : null}
         </CardBody>
       </Card>
 
@@ -358,8 +358,8 @@ function CliToolDetailBody({
         />
         <CardBody>
           <Stack gap="12px">
-            <div className="provider-grid grid gap-6">
-              <div className="flex flex-col gap-3">
+            <div className="grid grid-cols-2 gap-4 items-start min-w-0 max-medium:grid-cols-1">
+              <div className="flex flex-col gap-3 min-w-0">
                 <Select
                   label="Apikey Name"
                   id="api-key-select"
@@ -402,11 +402,13 @@ function CliToolDetailBody({
                   </span>
                 ) : null}
               </div>
-              <Input
-                label="Endpoint"
-                value={endpoint}
-                onChange={(e) => setEndpoint(e.target.value)}
-              />
+              <div className="min-w-0">
+                <Input
+                  label="Endpoint"
+                  value={endpoint}
+                  onChange={(e) => setEndpoint(e.target.value)}
+                />
+              </div>
             </div>
           </Stack>
         </CardBody>

@@ -1252,6 +1252,71 @@ function RequestsStatCard({
 }
 
 /**
+ * Latency bar above the Requests table.
+ *
+ * Routing-average lives here (not in the top metric row) because the P50/P95/
+ * P99 chips overflowed their grid cell at narrow widths. A flex-wrap row
+ * inside the table's rounded panel gives the chips the horizontal room they
+ * need and keeps the per-request table right beside the figures that
+ * summarise it. Hidden while the summary is still loading so the panel does
+ * not flash a "—" row before real numbers arrive.
+ *
+ * It sits outside `DataTable`'s own scroll box, so it stays put while the
+ * rows scroll under it.
+ */
+function RoutingLatencyBar({
+  pending,
+  avgMs,
+  p50Ms,
+  p95Ms,
+  p99Ms,
+}: {
+  readonly pending: boolean;
+  readonly avgMs: number | undefined;
+  readonly p50Ms: number | undefined;
+  readonly p95Ms: number | undefined;
+  readonly p99Ms: number | undefined;
+}): ReactNode {
+  // The summary is shared across the whole page; treat the first paint the
+  // same way the top tiles do (a "…") so a long load reads as one state,
+  // not a mix of numbers and placeholders.
+  if (pending) return null;
+
+  const tiles: ReadonlyArray<{ readonly label: string; readonly value: number | undefined; readonly accent?: boolean }> = [
+    { label: "Routing avg", value: avgMs, accent: true },
+    { label: "P50", value: p50Ms },
+    { label: "P95", value: p95Ms },
+    { label: "P99", value: p99Ms },
+  ];
+
+  return (
+    <div
+      role="group"
+      aria-label="Routing latency summary"
+      className="flex flex-wrap items-center gap-x-6 gap-y-3 border-b border-inner-border px-6 py-5 text-badge"
+    >
+      <span className="inline-flex items-center gap-2 font-semibold text-text-secondary">
+        <Route size={12} aria-hidden="true" />
+        Routing latency
+      </span>
+      {tiles.map((tile) => (
+        <span
+          key={tile.label}
+          className="inline-flex items-baseline gap-1.5 font-mono tabular-nums leading-none"
+        >
+          <span className={`text-micro font-semibold tracking-label uppercase ${tile.accent ? "text-accent" : "text-text-tertiary"}`}>
+            {tile.label}
+          </span>
+          <span className={`text-caption font-semibold ${tile.accent ? "text-text-primary" : "text-text-secondary"}`}>
+            {formatDuration(tile.value)}
+          </span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/**
  * Scale switcher on a token card. Cards start on the exact count; each click
  * steps through the compact units from the coarsest that fits down to K and
  * then wraps back to the exact count, so the raw number and the readable
@@ -1584,33 +1649,6 @@ export default function Usage(): ReactNode {
           }
         />
         <StatCard
-          label="Routing average"
-          value={summaryQuery.isPending ? "…" : formatDuration(summary?.avgResolveMs)}
-          detail={
-            summaryQuery.isPending
-              ? "Performance"
-              : (
-                <span className="inline-flex flex-wrap gap-1.5">
-                  {[
-                    ["P50", summary?.latencyP50Ms],
-                    ["P95", summary?.latencyP95Ms],
-                    ["P99", summary?.latencyP99Ms],
-                  ].map(([label, latency]) => (
-                    <span
-                      key={label}
-                      className="inline-flex items-center gap-1 rounded-control border border-inner-border bg-surface-1 px-1.5 py-1 font-mono tabular-nums text-micro leading-none"
-                    >
-                      <span className="font-semibold text-text-tertiary">{label}</span>
-                      <span>{formatDuration(typeof latency === "number" ? latency : undefined)}</span>
-                    </span>
-                  ))}
-                </span>
-              )
-          }
-          tone="teal"
-          icon={<Route size={13} />}
-        />
-        <StatCard
           label="Est. cost"
           value={summaryQuery.isPending ? "…" : formatUsd(summary?.estimatedCostUsd)}
           // The figure is always an estimate, never an invoice. When completed
@@ -1724,6 +1762,13 @@ export default function Usage(): ReactNode {
             </div>
           ) : (
             <div id="usage-requests-scroll" className="rounded-control border border-inner-border bg-surface-1">
+              <RoutingLatencyBar
+                pending={summaryQuery.isPending}
+                avgMs={summary?.avgResolveMs}
+                p50Ms={summary?.latencyP50Ms}
+                p95Ms={summary?.latencyP95Ms}
+                p99Ms={summary?.latencyP99Ms}
+              />
               <DataTable
                 maxHeight={445}
                 onScroll={handleTableScroll}
