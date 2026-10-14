@@ -425,8 +425,8 @@ function CustomProviderCard({ customProvider }: { customProvider: ProviderRespon
           <ProviderIcon
             icon={customProvider.wireFamilyDefault === "messages" ? "anthropic" : "openai"}
             name={customProvider.label || customProvider.providerId}
-            size={48}
-            imageSize={40}
+            size={32}
+            imageSize={24}
           />
           <div className="min-w-0 flex-1">
             <div

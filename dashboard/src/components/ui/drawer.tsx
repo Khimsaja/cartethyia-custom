@@ -1,10 +1,9 @@
 import { X } from "lucide-react";
 import { createPortal } from "react-dom";
-import { useRef, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { usePresence } from "../../hooks/use-presence";
 import { useModalFocus } from "../../hooks/use-modal-focus";
 import { cn } from "../../lib/classnames";
-
 export interface DrawerProps {
   readonly open: boolean;
   readonly onClose: () => void;
@@ -24,7 +23,12 @@ export function Drawer({ open, onClose, title, children }: DrawerProps): ReactNo
   const panelRef = useRef<HTMLElement>(null);
   const { mounted, closing } = usePresence(open, 220);
   useModalFocus({ open, mounted, panelRef, onClose });
-
+  // Mobile nav rail stays open underneath (it only closes on navigation).
+  // Tell the shell to shut it so its dim overlay never sits under this panel
+  // and touch scroll stays inside `.drawer-body`.
+  useEffect(() => {
+    if (mounted) window.dispatchEvent(new CustomEvent("cartethyia:overlay-open"));
+  }, [mounted]);
   if (!mounted) return null;
 
   return createPortal(

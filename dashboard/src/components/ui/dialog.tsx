@@ -52,6 +52,11 @@ export function Dialog({
   const [expanded, setExpanded] = useState(false);
   useModalFocus({ open, mounted, panelRef, onClose });
 
+  // Same contract as `Drawer`: shut the mobile nav rail so its dim overlay
+  // never sits under this panel and traps touch scroll.
+  useEffect(() => {
+    if (mounted) window.dispatchEvent(new CustomEvent("cartethyia:overlay-open"));
+  }, [mounted]);
   // Reset window chrome when the dialog (re)opens.
   useEffect(() => {
     if (open) {

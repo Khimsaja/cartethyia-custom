@@ -88,12 +88,9 @@ function mergedReasoningText(events: readonly CanonicalEvent[]): string {
     const text = eventReasoningText(event);
     if (text === undefined) continue;
     const identity = reasoningSummaryIdentity(event);
-    let separator = "";
-    if (previousText !== undefined && (previousIdentity === undefined || identity === undefined)) {
-      separator = "\n\n";
-    } else {
-      separator = reasoningSummarySeparator(previousIdentity, identity, previousText, text);
-    }
+    // Identity-less deltas are continuations of one part (same rule as the
+    // streaming path): join raw, never force a paragraph break per token.
+    const separator = reasoningSummarySeparator(previousIdentity, identity, previousText, text);
     chunks.push(separator, text);
     previousIdentity = identity;
     previousText = text;

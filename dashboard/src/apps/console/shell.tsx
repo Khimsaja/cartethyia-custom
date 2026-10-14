@@ -546,6 +546,13 @@ export function DashboardShell({
     setDrawerOpen(false);
   }, [location.pathname]);
 
+  // A modal overlay (Request Detail drawer, Dialog) sits above the mobile
+  // nav rail. Close the rail so its dim overlay never traps touch scroll.
+  useEffect(() => {
+    const close = () => setDrawerOpen(false);
+    window.addEventListener("cartethyia:overlay-open", close);
+    return () => window.removeEventListener("cartethyia:overlay-open", close);
+  }, []);
   // The shell stays mounted across navigations, so the document keeps the
   // previous page's offset and the next page opens already scrolled. Layout
   // timing, not `useEffect`: a post-paint reset shows the stale offset for one
