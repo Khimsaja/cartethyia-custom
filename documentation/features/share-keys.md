@@ -101,7 +101,7 @@ check against the bundle proves nothing.
 
 ## See also
 
-- [`console-api.md`](../reference/console-api.md) — console access and mutation
+- [`console-api.md`](../../.skills/cartethyia-console-api/references/console-api.md) — console access and mutation
   boundaries; the public router is mounted separately and does not use console
   session authentication.
-- [`backend.md`](../reference/backend.md) — backend composition and route mounting.
+- [`backend.md`](../../.skills/cartethyia-engineering/references/backend.md) — backend composition and route mounting.

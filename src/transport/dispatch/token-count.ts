@@ -217,7 +217,15 @@ export function createTokenCountHandler(deps: TokenCountHandlerDeps) {
  * The stored endpoint is the chat path (`/v1/messages`), and the counter is its
  * sibling rather than a separate service. A trailing slash is normalized so a
  * row stored as `/v1/messages/` does not become `/v1/messages//count_tokens`.
+ *
+ * A query string is moved back to the end rather than being appended to.
+ * AgentRouter stores `/v1/messages?beta=true`, and appending naively produces
+ * `/v1/messages?beta=true/count_tokens` — the counting segment lands inside the
+ * query, so the upstream sees the chat path with junk after it and never counts.
  */
-function joinCountTokensPath(endpoint: string): string {
-  return `${endpoint.replace(/\/+$/, "")}/count_tokens`;
+export function joinCountTokensPath(endpoint: string): string {
+  const queryAt = endpoint.indexOf("?");
+  const path = queryAt === -1 ? endpoint : endpoint.slice(0, queryAt);
+  const query = queryAt === -1 ? "" : endpoint.slice(queryAt);
+  return `${path.replace(/\/+$/, "")}/count_tokens${query}`;
 }

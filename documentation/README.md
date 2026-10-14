@@ -15,18 +15,11 @@ How the system is built — [reference/](reference/README.md), one page per laye
 
 - [Architecture](reference/architecture.md) — process, request path, routing
   snapshot, data.
-- [Backend](reference/backend.md) — boot, public routes, dispatch, protocol,
-  persistence.
-- [Protocol and translation](reference/protocol-and-translation.md) — wire
-  families, the canonical model, and where a provider's dialect is applied.
 - [Model name forms](reference/model-name-forms.md) — requested vs canonical vs
   routed vs displayed; why the effort suffix gains a space in Request Detail and
   why the combo prefix is stripped before dispatch.
 - [Providers](reference/providers.md) — the provider layers, credentials,
   discovery, and what makes each family non-standard.
-- [Console API](reference/console-api.md) — the admin/operator surface: domains,
-  feature inventory, and the browser mirror.
-- [Dashboard](reference/dashboard.md) — pages, data flow, layout, mutations.
 - [Codebase size](reference/codebase-size.md) — tracked backend and frontend
   source-line counts and counting scope.
 - [Configuration](reference/configuration.md) — variables declared in
@@ -48,24 +41,25 @@ manuals; add a page under `features/` instead.
 
 ```text
 documentation/
-├── agent-context.md     repository onboarding and verified subsystem map
+├── agent-context.md      repository onboarding and verified subsystem map
 ├── getting-started.md    installing and running it
 ├── installation.md       install variants, one-shot script, Docker
+├── archive/              superseded investigations, kept for the record
 ├── reference/            how it is built, one page per layer
 └── features/             one page per feature
 ```
 
-Procedure lives in `.skills/`, not here. Each skill owns one topic and names the
-layer's owner: `cartethyia-engineering` (invariants, taste, gates),
+Procedure and the layer maps live in `.skills/`, not here. Each skill owns one
+topic: `cartethyia-engineering` (invariants, taste, gates, and the backend map),
 `cartethyia-reverse-engineering` (tracing Cartethyia's internal behavior),
 `cartethyia-client-protocol-reverse-engineering` (static inspection of an
-external client/installer and evidence-based protocol mapping),
-`cartethyia-trace-replay` (reproducing a failing request),
-`cartethyia-schema-telemetry` (schema and migrations),
+external client), `cartethyia-trace-replay` (reproducing a failing request, and
+the protocol seam map), `cartethyia-schema-telemetry` (schema and migrations),
 `cartethyia-health-routing` (account and model health),
 `cartethyia-provider-catalog` (adding and authenticating a provider),
-`cartethyia-console-api` (authoring a console domain), and
-`cartethyia-dashboard` (browser code). `AGENTS.md` routes you to the right one.
+`cartethyia-console-api` (authoring a console domain, and the console surface
+map), and `cartethyia-dashboard` (browser code, and the page map). `AGENTS.md`
+routes you to the right one.
 
 For the product overview, supported clients, and Cartethyia's main benefits, see
 [`README.md`](../README.md).

@@ -24,56 +24,32 @@ in-memory coordination backend.
 
 ## 2. Choose a database mode
 
-Cartethyia exposes the same application features in both modes. Only the
-persistence backend and deployment profile change.
+Same features either way. Only the database changes.
 
 | | Lite | Full |
 |---|---|---|
 | Database | Embedded SQLite | External PostgreSQL |
-| Best for | Personal use, local development, one casual process | VPS, sharing, selling, sustained or high workload |
-| Extra services | No database service; Redis optional | PostgreSQL required; Redis optional |
-| Trade-off | Single-process and lower concurrency ceiling | Requires operating or reaching PostgreSQL |
+| Best for | One person, one machine | VPS, several people, sustained load |
+| Needs | Nothing | A reachable PostgreSQL |
+| Ceiling | Single process, single writer | Multiple instances |
 
-### Lite
+Lite is the default and stores its database at
+`<CARTETHYIA_DATA_DIR>/cartethyia.sqlite`. When that is unset: `%APPDATA%\Cartethyia`
+on Windows, `~/Library/Application Support/Cartethyia` on macOS,
+`$XDG_DATA_HOME/Cartethyia` (or `~/.local/share/Cartethyia`) on Linux.
 
-Lite is the default in `.env.example` and is the recommended starting point for
-personal or local use. It does not require PostgreSQL or Redis.
-
-SQLite stores the database at:
-
-```text
-<CARTETHYIA_DATA_DIR>/cartethyia.sqlite
-```
-
-When `CARTETHYIA_DATA_DIR` is unset, the default is:
-
-| Operating system | Default data directory |
-|---|---|
-| Windows | `%APPDATA%\Cartethyia` |
-| macOS | `~/Library/Application Support/Cartethyia` |
-| Linux | `$XDG_DATA_HOME/Cartethyia`, or `~/.local/share/Cartethyia` |
-
-### Full
-
-Full is recommended for VPS deployments, sharing, selling, and higher workloads.
-Set:
+Full:
 
 ```dotenv
 CARTETHYIA_DB_MODE=full
 DATABASE_URL=postgres://user:password@host:5432/cartethyia
 ```
 
-The PostgreSQL server must be reachable from the Cartethyia process. Redis is
-still optional for a single process; set `REDIS_URL` for shared coordination or
-multiple app instances.
-
-Lite is not a reduced feature edition. To move to Full later, export a JSON
-backup from Lite and import it into the Full instance. The configuration does
-not need to be rebuilt manually.
+Redis is optional in both. Set `REDIS_URL` only when coordination is shared
+across processes. Lite is not a cut-down edition: move to Full later by
+exporting a JSON backup and importing it. The config does not need rebuilding.
 
 ## npm global package
-
-For an installed CLI, install Bun 1.4.0 or newer and npm, then run:
 
 ```bash
 npm install --global cartethyia
@@ -81,37 +57,21 @@ cartethyia setup
 carte
 ```
 
-The setup wizard creates the encryption key, asks Lite or Full on a fresh
-interactive install, checks the selected database, and stores `.env` in the
-user's OS config directory. The source package and built dashboard remain in
-npm's global installation; generated config and SQLite data stay outside it.
+Setup creates the encryption key, asks Lite or Full, checks the database, and
+stores `.env` in the OS config directory (`%APPDATA%\Cartethyia` on Windows,
+`~/Library/Application Support/Cartethyia` on macOS, `$XDG_CONFIG_HOME/Cartethyia`
+on Linux). Override it with `CARTETHYIA_CONFIG_DIR`. Generated config and SQLite
+data stay outside the npm package. Setup does not install PostgreSQL.
 
-Lite uses embedded SQLite and needs no database server; it suits one local
-instance. Full uses PostgreSQL and requires an already-running, reachable server
-configured through `DATABASE_URL`; npm setup does not install PostgreSQL. Redis
-is optional for one process and needed when coordination is shared across
-processes or instances.
+`carte` starts the gateway in the tray and returns the terminal. `cartethyia
+start` stays in the foreground. The tray shows versions, **Open Console**,
+**Reset password**, **Backup & Restore**, and **Exit**, and can install an
+update. Exit drains the gateway through its authenticated loopback endpoint
+before stopping. This does not install a login/startup service.
 
-`cartethyia start` runs the gateway in the foreground. `carte` (or
-`cartethyia tray`) shows a loading message in the launching terminal, then returns
-to the prompt after the gateway is ready. The tray menu shows the installed and
-latest npm versions, the repository, **Open Console**, **Reset password**,
-**Backup & Restore**, and **Exit**. Choosing a newer version installs it and
-starts the new tray/gateway process before the previous tray exits. Exit and
-Update request the gateway's authenticated loopback drain endpoint before
-stopping it. **Reset password** and **Backup & Restore** open Console Settings;
-password changes require the current password, and backup actions re-authenticate.
-Closing the launch terminal does not stop the gateway. This does not install an
-OS logon/startup service; choose **Exit** in the tray menu to stop Cartethyia.
-
-For automation, `cartethyia setup --non-interactive` never prompts and uses the
-persisted user config. Full mode must already have `CARTETHYIA_DB_MODE=full` and
-a reachable `DATABASE_URL` in that config; credentials supplied only in the
-calling shell are not copied to disk. On Linux the config directory follows
-`XDG_CONFIG_HOME` (or `~/.config/Cartethyia`); macOS uses
-`~/Library/Application Support/Cartethyia`, and Windows uses `%APPDATA%\\Cartethyia`.
-Set `CARTETHYIA_CONFIG_DIR` to override the config location.
-
+`cartethyia setup --non-interactive` never prompts and reads the persisted
+config. Full mode must already have `CARTETHYIA_DB_MODE=full` and a reachable
+`DATABASE_URL` there; values supplied only in the shell are not copied to disk.
 ## 3. Install dependencies
 
 From the repository root, install both Bun workspaces (backend and dashboard):
@@ -133,132 +93,59 @@ Run the unified setup command:
 bun setup
 ```
 
-`bun setup` does the following:
+`bun setup` refuses Bun older than 1.4.0, creates `.env` from `.env.example`,
+generates `CARTETHYIA_ENCRYPTION_KEY` when missing, asks Lite or Full, probes
+ports 12800, 8080, 3000, and 8081 and asks which to use, prepares the Lite data
+directory or asks for `DATABASE_URL` in Full, and checks Redis only when
+`REDIS_URL` is set. It does not install PostgreSQL and it does not start the
+gateway. After it, open the console and finish the first-boot wizard.
 
-1. refuses to continue when Bun is older than 1.4.0;
-2. creates `.env` from the mandatory rows of `.env.example` when it does not exist;
-3. generates `CARTETHYIA_ENCRYPTION_KEY` when it is missing or still a placeholder;
-4. asks Lite or Full on a fresh install (press Enter for Lite);
-5. probes 12800, 8080, 3000, and 8081, then asks which port to listen on —
-   it prints which of those are actually free before the prompt, and pressing
-   Enter keeps 12800; use an available port when a VPS does not forward 12800;
-6. prepares the Lite data directory, or finds a local PostgreSQL and asks for
-   `DATABASE_URL` in Full mode;
-7. checks Redis only when `REDIS_URL` is configured — leaving it empty is normal;
-8. checks Docker Compose when `CARTETHYIA_SETUP_MODE=docker` is selected.
-
-It does not install PostgreSQL. Full mode needs a server that is already
-running. Setup configures the installation; it does not start it. Pick one of
-the two ways in below, then open the console and complete the first-boot wizard
-to create the admin user.
-
-`CARTETHYIA_DB_MODE` is required and has no default: the gateway throws at boot
-when it is absent, because the two modes are different databases with separate
-migration sets and a silent guess would pick which one an install's data is read
-against. `bun setup` writes it.
-
-To choose Full without the prompt, set `CARTETHYIA_DB_MODE=full` and a reachable
-`DATABASE_URL` in `.env`, then run:
+`CARTETHYIA_DB_MODE` has no default: the gateway throws at boot when it is
+absent, because the two modes are different databases and a silent guess would
+pick which one an install's data is read against.
 
 ```bash
-bun setup --non-interactive
+bun setup --non-interactive   # never prompts; fails when Full config is missing
+bun doctor                    # checks .env, the database, optional Redis, readiness
 ```
-
-For automation, always use:
-
-```bash
-bun setup --non-interactive
-```
-
-That mode never prompts. It reads the selected mode and connection values from
-`.env` and fails when the required Full-mode configuration is missing.
-
-Check the resulting configuration with:
-
-```bash
-bun doctor
-```
-
-`bun doctor` checks `.env`, the selected database backend, the Lite data
- directory or PostgreSQL reachability, optional Redis, and application readiness.
-
 ## 5. Configure encryption
 
 `CARTETHYIA_ENCRYPTION_KEY` is a required 256-bit secret. It encrypts stored
 provider credentials and API keys. Treat it like a password and keep it outside
 version control.
 
-The setup command generates it automatically. Manual generation is only needed
-when rotating the key or preparing an environment yourself.
+The setup command generates it. Generate one yourself only when rotating:
 
 ```bash
-# macOS / Linux
 openssl rand -hex 32
-
-# Windows PowerShell
-[Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }))
-
-# Bun / Node on any platform
 bun -e "import { randomBytes } from 'node:crypto'; console.log(randomBytes(32).toString('base64'))"
 ```
 
-Either a 64-character hexadecimal value or Base64 encoding of 32 bytes is
-accepted.
+A 64-character hex value or Base64 of 32 bytes are both accepted.
 
 ## 6. Start Cartethyia
 
-After setup succeeds, pick one of two ways in.
-
-**Production** — build first, then start. `bun run start` runs the compiled
-binary and stops with "binary is missing; run bun run build first" if that
-build has not happened, so the build is part of the command, not a separate
-step you can skip:
+Production builds first, then runs the compiled binary:
 
 ```bash
 bun run build && bun run start
 ```
 
-**Development** — no build. Hot reloads the backend and serves the dashboard
-from its own dev server:
+`bun run start` stops with "binary is missing" if you skip the build.
+Development needs no build and hot-reloads: `bun run dev`. Split processes with
+`bun run dev:backend` and `bun run dashboard:dev`, or `bun run dev:watch` to
+restart on file changes.
 
-```bash
-bun run dev
-```
-
-Use this while changing source; use the build-and-start form to run it the way
-a deployment would.
-
-Open the dashboard at `http://localhost:<PORT>/console`. `PORT` comes from
-`.env`; 12800 unless setup was told otherwise.
-
-Both listen on that same `PORT`. They are not two ports. The only separate one
-is the dashboard's own dev server, which stays on 5173 and proxies API calls to
-`PORT` — that 5173 never needs to be opened on a VPS, and it only exists in the
-development form. When `PORT` changes, `CARTETHYIA_PUBLIC_ORIGIN` must use it
-too, or OAuth callbacks point at the wrong place. Setup rewrites the origin
-when it is still the default.
-
-For backend and dashboard processes separately:
-
-```bash
-bun run dev:backend
-bun run dashboard:dev
-```
-
-For automatic restart when source, migration, or dependency files change:
-
-```bash
-bun run dev:watch
-```
-
-Useful endpoints:
+Open `http://localhost:<PORT>/console`. Both forms listen on the same `PORT`
+(12800 unless setup was told otherwise). The dashboard dev server on 5173
+proxies to it and never needs to be opened on a VPS. When `PORT` changes,
+`CARTETHYIA_PUBLIC_ORIGIN` must use it too, or OAuth callbacks miss.
 
 | Endpoint | Purpose |
 |---|---|
-| `/health` | Process liveness |
-| `/health/ready` | Database, migration, and dependency readiness |
-| `/metrics` | Prometheus metrics |
-| `/v1/*` | Gateway API routes |
+| `/health`, `/health/ready` | Liveness, and database/migration readiness |
+| `/metrics` | Prometheus |
+| `/v1/*` | Gateway API |
 | `/console` | Dashboard |
 | `/share/:token` | Public child-key enrollment |
 

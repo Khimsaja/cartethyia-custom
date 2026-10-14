@@ -4,9 +4,8 @@ Install Cartethyia on a local machine, a VPS, or with Docker, in either
 **Lite** (embedded SQLite) or **Full** (external PostgreSQL) mode.
 
 > [!WARNING]
-> **Development version.** APIs, configuration, database behavior, and provider
-> integrations may change without notice. Before reporting an error, update to
-> the latest `dev` branch and verify the problem still occurs.
+> Cartethyia holds provider credentials and API keys on the machine you run it
+> on. Restrict who can reach the console, and keep backups somewhere you control.
 
 ## Choose a mode
 
@@ -38,75 +37,35 @@ table above before choosing it for a shared or sustained workload.
 
 ---
 
-## 1. Local install — Lite
+## 1. Local install
 
-Lite is the default in `.env.example`. Nothing else to install.
+Lite is the default and needs nothing else. Full needs a reachable PostgreSQL:
+`createdb cartethyia`, then set `CARTETHYIA_DB_MODE=full` and `DATABASE_URL`.
+`REDIS_URL` is optional in both.
 
 ```bash
 git clone -b dev https://github.com/risunCode/Cartethyia.git
 cd Cartethyia
-
 bun install --linker isolated
 bun setup --non-interactive
-bun run build
-bun run start
+bun run build && bun run start
 ```
 
-Run the install from the repository root. The isolated linker installs both
-workspaces and creates dependency directories for the backend and
-`dashboard/`; no second dashboard install is needed.
+Run it from the repository root. The isolated linker installs both workspaces;
+no second install from `dashboard/` is needed. Open
+`http://localhost:12800/console`.
 
-Open `http://localhost:12800/console`.
+**First boot is a wizard, not an automatic step.** `GET
+/console/api/auth/first-boot` returns `{"requires_setup":true}`; `POST
+/console/api/auth/setup` with a password creates the admin user, and only then
+is `CARTETHYIA_API_KEY` seeded. Skipping it leaves the console unusable and the
+key never inserted.
 
-**First boot creates the admin user and gateway API key.** This is a wizard,
-not an automatic step:
-
-1. `GET /console/api/auth/first-boot` → `{"requires_setup":true}`
-2. `POST /console/api/auth/setup` with a password
-3. Only then is `CARTETHYIA_API_KEY` (if set in `.env`) seeded
-
-Skipping step 2 leaves the console unusable and the API key never inserted.
-
-### Scripted one-shot Lite install
-
-See [`scripts/install/lite.sh`](#7-one-shot-install-script) — one command,
-`bun install` through a running service, no manual steps.
-
+Migrations run at boot and are recorded in `cartethyia_schema_migrations`. For a
+one-command install, see [`scripts/install/lite.sh`](#7-one-shot-install-script).
 ---
 
-## 2. Local install — Full
-
-Requires a reachable PostgreSQL server.
-
-```bash
-createdb cartethyia
-```
-
-`.env`:
-
-```dotenv
-CARTETHYIA_DB_MODE=full
-DATABASE_URL=postgres://user:password@localhost:5432/cartethyia
-REDIS_URL=redis://localhost:6379   # optional; omit for in-memory
-```
-
-```bash
-bun install --linker isolated
-bun setup --non-interactive
-bun doctor
-bun run build
-bun run start
-```
-
-Migrations run automatically at boot and are recorded in
-`cartethyia_schema_migrations`.
-
-Redis is **never required**. Set `REDIS_URL` only for shared coordination or
-multiple instances.
-
----
-
-## 3. VPS install — Lite (native, no Docker)
+## 2. VPS install — Lite (native, no Docker)
 
 Verified on Debian 13, 1 vCPU / 2 GB, Bun 1.4.2.
 
@@ -145,126 +104,56 @@ bun run build
 
 ### systemd
 
-`/etc/systemd/system/cartethyia.service`:
+`/etc/systemd/system/cartethyia.service`, then `systemctl enable --now cartethyia`:
 
 ```ini
-[Unit]
-Description=Cartethyia AI Gateway
-After=network.target
-
 [Service]
 Type=simple
-User=root
 WorkingDirectory=/opt/cartethyia/repo
 EnvironmentFile=/opt/cartethyia/repo/.env
 Environment=PATH=/root/.bun/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/opt/cartethyia/repo/dist/cartethyia
 Restart=always
 RestartSec=5
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=cartethyia
-
-[Install]
-WantedBy=multi-user.target
 ```
 
-```bash
-systemctl daemon-reload
-systemctl enable --now cartethyia
-curl http://127.0.0.1:8080/health/ready
-```
+Check it with `curl http://127.0.0.1:8080/health/ready`.
 
 ### Reverse proxy
 
-Caddy:
+Caddy: `your.domain { reverse_proxy 127.0.0.1:8080 }`.
 
-```
-your.domain {
-    reverse_proxy 127.0.0.1:8080
-}
-```
-
-Nginx must forward the client IP, otherwise per-IP rate limiting sees every
-request as one IP:
+Nginx must forward the client IP or every request looks like one IP:
 
 ```nginx
 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 proxy_set_header X-Real-IP $remote_addr;
 ```
 
-And in `.env`:
-
-```dotenv
-TRUSTED_PROXY_CIDRS=127.0.0.1/32,10.0.0.0/8
-```
+And set `TRUSTED_PROXY_CIDRS=127.0.0.1/32,10.0.0.0/8` in `.env`.
 
 ### Auto-deploy
 
-`/opt/cartethyia/deploy.sh`:
+Use [`scripts/install/lite.sh`](#6-one-shot-install-script) rather than writing
+your own. If you do poll for updates, a build takes 3–5 minutes on 1 vCPU, so a
+1-minute cron stacks builds until the box runs out of memory. Poll every 5
+minutes, take a `flock` before fetching, and roll back to the previous commit if
+`/health/ready` never comes up after the restart.
 
-```bash
-#!/usr/bin/env bash
-set -uo pipefail
-export PATH="/root/.bun/bin:$PATH"
-REPO=/opt/cartethyia/repo
-LOG=/opt/cartethyia/deploy.log
-LOCK=/opt/cartethyia/deploy.lock
+### Port
 
-exec 9>"$LOCK"
-if ! flock -n 9; then echo "[$(date -Is)] another deploy running, skip" >> "$LOG"; exit 0; fi
+`PORT` is the one public port; the default is 12800. A VPS whose NAT does not
+forward it should set `PORT` to a forwarded port and set
+`CARTETHYIA_PUBLIC_ORIGIN` to the same port, or OAuth callbacks miss. The
+dashboard dev server on 5173 is local only. The app binds `0.0.0.0`; Docker
+maps `${PORT:-12800}` to the container's 12800, so changing `PORT` changes the
+host side only.
 
-cd "$REPO" || exit 1
-git fetch --quiet origin dev || exit 1
-LOCAL=$(git rev-parse HEAD)
-REMOTE=$(git rev-parse origin/dev)
-if [ "$LOCAL" = "$REMOTE" ]; then exit 0; fi
 
-echo "[$(date -Is)] deploy $LOCAL -> $REMOTE" >> "$LOG"
-git reset --quiet --hard "$REMOTE" || exit 1
-bun install --linker isolated --frozen-lockfile >> "$LOG" 2>&1 || { echo "install failed" >> "$LOG"; exit 1; }
-bun run build >> "$LOG" 2>&1 || { echo "build failed" >> "$LOG"; exit 1; }
-
-systemctl restart cartethyia
-PORT=$(grep -E '^PORT=' .env | cut -d= -f2)
-for i in $(seq 1 40); do
-  if curl -fsS "http://127.0.0.1:${PORT}/health/ready" >/dev/null 2>&1; then
-    echo "[$(date -Is)] healthy" >> "$LOG"; exit 0
-  fi
-  sleep 3
-done
-echo "[$(date -Is)] UNHEALTHY, rollback to $LOCAL" >> "$LOG"
-git reset --quiet --hard "$LOCAL"
-systemctl restart cartethyia
-exit 1
-```
-
-```bash
-chmod +x /opt/cartethyia/deploy.sh
-(crontab -l 2>/dev/null | grep -v 'cartethyia/deploy.sh'; echo "*/5 * * * * /opt/cartethyia/deploy.sh") | crontab -
-```
-
-**The `flock` is mandatory.** A build takes 3–5 minutes on 1 vCPU; a 1-minute
-cron stacks builds until the box OOMs. The 5-minute interval plus the lock is
-what keeps a small VPS alive.
-
-### Port note
-
-`PORT` is the one public port. `bun dev` and the production build both listen
-on it; there is no separate production port. The default is 12800. A VPS whose
-NAT only forwards part of the range should set `PORT` to a forwarded port —
-8080 is the usual choice — and set `CARTETHYIA_PUBLIC_ORIGIN` to the same port,
-or OAuth callbacks miss. `bun setup` asks on a fresh install and rewrites the
-origin when it is still the default. The dashboard dev server on 5173 is local
-only and does not need to be forwarded.
-
-The app binds `0.0.0.0`, so a host-level proxy reaching the container's
-internal IP works without extra configuration. Docker maps `${PORT:-12800}` to
-the container's 12800, so changing `PORT` changes the host side only.
 
 ---
 
-## 4. VPS install — Full (native)
+## 3. VPS install — Full (native)
 
 Same as VPS Lite through step 5, then:
 
@@ -289,7 +178,7 @@ and keep `REDIS_URL` shared.
 
 ---
 
-## 5. Docker — Full (default)
+## 4. Docker — Full (default)
 
 **`docker-compose.yml` defaults to Full mode.** It bundles Redis but **never
 PostgreSQL** — Full requires an external server reachable through
@@ -309,67 +198,26 @@ docker compose logs -f app
 docker compose down
 ```
 
-To bundle PostgreSQL locally, add `docker-compose.override.yml`:
+To bundle PostgreSQL locally instead of pointing at an external one, add a
+`docker-compose.override.yml` with a `postgres:16-alpine` service, a
+`pg_isready` healthcheck, and `app.depends_on` waiting for it. Mount its data
+on a named volume.
 
-```yaml
-services:
-  postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: cartethyia
-      POSTGRES_PASSWORD: change-me
-      POSTGRES_DB: cartethyia
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U cartethyia"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    networks:
-      - cartethyia
-
-  app:
-    depends_on:
-      postgres:
-        condition: service_healthy
-
-volumes:
-  pgdata:
-```
-
----
-
-## 6. Docker — Lite
-
-Override the default:
+## 5. Docker — Lite
 
 ```dotenv
 CARTETHYIA_DB_MODE=lite
-# DATABASE_URL is not needed in Lite.
-# CARTETHYIA_REDIS_URL=   # empty or omit to use in-memory coordination in Compose
 ```
 
-```bash
-docker compose up --build -d
-```
+`DATABASE_URL` is not needed. Leave `CARTETHYIA_REDIS_URL` empty for in-memory
+coordination; the Compose file maps that variable to the app's `REDIS_URL`, so
+a host `.env` `REDIS_URL` does not override it.
 
-The app container stores Lite state and telemetry payloads in the persistent
-`/app/data` volume. **Without that mount, replacing the container wipes the
-database. Compose starts its bundled Redis service in Lite mode too; set
-`CARTETHYIA_REDIS_URL` empty to use in-memory coordination instead. The Compose
-file maps that variable to the app's `REDIS_URL`; a host `.env` `REDIS_URL`
-does not override it.
-
-> [!IMPORTANT]
-> The image is built on Alpine and runs `dist/cartethyia` (the compiled
-> binary). Lite state lives in the `/app/data` volume mounted above; without
-> it, replacing the container wipes the database.
-
+Lite state lives in the `/app/data` volume. Without that mount, replacing the
+container wipes the database. The image is Alpine and runs `dist/cartethyia`.
 ---
 
-## 7. One-shot install script
+## 6. One-shot install script
 
 [`scripts/install/lite.sh`](https://github.com/risunCode/Cartethyia/blob/dev/scripts/install/lite.sh)
 — one command, Lite mode, no manual steps. Idempotent; safe to re-run.
@@ -402,45 +250,7 @@ curl -s -X POST http://127.0.0.1:$PORT/console/api/auth/setup \
 
 ---
 
-## 8. Endpoints
-
-| Endpoint | Purpose |
-|---|---|
-| `/health` | Process liveness |
-| `/health/ready` | Database, migration, dependency readiness |
-| `/metrics` | Prometheus metrics |
-| `/v1/*` | Gateway API routes |
-| `/console` | Dashboard |
-| `/share/:token` | Public child-key enrollment |
-
-## 9. Encryption key
-
-`CARTETHYIA_ENCRYPTION_KEY` is a required 256-bit secret. It encrypts stored
-provider credentials and API keys. `bun setup` generates it. Manual
-generation, for rotation or prepared environments:
-
-```bash
-# macOS / Linux
-openssl rand -hex 32
-
-# Windows PowerShell
-[Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }))
-
-# Bun / Node
-bun -e "import { randomBytes } from 'node:crypto'; console.log(randomBytes(32).toString('base64'))"
-```
-
-Either 64 hex characters or Base64 of 32 bytes is accepted. **Never change it
-after credentials are stored** — stored secrets become unreadable.
-
-## 10. Backup and migration
-
-Numbered migrations under `migrations/` run automatically at boot and are
-recorded in `cartethyia_schema_migrations`.
-
-To move Lite → Full: export a JSON backup from Lite, restore into Full. The
-configuration does not need to be rebuilt.
-
 ## See also
 
-- [`getting-started.md`](getting-started.md) — first-run walkthrough
+Endpoints, the encryption key, backups, and moving Lite to Full are covered in
+[getting started](getting-started.md). Do not keep a second copy here.

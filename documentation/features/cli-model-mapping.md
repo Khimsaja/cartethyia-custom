@@ -135,5 +135,5 @@ lookup; there is no focused checked-in test for the differential above yet.
   table this resolves through when the gates are closed.
 - [`architecture.md`](../reference/architecture.md) — how the snapshot is built and
   invalidated.
-- [`console-api.md`](../reference/console-api.md) — the four boundaries every console
+- [`console-api.md`](../../.skills/cartethyia-console-api/references/console-api.md) — the four boundaries every console
   write passes through first.

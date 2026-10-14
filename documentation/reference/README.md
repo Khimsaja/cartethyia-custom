@@ -8,18 +8,20 @@ Keep it that way — a feature that needs prose gets a page under `features/`.
 | Page | Covers |
 | --- | --- |
 | [Architecture](architecture.md) | Process, request path, routing snapshot and its invalidation, data, what is intentionally absent |
-| [Backend](backend.md) | Boot, public `/v1` routes, dispatch, protocol, providers, routing and network, security, persistence, observability, workers |
-| [Protocol and translation](protocol-and-translation.md) | Wire families, the canonical model, request and response path, error mapping |
 | [Providers](providers.md) | Provider layers, boot and bundled vs BYOK, credentials and auth, discovery, quota, per-family notes |
-| [Console API](console-api.md) | Anatomy of a domain, wiring, the four boundaries, feature inventory, where to change what |
-| [Dashboard](dashboard.md) | Shell, pages, data flow, layout rules, mutation feedback, build and serve |
 | [Codebase size](codebase-size.md) | Tracked backend and frontend source-line counts and counting scope |
 | [Configuration](configuration.md) | Every environment variable. **Generated** from `src/config/spec.ts` by `scripts/generate/config-reference.ts`; regenerate it, never edit it by hand |
 | [SQLite parity](sqlite-parity.md) | Measured dialect differences between Lite and Full, and which ones are not defects |
 
-Ownership boundaries live in
-[Architecture → Ownership](architecture.md#ownership), and the four console
-boundaries live in [Console API → Boundaries](console-api.md#boundaries).
+The backend, protocol, console, and dashboard maps moved into the skill that
+owns the change, so the procedure and the map stay in one place:
+
+- Backend — `.skills/cartethyia-engineering/references/backend.md`
+- Protocol and translation — `.skills/cartethyia-trace-replay/references/protocol-and-translation.md`
+- Console API — `.skills/cartethyia-console-api/references/console-api.md`
+- Dashboard — `.skills/cartethyia-dashboard/references/dashboard-map.md`
+
+Ownership boundaries live in [Architecture → Ownership](architecture.md#ownership).
 
 Procedure is not here. `.skills/` owns it — `cartethyia-schema-telemetry` for a
 schema or migration change, `cartethyia-health-routing` for cooldowns and

@@ -60,11 +60,11 @@ loop.
 Unknown protected paths redirect to `/`. There is no fusion page.
 
 Three of those pages are backed by a feature page that owns the data and the
-console domain behind them: [`/combos`](../features/routing-aliases-combos.md),
-[`/proxy`](../features/network-pools.md), and `/cli-tools`
-([CLI model mapping](../features/cli-model-mapping.md)). The share page is public
-and has its own: [share keys](../features/share-keys.md). Provider detail's
-quota threshold is documented in [Usage floor](../features/usage-floor.md).
+console domain behind them: [`/combos`](../../../documentation/features/routing-aliases-combos.md),
+[`/proxy`](../../../documentation/features/network-pools.md), and `/cli-tools`
+([CLI model mapping](../../../documentation/features/cli-model-mapping.md)). The share page is public
+and has its own: [share keys](../../../documentation/features/share-keys.md). Provider detail's
+quota threshold is documented in [Usage floor](../../../documentation/features/usage-floor.md).
 
 ## Data flow
 
@@ -137,7 +137,7 @@ or media-generation tools run; **YOLO** runs those tools automatically.
 lets recipients copy granted model ids and test allowed models with the shared
 key, and carries no key-management controls such as enable, disable, or delete.
 What the page is for, and what enforces it, is on the
-[share keys](../features/share-keys.md) page.
+[share keys](../../../documentation/features/share-keys.md) page.
 
 `apps/landing` is the unauthenticated product page. Crawlers do not run the
 bundle, so title, description, and social tags for landing, console, and share
@@ -189,30 +189,22 @@ click landed.
 
 ## Provider routing controls
 
-`useRoutingStrategy` reads `GET` provider routing and writes it back through
+`useRoutingStrategy` reads provider routing and writes it back through
 `useUpdateProviderRouting`. Round robin is a boolean over the `round_robin`
-strategy. Fallback is the other value. `rotateCount`, `maxInflight`,
-`skipProxy`, and `userAgent` save through `useDebouncedSave`, so a slider
-does not send one request per pixel.
+strategy; fallback is the other value. `rotateCount`, `maxInflight`,
+`skipProxy`, and `userAgent` save through `useDebouncedSave`, so a slider does
+not send one request per pixel. User-agent editing is gated by `allowUserAgent`.
 
-User-agent editing is gated by `allowUserAgent`. Providers that must keep a
-fixed agent do not show the field.
+Three defaults apply when no routing row exists, all read from the backend:
 
-Three defaults answer when no routing row exists, and all three are read from
-the backend rather than restated in the hook:
-
-- **Cline skips the proxy.** Its per-account health follows the egress address,
-  so a pool in front of it is the thing most likely to be wrong.
-- **`maxInflight` is unlimited** (`∞`). It was 5, which capped every provider
-  an operator had not configured and surfaced as `capacity_exhausted` — a
-  capacity claim about a limit nobody set. A ceiling the operator did set is
-  still enforced.
-- **Client identity is the Claude Code CLI.** A bare API key with no identity of
-  its own identifies as `claude-cli/<version> (external, cli)`, on the live
-  version. It was a frozen Codex literal. "None" still means no header at all,
-  which is why the hook initializes `userAgent` to `""` and lets the fetched
-  row fill it in: seeding it with any real identity would show the card one
-  thing and save another.
+- **Cline skips the proxy.** Its health follows the egress address, so a pool in
+  front of it is the thing most likely to be wrong.
+- **`maxInflight` is unlimited.** It was 5, which capped every unconfigured
+  provider and surfaced as `capacity_exhausted` — a limit nobody set. A ceiling
+  the operator did set is still enforced.
+- **Client identity is the Claude Code CLI**, on the live version. It was a
+  frozen Codex literal. "None" still means no header, which is why the hook
+  initializes `userAgent` to `""` and lets the fetched row fill it.
 
 ## Build and serve
 

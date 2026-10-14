@@ -3,15 +3,10 @@
 How one client payload becomes one provider payload and back. Read this before
 changing request or response handling. For the procedure to attribute a failing
 request to one field, use the
-[trace-replay skill](../../.skills/cartethyia-trace-replay/SKILL.md) instead —
+[trace-replay skill](../SKILL.md) instead —
 this file explains the seams, not the bisection method.
 
 ## What the gateway translates between
-
-The gateway exposes four client request surfaces. Each surface parses into the
-canonical request; `completions` has its own legacy parser and client-response
-encoder, but no dedicated provider-side codec. It is translated to the selected
-provider wire family like the other surfaces.
 
 | Client surface | Path | Owner |
 | --- | --- | --- |
@@ -20,32 +15,18 @@ provider wire family like the other surfaces.
 | Messages | `/v1/messages` | `src/transport/surface/messages/` |
 | Completions | `/v1/completions` | `src/transport/surface/completion.ts` |
 
-Each adapter implements `SurfaceAdapter` (`src/transport/surface/adapters.ts:51`):
-`matchesBodyShape` for detection, `parse` for inbound, and `encode`/`encodeOutput`
-for outbound. The registry is built once in `src/boot/app.ts:185`.
-
-Detection is once-only with fixed precedence — explicit `x-cartethyia-surface`
-header, then endpoint path, then an unambiguous body shape, then chat as the
-permissive default (`src/transport/surface/adapters.ts:129`). Path wins over body
-shape on purpose: user-agent sniffing and prompt-text scanning never influence
-routing. Every signal is evaluated even after one wins, because the losing
-signals are what `disagreement` reports. A path-vs-body disagreement is normal
-traffic, not a fault — a chat body with `max_tokens` also matches the Messages
-shape — so only a marker-vs-path conflict is logged at warn
-(`src/transport/guards/request-context.ts:194`).
+Each adapter implements `SurfaceAdapter` (`src/transport/surface/adapters.ts`):
+`matchesBodyShape`, `parse`, `encode`. Detection runs once, in fixed order:
+`x-cartethyia-surface` header, then path, then an unambiguous body shape, then
+chat as the default. Path wins over body on purpose — user-agent sniffing never
+influences routing. A path-vs-body disagreement is normal traffic; only a
+marker-vs-path conflict is logged at warn.
 
 Codex and Gemini are client-visible only through their providers, not as public
-surfaces: `src/protocol/request/codex.ts`, `src/protocol/response/codex.ts`, and
-`src/protocol/request/gemini.ts` / `response/gemini.ts` are consumed by
-`src/providers/integrations/codex/codex.ts:40` and
-`src/providers/integrations/gemini.ts`.
-
-Three wire families exist on the provider side — `chat`, `responses`, `messages`
-(`src/protocol/canonical-model.ts:8`). There is no `native` family. A provider
-that frames its own bytes says so on its metadata (`bespokeWire`,
-`src/providers/provider-metadata.ts`), which is what exempts it from the codec
-matrices in `src/transport/translation/capabilities.ts:175`.
-
+surfaces. Three wire families exist on the provider side: `chat`, `responses`,
+`messages`. There is no `native` family. A provider that frames its own bytes
+says so with `bespokeWire` on its metadata, which exempts it from the codec
+matrices.
 ## The canonical model
 
 `src/protocol/canonical-model.ts` holds the vocabulary both sides encode from:
@@ -60,24 +41,20 @@ pair. Without a canonical form each client surface would need an N-way
 translation table per provider, and a chat client could never be served by a
 Messages account.
 
-Two decisions in the model carry most of the weight:
+Two decisions carry most of the weight:
 
-- **Stop reasons are canonical.** `CanonicalStopReason` (:304) is mapped from the
-  provider's own vocabulary by the response decoders and mapped back into the
-  client's by the surface encoders. The raw provider string survives on
-  `provider_stop_reason` (:330) for diagnostics, and encoders must not switch on
-  it — that is what keeps one protocol's stop vocabulary out of another's
-  response.
-- **Tool results live in `tool` *or* `user` turns.** The Messages ledger re-homes
-  tool results into `user` turns, so `canContainToolResult` (:190) is the
-  predicate, not `role === "tool"`. Testing the role directly is how broken tool
-  sequences reached upstream.
+- **Stop reasons are canonical.** Decoders map the provider's vocabulary in,
+  encoders map it back out. The raw string survives on `provider_stop_reason`
+  for diagnostics, and encoders must not switch on it.
+- **Tool results live in `tool` or `user` turns.** The Messages ledger re-homes
+  them into `user` turns, so `canContainToolResult` is the predicate, not
+  `role === "tool"`. Testing the role directly is how broken sequences reached
+  upstream.
 
-Values with no stable intersection across wires stay opaque: `extension` content
-parts, `reasoning` payloads, and `GenerationControls` keys prefixed
-`extension:` (:127). Reasoning is one canonical part whether the client sent a
-thinking block, `reasoning_content`, or a Responses reasoning item. Empty
-reasoning is preserved, never invented.
+Values with no stable intersection stay opaque: `extension` parts, `reasoning`
+payloads, and `GenerationControls` keys prefixed `extension:`. Reasoning is one
+canonical part however the client sent it. Empty reasoning is preserved, never
+invented.
 
 ## Request path
 
@@ -96,8 +73,8 @@ precedence lives in `src/transport/surface/dialects.ts`: `parseToolDefinition`
 runs everything that needs no knowledge of the chosen provider: the `model(high)`
 thinking suffix is stripped before anything matches on the model name (:101),
 alias and CLI remapping resolve the target
-([alias and combo resolution](../features/routing-aliases-combos.md),
-[CLI model mapping](../features/cli-model-mapping.md)), corrupt attachments are
+([alias and combo resolution](../../../documentation/features/routing-aliases-combos.md),
+[CLI model mapping](../../../documentation/features/cli-model-mapping.md)), corrupt attachments are
 dropped (:155), capabilities are derived and the plan is built, degraded
 variants are tried when nothing supports the full request (:174), tool rounds
 are repaired (:281), and the request is projected onto the winning candidate
@@ -176,36 +153,27 @@ record is committed, then the wire converters (`usageToChatWire` :357,
 A provider failure becomes a client-visible error at one of two boundaries, and
 both produce the same `GatewayError` so the classification cannot disagree.
 
-`mapUpstreamHttpError` (`src/transport/failure-policy.ts:785`) turns a failed
-HTTP response into a typed error, reading a machine-readable identifier via
-`upstreamErrorIdentifier` (:586) before falling back to status alone through
-`classifyUpstreamError` (:622). Prose is only consulted to recognize an overflow
-that names both the measured size and the window (`isContextLengthFailure` :524),
-never as a substring rule. `src/protocol/stream-error-frames.ts:46` applies the
-same classifier to an error envelope that arrived *after* a 200 status line — a
-streaming failure that used to reach telemetry as `unknown_error`. Claude has its
-own mapper for the same reason (`src/protocol/messages-errors.ts:56`).
+`mapUpstreamHttpError` turns a failed HTTP response into a typed error, reading
+a machine-readable identifier before falling back to status. Prose is consulted
+only to recognize an overflow that names both the measured size and the window,
+never as a substring rule. `stream-error-frames.ts` applies the same classifier
+to an error envelope that arrived after a 200 status line.
 
-Every error carries `code`, `status`, `origin`, and `details`. Origin is
-`cartethyia`, `upstream`, or `network`, and it matters: a corrupt SSE stream
-labelled `invalid_request` told the client its request was wrong and invited a
-retry against a broken upstream. `classifyUpstreamFailure` (:306) decides
-retryability and account health from that same record, so failover and the
-account cooldown never disagree about what happened.
+Every error carries `code`, `status`, `origin` (`cartethyia`, `upstream`,
+`network`), and `details`. Origin matters: a corrupt SSE stream labelled
+`invalid_request` told the client its request was wrong and invited a retry
+against a broken upstream. `classifyUpstreamFailure` decides retryability and
+account health from that same record, so failover and cooldown never disagree.
 
-Public text goes through `formatPublicErrorMessage`
-(`src/protocol/gateway-error.ts:122`): the code travels in `error.code`, not
-prefixed into the sentence. `publicGatewayErrorDetails` (:187) is an allowlist —
-`PUBLIC_ERROR_DETAIL_KEYS` at :140 — so an upstream payload cannot leak into the
-envelope. `createErrorNormalizationMiddleware`
-(`src/transport/guards/error-lifecycle.ts:56`) is the single serializer for
-everything thrown on `/v1/*` and `/console/api/*`, mounted globally.
+Public text goes through `formatPublicErrorMessage`: the code travels in
+`error.code`, not prefixed into the sentence. `publicGatewayErrorDetails` is an
+allowlist, so an upstream payload cannot leak into the envelope.
+`createErrorNormalizationMiddleware` is the single serializer for everything
+thrown on `/v1/*` and `/console/api/*`.
 
-Surface-level protocol failures are typed subclasses rather than bare strings:
-`MessagesLedgerError` (`src/transport/surface/messages/errors.ts:4`) for a tool
-ledger mismatch, `ResponsesSequenceError` and `ResponsesLifecycleError`
-(`src/transport/surface/responses/errors.ts:15`, `:23`) for sequence and
-lifecycle violations.
+Surface failures are typed subclasses: `MessagesLedgerError` for a tool ledger
+mismatch, `ResponsesSequenceError` and `ResponsesLifecycleError` for sequence
+and lifecycle violations.
 
 ## Where to change what
 
@@ -228,10 +196,10 @@ lifecycle violations.
 
 Reproducing a failure, bisecting a payload, remote debugging against a live
 gateway, and proving a test locks the fix are owned by the
-[trace-replay skill](../../.skills/cartethyia-trace-replay/SKILL.md). Routing,
+[trace-replay skill](../SKILL.md). Routing,
 eligibility, leases, and account cooldowns are covered by the
-[architecture reference](architecture.md) and
-[health-routing skill](../../.skills/cartethyia-health-routing/SKILL.md).
+[architecture reference](../../../documentation/reference/architecture.md) and
+[health-routing skill](../../cartethyia-health-routing/SKILL.md).
 Provider registration and catalogs are covered by the
-[backend reference](backend.md) and
-[provider-catalog skill](../../.skills/cartethyia-provider-catalog/SKILL.md).
+[backend reference](../../cartethyia-engineering/references/backend.md) and
+[provider-catalog skill](../../cartethyia-provider-catalog/SKILL.md).

@@ -37,21 +37,19 @@ telemetry buffer; without the buffer the route writes no usage.
 ## Dispatch
 
 `src/transport/dispatch/proxy-request.ts` owns `handleProviderProxyRequest`:
-authenticated request → `ProxyRequestPreparer.prepare()` → canonical request →
-`RoutingEngine` plan → `runAttemptLoop` → leases → provider adapter → stream
-(`dispatchStreamingAttempt`) or buffered response → `completeAttempt` →
-release. A retryable failure releases the lease and tries the next candidate;
-a terminal failure becomes a `GatewayError` and stops.
+authenticated request, `prepare()`, canonical request, `RoutingEngine` plan,
+`runAttemptLoop`, leases, adapter, then stream or buffered response,
+`completeAttempt`, release. A retryable failure releases the lease and tries the
+next candidate; a terminal one becomes a `GatewayError` and stops.
 
-Retryability is decided in `src/transport/failure-policy.ts`. An overflow
-(`context_length_exceeded`) is retryable — it names how large the prompt was
+Retryability is decided in `src/transport/failure-policy.ts`. A
+`context_length_exceeded` is retryable: it names how large the prompt was
 against the window *that* candidate offered, so a sibling with more room is
-tried unchanged. Nothing in the loop shrinks or rewrites the prompt; a client
-compacts on the 413 it receives once every candidate has overflowed.
+tried unchanged. Nothing in the loop rewrites the prompt.
 
-Streaming owns its own cleanup: `ProxyRequestStateStore.cleanup()` is the
-single release point (completion, error, cancel, client abort, deadline,
-stall). A pending pull owns its terminal outcome and is not released twice.
+`ProxyRequestStateStore.cleanup()` is the single release point for completion,
+error, cancel, client abort, deadline, and stall. A pending pull owns its
+terminal outcome and is not released twice.
 
 ## Protocol
 
@@ -90,11 +88,11 @@ on the next request, not at the next process start.
 | `search/` | Hosted search tools and grounding |
 
 Per-account quota thresholds are applied during route eligibility; they are not
-account health state. See [Usage floor](../features/usage-floor.md).
+account health state. See [Usage floor](../../../documentation/features/usage-floor.md).
 `base-adapter.ts` and `compatible-adapter.ts` cover standard-wire providers; a
 bespoke provider frames its own bytes in its adapter — that fact lives on
 provider metadata, not in `wire_family`. Details:
-[Providers](providers.md).
+[Providers](../../../documentation/reference/providers.md).
 
 ## Routing and network
 
@@ -102,8 +100,8 @@ provider metadata, not in `wire_family`. Details:
 types and `InMemoryRouteSnapshotService`; `admission.ts`/`reservations.ts`
 hold slots and leases; `round-robin.ts` keeps the per-provider cursor. Three
 independently configured strategies: provider, pool, and combo (all `fallback`
-or `round_robin`) — see [network pools](../features/network-pools.md) and
-[routing aliases and combos](../features/routing-aliases-combos.md).
+or `round_robin`) — see [network pools](../../../documentation/features/network-pools.md) and
+[routing aliases and combos](../../../documentation/features/routing-aliases-combos.md).
 
 `src/network/` is the egress half: `pool/` selects a pool and accounts bytes,
 `ssrf.ts` rejects disallowed destinations, `retry.ts` is the outbound retry
@@ -130,20 +128,16 @@ returns a user only when exactly one row matches the username.
 ## Persistence
 
 `src/persistence/schema.ts` is the Drizzle source. The baselines define the
-foundational schema; SQLite's baseline is generated from PostgreSQL. Preserve
-released baseline files (their hashes are recorded in deployed databases).
-Matching numbered migrations bring both backends to the current schema and
-upgrade supported existing databases; databases with retired migration history
-must be recreated from the baseline and recovered through backup/restore, which
-maps legacy routing names and values (`bypass_proxy`, `bridge`, the old
-provider User-Agent default, Cline's skip-proxy default, `fusion`) before
-inserting rows.
+foundational schema; SQLite's is generated from PostgreSQL, and released
+baseline hashes are recorded in deployed databases, so do not rewrite them.
+Databases with retired migration history are recreated from the baseline and
+recovered through backup/restore, which maps legacy names (`bypass_proxy`,
+`bridge`, `fusion`) before inserting rows.
 
-Stores live in `src/persistence/stores/` and under the console domain owning
-the table. `tenant-scope.ts` holds `globalOrOwnedBy`: a `NULL` tenant id is a
-shared row — replacing it with `eq(tenantId)` hides shared catalog rows, and
-the reverse is also wrong (quota and OAuth owner checks use `eq` on purpose).
-`usage-flush.ts` coalesces admission counters: one update per key per flush.
+`tenant-scope.ts` holds `globalOrOwnedBy`: a `NULL` tenant id is a shared row.
+Replacing it with `eq(tenantId)` hides shared catalog rows. Quota and OAuth
+owner checks use `eq` on purpose. `usage-flush.ts` coalesces admission
+counters: one update per key per flush.
 
 ## Observability
 
@@ -164,7 +158,7 @@ prefix and never touches the current hour.
 
 `src/console/console-router.ts` mounts `/console/api`; CSRF and the mutation
 limiter wrap every domain; `domain-registration.ts` attaches the domains.
-Full surface table: [Console API](console-api.md).
+Full surface table: [Console API](../../cartethyia-console-api/references/console-api.md).
 
 | Prefix | Domain |
 | --- | --- |
@@ -184,23 +178,13 @@ recreating them.
 
 ## Workers
 
-`src/workers/` keeps scheduling mechanics and jobs as flat modules:
-`scheduler.ts` (task timers, non-overlap, shutdown, concurrency waves),
-`sweep-runner.ts` (shared bounded runner for account sweeps),
-`quota-refresh-sweep.ts` (stale quota + daily check-in ride-along),
-`oauth-refresh-sweep.ts` (due credential refresh), `daily-checkin.ts` (claims
-check-ins, reports Buddy activity; the quota sweep supplies tenant-safe
-egress), `account-identity-sweep.ts` (derives account label/email from stored
-credentials).
-
-`src/boot/dependencies.ts` registers these with the scheduler. Other periodic
-jobs stay beside their owning domains (session cleanup under
-`src/console/auth/`, health cleanup under `src/providers/operations/`). A task
-needing persistence receives the composition root's database handle; it does
-not open a second pool. The composition root logs named startup phases with
-elapsed time and RSS/heap — `[startup]` lines are phase diagnostics, not
-steady-state memory benchmarks. Client version refresh is deliberately
-deferred after startup.
+`src/workers/` keeps scheduling and jobs flat: `scheduler.ts` (timers,
+non-overlap, shutdown), `sweep-runner.ts` (bounded runner), `quota-refresh-sweep.ts`,
+`oauth-refresh-sweep.ts`, `daily-checkin.ts`, and `account-identity-sweep.ts`.
+`src/boot/dependencies.ts` registers them. Other periodic jobs stay beside their
+owning domain. A task receives the composition root's database handle and does
+not open a second pool. `[startup]` log lines are phase diagnostics, not memory
+benchmarks. Client version refresh is deferred until after startup.
 
 ## Where to change what
 
