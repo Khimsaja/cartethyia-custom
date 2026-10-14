@@ -63,18 +63,12 @@ export interface WireTokenBound {
 const DEFAULT_OUTPUT_TOKENS = 32_000;
 
 /**
- * Output-token bounds per wire family. Values below are the current
- * per-builder behavior, centralized so the three codecs cannot drift:
- * chat clamps to 32k (free-tier backends 400 on unbounded values);
- * messages defaults to 4096 (Anthropic requires the field), floors to 32k
- * with tools, and clamps OAuth to 64k; responses passes through.
- *
- * `chat` and `responses` also carry a default, for the reason proven above:
- * an omitted limit used to be forwarded as *absent*, and an upstream that
- * requires the field rejected the request outright.
+ * Output-token bounds per wire family. Chat has no global ceiling: a model's
+ * catalog output limit is the ceiling, and an unknown model passes the
+ * caller's value through. Messages keeps its Anthropic floors and OAuth cap.
  */
 export const WIRE_TOKEN_BOUNDS: Readonly<Record<string, WireTokenBound>> = {
-  chat: { minTokens: 16, ceiling: 32_000, defaultMaxTokens: DEFAULT_OUTPUT_TOKENS },
+  chat: { minTokens: 16, defaultMaxTokens: DEFAULT_OUTPUT_TOKENS },
   messages: { minTokens: 16, defaultMaxTokens: 4_096, toolCallFloor: 32_000, oauthCeiling: 64_000 },
   responses: { minTokens: 16, defaultMaxTokens: DEFAULT_OUTPUT_TOKENS },
 };
@@ -83,7 +77,7 @@ export const WIRE_TOKEN_BOUNDS: Readonly<Record<string, WireTokenBound>> = {
 export function resolveWireMaxTokens(
   wire: string,
   controls: { max_tokens?: number | undefined },
-  options: { hasTools?: boolean; isOAuth?: boolean } = {},
+  options: { hasTools?: boolean; isOAuth?: boolean; maxOutputTokens?: number } = {},
 ): number | undefined {
   const bound = WIRE_TOKEN_BOUNDS[wire];
   if (bound === undefined) return controls.max_tokens;
@@ -95,7 +89,8 @@ export function resolveWireMaxTokens(
     value = bound.toolCallFloor;
   if (value !== undefined && bound.oauthCeiling !== undefined && options.isOAuth === true && value > bound.oauthCeiling)
     value = bound.oauthCeiling;
-  if (value !== undefined && bound.ceiling !== undefined && value > bound.ceiling) value = bound.ceiling;
+  const ceiling = options.maxOutputTokens ?? bound.ceiling;
+  if (value !== undefined && ceiling !== undefined && value > ceiling) value = ceiling;
   return value;
 }
 /**

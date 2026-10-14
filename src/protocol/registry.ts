@@ -5,6 +5,7 @@ export interface CodecContext {
   readonly sessionId?: string;
   readonly supportsPromptCaching?: boolean;
   readonly chatTokenLimitField?: "max_tokens" | "max_completion_tokens";
+  readonly maxOutputTokens?: number;
   readonly promptCacheKey?: string;
   readonly signal?: AbortSignal;
 }
@@ -147,6 +148,9 @@ export async function encodeWireRequest(
       ...(context?.chatTokenLimitField === undefined
         ? {}
         : { tokenLimitField: context.chatTokenLimitField }),
+      ...(context?.maxOutputTokens === undefined
+        ? {}
+        : { maxOutputTokens: context.maxOutputTokens }),
       ...(context?.promptCacheKey === undefined
         ? {}
         : { promptCacheKey: context.promptCacheKey }),

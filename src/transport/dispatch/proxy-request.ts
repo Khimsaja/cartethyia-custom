@@ -237,6 +237,7 @@ export async function handleProviderProxyRequest(
         model_id: candidate.model_id,
         wire_family: candidate.wire_family,
         endpoint_path: candidate.endpoint,
+        ...(candidate.output_limit == null ? {} : { output_limit: candidate.output_limit }),
         capabilities: candidate.capability_profile,
         user_agent: candidate.user_agent,
       };

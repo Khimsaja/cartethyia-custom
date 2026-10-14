@@ -32,12 +32,12 @@ describe("output-token bounds — the caller's stated limit is never invented ov
     );
   });
 
-  test("chat clamps a limit above the wire ceiling instead of forwarding it", () => {
-    // Free-tier Chat backends answer an unbounded value with a generic
-    // invalid-argument 400, so the ceiling is a correctness fix, not a taste one.
-    const ceiling = WIRE_TOKEN_BOUNDS["chat"]?.ceiling;
-    expect(ceiling).toBeDefined();
-    expect(canonicalToChatPayload(request({ max_tokens: 128_000 }))["max_tokens"]).toBe(ceiling);
+  test("chat forwards a limit above the old global ceiling", () => {
+    expect(canonicalToChatPayload(request({ max_tokens: 128_000 }))["max_tokens"]).toBe(128_000);
+  });
+
+  test("chat clamps to the catalog output limit when one is supplied", () => {
+    expect(canonicalToChatPayload(request({ max_tokens: 500_000 }), { maxOutputTokens: 384_000 })["max_tokens"]).toBe(384_000);
   });
 
   test("chat floors a limit below the wire minimum", () => {

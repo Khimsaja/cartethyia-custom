@@ -139,6 +139,7 @@ export function createWebsearchHandler(deps: WebsearchHandlerDeps) {
           provider_id: candidate.provider_id as ProviderAdapter["provider_id"],
           model_id: candidate.model_id,
           wire_family: candidate.wire_family,
+          ...(candidate.output_limit == null ? {} : { output_limit: candidate.output_limit }),
           endpoint_path: candidate.endpoint,
           capabilities: candidate.capability_profile,
         };

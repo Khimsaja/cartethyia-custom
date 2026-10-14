@@ -19,6 +19,8 @@ export interface RouteCandidate {
    */
   readonly service_kind?: ServiceKind;
   readonly endpoint: string;
+  /** Catalog output ceiling. Absent means the wire default still applies. */
+  readonly output_limit?: number | null;
   readonly capability_profile: CapabilityProfile;
   /** Route-selected User-Agent fallback; provider-supplied identities remain authoritative. */
   readonly user_agent?: string;

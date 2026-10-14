@@ -121,6 +121,7 @@ export interface ProviderDispatchTarget {
   readonly model_id: string;
   readonly wire_family: WireFamily;
   readonly endpoint_path: string;
+  readonly output_limit?: number | null;
   readonly capabilities: Readonly<Record<string, boolean>>;
 }
 

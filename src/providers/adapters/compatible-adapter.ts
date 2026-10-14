@@ -203,6 +203,7 @@ export class OpenAICompatibleAdapter extends BaseProviderAdapter {
     const payload = await encodeWireRequest(wireFamily, effectiveRequest, {
       supportsPromptCaching: this.config.supports_prompt_caching !== false,
       ...(promptCacheKey === undefined ? {} : { promptCacheKey }),
+      ...(candidate.output_limit == null ? {} : { maxOutputTokens: candidate.output_limit }),
       ...(this.config.chat_token_limit_field === undefined
         ? {}
         : { chatTokenLimitField: this.config.chat_token_limit_field }),

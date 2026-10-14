@@ -177,11 +177,11 @@ interface MergedModelRow {
   serviceKind: ServiceKind;
   endpointPath: string;
   modalities: unknown;
+  outputLimit: number | null;
   reasoning: boolean;
   toolCall: boolean;
   enabled: boolean;
 }
-
 /**
  * Converts persisted model rows into candidate input. Seed materialization is
  * performed before this function runs, so no static-vs-DB merge is needed.
@@ -198,6 +198,7 @@ function mergeModelCatalog(
       serviceKind: row.serviceKind as ServiceKind,
       endpointPath: row.endpointPath,
       modalities: row.modalities,
+      outputLimit: row.outputLimit,
       reasoning: row.reasoning,
       toolCall: row.toolCall,
       enabled: row.enabled,
@@ -234,11 +235,11 @@ const MODEL_COLUMNS = {
   serviceKind: models.serviceKind,
   endpointPath: models.endpointPath,
   modalities: models.modalities,
+  outputLimit: models.outputLimit,
   reasoning: models.reasoning,
   toolCall: models.toolCall,
   enabled: models.enabled,
 } as const;
-
 const ACCOUNT_COLUMNS = {
   id: providerAccounts.id,
   providerId: providerAccounts.providerId,
@@ -511,6 +512,7 @@ class RouteCatalogRepository {
                 wire_family: model.wireFamily as WireFamily,
                 service_kind: model.serviceKind,
                 endpoint: model.endpointPath,
+                ...(model.outputLimit == null ? {} : { output_limit: model.outputLimit }),
                 capability_profile: capabilityProfile,
                 tenant_id: tId,
                 requires_account: false as const,
@@ -535,6 +537,7 @@ class RouteCatalogRepository {
           wire_family: model.wireFamily as WireFamily,
           service_kind: model.serviceKind,
           endpoint: model.endpointPath,
+          ...(model.outputLimit == null ? {} : { output_limit: model.outputLimit }),
           capability_profile: capabilityProfile,
           tenant_id: providerTenantId,
           ...(providerRequiresAccount
@@ -573,6 +576,7 @@ class RouteCatalogRepository {
           wire_family: model.wireFamily as WireFamily,
           service_kind: model.serviceKind,
           endpoint: model.endpointPath,
+          ...(model.outputLimit == null ? {} : { output_limit: model.outputLimit }),
           capability_profile: capabilityProfile,
           ...(routeUserAgent === undefined ? {} : { user_agent: routeUserAgent }),
           tenant_id: rowTenantId,

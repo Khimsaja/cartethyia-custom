@@ -148,6 +148,7 @@ export function createTokenCountHandler(deps: TokenCountHandlerDeps) {
         const target: ProviderDispatchTarget = {
           provider_id: candidate.provider_id as ProviderAdapter["provider_id"],
           model_id: candidate.model_id,
+          ...(candidate.output_limit == null ? {} : { output_limit: candidate.output_limit }),
           wire_family: candidate.wire_family,
           // Always supplied. `dispatchNativeService` falls back to
           // `/v1/systemone` on an empty path, which would post a Messages body to

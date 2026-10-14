@@ -180,6 +180,7 @@ export function canonicalToChatPayload(
   options: {
     readonly supportsPromptCaching?: boolean;
     readonly tokenLimitField?: "max_tokens" | "max_completion_tokens";
+    readonly maxOutputTokens?: number;
     readonly promptCacheKey?: string;
   } = {},
 ): Record<string, unknown> {
@@ -523,7 +524,9 @@ export function canonicalToChatPayload(
   // must reach the upstream as a real number. Upstreams that require the field
   // reject a large prompt whose `max_tokens` is absent outright (WorkBuddy
   // `400 model_param_invalid`, reproduced through the gateway).
-  const bounded = resolveWireMaxTokens("chat", { max_tokens: requestedMaxTokens });
+  const bounded = resolveWireMaxTokens("chat", { max_tokens: requestedMaxTokens }, {
+    ...(options.maxOutputTokens === undefined ? {} : { maxOutputTokens: options.maxOutputTokens }),
+  });
   delete payload["max_tokens"];
   if (bounded !== undefined) payload[tokenLimitField] = bounded;
   return payload;
