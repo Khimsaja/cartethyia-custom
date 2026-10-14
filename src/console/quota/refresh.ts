@@ -104,6 +104,29 @@ export function timeoutSignal(requestSignal: AbortSignal, ms: number): AbortSign
  * dashboard blamed the wrong thing. A check cannot reclassify a parked account;
  * its own failure is still visible through the quota cache the page renders.
  */
+/**
+ * A failure that says nothing about the account.
+ *
+ * A quota fetch that ran out of its own abort budget timed out against *our*
+ * egress, not against the credential: the upstream may never have seen the
+ * request. Counting it like a refusal meant three slow passes parked a healthy
+ * account for six hours — and the buddy family is the worst case, because its
+ * quota and check-in legs share one pass and rotate egress per account, so a
+ * single slow pool produced three timeouts in a row.
+ *
+ * Matched on the message the timeout paths produce. Deliberately narrow: a
+ * refusal that merely mentions a timeout is still a refusal.
+ */
+function isTransientTimeout(error: string | null | undefined): boolean {
+  if (!error) return false;
+  const lower = error.toLowerCase();
+  return (
+    lower.includes("the operation timed out") ||
+    lower.includes("operation timed out") ||
+    lower.includes("timeout") && lower.includes("abort")
+  );
+}
+
 export async function recordAccountCheck(
   db: CartethyiaDatabase,
   accountId: string,
@@ -126,20 +149,26 @@ export async function recordAccountCheck(
       .where(activeOnly);
     return;
   }
+  const transient = isTransientTimeout(outcome.error);
   // Count the failure in the same statement. A quota endpoint that keeps
   // refusing is an account problem, and the row has to say so: the dashboard
   // reads `consecutiveFailures` for the pill, and a check that only wrote the
   // error text left the account looking healthy while every refresh failed.
+  //
+  // A timeout is annotated but NOT counted: it is evidence about the network,
+  // not the credential, and letting it advance the streak is what parked
+  // healthy accounts for six hours over three slow passes.
   const failing = await db
     .update(providerAccounts)
     .set({
       lastError: (outcome.error ?? "Account check failed").slice(0, 500),
       lastErrorCategory: outcome.category ?? "check_failed",
       lastErrorAt: new Date(),
-      consecutiveFailures: sql`${providerAccounts.consecutiveFailures} + 1`,
+      ...(transient ? {} : { consecutiveFailures: sql`${providerAccounts.consecutiveFailures} + 1` }),
     })
     .where(activeOnly)
     .returning({ consecutiveFailures: providerAccounts.consecutiveFailures });
+  if (transient) return;
   const failures = failing[0]?.consecutiveFailures ?? 0;
   // Past the threshold the account is parked, not just annotated. Three
   // consecutive refusals is a quota surface that is not coming back on its
