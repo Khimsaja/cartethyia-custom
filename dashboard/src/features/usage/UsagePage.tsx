@@ -1261,10 +1261,11 @@ function RequestsStatCard({
  * summarise it. Hidden while the summary is still loading so the panel does
  * not flash a "—" row before real numbers arrive.
  *
- * One row, not two: the average carries the "Route latency" wording itself
- * rather than sitting under a separate heading, so the row reads
- * `AVG 596 ms · P50 … · P95 … · P99 …` and four figures stay on one line at
- * ordinary widths. It wraps rather than overflows when there is no room.
+ * One row, four figures of the same size: `LATENCY 367 ms · P50 … · P95 … ·
+ * P99 …`. The average used to be larger and labelled "Route latency AVG",
+ * which read as a heading sitting on top of the percentiles. Shortening it to
+ * "Latency" and dropping the accent size keeps the row even. It wraps rather
+ * than overflows when there is no room.
  *
  * It sits outside `DataTable`'s own scroll box, so it stays put while the
  * rows scroll under it.
@@ -1287,8 +1288,8 @@ function RoutingLatencyBar({
   // not a mix of numbers and placeholders.
   if (pending) return null;
 
-  const tiles: ReadonlyArray<{ readonly label: string; readonly value: number | undefined; readonly accent?: boolean }> = [
-    { label: "Route latency AVG", value: avgMs, accent: true },
+  const tiles: ReadonlyArray<{ readonly label: string; readonly value: number | undefined }> = [
+    { label: "Latency", value: avgMs },
     { label: "P50", value: p50Ms },
     { label: "P95", value: p95Ms },
     { label: "P99", value: p99Ms },
@@ -1304,12 +1305,12 @@ function RoutingLatencyBar({
       {tiles.map((tile) => (
         <span
           key={tile.label}
-          className="inline-flex items-baseline gap-1.5 font-mono tabular-nums leading-none"
+          className="inline-flex items-baseline gap-1.5 font-mono tabular-nums leading-none text-caption"
         >
-          <span className={`text-micro font-semibold tracking-label uppercase ${tile.accent ? "text-accent" : "text-text-tertiary"}`}>
+          <span className="font-semibold tracking-label uppercase text-text-tertiary">
             {tile.label}
           </span>
-          <span className={`text-caption font-semibold ${tile.accent ? "text-text-primary" : "text-text-secondary"}`}>
+          <span className="font-semibold text-text-secondary">
             {formatDuration(tile.value)}
           </span>
         </span>
