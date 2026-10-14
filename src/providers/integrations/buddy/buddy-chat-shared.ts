@@ -195,6 +195,9 @@ export function buddyPrePayloadCommon(
   const messages = payload["messages"];
   if (Array.isArray(messages)) {
     const arr = messages as Array<Record<string, unknown>>;
+    // Nameless calls 400 before anything else can be judged, and their results
+    // must be orphans before the repack below tries to reorder them.
+    dropBuddyEmptyNameToolCalls(arr);
     // Buddy wire: repack tool result blocks before cleanup (image_resize_notice splits tool results → 11148)
     repackBuddyToolResultBlocks(arr);
     cleanupBuddyOrphanToolPairs(arr);
@@ -266,6 +269,55 @@ function repackBuddyToolResultBlocks(messages: Array<Record<string, unknown>>): 
   if (!changed) return;
   messages.length = 0;
   messages.push(...out);
+}
+
+/**
+ * Drop assistant tool_calls whose function name is empty.
+ *
+ * A streamed call can lose its name and land in the client transcript as
+ * `function.name: ""` (see `tool-identity.ts`: the client then replays it and
+ * every later request is rejected with "`name` must be non-empty"). Buddy
+ * reports this as `11133` with `param: ""`, naming no field, so the transcript
+ * is the only place it can be caught.
+ *
+ * The name is only ever absent, never wrong: replaying the same body with the
+ * name set to an identifier that is not even in `tools` returns 200, so the
+ * upstream rejects the missing value rather than an unknown one. Dropping the
+ * call is therefore not lossy — a nameless call cannot be dispatched anyway.
+ * The matching tool result becomes an orphan and
+ * `cleanupBuddyOrphanToolPairs` removes it in the same pass.
+ */
+function dropBuddyEmptyNameToolCalls(messages: Array<Record<string, unknown>>): void {
+  let changed = false;
+  for (const message of messages) {
+    if (message["role"] !== "assistant" || !Array.isArray(message["tool_calls"])) continue;
+    const calls = message["tool_calls"] as unknown[];
+    const kept = calls.filter((call) => {
+      if (call === null || typeof call !== "object") return true;
+      const fn = (call as Record<string, unknown>)["function"];
+      if (fn === null || typeof fn !== "object") return true;
+      const name = (fn as Record<string, unknown>)["name"];
+      return typeof name === "string" && name.trim().length > 0;
+    });
+    if (kept.length === calls.length) continue;
+    const { tool_calls: _dropped, ...rest } = message as Record<string, unknown> & { tool_calls: unknown };
+    if (kept.length === 0) {
+      messages[messages.indexOf(message)] = rest;
+    } else {
+      (message as Record<string, unknown>)["tool_calls"] = kept;
+    }
+    changed = true;
+  }
+  if (!changed) return;
+  // A message left with neither content nor calls carries nothing upstream.
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message === undefined || message["role"] !== "assistant") continue;
+    const hasCalls = Array.isArray(message["tool_calls"]) && (message["tool_calls"] as unknown[]).length > 0;
+    const content = message["content"];
+    const hasContent = (typeof content === "string" && content.trim().length > 0) || Array.isArray(content);
+    if (!hasCalls && !hasContent) messages.splice(i, 1);
+  }
 }
 
 /**

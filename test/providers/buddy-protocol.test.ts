@@ -80,6 +80,71 @@ describe("Buddy upstream protocol alignment", () => {
     expect(events.some((event) => event.type === "tool_call_delta" && event.name === "run_shell")).toBe(true);
   });
 
+  test("drops a replayed tool call whose function name is empty, and its orphan result", () => {
+    const payload: Record<string, unknown> = {
+      model: "deepseek-v4.1-flash",
+      messages: [
+        { role: "user", content: "search this" },
+        {
+          role: "assistant",
+          content: "on it",
+          tool_calls: [{ id: "call_1", type: "function", function: { name: "", arguments: '{"query":"x"}' } }],
+        },
+        { role: "tool", tool_call_id: "call_1", content: "<tool_use_error>No such tool available: </tool_use_error>" },
+      ],
+    };
+    buddyPrePayloadCommon(payload, request);
+    const messages = payload["messages"] as Array<Record<string, unknown>>;
+    expect(messages.some((m) => m["role"] === "tool" && m["tool_call_id"] === "call_1")).toBe(false);
+    const assistant = messages.find((m) => m["role"] === "assistant") as Record<string, unknown> | undefined;
+    expect(assistant?.["tool_calls"]).toBeUndefined();
+  });
+
+  test("keeps a named call on the same turn when a sibling name is empty", () => {
+    const payload: Record<string, unknown> = {
+      model: "deepseek-v4.1-flash",
+      messages: [
+        { role: "user", content: "go" },
+        {
+          role: "assistant",
+          content: "working",
+          tool_calls: [
+            { id: "call_1", type: "function", function: { name: "run_shell", arguments: "{}" } },
+            { id: "call_2", type: "function", function: { name: "", arguments: "{}" } },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_1", content: "ok" },
+        { role: "tool", tool_call_id: "call_2", content: "err" },
+      ],
+    };
+    buddyPrePayloadCommon(payload, request);
+    const messages = payload["messages"] as Array<Record<string, unknown>>;
+    const assistant = messages.find((m) => m["role"] === "assistant") as Record<string, unknown>;
+    const kept = (assistant["tool_calls"] ?? []) as Array<Record<string, unknown>>;
+    expect(kept).toHaveLength(1);
+    expect((kept[0]?.["function"] as Record<string, unknown> | undefined)?.["name"]).toBe("run_shell");
+    expect(messages.some((m) => m["tool_call_id"] === "call_2")).toBe(false);
+  });
+
+  test("does not remove an assistant turn that keeps content after dropping a nameless call", () => {
+    const payload: Record<string, unknown> = {
+      model: "deepseek-v4.1-flash",
+      messages: [
+        { role: "user", content: "go" },
+        {
+          role: "assistant",
+          content: "checking",
+          tool_calls: [{ id: "call_1", type: "function", function: { name: "  ", arguments: "{}" } }],
+        },
+        { role: "tool", tool_call_id: "call_1", content: "err" },
+      ],
+    };
+    buddyPrePayloadCommon(payload, request);
+    const messages = payload["messages"] as Array<Record<string, unknown>>;
+    // The turn said something before calling, so it survives without its call.
+    expect(messages.some((m) => m["role"] === "assistant" && m["content"] === "checking")).toBe(true);
+  });
+
   test("reads enterprise usage when the personal package list is empty", async () => {
     const fetcher = (async (url: string) => new Response(JSON.stringify(
       String(url).endsWith("/get-user-resource")
