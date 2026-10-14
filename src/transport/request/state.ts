@@ -3,6 +3,7 @@ import type { CanonicalRequest, UsageRecord } from "../../protocol/canonical-mod
 import type { ClientIdentity } from "../../security/abuse";
 import type { ResolvedApiKey } from "../../security/api-key-auth";
 import type { PreparedProxyRequest } from "./preparer";
+import type { TelemetryPayloadCapture } from "../../observability/payload-capture";
 import { createInFlightRegistry, type InFlightSnapshot } from "./inflight";
 import { log } from "../../observability/logger";
 import { fastPathname } from "../pathname";
@@ -57,6 +58,20 @@ export interface ProxyRequestState {
   canonicalRequest?: CanonicalRequest;
   preparedRequest?: PreparedProxyRequest;
   outcome?: ProxyRequestOutcome;
+  /**
+   * Payload capture for this request, stashed so a rejection that never
+   * reaches `completeAttempt` can still record what the client sent. Set on
+   * the same code path that builds the dispatch deps; optional because a
+   * route may decline to capture.
+   */
+  payloadCapture?: TelemetryPayloadCapture;
+  /**
+   * The error envelope the client was given, for a rejection raised before
+   * dispatch. `attempt-finalize` derives this for dispatched attempts; an
+   * early rejection has no attempt, so it is recorded here instead and both
+   * paths end up with the same four panels populated.
+   */
+  clientResponseText?: string;
   /**
    * Set by the dispatch handler synchronously before returning a streaming
    * response. `afterResponse` lifecycle hooks read it to skip finalization

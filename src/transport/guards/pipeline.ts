@@ -25,6 +25,7 @@ import type { TrustedProxyBoundary } from "../../config/network";
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import type { TelemetryBatchBuffer } from "../../observability/telemetry-buffer";
 import type { ModelStrikeService } from "../../security/model-abuse";
+import { TelemetryPayloadCapture } from "../../observability/payload-capture";
 
 /** Shared state/context carried by every ordered transport stage. */
 export interface TransportPipelineContext {
@@ -151,6 +152,9 @@ export function createTransportPipeline(context: TransportPipelineContext): Tran
       registerTelemetryLifecycle(rootApp, {
         stateStore: context.stateStore,
         telemetryBuffer: context.telemetry,
+        // One capture for the process, shared with every request state so an
+        // early rejection can record its payload from the finalize hook.
+        payloadCapture: new TelemetryPayloadCapture(context.db),
       });
     } else {
       registerRequestCleanup(rootApp, { stateStore: context.stateStore });

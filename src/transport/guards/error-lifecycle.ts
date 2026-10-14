@@ -4,6 +4,8 @@ import { GatewayError, explainGatewayError, formatPublicErrorMessage, publicGate
 import type { ProxyRequestState, ProxyRequestStateStore } from "../request/state";
 import { GATEWAY_SECURITY_HEADERS } from "../../security/outbound-headers";
 import type { TelemetryBatchBuffer, TelemetryEventInput } from "../../observability/telemetry-buffer";
+import type { TelemetryPayloadCapture } from "../../observability/payload-capture";
+import { captureEarlyRejectionPayload } from "./early-rejection-capture";
 import { reasoningEffortFromIntent } from "../../providers/provider-reasoning";
 import { metrics } from "../../observability/metrics";
 import { computeTokensPerSec } from "../../observability/token-speed";
@@ -120,7 +122,7 @@ export function createErrorNormalizationMiddleware(deps: {
         if (hint !== undefined) set.headers["retry-after"] = hint;
         else if (status === 429) set.headers["retry-after"] = "1";
       }
-      return {
+      const envelope = {
         error: {
           origin,
           code,
@@ -130,6 +132,17 @@ export function createErrorNormalizationMiddleware(deps: {
             : {}),
         },
       };
+      // Kept on the state so an early rejection — which never reaches
+      // `completeAttempt`, where this is normally derived — still has the
+      // client response its payload panel shows.
+      if (state !== undefined) {
+        try {
+          state.clientResponseText = JSON.stringify(envelope);
+        } catch {
+          // A body that will not serialize has nothing useful to show.
+        }
+      }
+      return envelope;
     })
     .as("global");
   return app as unknown as Elysia;
@@ -202,6 +215,16 @@ export function finalizeRequestTelemetry(
   // outcome above remain the only signal — never enqueue a bogus row.
   if (!authorization) {
     return;
+  }
+
+  // An early rejection never reaches `completeAttempt`, which is the only
+  // caller that used to write a payload frame — so a 400 from ingress, auth,
+  // parse, or the preparer produced a request row whose four capture panels
+  // were all empty, and the one case an operator most wants to read (what did
+  // the client actually send?) had nothing to read. Capture the ingress body
+  // and the error the client saw, keyed to the same request id as the row.
+  if (requestData === undefined && state.ingressBody !== undefined) {
+    void captureEarlyRejectionPayload(state, authorization);
   }
 
   telemetryBuffer.enqueue(
@@ -342,11 +365,21 @@ export function registerTelemetryLifecycle(
   deps: {
     readonly stateStore: ProxyRequestStateStore;
     readonly telemetryBuffer: TelemetryBatchBuffer;
+    /**
+     * Optional so a reduced composition that mounts no payload capture still
+     * registers the lifecycle. When absent, an early rejection records its
+     * telemetry row without a payload frame rather than failing.
+     */
+    readonly payloadCapture?: TelemetryPayloadCapture;
   },
 ): void {
   app.afterResponse(async ({ request }) => {
     const state = deps.stateStore.get(request);
     if (!state) return;
+    // Hand the state the capture before anything can finalize: an early
+    // rejection is finalized from this hook, which is the path that never
+    // reached `completeAttempt`.
+    if (deps.payloadCapture !== undefined) state.payloadCapture = deps.payloadCapture;
     // Streaming responses run telemetry + cleanup on stream completion/cancel
     // (see dispatch/proxy-request), never at the headers-flush `afterResponse`
     // boundary: cleanup aborts the controller, killing the in-flight stream.
