@@ -46,6 +46,7 @@ export class InMemoryAdmissionCounterStore implements AdmissionCounterStore {
   private readonly tenantConcurrent = new Map<string, number>();
   private readonly reservations = new Map<string, InMemoryReservation>();
   private readonly terminalRing: string[] = []; // Ring buffer for terminal reservation IDs
+  private terminalRingStart = 0;
   private failing = false;
   private gate: Promise<void> = Promise.resolve();
 
@@ -274,7 +275,7 @@ export class InMemoryAdmissionCounterStore implements AdmissionCounterStore {
   }
 
   /** Caps a bucketed counter map; oldest-inserted buckets evicted first. */
-  private evictCounter(store: Map<string, number>): void {
+  private evictCounter(store: Map<string, number> | Map<string, number[]>): void {
     if (store.size < COUNTER_MAP_CAP) return;
     let toEvict = store.size - COUNTER_MAP_CAP + 1;
     for (const key of store.keys()) {
@@ -320,6 +321,7 @@ export class InMemoryAdmissionCounterStore implements AdmissionCounterStore {
     if (!existing) {
       const fresh: number[] = [];
       this.rpmTimestamps.set(apiKeyId, fresh);
+      this.evictCounter(this.rpmTimestamps);
       return fresh;
     }
     // In-place compaction: `.filter` allocated a new array per request.
@@ -346,11 +348,13 @@ export class InMemoryAdmissionCounterStore implements AdmissionCounterStore {
    * Adds a terminal (committed/released) reservation to the ring buffer.
    * If the ring is full, evicts the oldest terminal reservation to prevent
    * unbounded memory growth while preserving idempotency for recent operations.
+   * Index-pointer queue: no O(N) shift() memmove per eviction.
    */
   private addToTerminalRing(reservationId: string): void {
     this.terminalRing.push(reservationId);
-    if (this.terminalRing.length > TERMINAL_RESERVATION_CAP) {
-      const oldestId = this.terminalRing.shift();
+    if (this.terminalRing.length - this.terminalRingStart > TERMINAL_RESERVATION_CAP) {
+      const oldestId = this.terminalRing[this.terminalRingStart];
+      this.terminalRingStart += 1;
       if (oldestId) {
         const oldest = this.reservations.get(oldestId);
         // Only evict if it's still terminal (active reservations stay)
@@ -358,6 +362,10 @@ export class InMemoryAdmissionCounterStore implements AdmissionCounterStore {
           this.reservations.delete(oldestId);
         }
       }
+    }
+    if (this.terminalRingStart > 1024 && this.terminalRingStart > this.terminalRing.length / 2) {
+      this.terminalRing.splice(0, this.terminalRingStart);
+      this.terminalRingStart = 0;
     }
   }
   private adjust(store: Map<string, number>, key: string, delta: number, enabled: boolean): void {

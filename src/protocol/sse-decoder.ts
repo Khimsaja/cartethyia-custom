@@ -71,7 +71,11 @@ export async function* decodeSseEvents(
   if (signal?.aborted) return;
   const reader = body.getReader();
   const decoder = new TextDecoder();
-  let buffer = "";
+  // Byte accumulation: `buffer += decode()` per chunk reallocated the whole
+  // prefix (O(n^2)) and `slice(newline+1)` memmove'd per line. Chunks collect
+  // raw and decode once per complete line instead.
+  const pending: Uint8Array[] = [];
+  let pendingBytes = 0;
   let eventName: string | null = null;
   let dataLines: string[] = [];
   let eventBytes = 0;
@@ -81,6 +85,48 @@ export async function* decodeSseEvents(
   };
   signal?.addEventListener("abort", onAbort, { once: true });
 
+  /** True when any pending byte is a newline. */
+  function hasPendingNewline(): boolean {
+    for (const chunk of pending) {
+      if (chunk.indexOf(10) >= 0) return true;
+    }
+    return false;
+  }
+
+  /** Removes and decodes the first complete line, or undefined when partial. */
+  function takeLine(): string | undefined {
+    let scanned = 0;
+    let chunkIndex = -1;
+    let newlineAt = -1;
+    for (let index = 0; index < pending.length; index += 1) {
+      const chunk = pending[index]!;
+      const found = chunk.indexOf(10);
+      if (found >= 0) {
+        chunkIndex = index;
+        newlineAt = found;
+        break;
+      }
+      scanned += chunk.byteLength;
+    }
+    if (chunkIndex < 0) return undefined;
+    const head = pending.splice(0, chunkIndex + 1);
+    const lineBytes = new Uint8Array(scanned + newlineAt);
+    let offset = 0;
+    for (let index = 0; index < head.length - 1; index += 1) {
+      const chunk = head[index]!;
+      lineBytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    const last = head[head.length - 1]!;
+    lineBytes.set(last.subarray(0, newlineAt), offset);
+    offset += newlineAt;
+    pendingBytes -= offset + 1;
+    const rest = last.subarray(newlineAt + 1);
+    if (rest.byteLength > 0) pending.unshift(rest);
+    const line = decoder.decode(lineBytes).replace(/\r$/, "");
+    if (line.length > maxLineBytes) throw oversized("line");
+    return line;
+  }
   function* dispatchEvent(): Iterable<SseEvent> {
     if (dataLines.length === 0) {
       eventName = null;
@@ -124,21 +170,28 @@ export async function* decodeSseEvents(
     while (true) {
       if (signal?.aborted) return;
       const chunk = await reader.read();
-      buffer += decoder.decode(chunk.value ?? new Uint8Array(), { stream: !chunk.done });
-      if (!buffer.includes("\n") && buffer.length > maxLineBytes) throw oversized("line");
-      let newline = buffer.indexOf("\n");
-      while (newline >= 0) {
-        const line = buffer.slice(0, newline).replace(/\r$/, "");
-        buffer = buffer.slice(newline + 1);
-        if (line.length > maxLineBytes) throw oversized("line");
+      if (chunk.value && chunk.value.byteLength > 0) {
+        pending.push(chunk.value);
+        pendingBytes += chunk.value.byteLength;
+        if (!hasPendingNewline() && pendingBytes > maxLineBytes) throw oversized("line");
+      }
+      let line = takeLine();
+      while (line !== undefined) {
         yield* emitLine(line);
-        newline = buffer.indexOf("\n");
+        line = takeLine();
       }
       if (chunk.done) break;
     }
-    if (buffer.length > 0) {
-      if (buffer.length > maxLineBytes) throw oversized("line");
-      yield* emitLine(buffer);
+    if (pendingBytes > 0) {
+      if (pendingBytes > maxLineBytes) throw oversized("line");
+      const total = new Uint8Array(pendingBytes);
+      let offset = 0;
+      for (const chunk of pending.splice(0, pending.length)) {
+        total.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      pendingBytes = 0;
+      yield* emitLine(decoder.decode(total));
     }
     yield* dispatchEvent();
   } finally {

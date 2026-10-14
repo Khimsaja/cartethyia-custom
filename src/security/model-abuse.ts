@@ -154,10 +154,16 @@ export class InMemoryModelAbuseStore implements ModelAbuseStore {
   /** Drops attempts older than the window and returns the rest. */
   private liveAttempts(ip: string, now: number, windowMs: number): number[] {
     const cutoff = now - windowMs;
-    const live = (this.strikes.get(ip) ?? []).filter((at) => at > cutoff);
-    if (live.length === 0) this.strikes.delete(ip);
-    else this.strikes.set(ip, live);
-    return live;
+    const existing = this.strikes.get(ip) ?? [];
+    // In-place compaction: `.filter` allocated a new array per invalid attempt.
+    let write = 0;
+    for (let read = 0; read < existing.length; read += 1) {
+      if (existing[read]! > cutoff) existing[write++] = existing[read]!;
+    }
+    existing.length = write;
+    if (existing.length === 0) this.strikes.delete(ip);
+    else this.strikes.set(ip, existing);
+    return existing;
   }
 
   async record(attempt: ModelAbuseAttempt): Promise<ModelAbuseOutcome> {

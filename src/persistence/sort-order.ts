@@ -11,7 +11,7 @@
  * while the provider-account catalog scopes to `(provider, tenant-or-global)`
  * so a reorder never touches another tenant's rows.
  */
-import { and, eq, getTableColumns, sql, type SQL } from "drizzle-orm";
+import { and, getTableColumns, inArray, sql, type SQL } from "drizzle-orm";
 import type { AnyColumn } from "drizzle-orm";
 import type { PgTable } from "drizzle-orm/pg-core";
 import type { CartethyiaDatabase } from "./db-handle";
@@ -61,9 +61,10 @@ export async function nextSortIndex(
 }
 
 /**
- * Rewrites one scoped list's order in a single transaction; `ids` is the full
+ * Rewrites one scoped list's order in one statement; `ids` is the full
  * desired order. Each named row's index becomes its `sort_index`; rows absent
- * from `ids` keep their old position.
+ * from `ids` keep their old position via the `ELSE` branch. One round trip
+ * instead of one UPDATE per id; `CASE` runs on both dialects.
  */
 export async function reorderSortIndex(
   db: CartethyiaDatabase,
@@ -71,13 +72,14 @@ export async function reorderSortIndex(
   scope: SQL | undefined,
   ids: readonly string[],
 ): Promise<void> {
+  if (ids.length === 0) return;
   const sortIndexKey = sortIndexProperty(order);
-  await db.transaction(async (tx) => {
-    for (const [index, id] of ids.entries()) {
-      await tx
-        .update(order.table)
-        .set({ [sortIndexKey]: index })
-        .where(and(scope, eq(order.idColumn, id)));
-    }
-  });
+  const whens = sql.join(
+    ids.map((id, index) => sql`WHEN ${order.idColumn} = ${id} THEN ${index}`),
+    sql` `,
+  );
+  await db
+    .update(order.table)
+    .set({ [sortIndexKey]: sql`CASE ${whens} ELSE ${order.sortIndexColumn} END` })
+    .where(scope === undefined ? inArray(order.idColumn, [...ids]) : and(scope, inArray(order.idColumn, [...ids])));
 }

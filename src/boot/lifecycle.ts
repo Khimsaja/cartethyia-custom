@@ -26,6 +26,7 @@ export class ShutdownCoordinator {
   private drainWindowMs: number;
   private drainTimeoutMs: number;
   private flushTimeoutMs: number;
+  private drainResolve: (() => void) | undefined;
 
   constructor(
     hooks?: ShutdownHooks,
@@ -55,6 +56,8 @@ export class ShutdownCoordinator {
 
   untrack(id: string): void {
     this.inflight.delete(id);
+    // Wake a drain waiter: resolve-on-empty replaces the 10 ms poll loop.
+    if (this.inflight.size === 0) this.drainResolve?.();
   }
 
   isDraining(): boolean {
@@ -129,12 +132,20 @@ export class ShutdownCoordinator {
     if (this.state === "stop_admitting") {
       this.state = "bounded_drain_wait";
     }
-    // bounded wait: allow in-flight to finish or hit deadline
+    // Event-driven: one deadline timer + resolve-on-empty from untrack(),
+    // instead of ~2.8k 10 ms poll cycles over the drain windows.
     while (this.inflight.size > 0) {
-      const now = Date.now();
-      if (now >= deadlineMs) break;
-      const waitMs = Math.min(10, deadlineMs - now);
-      await new Promise<void>((r) => setTimeout(r, waitMs));
+      const remaining = deadlineMs - Date.now();
+      if (remaining <= 0) break;
+      await new Promise<void>((resolve) => {
+        this.drainResolve = resolve;
+        const timer = setTimeout(() => {
+          if (this.drainResolve === resolve) this.drainResolve = undefined;
+          resolve();
+        }, remaining);
+        if (typeof timer.unref === "function") timer.unref();
+      });
+      this.drainResolve = undefined;
     }
   }
 
@@ -143,20 +154,24 @@ export class ShutdownCoordinator {
       this.state = "flush_telemetry";
     }
     const remaining = Math.max(0, deadlineMs - Date.now());
-    if (this.hooks.flushTelemetry) {
-      try {
-        await withTimeout(
-          this.hooks.flushTelemetry(deadlineMs),
-          remaining,
-          "flush telemetry deadline exceeded",
-        );
-      } catch {
-        // deadline exceeded still proceeds to closePools per bounded design
+    // No budget left: invoking the hook would start work with zero deadline
+    // that withTimeout immediately cancels; skip straight to pool close.
+    if (remaining <= 0 || !this.hooks.flushTelemetry) {
+      if (remaining > 0 && !this.hooks.flushTelemetry) {
+        // bounded small delay to simulate flush
+        const wait = Math.min(remaining, 5);
+        await new Promise<void>((r) => setTimeout(r, wait));
       }
-    } else {
-      // bounded small delay to simulate flush
-      const wait = Math.min(remaining, 5);
-      if (wait > 0) await new Promise<void>((r) => setTimeout(r, wait));
+      return;
+    }
+    try {
+      await withTimeout(
+        this.hooks.flushTelemetry(deadlineMs),
+        remaining,
+        "flush telemetry deadline exceeded",
+      );
+    } catch {
+      // deadline exceeded still proceeds to closePools per bounded design
     }
   }
 
@@ -164,8 +179,12 @@ export class ShutdownCoordinator {
     if (this.state !== "close_pools") {
       this.state = "close_pools";
     }
-    if (this.hooks.closePools) {
-      await this.hooks.closePools();
+    if (!this.hooks.closePools) return;
+    // A hung pool close must not stall process exit past the budget.
+    try {
+      await withTimeout(this.hooks.closePools(), this.drainTimeoutMs, "close pools deadline exceeded");
+    } catch {
+      // Bounded design: exit proceeds even when a pool hangs.
     }
   }
 }

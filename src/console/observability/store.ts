@@ -185,6 +185,8 @@ async function resolveProxyLabel(
 }
 const HEALTH_WINDOW_MS = 24 * 3_600_000;
 const TOP_N = 50;
+/** How long one dashboard poll burst shares a parsed period event set. */
+const PERIOD_MEMO_TTL_MS = 1_500;
 
 /** Nearest-rank percentile over a sorted array, matching `percentile_cont` closely enough for a health gauge. */
 function percentile(sorted: readonly number[], fraction: number): number {
@@ -261,6 +263,12 @@ function emptyBreakdown(name: string): BreakdownBucket {
 
 /** Real Drizzle-backed observability repository used by the production console. */
 export class DrizzleObservabilityStore implements ObservabilityStore {
+  /**
+   * Per-(tenant, period) parsed event set, shared by the ~8 usage endpoints
+   * one dashboard poll fires in parallel. 1.5 s window: a poll burst shares
+   * one file parse; the next poll re-reads. In-flight shares one promise.
+   */
+  private readonly periodMemo = new Map<string, { at: number; promise: Promise<readonly TelemetryEventRecord[]> }>();
   constructor(
     private readonly db: CartethyiaDatabase,
     private readonly redis: RedisClient | undefined,
@@ -414,8 +422,18 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
 
   /** The tenant's retained events inside a usage period. `all` keeps everything. */
   private periodEvents(tenantId: string, period: string): Promise<readonly TelemetryEventRecord[]> {
+    const key = `${tenantId}:${period}`;
+    const now = Date.now();
+    const hit = this.periodMemo.get(key);
+    if (hit && now - hit.at < PERIOD_MEMO_TTL_MS) return hit.promise;
     const since = periodStartDate(period);
-    return queryTelemetryEvents(since === undefined ? { tenantId } : { tenantId, since });
+    const promise = queryTelemetryEvents(since === undefined ? { tenantId } : { tenantId, since });
+    this.periodMemo.set(key, { at: now, promise });
+    // A rejected parse must not poison the memo for the next poll.
+    void promise.catch(() => {
+      if (this.periodMemo.get(key)?.promise === promise) this.periodMemo.delete(key);
+    });
+    return promise;
   }
 
   async usageSummary(tenantId: string, period: string): Promise<UsageSummaryResponse> {
@@ -656,15 +674,16 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
     const rows = await queryTelemetryEvents({ tenantId, requestId });
     const event = rows[0];
     if (!event) return undefined;
-    const hideClientIp = await shouldMaskClientIp(this.preferences, tenantId);
+    // The label, proxy, and mask lookups are independent: run them together
+    // instead of three sequential round trips.
+    const [hideClientIp, keyLabels, proxy] = await Promise.all([
+      shouldMaskClientIp(this.preferences, tenantId),
+      event.apiKeyId ? this.apiKeyLabels(tenantId, [event.apiKeyId]) : undefined,
+      event.networkPoolId ? resolveProxyLabel(this.db, tenantId, event.networkPoolId) : ("direct" as const),
+    ]);
     const item = mapUsageRequestItem(event, hideClientIp);
-    const keyLabel = event.apiKeyId
-      ? (await this.apiKeyLabels(tenantId, [event.apiKeyId])).get(event.apiKeyId)
-      : undefined;
+    const keyLabel = event.apiKeyId ? keyLabels?.get(event.apiKeyId) : undefined;
     const labeled = keyLabel === undefined ? item : { ...item, apiKeyLabel: keyLabel };
-    const proxy = event.networkPoolId
-      ? await resolveProxyLabel(this.db, tenantId, event.networkPoolId)
-      : "direct";
     const presented = { ...labeled, proxy };
     // Filter the payload table directly instead of joining `telemetry_events`
     // only to re-apply the tenant predicate: `telemetry_payloads` carries

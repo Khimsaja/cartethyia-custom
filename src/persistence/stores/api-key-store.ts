@@ -1,7 +1,7 @@
 // Persisted API-key store: the console API-key domain and gateway authentication both consume this boundary.
 
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
-import { nextSortIndex, reorderSortIndex } from "../sort-order";
+import { nextSortIndex, reorderSortIndex, type SortOrderDb } from "../sort-order";
 import { getDbHandle } from "../boot";
 import type { CartethyiaDatabase } from "../db-handle";
 import { lockRows } from "../dialect";
@@ -196,9 +196,12 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
   constructor(private readonly db: CartethyiaDatabase) {}
 
   /** Attaches the popup, which lives in its own table so the auth read never loads it. */
-  private async withPopups(rows: readonly (typeof apiKeys.$inferSelect)[]): Promise<ApiKeyRecord[]> {
+  private async withPopups(
+    db: SortOrderDb | CartethyiaDatabase,
+    rows: readonly (typeof apiKeys.$inferSelect)[],
+  ): Promise<ApiKeyRecord[]> {
     if (rows.length === 0) return [];
-    const popups = await this.db
+    const popups = await db
       .select()
       .from(sharePopups)
       .where(inArray(sharePopups.apiKeyId, rows.map((row) => row.id)));
@@ -263,7 +266,7 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
       .where(eq(apiKeys.tenantId, tenantId))
       .orderBy(apiKeys.sortIndex, apiKeys.createdAt, apiKeys.id)
       .limit(1000);
-    return this.withPopups(rows);
+    return this.withPopups(this.db, rows);
   }
 
   /** Rewrites the list order for one tenant; `keyIds` is the full order. */
@@ -290,7 +293,7 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
       .from(apiKeys)
       .where(and(eq(apiKeys.tenantId, tenantId), eq(apiKeys.id, keyId)))
       .limit(1);
-    return rows[0] ? (await this.withPopups(rows))[0] : undefined;
+    return rows[0] ? (await this.withPopups(this.db, rows))[0] : undefined;
   }
   async listChildren(tenantId: string, parentKeyId: string): Promise<readonly ApiKeyRecord[]> {
     const rows = await this.db
@@ -303,7 +306,7 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
         ),
       )
       .orderBy(apiKeys.createdAt, apiKeys.id);
-    return this.withPopups(rows);
+    return this.withPopups(this.db, rows);
   }
   async create(record: ApiKeyRecord): Promise<void> {
     // Append to the end of the tenant's list rather than relying on creation
@@ -409,7 +412,7 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
         .returning();
       if (!rows[0]) return undefined;
       if (popupPatchTouched(patch)) await mergeSharePopup(tx, keyId, patch);
-      return (await this.withPopups(rows))[0];
+      return (await this.withPopups(tx, rows))[0];
     });
   }
   async revoke(tenantId: string, keyId: string, revokedAt: Date): Promise<boolean> {

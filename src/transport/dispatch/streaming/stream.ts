@@ -43,7 +43,7 @@ import type { AdmissionLease } from "../../../security/admission/contracts";
 import type { NetworkPoolSelector } from "../../../network/pool/selector";
 import type { TelemetryBatchBuffer } from "../../../observability/telemetry-buffer";
 import type { ProviderExchangeCapture } from "../attempt-finalize";
-import { captureProviderExchange } from "../attempt-finalize";
+import { captureProviderExchange, shouldCaptureProviderBody } from "../attempt-finalize";
 import { proxySuccessHeaders, buildUpstreamDispatchContext } from "../upstream";
 import { resolveStreamFirstChunkTimeoutMs, resolveStreamStallTimeoutMs, resolveUpstreamTimeoutMs } from "../../../config/timeouts";
 import { isWebSearchToolName } from "../../translation/search";
@@ -167,7 +167,11 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
     prepared.authorization.snapshot.tenant_id,
   );
   const wrappedOutboundFetch = outboundFetch
-    ? captureProviderExchange(outboundFetch, providerCapture)
+    ? captureProviderExchange(
+        outboundFetch,
+        providerCapture,
+        await shouldCaptureProviderBody(deps.db, prepared.authorization.snapshot.tenant_id),
+      )
     : undefined;
   const dispatchContext = buildUpstreamDispatchContext({
     credential,

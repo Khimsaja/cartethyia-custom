@@ -29,6 +29,7 @@ import {
   completionContext,
   estimatedUsage,
   parseCapturedBody,
+  shouldCaptureProviderBody,
   terminalFailure,
 } from "./attempt-finalize";
 import { runAttemptLoop } from "./attempt-loop";
@@ -266,6 +267,7 @@ export async function handleProviderProxyRequest(
                   prepared.authorization.snapshot.tenant_id,
                 ),
                 providerCapture,
+                await shouldCaptureProviderBody(deps.db, prepared.authorization.snapshot.tenant_id),
               ),
             }
           : {}),

@@ -267,19 +267,28 @@ export class NetworkPoolSelector {
       const raws = (await this.redis.mget(
         ...providerIds.map((providerId) => proxyCooldownKey(poolId, providerId)),
       )) as Array<string | null>;
+      const staleMarkerKeys: string[] = [];
+      const staleMembers: string[] = [];
       for (let index = 0; index < providerIds.length; index += 1) {
         const providerId = providerIds[index];
         if (providerId === undefined) continue;
         const raw = raws[index] ?? null;
         const entry = raw ? parseCooldownEntry(raw) : undefined;
         if (!entry) {
-          if (raw) await this.redis.del(proxyCooldownKey(poolId, providerId));
-          await this.redis.srem(proxyCooldownProvidersKey(poolId), providerId);
+          if (raw) staleMarkerKeys.push(proxyCooldownKey(poolId, providerId));
+          staleMembers.push(providerId);
           continue;
         }
         if (entry.poolId === poolId && now < entry.until) active.set(entry.providerId, entry);
-        else await this.redis.srem(proxyCooldownProvidersKey(poolId), providerId);
+        else staleMembers.push(providerId);
       }
+      // One batched cleanup instead of serial del/srem per stale member.
+      await Promise.all([
+        ...(staleMarkerKeys.length > 0 ? [this.redis.del(...staleMarkerKeys)] : []),
+        ...(staleMembers.length > 0
+          ? staleMembers.map((member) => this.redis!.srem(proxyCooldownProvidersKey(poolId), member))
+          : []),
+      ]);
     }
 
     return [...active.values()];

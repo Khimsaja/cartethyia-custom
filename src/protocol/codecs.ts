@@ -18,7 +18,7 @@ import { BASE_PROTECTED_HEADERS, HEADER_CONTROL, HEADER_TOKEN } from "../securit
 import { unwrapProviderToken } from "../providers/provider-credential-envelope";
 
 const TEXT_ENCODER = new TextEncoder();
-
+const TEXT_DECODER = new TextDecoder();
 /**
  * Deepest nesting the recursive rewriters below will descend into.
  *
@@ -877,7 +877,7 @@ export function joinUrl(base: string, path: string): string {
  * (registry.ts), the single token-envelope implementation.
  */
 export function normalizeBearerToken(raw: string): string {
-  return new TextDecoder().decode(unwrapProviderToken(raw, "bearer"));
+  return TEXT_DECODER.decode(unwrapProviderToken(raw, "bearer"));
 }
 
 /**

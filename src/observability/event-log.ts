@@ -160,7 +160,11 @@ export async function queryTelemetryEvents(query: EventQuery): Promise<Telemetry
   for (const file of files) {
     const matched: TelemetryEventRecord[] = [];
     for await (const event of readEventFiles([file])) {
-      if (matches(event, query, since, keys, accounts)) matched.push(event);
+      if (!matches(event, query, since, keys, accounts)) continue;
+      matched.push(event);
+      // A requestId lookup needs one row: stop at the first (newest) match
+      // instead of parsing the whole retention window.
+      if (query.requestId !== undefined) return matched;
     }
     matched.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
     events.push(...matched);

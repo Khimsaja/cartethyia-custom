@@ -54,6 +54,19 @@ async function resolvePayloadCapture(
 }
 
 /**
+ * True when the tenant keeps response bodies (mode `full`). The dispatch
+ * path calls this once per attempt to decide whether the provider-response
+ * tee is worth its clone + bounded read; `none`/`metadata` skip the body.
+ */
+export async function shouldCaptureProviderBody(
+  db: CartethyiaDatabase,
+  tenantId: string | null,
+): Promise<boolean> {
+  const { mode } = await resolvePayloadCapture(db, tenantId);
+  return mode === "full";
+}
+
+/**
  * Combined body cap for one capture depth. Fixed size tiers: every depth
  * stores all four drawer panels (client request, translated provider
  * request, raw provider response, final client response) — only the cap
@@ -215,10 +228,18 @@ export function providerRequestMetadataOnly(request: unknown): unknown {
   return Object.keys(metadata).length === 0 ? null : metadata;
 }
 
-/** Wraps a validated outbound fetch to tee the provider request/response. */
+/**
+ * Wraps a validated outbound fetch to tee the provider request/response.
+ *
+ * `captureBody=false` records the request line but skips the response
+ * `clone()` + bounded read: tenants in `none`/`metadata` mode paid a full
+ * 256 KiB tee + decode + parse per attempt for bodies the terminal capture
+ * discarded. The request line is metadata-cheap and always kept.
+ */
 export function captureProviderExchange(
   inner: ValidatedOutboundFetch,
   sink: ProviderExchangeCapture,
+  captureBody = true,
 ): ValidatedOutboundFetch {
   return async (input, init) => {
     const url =
@@ -236,9 +257,10 @@ export function captureProviderExchange(
       ...(rawBody === null ? {} : { body: parseCapturedBody(rawBody) }),
     };
     const response = await inner(input, init);
-    sink.response = shouldCaptureProviderResponse(response)
-      ? readBoundedBody(response.clone(), PROVIDER_CAPTURE_MAX_BYTES).then(parseCapturedBody)
-      : Promise.resolve(null);
+    sink.response =
+      captureBody && shouldCaptureProviderResponse(response)
+        ? readBoundedBody(response.clone(), PROVIDER_CAPTURE_MAX_BYTES).then(parseCapturedBody)
+        : Promise.resolve(null);
     return response;
   };
 }

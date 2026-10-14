@@ -23,7 +23,9 @@ export function resolveMemoryLimitOverrideBytes(): number | undefined {
  * keeps a hard ceiling.
  */
 export function resolveUpstreamTimeoutMs(): number {
-  return readInt("CARTETHYIA_UPSTREAM_TIMEOUT_MS", CONFIG_SPEC.CARTETHYIA_UPSTREAM_TIMEOUT_MS);
+  if (cachedUpstreamTimeoutMs === undefined)
+    cachedUpstreamTimeoutMs = readInt("CARTETHYIA_UPSTREAM_TIMEOUT_MS", CONFIG_SPEC.CARTETHYIA_UPSTREAM_TIMEOUT_MS);
+  return cachedUpstreamTimeoutMs;
 }
 
 /**
@@ -35,10 +37,25 @@ export function resolveUpstreamTimeoutMs(): number {
  * sweep could reclaim it.
  */
 export function resolveStreamStallTimeoutMs(): number {
-  return readInt(
-    "CARTETHYIA_STREAM_STALL_TIMEOUT_MS",
-    CONFIG_SPEC.CARTETHYIA_STREAM_STALL_TIMEOUT_MS,
-  );
+  if (cachedStreamStallTimeoutMs === undefined)
+    cachedStreamStallTimeoutMs = readInt(
+      "CARTETHYIA_STREAM_STALL_TIMEOUT_MS",
+      CONFIG_SPEC.CARTETHYIA_STREAM_STALL_TIMEOUT_MS,
+    );
+  return cachedStreamStallTimeoutMs;
+}
+
+// Module-level lazy cache: env is boot-stable, and these resolvers run per
+// request/stream (see stream.ts, request-context.ts, pool/selector.ts).
+let cachedUpstreamTimeoutMs: number | undefined;
+let cachedStreamStallTimeoutMs: number | undefined;
+let cachedInflightTtlSeconds: number | undefined;
+
+/** Clears the memoized timeout cache; tests that mutate env mid-process only. */
+export function resetTimeoutCacheForTests(): void {
+  cachedUpstreamTimeoutMs = undefined;
+  cachedStreamStallTimeoutMs = undefined;
+  cachedInflightTtlSeconds = undefined;
 }
 
 /**
@@ -57,10 +74,10 @@ export function resolveStreamStallTimeoutMs(): number {
  * a shorter TTL in either one reintroduces the over-admission the other avoids.
  */
 export function resolveInflightTtlSeconds(): number {
-  return (
-    Math.ceil((resolveUpstreamTimeoutMs() + resolveStreamStallTimeoutMs()) / 1000) +
-    INFLIGHT_TTL_BUFFER_SECONDS
-  );
+  if (cachedInflightTtlSeconds === undefined)
+    cachedInflightTtlSeconds = Math.ceil((resolveUpstreamTimeoutMs() + resolveStreamStallTimeoutMs()) / 1000) +
+      INFLIGHT_TTL_BUFFER_SECONDS;
+  return cachedInflightTtlSeconds;
 }
 
 /**

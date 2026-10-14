@@ -28,6 +28,8 @@ import type { ProviderWebSocketSession, ValidatedOutboundWebSocket } from "../..
 const POOL_AGENT_IDLE_MS = 10 * 60_000;
 /** Maximum number of concurrent pool agents to prevent unbounded growth. */
 const MAX_POOL_AGENTS = 1000;
+/** Minimum gap between idle-time sweeps; the per-resolve scan is the hot cost. */
+const POOL_AGENT_SWEEP_INTERVAL_MS = 30_000;
 
 export interface PoolAgentResolverDeps {
   readonly ssrfPolicy?: SsrfPolicy;
@@ -136,6 +138,7 @@ export class PoolAgentResolver {
   private readonly agents = new Map<string, Promise<PoolAgent>>();
   private readonly lastUsed = new Map<string, number>();
   private readonly ssrfPolicy: SsrfPolicy;
+  private lastIdleSweepAt = 0;
   private readonly resolveFn: (
     hostname: string,
     signal: AbortSignal,
@@ -175,18 +178,26 @@ export class PoolAgentResolver {
    *
    * Also enforces a hard cardinality ceiling (MAX_POOL_AGENTS) by evicting
    * the least-recently-used entries when the cache exceeds the cap.
+   *
+   * The idle-time scan is throttled to once per 30 s: it walks the whole map
+   * on every dispatch otherwise. The over-cap eviction still runs per call —
+   * it only allocates when actually over the ceiling.
    */
   private evictIdleAgents(): void {
-    const cutoff = Date.now() - POOL_AGENT_IDLE_MS;
-    for (const [key, usedAt] of this.lastUsed) {
-      if (usedAt >= cutoff) continue;
-      this.lastUsed.delete(key);
-      const pending = this.agents.get(key);
-      this.agents.delete(key);
-      if (pending) {
-        void pending
-          .then((agent) => destroyAgent(agent))
-          .catch(() => undefined);
+    const now = Date.now();
+    if (now - this.lastIdleSweepAt >= POOL_AGENT_SWEEP_INTERVAL_MS) {
+      this.lastIdleSweepAt = now;
+      const cutoff = now - POOL_AGENT_IDLE_MS;
+      for (const [key, usedAt] of this.lastUsed) {
+        if (usedAt >= cutoff) continue;
+        this.lastUsed.delete(key);
+        const pending = this.agents.get(key);
+        this.agents.delete(key);
+        if (pending) {
+          void pending
+            .then((agent) => destroyAgent(agent))
+            .catch(() => undefined);
+        }
       }
     }
     // Evict oldest entries if over the cardinality ceiling
@@ -208,6 +219,7 @@ export class PoolAgentResolver {
 
   /** Drops agents idle past the retention window. Safe to call from maintenance. */
   sweepIdleAgents(): void {
+    this.lastIdleSweepAt = 0;
     this.evictIdleAgents();
   }
 

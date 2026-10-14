@@ -24,6 +24,8 @@ import type { ApiKeyModelAccessMode } from "../persistence/schema";
  */
 const AUTH_CACHE_TTL_MS = 3_000;
 const AUTH_CACHE_MAX_ENTRIES = 10_000;
+/** Negative-result TTL: unknown/revoked tokens miss the DB at most this often. */
+const AUTH_NEGATIVE_CACHE_TTL_MS = 1_500;
 
 interface AuthCacheEntry {
   readonly at: number;
@@ -35,6 +37,15 @@ interface AuthCacheEntry {
 const authCache = new Map<string, AuthCacheEntry>();
 /** Reverse index: keyId → set of token hashes that resolved to it. */
 const authCacheByKeyId = new Map<string, Set<string>>();
+/** Unknown/revoked token HMACs with their miss time; cleared on any key mutation. */
+const authNegativeCache = new Map<string, number>();
+/**
+ * Negative-result fast path. Unknown/revoked tokens previously hit the DB on
+ * every request; now a repeat miss within 1.5 s costs one HMAC + one map
+ * lookup and no query. Keyed by the full HMAC: a cheap pre-hash would let a
+ * crafted collision reject someone else's valid key, while the HMAC key can
+ * only match its own token. Bound below beside the positive cache.
+ */
 
 /**
  * Drops the oldest entries until `authCache` is within budget. Every removal
@@ -59,9 +70,19 @@ function evictAuthCacheOldest(): void {
 /** Registers a resolved hash in both the cache and the keyId reverse index. */
 function indexAuthCache(hash: string, entry: AuthCacheEntry): void {
   authCache.set(hash, entry);
+  authNegativeCache.delete(hash);
   const hashes = authCacheByKeyId.get(entry.keyId) ?? new Set<string>();
   hashes.add(hash);
   authCacheByKeyId.set(entry.keyId, hashes);
+}
+
+/** Bounds the negative cache; same oldest-first rule as the positive cache. */
+function evictAuthNegativeOldest(): void {
+  while (authNegativeCache.size > AUTH_CACHE_MAX_ENTRIES) {
+    const oldest = authNegativeCache.keys().next().value;
+    if (oldest === undefined) return;
+    authNegativeCache.delete(oldest);
+  }
 }
 
 /**
@@ -70,6 +91,9 @@ function indexAuthCache(hash: string, entry: AuthCacheEntry): void {
  * mutation that changes a key's scopes, limits, or revoked state.
  */
 export function invalidateApiKeyCache(keyId?: string): void {
+  // A mutation may mint the previously-unknown token, so negative entries
+  // must go with the positive ones.
+  authNegativeCache.clear();
   if (keyId === undefined) {
     authCache.clear();
     authCacheByKeyId.clear();
@@ -259,12 +283,22 @@ export async function resolveApiKeyAuthorization(
   db: CartethyiaDatabase,
   token: string,
 ): Promise<ResolvedApiKey | undefined> {
+  const now = Date.now();
   const hash = hashSecret(token);
+  const negativeAt = authNegativeCache.get(hash);
+  if (negativeAt !== undefined) {
+    if (now - negativeAt < AUTH_NEGATIVE_CACHE_TTL_MS) return undefined;
+    authNegativeCache.delete(hash);
+  }
   const cached = authCache.get(hash);
-  if (cached && Date.now() - cached.at < AUTH_CACHE_TTL_MS) return cached.value;
+  if (cached && now - cached.at < AUTH_CACHE_TTL_MS) return cached.value;
   const store = new DrizzleApiKeyStore(db);
   const row = await store.findActiveByHash(hash);
-  if (!row) return undefined;
+  if (!row) {
+    authNegativeCache.set(hash, now);
+    evictAuthNegativeOldest();
+    return undefined;
+  }
   // A child (shared) key consumes against its parent's quota, not just its
   // own: the parent's budget is the operator's global cap across all
   // recipients. Without this the parent's lifetime budget never moves no

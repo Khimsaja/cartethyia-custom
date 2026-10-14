@@ -76,6 +76,10 @@ async function writeLifetimeDeltas(
     WHERE "api_keys"."id" = v.id
   `));
 }
+/** Max keys per flush statement; larger windows are chunked. */
+const FLUSH_STATEMENT_MAX_KEYS = 500;
+/** Max distinct keys retained across windows; oldest dropped first. */
+const FLUSH_PENDING_MAX_KEYS = 5000;
 export class UsageFlushBuffer {
   private readonly pending = new Map<string, number>();
   private timer: ReturnType<typeof setTimeout> | undefined;
@@ -94,16 +98,21 @@ export class UsageFlushBuffer {
   enqueue(apiKeyId: string, delta: number): void {
     if (!Number.isFinite(delta) || delta <= 0) return;
     this.pending.set(apiKeyId, (this.pending.get(apiKeyId) ?? 0) + delta);
+    if (this.pending.size > FLUSH_PENDING_MAX_KEYS) {
+      const oldest = this.pending.keys().next();
+      if (!oldest.done) this.pending.delete(oldest.value);
+    }
   }
 
   /**
-   * Writes everything accumulated so far in one statement.
+   * Writes everything accumulated so far, in bounded statements of at most
+   * 500 keys each. One giant statement grows the SQL string with the
+   * distinct-key count per window; chunking keeps each statement bounded.
    *
-   * The whole batch goes as a single UPDATE; on failure it falls back to one
-   * write per key so one bad key cannot cost the others their delta. A key
-   * whose write fails goes back into the pending map, added to anything
-   * enqueued while the flush ran, so a transient failure retries instead of
-   * dropping.
+   * A chunk that fails falls back to one write per key so one bad key cannot
+   * cost the others their delta. A key whose write fails goes back into the
+   * pending map, added to anything enqueued while the flush ran, so a
+   * transient failure retries instead of dropping.
    */
   async flush(): Promise<void> {
     if (this.flushing || this.pending.size === 0) return;
@@ -111,18 +120,22 @@ export class UsageFlushBuffer {
     const batch = new Map(this.pending);
     this.pending.clear();
     try {
-      try {
-        await writeLifetimeDeltas(this.db, batch);
-        return;
-      } catch {
-        // Fall through to the per-key path: one statement failing tells us
-        // nothing about which key caused it.
-      }
-      for (const [apiKeyId, delta] of batch) {
+      const entries = [...batch];
+      for (let offset = 0; offset < entries.length; offset += FLUSH_STATEMENT_MAX_KEYS) {
+        const chunk = new Map(entries.slice(offset, offset + FLUSH_STATEMENT_MAX_KEYS));
         try {
-          await this.write(this.db, apiKeyId, delta);
+          await writeLifetimeDeltas(this.db, chunk);
+          continue;
         } catch {
-          this.pending.set(apiKeyId, (this.pending.get(apiKeyId) ?? 0) + delta);
+          // Fall through to the per-key path: one statement failing tells us
+          // nothing about which key caused it.
+        }
+        for (const [apiKeyId, delta] of chunk) {
+          try {
+            await this.write(this.db, apiKeyId, delta);
+          } catch {
+            this.pending.set(apiKeyId, (this.pending.get(apiKeyId) ?? 0) + delta);
+          }
         }
       }
     } finally {

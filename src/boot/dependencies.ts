@@ -385,6 +385,9 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
   scheduledTasks.register({
     name: "quota-refresh-sweep",
     intervalMs: 60_000,
+    // Staggered off the oauth/lease/health ticks so the three sweeps that
+    // strike providerAccounts do not land together every minute.
+    initialDelayMs: 20_000,
     run: () =>
       quotaRefreshSweep({
         db,
@@ -392,6 +395,9 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
         providerRegistry: registry,
         resolveCredential: quotaResolveCredential,
         snapshotInvalidator: snapshotService,
+        // Below the 60 s interval: a budget longer than the tick guarantees
+        // skip/burst under load instead of steady progress.
+        passBudgetMs: 45_000,
         // The check-in ride-along rotates egress per account: each account
         // gets the next active pool in its tenant's rotation so check-ins
         // spread across IPs instead of sharing one direct egress. No pool
