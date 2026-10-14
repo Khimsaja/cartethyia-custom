@@ -919,54 +919,43 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
           request.secret.trim().length > 0
         ) {
           const trimmed = request.secret.trim();
-          if (request.credentialKind === "oauth" && providerId === "mimodesktop") {
-            const { parseMimoCredential, encodeMimoCredential } = await import(
-              "../../../providers/integrations/xiaomi-mimo/mimodesktop-oauth"
+          const parts = parsePastedOAuthCredential(trimmed);
+          pastedAuthState = parts.authState;
+          const hasRefreshToken = parts.refreshToken !== parts.accessToken;
+          const parsedJwt =
+            requestedCredentialMode === "api_key"
+              ? undefined
+              : parseJwtCredential(parts.accessToken);
+          if (requestedCredentialMode === "jwt" && parsedJwt === undefined) {
+            throw new ConsoleDomainError(
+              "invalid_request",
+              400,
+              "credentialMode jwt requires a valid three-part JWT",
             );
-            const creds = parseMimoCredential(trimmed);
-            oauthRefreshCiphertext = encryptCredential(creds.passToken);
-            oauthExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-            effectiveSecret = encodeMimoCredential(creds);
-            oauthHasRefreshToken = true;
+          }
+          if (requestedCredentialMode === "api_key") {
+            effectiveSecret = parts.accessToken;
+            effectiveCredentialKind = "api_key";
+            effectiveCredentialMode = "api_key";
+          } else if (
+            parsedJwt !== undefined &&
+            (requestedCredentialMode === "jwt" || !hasRefreshToken)
+          ) {
+            effectiveSecret = parts.accessToken;
+            effectiveCredentialKind = "api_key";
+            effectiveCredentialMode = "jwt";
+            tokenExpiresAt = parsedJwt.expiresAt;
+          } else if (request.credentialKind === "oauth" || hasRefreshToken) {
+            effectiveSecret = parts.accessToken;
+            effectiveCredentialKind = hasRefreshToken ? "oauth" : "api_key";
+            effectiveCredentialMode = hasRefreshToken ? "auto" : "api_key";
+            if (hasRefreshToken) {
+              oauthRefreshCiphertext = encryptCredential(parts.refreshToken);
+              oauthHasRefreshToken = true;
+            }
+            oauthExpiresAt = parts.expiresAt;
           } else {
-            const parts = parsePastedOAuthCredential(trimmed);
-            pastedAuthState = parts.authState;
-            const hasRefreshToken = parts.refreshToken !== parts.accessToken;
-            const parsedJwt =
-              requestedCredentialMode === "api_key"
-                ? undefined
-                : parseJwtCredential(parts.accessToken);
-            if (requestedCredentialMode === "jwt" && parsedJwt === undefined) {
-              throw new ConsoleDomainError(
-                "invalid_request",
-                400,
-                "credentialMode jwt requires a valid three-part JWT",
-              );
-            }
-            if (requestedCredentialMode === "api_key") {
-              effectiveSecret = parts.accessToken;
-              effectiveCredentialKind = "api_key";
-              effectiveCredentialMode = "api_key";
-            } else if (
-              parsedJwt !== undefined &&
-              (requestedCredentialMode === "jwt" || !hasRefreshToken)
-            ) {
-              effectiveSecret = parts.accessToken;
-              effectiveCredentialKind = "api_key";
-              effectiveCredentialMode = "jwt";
-              tokenExpiresAt = parsedJwt.expiresAt;
-            } else if (request.credentialKind === "oauth" || hasRefreshToken) {
-              effectiveSecret = parts.accessToken;
-              effectiveCredentialKind = hasRefreshToken ? "oauth" : "api_key";
-              effectiveCredentialMode = hasRefreshToken ? "auto" : "api_key";
-              if (hasRefreshToken) {
-                oauthRefreshCiphertext = encryptCredential(parts.refreshToken);
-                oauthHasRefreshToken = true;
-              }
-              oauthExpiresAt = parts.expiresAt;
-            } else {
-              effectiveCredentialMode = "api_key";
-            }
+            effectiveCredentialMode = "api_key";
           }
         }
 

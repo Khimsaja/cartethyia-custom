@@ -385,12 +385,6 @@ export const PROVIDER_CAPABILITIES = {
     loadAdapter: async () => createApiKeyAdapter((await import("./integrations/xiaomi-mimo/xiaomi")).XIAOMITP_SPEC),
     loadModels: async () => (await import("./integrations/xiaomi-mimo/xiaomi")).XIAOMI_MODELS,
   },
-  mimodesktop: {
-    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/xiaomi-mimo/mimodesktop")).MIMODESKTOP_SPEC),
-    loadModels: async () => (await import("./integrations/xiaomi-mimo/mimodesktop")).MIMODESKTOP_MODELS,
-    loadAuthentication: oauthCapability(() => import("./integrations/xiaomi-mimo/mimodesktop-oauth"), "mimoDesktopOAuthClient", { withRefresher: true }),
-    loadQuotaCollector: quotaCapability(() => import("./integrations/xiaomi-mimo/mimodesktop-quota"), "fetchMimoDesktopQuota"),
-  },
   zcode: {
     loadAdapter: async () => createApiKeyAdapter((await import("./integrations/zcode/provider")).ZCODE_SPEC),
     loadModels: async () => (await import("./integrations/zcode/provider")).ZCODE_MODELS,

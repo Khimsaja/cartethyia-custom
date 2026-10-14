@@ -107,7 +107,7 @@ Steady-state instrumentation already exists; nothing needs to be added to answer
 | Metric label cardinality | Ruled out. Only `status` labels; no per-model, per-account, or per-request labels. |
 | Missing SQLite pragmas | Ruled out — and worth stating because it looks missing on a careless read: `applyFilePragmas` sets `journal_mode=WAL`, `synchronous=NORMAL`, `busy_timeout`, `cache_size=-8192` (8 MB), `temp_store=MEMORY`, and `wal_autocheckpoint`. |
 | Prepared-statement churn | Ruled out. `sqliteSql()` inlines `now()`/`gen_random_uuid()` into the SQL text, producing a unique string per call, which defeats bun:sqlite's statement cache. Measured cost with `--expose-gc`: **3 MB per 200 000 prepares** (~15 bytes each). Negligible. Note that measuring this *without* `--expose-gc` shows ~23 MB per 200 k, which is uncollected garbage, not retention — the same trap as reading `rss` alone. |
-| `sessionCache` / `inFlightHandshakes` (Xiaomi SSO) | **Was a real defect, now fixed.** The only maps in the gateway with no eviction at all: `sessionCache` was cleared only wholesale, and `inFlightHandshakes` only by each handshake's own `finally`. A rotating `passToken` added one entry per value and released none. Both are now bounded at 256 (`mimodesktop-sso.ts`). |
+| `sessionCache` / `inFlightHandshakes` (Xiaomi SSO) | **Was a real defect, now fixed.** The only maps in the gateway with no eviction at all: `sessionCache` was cleared only wholesale, and `inFlightHandshakes` only by each handshake's own `finally`. A rotating `passToken` added one entry per value and released none. Both were bounded at 256; the MiMo Desktop SSO module has since been removed with the provider. |
 
 ## Still open — the one thing that has not been measured
 

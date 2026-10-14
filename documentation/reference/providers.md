@@ -83,7 +83,7 @@ Three auth client shapes:
 
 | Shape | Base class | Family examples |
 | --- | --- | --- |
-| Browser PKCE | `OAuthClient.buildAuthorizeUrl`/`exchangeCode` (`authentication/oauth-client.ts`) | claude, antigravity, kiro, codex, mimodesktop, openrouter, zcode |
+| Browser PKCE | `OAuthClient.buildAuthorizeUrl`/`exchangeCode` (`authentication/oauth-client.ts`) | claude, antigravity, kiro, codex, openrouter, zcode |
 | Device code (RFC 8628) | `OAuthDeviceFlow` (`authentication/oauth-device-flow.ts`) | codex, github, cursor, grok, xai, kimi, cline, kiro, kilo, muse, qoder, factory |
 | No OAuth | plain key path; `probeApiKeyConnectivity` is the account test (`quota/quota-support.ts`) | openai, anthropic, mistral, meta, most compatible API-key providers |
 
@@ -172,7 +172,7 @@ Verified in code only. `bespokeWire` = the adapter frames its own protocol, not 
 | qoder | Device flow whose refresh endpoint answers 403; no refresher. |
 | cline | Discovery reads only `recommended` + `free` — the pass roster would write subscription rows an operator's account can only 401 on. |
 | openrouter / zcode | PKCE ends by minting a **durable API key**, not an access token; no refresher. |
-| xiaomi-mimo | Three ids: `xiaomipg`, `xiaomitp` (key-based), `mimodesktop` (OAuth imports the desktop app session). MiMo Studio browser-cookie login is not supported. |
+| xiaomi-mimo | Two ids: `xiaomipg`, `xiaomitp`, both key-based. MiMo Studio browser-cookie login is not supported. |
 | cb / cbcn / workbuddy / workbuddycn | One billing system: `BUDDY_PROVIDER_IDS` names the family for health, request prep, and daily check-in. WorkBuddy CN mirrors WorkBuddy on `www.workbuddy.cn` plus recent CN model additions. See the [catalog-fetch procedure](../../.skills/cartethyia-provider-catalog/SKILL.md#fetch-a-buddy-model-catalog), [captured catalogs](../../.skills/cartethyia-provider-catalog/catalogs/README.md), and [provider request prep](../../.skills/cartethyia-provider-catalog/request-prep.md). |
 | opencodeft / opencodezen / opencodego | Three tiers on `opencode.ai`: free (`requires_account: false`, `ipScopedRateLimit: true` — 429 cools the pool, not the account), Zen (billed), Go (billed, `/zen/go/v1`). Every tier's dispatch carries the client-identity fingerprint (`integrations/opencode/fingerprint.ts`): `x-opencode-client: desktop`, a canonical `ses_` session whose hex decodes to a plausible inverted-millisecond timestamp (6-hour-bucket jitter, stable per conversation), a fresh `msg_` request id, project/UA/trace headers. **Free-model dispatches** (`-free` suffix or `big-pickle`) additionally get the gate workarounds: agent-tool quartet backfilled, `stream:true` forced at the wire layer, SSE accept — the gate refuses tool-less or non-streaming free dispatches with `403 FreeTierError`; the client-visible stream contract is untouched and non-stream aggregation decodes the forced SSE. Verified live 2026-10-14. |
 | exa / parallel | `serviceKinds: ["websearch"]` only; served by `/v1/search`, never the chat pipeline. No account uses the public MCP; a stored API key uses the higher-limit HTTP API. |

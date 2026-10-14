@@ -663,13 +663,6 @@ const FREE_LIMITED_IDS = new Set([
   "kilo",
 ]);
 /**
- * Providers reached with a signed-in session rather than an API key.
- *
- * MiMo Desktop reads the desktop app's own session store through its OAuth
- * import flow; no browser cookie needs to be pasted.
- */
-const WEB_LLM_IDS = new Set(["mimodesktop"]);
-/**
  * The providers an operator reaches for first: household names with a
  * published API-key signup. Grouped so the long tail of compatible resellers
  * below does not bury the ones everybody has already heard of. `ollama` is
@@ -939,16 +932,11 @@ const SECTIONS = [
     filter: (p: ProviderResponse) => FREE_LIMITED_IDS.has(p.providerId.toLowerCase()),
   },
   {
-    title: "Web Session Providers",
-    subtitle: "Signed-in web sessions — no API key",
-    filter: (p: ProviderResponse) => WEB_LLM_IDS.has(p.providerId.toLowerCase()),
-  },
-  {
     title: "OAuth & Agent Providers",
     // Import-only clients validate and store API keys; only browser/device
     // authorization belongs in this section.
     filter: (p: ProviderResponse) =>
-      hasInteractiveOAuth(p) && !FREE_LIMITED_IDS.has(p.providerId.toLowerCase()) && !WEB_LLM_IDS.has(p.providerId.toLowerCase()),
+      hasInteractiveOAuth(p) && !FREE_LIMITED_IDS.has(p.providerId.toLowerCase()),
   },
   {
     title: "Well Known API Key Providers",
@@ -958,7 +946,7 @@ const SECTIONS = [
       WELL_KNOWN_API_KEY_IDS.has(p.providerId.toLowerCase()) &&
       !FOUNDING_IDS.has(p.providerId.toLowerCase()) &&
       !FREE_LIMITED_IDS.has(p.providerId.toLowerCase()) &&
-      !hasInteractiveOAuth(p) && !WEB_LLM_IDS.has(p.providerId.toLowerCase()),
+      !hasInteractiveOAuth(p),
   },
   {
     title: "Other API Key Providers",
@@ -968,7 +956,7 @@ const SECTIONS = [
       !WELL_KNOWN_API_KEY_IDS.has(p.providerId.toLowerCase()) &&
       !FOUNDING_IDS.has(p.providerId.toLowerCase()) &&
       !FREE_LIMITED_IDS.has(p.providerId.toLowerCase()) &&
-      !hasInteractiveOAuth(p) && !WEB_LLM_IDS.has(p.providerId.toLowerCase()),
+      !hasInteractiveOAuth(p),
   },
 ];
 

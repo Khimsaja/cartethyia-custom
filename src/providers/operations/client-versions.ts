@@ -337,11 +337,6 @@ export const VERSION_SOURCES = {
     fallback: "7.8.9",
     sources: [{ url: "https://open-vsx.org/api/kilocode/kilo-code" }],
   },
-  mimo: {
-    key: "mimo-cli",
-    fallback: "0.1.15",
-    sources: [{ url: "https://registry.npmjs.org/@mimo-ai/cli/latest" }],
-  },
   muse: {
     key: "muse-code",
     fallback: "1.4.7-R6101.1",
@@ -379,7 +374,6 @@ const resolvers = {
   kiro: createClientVersionResolver({ ...VERSION_SOURCES.kiro, client: "kiro" }),
   github: createClientVersionResolver({ ...VERSION_SOURCES.github, client: "github-copilot" }),
   kilo: createClientVersionResolver({ ...VERSION_SOURCES.kilo, client: "kilo" }),
-  mimo: createClientVersionResolver({ ...VERSION_SOURCES.mimo, client: "mimo" }),
   muse: createClientVersionResolver({ ...VERSION_SOURCES.muse, client: "muse" }),
   zcode: createClientVersionResolver({ ...VERSION_SOURCES.zcode, client: "zcode" }),
 } satisfies Record<keyof typeof VERSION_SOURCES, ClientVersionResolver>;
@@ -405,7 +399,6 @@ const PROVIDER_VERSION_RESOLVERS: Readonly<Record<string, ClientVersionResolver>
   claude: resolvers.claudeCli,
   github: resolvers.github,
   kilo: resolvers.kilo,
-  mimodesktop: resolvers.mimo,
   muse: resolvers.muse,
   zcode: resolvers.zcode,
 };
