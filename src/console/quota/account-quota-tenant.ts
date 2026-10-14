@@ -6,6 +6,7 @@ import { providerAccounts, providers } from "../../persistence/schema";
 import { providerDisplayName } from "../../providers/provider-metadata";
 import { invalidateCredentialCache } from "../../providers/operations/provider-credential-service";
 import { requireTenantScope } from "../shared/errors";
+import { GatewayError } from "../../protocol/gateway-error";
 import {
   GLOBAL_QUOTA_LENS,
   cachedQuotaAgeMs,
@@ -21,6 +22,7 @@ import {
   type QuotaRefreshDeps,
   type QuotaRefreshFailureCode,
 } from "./refresh";
+import { selectAccountTestEgress } from "./account-test-egress";
 import type { ProviderId } from "../../providers/provider-contracts";
 import {
   DAILY_CHECKIN_PROVIDER_IDS,
@@ -349,11 +351,37 @@ export function registerAccountQuotaTenantRoutes(
       }
 
       const attemptedAt = new Date().toISOString();
-      const outcome = await refreshAccountQuota(
-        refreshDeps,
-        { accountId, providerId: account.providerId, tenantId: account.tenantId, credentialKind: account.credentialKind },
-        signalFetch(timeoutSignal(request.signal, QUOTA_REFRESH_TIMEOUT_MS)),
+      if (!deps.poolSelector || !deps.networkBindingFactory) {
+        throw new GatewayError(
+          "proxy_pool_unavailable",
+          503,
+          "Account test cannot select a proxy because proxy routing is not configured.",
+          { reason: "proxy_routing_unconfigured" },
+          "network",
+        );
+      }
+      const egress = await selectAccountTestEgress(
+        {
+          db,
+          poolSelector: deps.poolSelector,
+          networkBindingFactory: deps.networkBindingFactory,
+        },
+        {
+          tenantId: access.tenantId,
+          providerId: account.providerId,
+          signal: timeoutSignal(request.signal, QUOTA_REFRESH_TIMEOUT_MS),
+        },
       );
+      let outcome;
+      try {
+        outcome = await refreshAccountQuota(
+          refreshDeps,
+          { accountId, providerId: account.providerId, tenantId: account.tenantId, credentialKind: account.credentialKind },
+          egress.fetch,
+        );
+      } finally {
+        egress.release();
+      }
       const httpStatus = outcome.quota.error === null ? 200 : 502;
       set.status = httpStatus;
       return {

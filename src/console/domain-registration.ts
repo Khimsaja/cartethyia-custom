@@ -293,6 +293,8 @@ export function registerConsoleDomains(
     snapshotInvalidator: ctx.routeSnapshotService,
     providerRegistry: ctx.providerRegistry,
     resolveCredential,
+    poolSelector: ctx.poolSelector,
+    networkBindingFactory: ctx.networkBindingFactory,
   }));
   // The listener binds the loopback port a browser redirect names, so the
   // callback delivers itself instead of waiting for a manual paste. One
