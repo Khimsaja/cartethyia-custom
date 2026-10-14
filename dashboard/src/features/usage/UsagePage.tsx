@@ -1261,6 +1261,11 @@ function RequestsStatCard({
  * summarise it. Hidden while the summary is still loading so the panel does
  * not flash a "—" row before real numbers arrive.
  *
+ * One row, not two: the average carries the "Route latency" wording itself
+ * rather than sitting under a separate heading, so the row reads
+ * `AVG 596 ms · P50 … · P95 … · P99 …` and four figures stay on one line at
+ * ordinary widths. It wraps rather than overflows when there is no room.
+ *
  * It sits outside `DataTable`'s own scroll box, so it stays put while the
  * rows scroll under it.
  */
@@ -1283,7 +1288,7 @@ function RoutingLatencyBar({
   if (pending) return null;
 
   const tiles: ReadonlyArray<{ readonly label: string; readonly value: number | undefined; readonly accent?: boolean }> = [
-    { label: "Routing avg", value: avgMs, accent: true },
+    { label: "Route latency AVG", value: avgMs, accent: true },
     { label: "P50", value: p50Ms },
     { label: "P95", value: p95Ms },
     { label: "P99", value: p99Ms },
@@ -1295,10 +1300,7 @@ function RoutingLatencyBar({
       aria-label="Routing latency summary"
       className="flex flex-wrap items-center gap-x-6 gap-y-3 border-b border-inner-border px-6 py-5 text-badge"
     >
-      <span className="inline-flex items-center gap-2 font-semibold text-text-secondary">
-        <Route size={12} aria-hidden="true" />
-        Routing latency
-      </span>
+      <Route size={12} aria-hidden="true" className="shrink-0 text-text-secondary" />
       {tiles.map((tile) => (
         <span
           key={tile.label}
