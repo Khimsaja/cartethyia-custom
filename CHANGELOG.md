@@ -30,6 +30,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- `POST /v1/messages/count_tokens` now answers for any routed model. A route
+  with no Anthropic Messages row (a combo of chat-family providers, for
+  example) used to fail with `capability_unsupported`, which left Claude Code
+  unable to decide whether a context still fit. Those models now get a local
+  estimate — characters ÷ 4 with a flat reserve per image, counting `system`,
+  tool rounds, and `tools` — the same basis the reference gateways use. A
+  Messages route still forwards the count, so the provider's own number wins.
 - Streaming tool calls now retain the upstream completion event, so completed
   tool-call turns end with `tool_calls` instead of a synthetic stream error.
 - PostgreSQL and SQLite baselines now include provider account identity

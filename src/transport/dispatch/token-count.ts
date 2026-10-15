@@ -9,10 +9,19 @@
  * a visible failure: too low and the follow-up request is rejected for length,
  * too high and the client compacts early for no reason.
  *
- * So the count is **forwarded**, never computed. The body is Anthropic's and the
- * answer is Anthropic's, which is also why this does not go through the canonical
- * surface codecs: `CanonicalRequest`/`CanonicalEvent` model a chat turn, and a
- * count is not one.
+ * So the count is **forwarded** when the route can be asked, and only then.
+ * The body is Anthropic's and the answer is Anthropic's, which is also why this
+ * does not go through the canonical surface codecs: `CanonicalRequest`/
+ * `CanonicalEvent` model a chat turn, and a count is not one.
+ *
+ * Most providers have no counter to ask. Chat Completions and Responses simply
+ * have no `count_tokens` endpoint, so a Messages client pointed at one of them
+ * (a combo of buddy-family models, say) has nowhere to forward to — and a 400
+ * there is worse than an approximation, because the client asked "does this
+ * still fit", not "can you count". When no route speaks Messages, the gateway
+ * estimates instead; that estimate is what the reference gateways answer on a
+ * provider without a counter, so the client sees the same magnitude it would
+ * behind one of them.
  *
  * The upstream response is returned **verbatim** — status, headers, and body.
  * Anthropic answers an unusable body with its own error envelope, and the client
@@ -21,10 +30,12 @@
  * The shape follows `generation.ts`: validate the trust boundary, drive
  * `runAttemptLoop`, hand back what the upstream produced. Candidate eligibility
  * is the provider's wire family, decided in
- * `ProxyRequestPreparer.prepareNativeTokenCount`.
+ * `ProxyRequestPreparer.prepareNativeTokenCount`; the estimate is the fallback
+ * when that gate leaves no candidate.
  */
 import type { ProviderAdapter, ProviderDispatchTarget } from "../../providers/provider-contracts";
 import { GatewayError } from "../../protocol/gateway-error";
+import { isRecord } from "../../protocol/codecs";
 import { resolveCredentialForAccount } from "../../providers/operations/provider-credential-service";
 import type { OAuthTokenRefresher, OAuthRefreshService } from "../../providers/authentication/oauth-refresh-service";
 import type { ValidatedNetworkBindingFactory } from "../../network/pool/resolver";
@@ -32,8 +43,8 @@ import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import { metrics } from "../../observability/metrics";
 import type { NetworkPoolSelector } from "../../network/pool/selector";
 import type { TelemetryBatchBuffer } from "../../observability/telemetry-buffer";
-import type { ProxyRequestStateStore } from "../request/state";
-import type { ProxyRequestPreparer } from "../request/preparer";
+import type { ProxyRequestState, ProxyRequestStateStore } from "../request/state";
+import type { ProxyRequestPreparer, PreparedNativeRequest } from "../request/preparer";
 import { completeAttempt, estimatedUsage } from "./attempt-finalize";
 import { runAttemptLoop } from "./attempt-loop";
 
@@ -83,12 +94,22 @@ export function createTokenCountHandler(deps: TokenCountHandlerDeps) {
       );
     }
 
-    const prepared = await deps.proxyPreparer.prepareNativeTokenCount({
-      model: countBody.model,
-      authorization,
-      ...(state.abortController.signal ? { signal: state.abortController.signal } : {}),
-      ...(state.clientUserAgent === undefined ? {} : { clientUserAgent: state.clientUserAgent }),
-    });
+    let prepared: PreparedNativeRequest;
+    try {
+      prepared = await deps.proxyPreparer.prepareNativeTokenCount({
+        model: countBody.model,
+        authorization,
+        ...(state.abortController.signal ? { signal: state.abortController.signal } : {}),
+        ...(state.clientUserAgent === undefined ? {} : { clientUserAgent: state.clientUserAgent }),
+      });
+    } catch (error) {
+      // Only "this model has no Messages route" falls back to estimating. A
+      // model whose accounts are cooling or saturated must still answer its
+      // real 429/503 — a fabricated count would tell the client its context
+      // fits when nothing is there to serve the turn that follows.
+      if (!(error instanceof GatewayError) || error.code !== "capability_unsupported") throw error;
+      return estimatedCountResponse(state, countBody);
+    }
 
     return runAttemptLoop<Response, ProviderAdapter>({
       state,
@@ -212,6 +233,33 @@ export function createTokenCountHandler(deps: TokenCountHandlerDeps) {
 }
 
 /**
+ * Answers a count the gateway worked out itself, on a route with no counter.
+ *
+ * No attempt is finalized: nothing was leased, nothing was sent upstream, and
+ * no provider produced this number, so recording it against an account would
+ * invent usage the account never served. The request still gets an outcome —
+ * without one the `afterResponse` hook finalizes it as a failure, and a count
+ * that answered 200 would show up in Console Log as an error.
+ */
+function estimatedCountResponse(
+  state: ProxyRequestState,
+  countBody: Record<string, unknown>,
+): Response {
+  const inputTokens = estimateMessagesInputTokens(countBody);
+  const payload = JSON.stringify({ input_tokens: inputTokens });
+  state.outcome = { status: "completed", httpStatus: 200 };
+  state.completed = true;
+  state.clientResponseText = payload;
+  metrics.proxy_requests_total.inc(1, { status: "completed" });
+  return new Response(payload, {
+    headers: {
+      "content-type": "application/json",
+      "cache-control": "no-store",
+      "x-request-id": state.requestId,
+    },
+  });
+}
+/**
  * Appends `/count_tokens` to the candidate's Messages endpoint.
  *
  * The stored endpoint is the chat path (`/v1/messages`), and the counter is its
@@ -228,4 +276,138 @@ export function joinCountTokensPath(endpoint: string): string {
   const path = queryAt === -1 ? endpoint : endpoint.slice(0, queryAt);
   const query = queryAt === -1 ? "" : endpoint.slice(queryAt);
   return `${path.replace(/\/+$/, "")}/count_tokens${query}`;
+}
+
+/**
+ * Tokens credited to one image, and the characters that make one token.
+ *
+ * The same two constants the reference gateways use for this endpoint, so the
+ * number a client reads here is the number those gateways would have answered.
+ */
+const IMAGE_TOKEN_ESTIMATE = 1_600;
+const CHARS_PER_TOKEN = 4;
+
+/** Accumulator for one body: priced characters, plus images priced flat. */
+interface CharTally {
+  chars: number;
+  images: number;
+}
+
+/** Characters a scalar or deeply nested JSON value contributes. */
+function tallyValue(value: unknown, tally: CharTally): void {
+  if (value === null || value === undefined) return;
+  if (typeof value === "string") {
+    tally.chars += value.length;
+    return;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    tally.chars += String(value).length;
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) tallyValue(item, tally);
+    return;
+  }
+  if (typeof value === "object") {
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      tally.chars += key.length;
+      tallyValue(item, tally);
+    }
+  }
+}
+
+/**
+ * Prices one Messages content block.
+ *
+ * `tool_use` arguments and `tool_result` content are what a later turn really
+ * pays for, so they are priced from their payload — pricing a tool round at
+ * zero is how a long agent transcript reads as far smaller than it is.
+ */
+function tallyBlock(block: unknown, tally: CharTally): void {
+  if (typeof block === "string") {
+    tally.chars += block.length;
+    return;
+  }
+  if (!isRecord(block)) {
+    tallyValue(block, tally);
+    return;
+  }
+  switch (block["type"]) {
+    case "text":
+      tally.chars += typeof block["text"] === "string" ? block["text"].length : 0;
+      return;
+    case "thinking":
+      tally.chars += typeof block["thinking"] === "string" ? block["thinking"].length : 0;
+      return;
+    case "tool_use":
+      tallyValue(block["name"], tally);
+      tallyValue(block["input"], tally);
+      return;
+    case "tool_result":
+      tallyValue(block["content"], tally);
+      return;
+    case "image":
+      // A binary payload has no honest character count, so it takes the flat
+      // per-image reserve instead — the same treatment an image gets in
+      // `estimateInputTokens`.
+      tally.images += 1;
+      return;
+    case "document":
+      // Base64 carries ~4 characters per 3 bytes; pricing the raw string as
+      // text would overstate a large PDF by a third.
+      tally.chars += Math.ceil((documentChars(block["source"]) * 3) / 4);
+      return;
+    default:
+      tallyValue(block, tally);
+  }
+}
+
+/** Raw characters in a document block's payload, base64 or URL. */
+function documentChars(source: unknown): number {
+  if (typeof source === "string") return source.length;
+  if (!isRecord(source)) return 0;
+  const data = source["data"];
+  if (typeof data === "string") return data.length;
+  const url = source["url"];
+  return typeof url === "string" ? url.length : 0;
+}
+
+/** Prices `system`, whether the caller sent a string or text blocks. */
+function tallySystem(system: unknown, tally: CharTally): void {
+  if (typeof system === "string") {
+    tally.chars += system.length;
+    return;
+  }
+  if (Array.isArray(system)) {
+    for (const block of system) tallyBlock(block, tally);
+  }
+}
+
+/**
+ * Estimates `input_tokens` for a Messages body, on a route with no counter.
+ *
+ * Deliberately `chars / 4` and not a weighted tokenizer: this is the number
+ * every reference gateway answers for this endpoint, so Claude Code sees the
+ * same magnitude here as it would behind one of them. Small in either
+ * direction only moves when the client compacts; a tokenizer nobody else uses
+ * would move it differently from every other deployment.
+ *
+ * `tools` is counted — Claude Code declares large tool schemas, and omitting
+ * them is what makes a count read far below the request that follows it.
+ */
+export function estimateMessagesInputTokens(body: Record<string, unknown>): number {
+  const tally: CharTally = { chars: 0, images: 0 };
+  tallySystem(body["system"], tally);
+  const messages = body["messages"];
+  if (Array.isArray(messages)) {
+    for (const message of messages) {
+      if (!isRecord(message)) continue;
+      const content = message["content"];
+      if (typeof content === "string") tally.chars += content.length;
+      else if (Array.isArray(content)) for (const block of content) tallyBlock(block, tally);
+      else tallyValue(content, tally);
+    }
+  }
+  if (body["tools"] !== undefined) tallyValue(body["tools"], tally);
+  return Math.max(1, Math.ceil(tally.chars / CHARS_PER_TOKEN) + tally.images * IMAGE_TOKEN_ESTIMATE);
 }
