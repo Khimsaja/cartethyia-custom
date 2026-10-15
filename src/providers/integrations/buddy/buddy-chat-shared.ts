@@ -48,11 +48,10 @@ function normalizedToolName(value: string, index: number, used: Set<string>): st
 /**
  * Buddy's Chat Completions wire has no `web_search_preview` hosted tool; its
  * search is an ordinary function named `web_search` with a `{query}` schema.
- * The canonical chat encoder emits `web_search_preview` for a hosted search
- * tool, which upstream accepted but then answered from the model's weights
- * ("I cannot access the internet"). Rewriting it here makes the model call
- * the function so the gateway's tool loop can execute the search and feed the
- * hits back for the model's summary.
+ * Rewriting the hosted declaration here lets the caller's own tool loop
+ * (Model Lab, or any client that executes its functions) run the query at
+ * `POST /v1/search`. The gateway never executes it: an unexecuted call is
+ * returned to the caller like any other function call.
  */
 function buddyHostedSearchFunction(rawTool: Record<string, unknown>): Record<string, unknown> | undefined {
   const type = rawTool["type"];

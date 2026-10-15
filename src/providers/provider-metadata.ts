@@ -339,23 +339,22 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
 ] as const;
 
 /**
- * Web search is served by the fallback route only, never as a model capability.
+ * Web search is a route of its own, never a model capability.
  *
  * There used to be a manual list of providers "whose hosted search had been
  * proven", and a `providerSupportsWebSearch` helper that consulted it. Both are
- * gone. A model row no longer advertises search, and a provider is a fallback
- * source purely by declaring a `serviceKind: "websearch"` catalog row — which
- * is what Exa, Parallel, and Gemini do.
+ * gone. A model row no longer advertises search, and a provider serves search
+ * purely by declaring a `serviceKind: "websearch"` catalog row — which is what
+ * Exa, Parallel, and Gemini do. Those rows answer `POST /v1/search` and are
+ * never reached from a chat turn.
  *
  * The reason is that the flag was never a capability gate: `deriveRequiredCapabilities`
  * deliberately does not derive `web_search`, so no chat request was ever
  * filtered or degraded by it. Its only real effect was to smuggle `llm` rows
  * (Codex, Antigravity) into the fallback candidate list as if they were search
- * routes, and to show a badge in the console. The Buddy family framed a hosted
- * search as an ordinary `web_search` function, which made the gateway execute
- * it; that was declared supported but behaved inconsistently, so it is not
- * special-cased either — those requests now take the fallback like everyone
- * else.
+ * routes, and to show a badge in the console. The fallback is gone too: a chat
+ * turn is dispatched once to the route its model selects, and a hosted search
+ * declaration is answered by that upstream, not executed by the gateway.
  */
 export type BundledProviderId = (typeof RAW_BUNDLED_PROVIDER_METADATA)[number]["id"];
 

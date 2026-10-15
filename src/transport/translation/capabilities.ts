@@ -185,8 +185,9 @@ export function routeCapabilitiesFor(candidate: CapabilityProfileHolder): RouteC
     reasoningEncryptedContent: profile.reasoningEncryptedContent === true,
     responseJsonObject: profile.responseJsonObject !== false,
     responseJsonSchema: profile.responseJsonSchema !== false,
-    // Always false: no model advertises search, so a search round is served by
-    // the fallback route rather than by a provider-side hosted tool.
+    // Search is a route of its own (`POST /v1/search` on a `websearch` row),
+    // never a capability a chat row claims: a hosted search declaration is
+    // carried through `tools` and answered by the selected upstream.
     webSearch: profile.webSearch === true,
     promptCaching: profile.promptCaching !== false,
     // A bespoke route has no codec, so no wire matrix applies: the adapter

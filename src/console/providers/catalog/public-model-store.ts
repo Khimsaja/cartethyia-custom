@@ -571,8 +571,8 @@ export class PublicModelCatalogStore {
         modalities: row.modalities,
         reasoning: row.reasoning,
         toolCall: row.toolCall,
-        // No model advertises search; a search round is served by the
-        // fallback route. See the note in provider-metadata.ts.
+        // No model advertises search: a `websearch` row answers
+        // `POST /v1/search`. See the note in provider-metadata.ts.
         webSearch: false,
         cost: row.cost,
       } satisfies ModelMetadata;

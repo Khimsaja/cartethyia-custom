@@ -140,8 +140,8 @@ export function buildCapabilityProfile(row: {
     parallelToolCalls: true,
     reasoning: true,
     reasoningEncryptedContent: true,
-    // No model advertises search: a search round is always served by the
-    // fallback route, never by a provider-side hosted tool on a chat row.
+    // Search is its own route: a `websearch` row answers `POST /v1/search`.
+    // A chat row never claims it; a hosted declaration rides through `tools`.
     webSearch: false,
     responseJsonObject: true,
     responseJsonSchema: true,

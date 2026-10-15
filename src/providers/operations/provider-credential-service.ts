@@ -36,8 +36,8 @@ const credCache = new Map<string, CredCacheEntry>();
 /**
  * Cache key combining the provider identity with the account id. The provider
  * must participate: a routing candidate can reuse another provider's account
- * id (e.g. the web-search fallback sharing the selected route's account), and
- * an accountId-only key would hand back the other provider's credential.
+ * id (e.g. a combo member borrowing a sibling's account), and an
+ * accountId-only key would hand back the other provider's credential.
  * The separator cannot appear in a provider id (lowercase slug grammar), so
  * distinct pairs never collide.
  */
