@@ -31,6 +31,36 @@ const ANTIGRAVITY_ARCH = "arm64";
 const ANTIGRAVITY_CL = "963137146";
 
 /**
+ * Env overrides for the three fingerprint fields, read per call so a test (or an
+ * operator editing `.env` and reloading) sees the current value rather than a
+ * process-start snapshot.
+ *
+ * These are the provider-local knobs the reference client exposes
+ * (`CARTETHYIA_ANTIGRAVITY_UA_OS_TYPE` / `_ARCH` / `_CL`); they exist so a
+ * Linux/x64 deployment stops claiming `darwin`/`arm64` on the wire. The
+ * defaults stay pinned to the captured desktop client because the backend
+ * gates on the version, not on these fields.
+ */
+const UA_OS_TYPE_ENV = "CARTETHYIA_ANTIGRAVITY_UA_OS_TYPE";
+const UA_ARCH_ENV = "CARTETHYIA_ANTIGRAVITY_UA_ARCH";
+const UA_CL_ENV = "CARTETHYIA_ANTIGRAVITY_UA_CL";
+
+/**
+ * `os_type`/`arch`/`cl` are opaque to the backend but they are still header
+ * bytes on a shared transport, so an override is sanitized to the characters
+ * the captured client ever emits. A value containing anything else (a quoted
+ * or delimited injection) is dropped in favor of the default rather than
+ * forwarded, which keeps one env var from corrupting the whole UA string.
+ */
+const UA_FIELD_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+
+function uaField(name: string, fallback: string): string {
+  const raw = process.env[name]?.trim();
+  if (raw === undefined || raw.length === 0) return fallback;
+  return UA_FIELD_PATTERN.test(raw) ? raw : fallback;
+}
+
+/**
  * Antigravity `User-Agent` header value; rebuilt when the discovered version
  * changes. Format captured from the real `antigravity/hub` desktop client:
  * `antigravity/hub/2.8.0 (aidev_client; os_type=darwin; arch=arm64; cl=963137146)`.
@@ -38,10 +68,14 @@ const ANTIGRAVITY_CL = "963137146";
  * The backend does not validate `cl` (verified live: stale, zero, and absent
  * `cl` all pass model gating on `daily-cloudcode-pa`; only the version
  * gates). The `cl`/`os_type`/`arch` fields are desktop-client fingerprints,
- * not operator policy, so they are pinned rather than configurable.
+ * not operator policy — they default to the captured desktop values but are
+ * env-overridable so a deployment need not claim `darwin`/`arm64`.
  */
 export function getAntigravityUserAgent(): string {
-  return `antigravity/hub/${getAntigravityVersion()} (aidev_client; os_type=${ANTIGRAVITY_OS_TYPE}; arch=${ANTIGRAVITY_ARCH}; cl=${ANTIGRAVITY_CL})`;
+  const osType = uaField(UA_OS_TYPE_ENV, ANTIGRAVITY_OS_TYPE);
+  const arch = uaField(UA_ARCH_ENV, ANTIGRAVITY_ARCH);
+  const cl = uaField(UA_CL_ENV, ANTIGRAVITY_CL);
+  return `antigravity/hub/${getAntigravityVersion()} (aidev_client; os_type=${osType}; arch=${arch}; cl=${cl})`;
 }
 
 // Per-wire-id request constants

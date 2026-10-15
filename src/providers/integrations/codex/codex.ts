@@ -39,7 +39,10 @@ import {
   getCodexResidency,
 } from "./codex-identity";
 import { mapCodexErrorResponse } from "./codex-errors";
-import { canonicalToCodexResponsesPayload } from "../../../protocol/request/codex";
+import {
+  canonicalToCodexResponsesPayload,
+  dropCodexAccessPrograms,
+} from "../../../protocol/request/codex";
 import {
   CodexStreamFrameProcessor,
   parseCodexResponsesJsonToEvents,
@@ -792,7 +795,7 @@ export function createCodexAdapter(
       }
       payload["client_metadata"] = clientMetadata;
 
-      const { res, release } = await postUpstreamJson(
+      let { res, release } = await postUpstreamJson(
         url,
         headers,
         payload,
@@ -800,6 +803,27 @@ export function createCodexAdapter(
         outboundFetch,
       );
       try {
+      // Daybreak access-program rejection → drop the field and replay once
+      // (donor `access-programs.ts:32-63`). UNCONFIRMED: the recovery is
+      // transcribed from the donor implementation alone — no capture here
+      // shows the upstream rejecting this field, so the replay is bounded to
+      // one attempt and only fires when the attempted request actually
+      // carried `access_programs`. An ineligible account therefore hard-fails
+      // on the second response instead of looping: the error that surfaces is
+      // the mapped rejection from the replay, never a retry-exhaustion error.
+      if (!res.ok && dropCodexAccessPrograms(payload)) {
+        await res.body?.cancel().catch(() => undefined);
+        release();
+        const replayed = await postUpstreamJson(
+          url,
+          headers,
+          payload,
+          context,
+          outboundFetch,
+        );
+        res = replayed.res;
+        release = replayed.release;
+      }
       if (!res.ok) {
         await mapCodexErrorResponse(res);
       }

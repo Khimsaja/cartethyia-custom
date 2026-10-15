@@ -26,6 +26,7 @@ import {
 } from "./claude-compatibility";
 import { buildClaudeHeaders, type ClaudeHeaderOptions } from "./claude-credentials";
 import { isRecord } from "../../../protocol/codecs";
+import { HEADER_CONTROL } from "../../../security/outbound-headers";
 import { resolvePromptCacheKey } from "../../operations/session-resolution";
 import { ensureAnthropicBeta, filterClaudeCustomHeaders } from "../shared/claude-messages";
 import {
@@ -222,8 +223,23 @@ export class ClaudeAdapter implements ProviderAdapter {
       headerOptions,
     );
     const profileId = request.generation_controls["extension:user_profile_id"];
-    if (typeof profileId === "string" && profileId.length > 0)
+    // A profile id travels two ways on the same request: the `user-profiles`
+    // beta that unlocks profile scoping, and the header that names *which*
+    // profile. Carrying only the beta (the state before this change) declares
+    // the capability without ever addressing a profile, so a profile-scoped
+    // credential could not be selected.
+    if (typeof profileId === "string" && profileId.length > 0) {
       ensureAnthropicBeta(headers, "user-profiles");
+      if (!HEADER_CONTROL.test(profileId)) {
+        headers["anthropic-user-profile-id"] = profileId;
+      } else {
+        // Never let a caller's newline reach the wire: an injected header is
+        // the one thing a filter downstream cannot undo.
+        log.warn("claude: user_profile_id dropped, contains control characters", {
+          provider: "claude",
+        });
+      }
+    }
     const sessionId =
       headers["X-Claude-Code-Session-Id"] ?? resolvePromptCacheKey(request, context);
     // Provider/model parameter quirks run before translation, exactly as they do
