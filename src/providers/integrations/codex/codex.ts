@@ -31,6 +31,25 @@ import { decodeSseEvents } from "../../../protocol/sse-decoder";
 import { imageCreatedSeconds, imagePrompt, responsesImageResult } from "../../../protocol/image-generation";
 import { isRecord, joinUrl } from "../../../protocol/codecs";
 import { postUpstreamJson } from "../../../protocol/upstream/post-json";
+import { parseUpstreamBackoff, sleep as defaultSleep } from "../../../transport/failure-policy";
+
+/**
+ * Sleep used by the 429 capacity-wait loop, overridable in tests.
+ *
+ * A real capacity wait is tens of seconds by design, so a test that exercises
+ * the loop would otherwise spend that long on the clock or blow its timeout.
+ * Production always uses the shared `failure-policy` sleep; only a test swaps
+ * it.
+ */
+let rateLimitSleep = defaultSleep;
+export function _setCodexRateLimitSleepForTesting(
+  impl: typeof defaultSleep | null,
+): void {
+  rateLimitSleep = impl ?? defaultSleep;
+}
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return rateLimitSleep(ms, signal);
+}
 import type { ImageGenerationOutcome, ProviderDispatchTarget, ProviderAdapter, ProviderDispatchContext, ResolvedCredential, WebSearchOutcome, WebSearchResult } from "../../provider-contracts";
 import {
   createCodexIdentity,
@@ -232,6 +251,109 @@ export interface CodexCompactAdapter extends ProviderAdapter {
 }
 
 const DEFAULT_CHATGPT_BASE_URL = "https://chatgpt.com";
+
+/**
+ * Total wall-clock a Codex dispatch may spend *waiting* on 429s.
+ *
+ * A transient quota/overload response is latency, not a terminal error: the
+ * upstream names how long the bucket is closed and the request can simply
+ * wait it out instead of surfacing `quota_exceeded` to the client. The budget
+ * is what keeps that from becoming an unbounded stall — a server that keeps
+ * restating a delay (or states one longer than the request has left) must not
+ * hold the attempt open past its own deadline.
+ *
+ * 5 minutes matches the donor Codex 429 window this closes
+ * (`openai-codex-responses.ts:310-311`, research item Codex #2) and is far
+ * below the default request deadline, so the deadline clamp below — not this
+ * cap — is the binding limit in practice.
+ */
+const CODEX_429_RETRY_BUDGET_MS = 5 * 60 * 1000;
+
+/** Upper bound on one 429 wait before the deadline clamp. */
+const CODEX_429_MAX_WAIT_MS = 60_000;
+
+/** Zero-delay 429 guard. Grows from 50ms, doubling per wait. */
+const CODEX_429_MIN_WAIT_MS = 50;
+
+/**
+ * The attempt-loop floor: a retry repeats the whole pre-dispatch phase, so it
+ * needs at least this much budget left on top of the upstream call itself.
+ * Mirrors `MIN_RETRY_BUDGET_MS` in `src/transport/dispatch/attempt-loop.ts`.
+ */
+const MIN_RETRY_BUDGET_MS = 15_000;
+
+/** The `x-codex-*` window headers, in seconds or epoch seconds. */
+function codexWindowResetMs(res: Response): number | undefined {
+  for (const header of ["x-codex-primary-reset-at", "x-codex-secondary-reset-at"]) {
+    const raw = res.headers.get(header);
+    const parsed = raw === null || raw.trim().length === 0 ? Number.NaN : Number(raw);
+    if (!Number.isFinite(parsed) || parsed <= 0) continue;
+    const targetMs = parsed >= 1_000_000_000 ? parsed * 1000 : Date.now() + parsed * 1000;
+    const remaining = targetMs - Date.now();
+    if (remaining > 0) return remaining;
+  }
+  return undefined;
+}
+
+/**
+ * The delay the Codex upstream asked us to wait before retrying a 429, in ms.
+ *
+ * Standard backoff headers first, then the Codex window headers. `null` when
+ * the upstream named no delay at all, which is *not* the same as "retry now" —
+ * see `codex429WaitMs`.
+ */
+function codex429ServerDelayMs(res: Response): number | null {
+  const headerDelay = parseUpstreamBackoff(res.headers);
+  if (headerDelay !== null) return headerDelay;
+  return codexWindowResetMs(res) ?? null;
+}
+
+/**
+ * How long to actually wait before re-posting a 429, or `null` to stop.
+ *
+ * Pure — `now` is passed in rather than read, so the clamps are testable
+ * without running the clock.
+ *
+ * Three cases:
+ *
+ * - **No server-stated delay** — a 429 that names no wait is retired as an
+ *   error (current behavior), *except* that the first bare 429 gets one short
+ *   backoff, because the rate-limit window itself is the evidence that a retry
+ *   is meaningful. UNCONFIRMED: our captures do not show whether Codex emits
+ *   `retry-after` on 429, so the header path is unverified against live traffic
+ *   and the backoff is the conservative fallback.
+ * - **The wait fits** — budget and deadline both leave room, so the stated
+ *   delay is honored in full.
+ * - **The wait does not fit** — clamped to what is left, or skipped entirely
+ *   when less than `MIN_RETRY_BUDGET_MS` would remain, because a re-post the
+ *   deadline would kill mid-flight has only turned a fast error into a slow
+ *   one.
+ */
+export function codex429WaitMs(options: {
+  readonly serverDelayMs: number | null;
+  readonly waitedMs: number;
+  readonly retry: number;
+  readonly deadline: number;
+  readonly now: number;
+}): number | null {
+  const { serverDelayMs, waitedMs, retry, deadline, now } = options;
+  const target =
+    serverDelayMs ?? (retry === 0 ? CODEX_429_MIN_WAIT_MS * 2 ** retry : null);
+  if (target === null) return null;
+  const budgetLeft = CODEX_429_RETRY_BUDGET_MS - waitedMs;
+  if (budgetLeft <= 0) return null;
+  // Leave the pre-dispatch floor for the re-post itself: the retry has to pay
+  // the whole pre-dispatch phase again before the upstream is even called.
+  const deadlineLeft = deadline - now - MIN_RETRY_BUDGET_MS;
+  if (deadlineLeft <= 0) return null;
+  const wait = Math.min(
+    target,
+    CODEX_429_MAX_WAIT_MS,
+    Math.max(budgetLeft, 0),
+    Math.max(deadlineLeft, 0),
+  );
+  return wait > 0 ? wait : null;
+}
 
 function authHeadersForCodex(
   credential: ResolvedCredential,
@@ -795,6 +917,8 @@ export function createCodexAdapter(
       }
       payload["client_metadata"] = clientMetadata;
 
+      let waitedOnRateLimitMs = 0;
+      let rateLimitRetry = 0;
       let { res, release } = await postUpstreamJson(
         url,
         headers,
@@ -803,6 +927,47 @@ export function createCodexAdapter(
         outboundFetch,
       );
       try {
+      // 429 → wait the delay the upstream stated and re-post the same request
+      // (research item Codex #2). A transient quota/overload is latency, not a
+      // terminal error: honoring the stated delay turns it into a slow success
+      // instead of a `quota_exceeded` the client has to retry itself.
+      //
+      // Bounded three ways so it can never stall the attempt: a 5-minute total
+      // wait budget, one 60s cap per wait, and the request deadline (a re-post
+      // needs `MIN_RETRY_BUDGET_MS` left to be worth starting). When none of
+      // those leave room, the 429 surfaces as it always did.
+      while (res.status === 429) {
+        const waitMs = codex429WaitMs({
+          serverDelayMs: codex429ServerDelayMs(res),
+          waitedMs: waitedOnRateLimitMs,
+          retry: rateLimitRetry,
+          deadline: context.deadline,
+          now: Date.now(),
+        });
+        if (waitMs === null) break;
+        await res.body?.cancel().catch(() => undefined);
+        release();
+        try {
+          await sleep(waitMs, context.abort_signal);
+        } catch {
+          // Aborted while waiting out the window: report the 429 we already
+          // hold, so the client sees the rate limit rather than a bare cancel.
+          await mapCodexErrorResponse(res);
+        }
+        // Count what was actually waited, not what was planned: the sleep can
+        // return early on abort, and the planner reads this as spent budget.
+        waitedOnRateLimitMs += waitMs;
+        rateLimitRetry += 1;
+        const retried = await postUpstreamJson(
+          url,
+          headers,
+          payload,
+          context,
+          outboundFetch,
+        );
+        res = retried.res;
+        release = retried.release;
+      }
       // Daybreak access-program rejection → drop the field and replay once
       // (donor `access-programs.ts:32-63`). UNCONFIRMED: the recovery is
       // transcribed from the donor implementation alone — no capture here
