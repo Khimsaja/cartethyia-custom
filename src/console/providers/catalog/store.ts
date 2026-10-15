@@ -75,6 +75,52 @@ function parseJwtCredential(raw: string): { readonly expiresAt?: Date } | undefi
  * with it but cannot be refreshed, so the caller stores it as a static
  * API credential instead of sending the access token to a refresh endpoint.
  */
+/**
+ * Middle segment of an auto-generated account label, from how the credential
+ * was actually detected.
+ *
+ * Only the two kinds that arrive with no name of their own are named here. An
+ * OAuth paste carries its own identity in `authState` (the account it was
+ * exported from), so it keeps whatever the export or the operator supplied —
+ * generating a name for it would overwrite an identity that was already there.
+ * An unrecognized mode falls back to `key`, matching the mode it is stored as.
+ */
+export function accountLabelKindSegment(credentialMode: CredentialMode): string {
+  return credentialMode === "jwt" ? "jwt" : "key";
+}
+
+/**
+ * First unused `dcint-key-N` / `dcint-jwt-N` label for one provider.
+ *
+ * Polished tokens and plain JWTs are the credentials that arrive nameless: an
+ * operator pastes several into one provider and every row came out as
+ * "<providerId> account", so five accounts were five identical labels and the
+ * list could not tell them apart — which account failed, or is cooling, was
+ * unreadable.
+ *
+ * Numbering runs per kind, so the first JWT is `jwt-1` rather than inheriting
+ * whatever number the api_key rows reached (`jwt-3` with no `jwt-1` reads as
+ * two missing accounts). Counting is case-insensitive on the whole label, so a
+ * hand-typed `DCINT-KEY-2` still reserves its number.
+ *
+ * Pure, so the numbering can be pinned without a database.
+ */
+export function nextGeneratedAccountLabel(
+  providerId: string,
+  credentialMode: CredentialMode,
+  existingLabels: readonly string[],
+): string {
+  const kind = accountLabelKindSegment(credentialMode);
+  const prefix = `${providerId}-${kind}-`;
+  const taken = new Set(
+    existingLabels.map((label) => label.trim().toLowerCase()),
+  );
+  for (let n = 1; ; n += 1) {
+    const candidate = `${prefix}${n}`;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
+}
+
 export function parsePastedOAuthCredential(raw: string): {
   readonly accessToken: string;
   readonly refreshToken: string;
@@ -836,6 +882,34 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
    * with accounts under two providers must not have the second provider's
    * first account land at a high index.
    */
+  /**
+   * Labels already in use for one provider, for numbering a generated name.
+   *
+   * Scoped to this provider and tenant: `dcint-key-1` and `other-key-1` belong
+   * to different providers and must not collide with each other.
+   */
+  private async generateAccountLabel(
+    db: CartethyiaDatabase | Parameters<Parameters<CartethyiaDatabase["transaction"]>[0]>[0],
+    providerId: string,
+    tenantId: string,
+    credentialMode: CredentialMode,
+  ): Promise<string> {
+    const rows = await db
+      .select({ label: providerAccounts.label })
+      .from(providerAccounts)
+      .where(
+        and(
+          eq(providerAccounts.providerId, providerId),
+          globalOrOwnedBy(providerAccounts.tenantId, tenantId),
+        ),
+      );
+    return nextGeneratedAccountLabel(
+      providerId,
+      credentialMode,
+      rows.map((row) => row.label).filter((label): label is string => typeof label === "string"),
+    );
+  }
+
   private async nextAccountSortIndex(
     db: CartethyiaDatabase | Parameters<Parameters<CartethyiaDatabase["transaction"]>[0]>[0],
     providerId: string,
@@ -979,13 +1053,19 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
         };
         const nextSortIndex =
           sortIndexOverride ?? (await this.nextAccountSortIndex(tx, providerId, tenantId));
+        // Read existing labels only when one has to be generated: a named
+        // account costs no extra query, and this is the path a large batch
+        // paste walks once per row.
+        const label =
+          request.label ??
+          (await this.generateAccountLabel(tx, providerId, tenantId, effectiveCredentialMode));
         const rows = await tx
           .insert(providerAccounts)
           .values({
             providerId,
             tenantId,
             sortIndex: nextSortIndex,
-            label: request.label ?? `${providerId} account`,
+            label,
             credentialCiphertext: encryptCredential(effectiveSecret),
             ...(credentialFingerprint ? { credentialFingerprint } : {}),
             credentialKind: effectiveCredentialKind,
