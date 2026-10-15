@@ -213,6 +213,23 @@ export function prefixMismatchBehavior(value: unknown): "drop_block" | "error" |
 /** Anthropic `thinking.display` values this gateway can forward without a beta. */
 const THINKING_DISPLAY_VALUES: ReadonlySet<string> = new Set(["summarized", "omitted"]);
 
+/**
+ * Display values that are real but need a beta this gateway does not negotiate.
+ *
+ * `updates` asks the upstream to stream raw thinking increments instead of a
+ * summary, under `thinking-display-updates-2026-08-18`. Those increments are a
+ * different response shape, and this gateway has no decoder for them — so the
+ * choice is between refusing the request and answering with thinking content
+ * that arrives broken. Refusing was right when the caller could change its
+ * request; a CLI that always sends this value simply cannot use the endpoint
+ * at all.
+ *
+ * Degrading to `summarized` keeps the request working: the caller gets a
+ * readable summary rather than an error or an empty thinking block. A value
+ * that is merely unknown is still rejected — degrading a typo would hide it.
+ */
+const BETA_ONLY_THINKING_DISPLAY_VALUES: ReadonlySet<string> = new Set(["updates"]);
+
 export function parseThinking(
   value: unknown,
   model: string,
@@ -226,14 +243,30 @@ export function parseThinking(
     throw new Error("Messages thinking.type must be enabled, adaptive, or disabled");
   }
   const display = thinking.display;
-  if (display !== undefined && !THINKING_DISPLAY_VALUES.has(String(display))) {
-    // `updates` requires the `thinking-display-updates-2026-08-18` beta, which
-    // this gateway does not negotiate; failing here is clearer than an opaque
-    // upstream 400 on a request that cannot succeed.
-    throw new Error("Messages thinking.display must be summarized or omitted");
+  if (
+    display !== undefined &&
+    !THINKING_DISPLAY_VALUES.has(String(display)) &&
+    !BETA_ONLY_THINKING_DISPLAY_VALUES.has(String(display))
+  ) {
+    // Name the rejected value: an operator reading this needs to know what the
+    // caller actually sent, not just which two values are allowed.
+    throw new Error(
+      `Messages thinking.display must be summarized or omitted; received ${JSON.stringify(
+        String(display),
+      )}`,
+    );
   }
+  // A beta-only value degrades to the summary this gateway can decode, so the
+  // request proceeds instead of failing on a display policy alone. `summarized`
+  // rather than `omitted`: `updates` asks for *more* thinking than the default,
+  // so degrading it to the value that hides thinking would invert the caller's
+  // intent. An explicit `omitted` is still honored.
   const displayValue =
-    display === "summarized" || display === "omitted" ? display : undefined;
+    display === "omitted"
+      ? "omitted"
+      : display === "summarized" || BETA_ONLY_THINKING_DISPLAY_VALUES.has(String(display))
+        ? "summarized"
+        : undefined;
   const prefixMismatch = prefixMismatchBehavior(thinking.block_binding);
   if (type === "disabled") {
     return {
