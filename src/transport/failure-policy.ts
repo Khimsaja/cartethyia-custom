@@ -835,11 +835,24 @@ export async function throwIfHtmlResponse(response: Response): Promise<void> {
   // The page came from the upstream (an edge proxy or the origin itself), so
   // it is an upstream failure: attributing it to `cartethyia` made the console
   // blame the gateway for a provider/edge response.
+  //
+  // `accountScope` marks the account that was dialled, not its credential: a
+  // WAF/edge challenge answers the *request* this account sent, and the same
+  // upstream serves its siblings fine — proven by eight cb accounts on one
+  // egress where only one was ever challenged. Scoping it to the account is
+  // what lets the health machine cool that account down; without it the
+  // failure classified provider-scoped, `mutatesAccount` was false, and the
+  // account stayed `active` with `consecutiveFailures: 0` through 16/16
+  // failures — re-dialled once a minute for as long as the block lasted.
+  //
+  // Deliberately not `credentialEvidence`: that flag also drives forced OAuth
+  // refresh and terminal disable, and an edge challenge is neither a revoked
+  // credential nor a permanent one.
   throw new GatewayError(
     "transport_unavailable",
     502,
     `Upstream returned an HTML error page: ${summary}`.slice(0, 300),
-    { upstreamStatus: response.status, contentType },
+    { upstreamStatus: response.status, contentType, accountScope: true },
     "upstream",
   );
 }

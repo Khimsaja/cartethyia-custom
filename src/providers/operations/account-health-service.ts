@@ -687,13 +687,20 @@ export function classifyAccountError(
     // deadline rather than a state needing an operator. The deadline matters:
     // `sweepExpiredCooldowns` selects on `cooldownUntil IS NOT NULL`, so a row
     // parked without one is never recovered and stays out of rotation.
+    //
+    // `canMutate` rather than a flat `false`: a 5xx whose failure the caller
+    // scoped to the account (an edge/WAF challenge answered to one account's
+    // requests while its siblings on the same egress served fine) must cool
+    // that account down, or it stays `active` and is re-dialled for as long as
+    // the block lasts. Provider-scoped 5xx keeps the old behavior: the upstream
+    // is indiscriminately failing and no single account is at fault.
     return result(
       lower.includes("timeout") ? "timeout" : "server_error",
       "cooldown",
       TRANSIENT_ERROR_COOLDOWN_MS(),
       new Date(Date.now() + TRANSIENT_ERROR_COOLDOWN_MS()),
       reason(`Provider ${statusCode ?? "network"} failure`),
-      false,
+      canMutate,
     );
   }
 
