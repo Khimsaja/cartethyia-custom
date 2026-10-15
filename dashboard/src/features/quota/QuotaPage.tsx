@@ -256,7 +256,7 @@ function DailyGrowthActions({
 
   return (
     <div
-      className="flex w-full min-w-0 flex-wrap items-center justify-between gap-2.5"
+      className="flex min-w-0 flex-wrap items-center gap-2.5"
       aria-label="Daily growth actions"
     >
       <div className="min-w-0 w-67.5">
