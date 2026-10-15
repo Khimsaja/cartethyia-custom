@@ -107,7 +107,12 @@ export const credentialKind = pgEnum("credential_kind", ["api_key", "oauth", "no
 
 // Shared wire-family domain used by providers.wire_family_default and
 // models.wire_family.
-export const wireFamily = pgEnum("wire_family", ["chat", "responses", "messages"]);
+//
+// `gemini` is Factory's native generateContent wire. Added by forward
+// migration `0002_add_gemini_wire_family.sql`; the enum here must stay in
+// step with what that migration applies, or a fresh database (built from the
+// baseline) and a migrated one would disagree.
+export const wireFamily = pgEnum("wire_family", ["chat", "responses", "messages", "gemini"]);
 
 // `https` is a hosted relay front door (Vercel, Cloudflare, Deno, Netlify):
 // plain HTTP CONNECT to an origin that terminates TLS itself, so the transport

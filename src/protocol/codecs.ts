@@ -721,6 +721,7 @@ export const BUILTIN_DEFAULT_ENDPOINTS: Record<WireFamily, string> = {
   chat: "/chat/completions",
   responses: "/v1/responses",
   messages: "/v1/messages",
+  gemini: "/api/llm/g/v1/generate",
 };
 
 /**

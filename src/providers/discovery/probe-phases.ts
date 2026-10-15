@@ -314,7 +314,13 @@ export async function resolveProbeTarget(args: {
       endpointPath = endpointForFamily(wireFamily);
     }
   }
-  const sourceSurface: SourceSurface = wireFamily;
+  // Wire family and source surface were the same vocabulary until `gemini`
+  // landed, so this used to be a plain assignment. They are not the same thing:
+  // `gemini` names a wire (native generateContent) but has no canonical request
+  // surface of its own, while `completion` is a surface with no matching wire.
+  // Probing a Gemini wire therefore has to name the surface whose codec builds
+  // the request, rather than pretending the wire is a surface.
+  const sourceSurface: SourceSurface = wireFamily === "gemini" ? "chat" : wireFamily;
   // Built from the row the probe resolves to, so the adapter's capability gate
   // sees the same profile live traffic would. `providerId` is part of the
   // profile because a bespoke-wire provider has no canonical codec and must not

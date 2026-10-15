@@ -34,6 +34,19 @@ import type {
 } from "../../provider-contracts";
 import type { CanonicalEvent, CanonicalRequest } from "../../../protocol/canonical-model";
 import { GatewayError } from "../../../protocol/gateway-error";
+import { decodeSseEvents } from "../../../protocol/sse-decoder";
+import { buildGeminiPayload } from "../../../protocol/request/gemini";
+import {
+  decodeGeminiStreamEvent,
+  geminiCandidate,
+  mapGeminiUsage,
+  responseParts,
+  toCanonicalStopReason,
+} from "../../../protocol/response/gemini";
+import { endpointUrl } from "../../../protocol/codecs";
+import { usageFromProvider } from "../../provider-usage";
+import { createUpstreamDeadlineLifecycle, abortGatewayError } from "../../operations/upstream-deadline";
+import { mapUpstreamHttpError } from "../../../transport/failure-policy";
 import { buildClaudeMessagesRequest, filterClaudeCustomHeaders } from "../shared/claude-messages";
 import { sendClaudeMessagesRequest } from "../../../protocol/upstream/send-claude-messages";
 import { applyParamQuirks } from "../../../transport/translation/quirks";
@@ -42,7 +55,7 @@ import type { ApiKeyProviderSpec } from "../../configured-provider";
 import { decodeFactoryDroidCredential } from "../../../security/credential-codec";
 import { log } from "../../../observability/logger";
 
-import { FACTORY_MODELS, FACTORY_PROVIDER_ID } from "./factory-models";
+import { FACTORY_GEMINI_ENDPOINT_PATH, FACTORY_MODELS, FACTORY_PROVIDER_ID } from "./factory-models";
 
 export { FACTORY_MODELS, FACTORY_PROVIDER_ID };
 
@@ -424,6 +437,20 @@ class FactoryDroidAdapter implements ProviderAdapter {
       return;
     }
 
+    // Factory's native Gemini wire: generateContent at `/api/llm/g/v1/generate`
+    // with `x-api-provider: google` (donor `packages/catalog/src/wire/
+    // factory-droid.ts:83-84`, `factory-droid/gemini.ts:28`, and
+    // `packages/ai/test/factory-droid-gemini.test.ts:25`). Posting this to the
+    // OpenAI leg would send a chat body to an endpoint that speaks neither.
+    if (candidate.wire_family === "gemini") {
+      yield* this.dispatchGeminiWire(request, candidate, context, {
+        token,
+        orgId,
+        baseUrl,
+      });
+      return;
+    }
+
     // The OpenAI-shaped legs are built per dispatch: the bearer and the org id
     // are read from the credential then, not captured when the registry
     // resolved this adapter. One spec carries both paths.
@@ -432,6 +459,176 @@ class FactoryDroidAdapter implements ProviderAdapter {
       candidate,
       context,
     );
+  }
+
+  /**
+   * The `gemini` wire: native generateContent over SSE.
+   *
+   * The envelope is the shared Gemini builder this gateway already uses for
+   * Antigravity, so Gemini encoding has one owner. What is Factory-specific is
+   * the path, the upstream selector, and the auth/client headers.
+   */
+  private async *dispatchGeminiWire(
+    request: CanonicalRequest,
+    candidate: ProviderDispatchTarget,
+    context: ProviderDispatchContext,
+    identity: { readonly token: string; readonly orgId: string; readonly baseUrl: string },
+  ): AsyncIterable<CanonicalEvent> {
+    const url = endpointUrl(
+      identity.baseUrl,
+      candidate.endpoint_path || FACTORY_GEMINI_ENDPOINT_PATH,
+    );
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      accept: request.stream ? "text/event-stream" : "application/json",
+      authorization: `Bearer ${identity.token}`,
+      ...factoryClientHeaders(identity.orgId),
+      ...factoryRoutingHeaders(request, context),
+      // The upstream selector is what routes this to Google rather than to
+      // Factory's default router.
+      "x-api-provider": "google",
+    };
+    const outboundFetch: typeof fetch =
+      (context.outbound_fetch as unknown as typeof fetch) ?? this.fetchFn;
+    const lifecycle = createUpstreamDeadlineLifecycle(context);
+    let response: Response;
+    try {
+      response = await outboundFetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(buildGeminiPayload(request)),
+        signal: lifecycle.signal,
+      });
+    } catch (error: unknown) {
+      const abortError = abortGatewayError(lifecycle, error, context.abort_signal);
+      lifecycle.release();
+      if (abortError) throw abortError;
+      throw error;
+    }
+    lifecycle.release();
+    if (!response.ok) throw await mapUpstreamHttpError(response, "factory");
+    if (!request.stream) {
+      const json = (await response.json()) as Record<string, unknown>;
+      yield* this.geminiBodyToEvents(json, request);
+      return;
+    }
+    if (response.body === null)
+      throw new GatewayError(
+        "platform_unavailable",
+        502,
+        "factory gemini returned empty stream",
+        {},
+        "upstream",
+      );
+    yield* this.geminiStreamToEvents(
+      response.body as ReadableStream<Uint8Array>,
+      request,
+      lifecycle.signal,
+    );
+  }
+
+  /**
+   * One full (non-streaming) generateContent body as canonical events.
+   *
+   * Uses the shared Gemini response helpers so Gemini decoding has one owner
+   * rather than a second copy here. `finishReason` maps by the donor's table
+   * (`factory-droid/gemini.ts:84-107`): STOP → stop, MAX_TOKENS → length, and
+   * anything else is an error rather than a clean stop — an unknown terminator
+   * must not masquerade as success.
+   */
+  private async *geminiBodyToEvents(
+    json: Record<string, unknown>,
+    request: CanonicalRequest,
+  ): AsyncIterable<CanonicalEvent> {
+    const { response: decoded, candidate: cand, parts } = geminiCandidate(json);
+    const output = responseParts(parts);
+    let seq = 1;
+    yield { type: "response_start", sequence_number: seq++, model: request.model } as CanonicalEvent;
+    if (output.thought) {
+      yield {
+        type: "content_delta",
+        sequence_number: seq++,
+        content: { kind: "reasoning", payload: null, summary: output.thought },
+      } as CanonicalEvent;
+    }
+    if (output.text) {
+      yield {
+        type: "content_delta",
+        sequence_number: seq++,
+        content: { kind: "text", text: output.text },
+      } as CanonicalEvent;
+    }
+    for (const call of output.calls) {
+      yield {
+        type: "tool_call_delta",
+        sequence_number: seq++,
+        call_id: call.id,
+        name: call.name,
+        arguments_delta: JSON.stringify(call.args),
+      } as CanonicalEvent;
+    }
+    const finishReason = typeof cand["finishReason"] === "string" ? cand["finishReason"] : undefined;
+    yield {
+      type: "terminal",
+      sequence_number: seq++,
+      // No finishReason on a full body means the upstream response was
+      // truncated: never complete.
+      state: finishReason === undefined ? "failed" : "complete",
+      stop_reason: toCanonicalStopReason(cand, output.calls.length),
+      ...(finishReason ? { provider_stop_reason: finishReason } : {}),
+      usage: usageFromProvider(mapGeminiUsage(decoded)),
+    } as CanonicalEvent;
+  }
+
+  /** Streaming generateContent: one canonical event per decoded SSE chunk. */
+  private async *geminiStreamToEvents(
+    body: ReadableStream<Uint8Array>,
+    request: CanonicalRequest,
+    signal: AbortSignal,
+  ): AsyncIterable<CanonicalEvent> {
+    let seq = 1;
+    yield { type: "response_start", sequence_number: seq++, model: request.model } as CanonicalEvent;
+    for await (const sse of decodeSseEvents(body, { signal })) {
+      const data = sse.data.trim();
+      if (data === "[DONE]") break;
+      const parsed = decodeGeminiStreamEvent(data, "factory gemini stream error");
+      if (parsed === undefined) continue;
+      const { candidate: cand, parts } = geminiCandidate(parsed);
+      const output = responseParts(parts);
+      if (output.thought) {
+        yield {
+          type: "content_delta",
+          sequence_number: seq++,
+          content: { kind: "reasoning", payload: null, summary: output.thought },
+        } as CanonicalEvent;
+      }
+      if (output.text) {
+        yield {
+          type: "content_delta",
+          sequence_number: seq++,
+          content: { kind: "text", text: output.text },
+        } as CanonicalEvent;
+      }
+      for (const call of output.calls) {
+        yield {
+          type: "tool_call_delta",
+          sequence_number: seq++,
+          call_id: call.id,
+          name: call.name,
+          arguments_delta: JSON.stringify(call.args),
+        } as CanonicalEvent;
+      }
+      const finishReason = typeof cand["finishReason"] === "string" ? cand["finishReason"] : undefined;
+      if (finishReason !== undefined) {
+        yield {
+          type: "terminal",
+          sequence_number: seq++,
+          state: "complete",
+          stop_reason: toCanonicalStopReason(cand, output.calls.length),
+          provider_stop_reason: finishReason,
+        } as CanonicalEvent;
+      }
+    }
   }
 }
 

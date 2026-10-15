@@ -37,7 +37,14 @@ function migratedDatabase(): Database {
 test("each backend has matching baseline and incremental migrations", () => {
   const postgres = readdirSync(resolve(process.cwd(), "migrations", "full-postgres")).filter((name) => name.endsWith(".sql")).sort();
   const sqlite = readdirSync(resolve(process.cwd(), "migrations", "lite-sqlite3")).filter((name) => name.endsWith(".sql")).sort();
-  const expected = ["0000_baseline.sql", "0001_allow_multiple_shared_keys_per_ip.sql"];
+  // Both backends must carry the same numbered migrations. The list is pinned
+  // (rather than derived) so adding a migration to only one backend fails here
+  // instead of silently diverging at startup.
+  const expected = [
+    "0000_baseline.sql",
+    "0001_allow_multiple_shared_keys_per_ip.sql",
+    "0002_add_gemini_wire_family.sql",
+  ];
   expect(postgres).toEqual(expected);
   expect(sqlite).toEqual(expected);
 });

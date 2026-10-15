@@ -63,6 +63,9 @@ export const GENERATION_CONTROL_MATRIX: Readonly<
   ]),
   responses: new Set(["temperature", "top_p", "max_output_tokens", "parallel_tool_calls", "service_tier"]),
   messages: new Set(["temperature", "top_p", "top_k", "stop", "max_tokens", "parallel_tool_calls"]),
+  // Native generateContent speaks its own `generationConfig`, not the OpenAI
+  // control names; the Gemini codec maps what it understands.
+  gemini: new Set(["temperature", "top_p", "top_k", "stop", "max_tokens"]),
 };
 
 /**
@@ -99,6 +102,7 @@ export const EXTENSION_MATRIX: Readonly<Record<WireFamily, ReadonlySet<string>>>
   chat: new Set(),
   responses: new Set(),
   messages: new Set(["server_tool_use", "search_result", "web_search_tool_result"]),
+  gemini: new Set(),
 };
 
 /** No codec re-encodes extension parts, so a bespoke adapter's route carries none. */

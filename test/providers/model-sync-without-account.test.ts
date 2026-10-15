@@ -52,7 +52,7 @@ function serviceWithResolver(resolver: () => Promise<null>): ProviderProbingServ
   return new ProviderProbingService({
     db: emptyDb(),
     telemetryBuffer: undefined,
-    defaultEndpoints: { chat: "/chat/completions", responses: "/responses", messages: "/v1/messages" },
+    defaultEndpoints: { chat: "/chat/completions", responses: "/responses", messages: "/v1/messages", gemini: "/api/llm/g/v1/generate" },
     bundledModelCatalog: new Map(),
     outboundFetchFor: async () => ({ fetch: globalThis.fetch }),
     snapshotInvalidator: { invalidate: () => {} },

@@ -5,7 +5,14 @@
  * and its compatibility-profile validator both project this list, so a new
  * family cannot land in one and be silently missing from the other.
  */
-export const WIRE_FAMILIES = ["chat", "responses", "messages"] as const;
+/**
+ * `gemini` is Factory's native `generateContent` wire (`/api/llm/g/v1/generate`,
+ * oh-my-pi `packages/catalog/src/wire/factory-droid.ts:83-84`). It is not
+ * chat-shaped, so routing a Gemini id onto `chat` posts to an endpoint that
+ * does not serve it. Adding it here is what lets the catalog name the right
+ * wire instead of lying about it.
+ */
+export const WIRE_FAMILIES = ["chat", "responses", "messages", "gemini"] as const;
 
 /** Wire protocol family selected by a provider route. */
 export type WireFamily = (typeof WIRE_FAMILIES)[number];

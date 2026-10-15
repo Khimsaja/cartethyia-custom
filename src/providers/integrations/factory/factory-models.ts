@@ -6,17 +6,20 @@
  * model id. Limits and the text/image split come from each seed row there, not
  * from a guess: Factory bills credits and publishes no prices, so `cost` stays null.
  *
- * Gemini ids are listed below on the `chat` wire family.
+ * Gemini ids are listed below on the `gemini` wire family.
  *
- * UNCONFIRMED — the research behind this catalog (rank #5, effort L) states
- * Factory serves Gemini on a separate `google-generate` wire that this gateway
- * does not implement, and that routing Gemini onto chat "posts to an endpoint
- * Factory does not serve". These rows do route Gemini onto chat. Exactly one of
- * that statement and these rows is stale; no capture in this repo settles which.
+ * Settled from the donor checkout (`Public/oh-my-pi`, commit c2cb79e4c2): the
+ * research was right and the old rows were wrong. Factory serves Gemini on a
+ * native generateContent wire at `/api/llm/g/v1/generate`
+ * (`packages/catalog/src/wire/factory-droid.ts:83-84`,
+ * `packages/ai/src/providers/factory-droid/gemini.ts:28`) with
+ * `x-api-provider: google` (`packages/ai/test/factory-droid-gemini.test.ts:25`).
+ * The rows used to say `chat`, which posted Gemini requests to an endpoint that
+ * does not serve them — so they failed at the endpoint, not at routing, which
+ * is why nothing caught it.
  *
- * If the research is right, these requests fail at the endpoint rather than
- * being rejected at routing. Confirm from a captured Factory Gemini request
- * before treating these rows as working.
+ * `garnet-07-15`, `gemini-3.1-pro-preview` and `gemini-3.8-flash` remain absent:
+ * the donor's catalog does not list them either.
  */
 import { defineModel } from "../../provider-model-definition";
 import type { ModelDefinition } from "../../provider-model-definition";
@@ -25,10 +28,20 @@ import type { WireFamily } from "../../../protocol/canonical-model";
 export const FACTORY_PROVIDER_ID = "factory" as const;
 
 /** The proxy path per wire family; see `factory.ts` for why they differ. */
+/**
+ * Default path for the `gemini` wire, exported because the adapter needs it as
+ * the fallback when a candidate row carries no `endpoint_path`.
+ */
+export const FACTORY_GEMINI_ENDPOINT_PATH = "/api/llm/g/v1/generate";
+
 const ENDPOINT_BY_WIRE: Readonly<Record<WireFamily, string>> = {
   chat: "/api/llm/o/v1/chat/completions",
   responses: "/api/llm/o/v1/responses",
   messages: "/api/llm/a/v1/messages",
+  // Factory's native Gemini wire (donor `packages/catalog/src/wire/
+  // factory-droid.ts:83-84`, and `factory-droid/gemini.ts:28`). A Gemini id
+  // routed onto `chat` posts to an endpoint that does not serve it.
+  gemini: FACTORY_GEMINI_ENDPOINT_PATH,
 };
 
 type CatalogRow = readonly [id: string, wire: WireFamily, ctx: number, out: number, vision: boolean, reasoning: boolean];
@@ -84,10 +97,10 @@ export const FACTORY_MODELS: readonly ModelDefinition[] = [
   ["gpt-5.3-codex", "chat", 272000, 128000, true, true] as const,
   ["gpt-5.3-codex-fast", "chat", 272000, 128000, true, true] as const,
   ["gpt-5.2", "chat", 272000, 128000, true, true] as const,
-  ["gemini-3.7-flash", "chat", 1000000, 65536, true, true] as const,
-  ["gemini-3.6-flash", "chat", 1000000, 65536, true, true] as const,
-  ["gemini-3.5-flash", "chat", 1000000, 65536, true, true] as const,
-  ["gemini-3-flash-preview", "chat", 1000000, 65536, true, true] as const,
+  ["gemini-3.7-flash", "gemini", 1000000, 65536, true, true] as const,
+  ["gemini-3.6-flash", "gemini", 1000000, 65536, true, true] as const,
+  ["gemini-3.5-flash", "gemini", 1000000, 65536, true, true] as const,
+  ["gemini-3-flash-preview", "gemini", 1000000, 65536, true, true] as const,
   ["inkling", "chat", 1007232, 32768, true, true] as const,
   ["mistral-large-4", "chat", 524288, 64000, true, true] as const,
   ["mistral-medium-3.5", "chat", 192000, 64000, true, true] as const,

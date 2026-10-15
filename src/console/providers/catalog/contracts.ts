@@ -66,6 +66,7 @@ const VALID_WIRE_FAMILIES: Record<WireFamily, true> = {
   chat: true,
   responses: true,
   messages: true,
+  gemini: true,
 };
 
 export function isWireFamily(value: unknown): value is WireFamily {
