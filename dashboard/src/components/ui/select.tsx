@@ -39,6 +39,31 @@ const SIZE_HEIGHT_CLASS: Record<NonNullable<SelectProps["size"]>, string> = {
   lg: "h-22",
 };
 
+/**
+ * The value handed to Radix, with its reserved empty string translated away.
+ *
+ * Radix treats `""` as "nothing selected" — `Select.Value` falls back to its
+ * placeholder for it, exactly as it does for `undefined`. A controlled `""`
+ * therefore renders "Select…" even when the caller's state names a real
+ * selection. Exported so the translation is pinned without a DOM: mounting
+ * Radix and asserting on what the trigger paints is the only other way to see
+ * it, and `dashboard/test` has no mount helper yet.
+ */
+export function radixRootValue(value: string): string | undefined {
+  return value === "" ? undefined : value;
+}
+
+/**
+ * Whether an emission from Radix is a real selection the caller should store.
+ *
+ * Radix can emit `""`; storing it puts the caller's state on the same dead
+ * value the trigger renders as "Select…", after which the field looks reset no
+ * matter what was picked. Refusing it keeps the last real selection.
+ */
+export function isSelectableValue(next: string): boolean {
+  return next !== "";
+}
+
 export function Select({
   value,
   onValueChange,
@@ -53,12 +78,16 @@ export function Select({
   size = "md",
   error,
 }: SelectProps): ReactNode {
-  const handler = onValueChange ?? (() => {});
+  const rootValue = radixRootValue(value);
+  const handler = (next: string): void => {
+    if (!isSelectableValue(next)) return;
+    onValueChange?.(next);
+  };
   const selectedLabel = options.find((option) => option.value === value)?.label;
 
 
   const trigger = (
-    <RadixSelect.Root value={value} onValueChange={handler} disabled={disabled}>
+    <RadixSelect.Root value={rootValue} onValueChange={handler} disabled={disabled}>
       <RadixSelect.Trigger
         id={id}
         aria-label={ariaLabelProp ?? label}
