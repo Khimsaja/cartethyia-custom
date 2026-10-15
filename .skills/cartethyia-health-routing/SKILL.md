@@ -30,6 +30,24 @@ Before changing a status or timeout, trace every reader and branch that uses it.
     Non-recoverable `auth_invalidated` failures can instead disable the account
     without a timed cooldown.
   - **soft** — stays eligible but is ordered after every healthy sibling.
+- A **slow lane** (`lane: "slow"`, Claude first-party OAuth) is orthogonal to
+  cooldown, never a member of `HARD_COOLDOWN_CATEGORIES`. The account still
+  serves on spare capacity via `anthropic-usage-limit: slow`, so it stays
+  **eligible** with reason `slow` and merely orders behind fresh siblings
+  (fresh → slow → cooling → saturated). Excluding it would park a serving
+  credential, and an all-slow pool must still dial: `healthyCount` counts
+  `slow` as servable, so it must never answer 429 while capacity sits idle.
+  - The ordering branch sits **after** the usage-floor gate. "Orthogonal"
+    means it adds no exclusion, not that it overrides one — an account below
+    its floor has no spare capacity for the lane to spend.
+  - A slow-lane **capacity wait** (429 `slot_busy`, or 529 /
+    `overloaded_error`, while the slow header was sent) retries the *same*
+    account after the server-stated interval, jittered and bounded by the
+    server's max-wait and the request deadline, with leases released during the
+    wait. It is not a failure: it records no health and writes no cooldown.
+    Terminal lane ends (`weekly_limit`, `budget_exhausted`, `off`,
+    `ineligible`, max-wait exceeded) are the only slow-lane events that mutate
+    health — as `quota_exhausted` at the stated reset.
 - `model_cooldown` is a hard exclusion per (account, model).
 - If every candidate is excluded, `plan()` answers **429
   `accounts_rate_limited`** when an exclusion reason is `cooldown_hard` or

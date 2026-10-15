@@ -161,6 +161,21 @@ an operator who turned proxying back on keeps it on.
   emission.
 - Pool capabilities and pricing are claims about every member, not one member.
 - Catalog presence is not availability; use an authorized real probe.
+- `WIRE_FAMILIES` (`src/protocol/canonical-model.ts`) is shared canonical
+  vocabulary: `chat`, `responses`, `messages`, `gemini`. Adding a family is a
+  contract change — the console's Elysia body schema and compatibility
+  validator project the same tuple, and `wire_family` is a **persisted enum**,
+  so it needs a forward migration in *both* `migrations/full-postgres/` and
+  `migrations/lite-sqlite3/` (same filename, or
+  `test/persistence/sqlite-baseline.test.ts` fails the parity check).
+  - `gemini` is Factory's native generateContent wire
+    (`/api/llm/g/v1/generate`, `x-api-provider: google`). It is **not**
+    chat-shaped: cataloguing a Gemini id as `chat` posts it to an endpoint that
+    does not serve it, which fails at the endpoint rather than at routing —
+    so nothing local catches it.
+  - Wire family and `SourceSurface` are **not** the same vocabulary (`gemini`
+    is a wire with no surface of its own; `completion` is a surface with no
+    wire). Never assign one to the other without an explicit mapping.
 
 ## Image generation
 

@@ -50,6 +50,31 @@ Entry point for repo work. Most tasks belong to a focused skill — pick it firs
 A workaround is fine only as a named temporary boundary with a removal
 condition.
 
+### "Built" is not "wired"
+
+A helper that nothing calls has zero runtime effect. Before reporting a
+behavior change as done, confirm something on the dispatch path actually
+invokes it — `grep` the call site, not just the definition. A unit test over
+the helper in isolation passes either way and proves nothing about wiring.
+
+The symmetric trap: wiring a *retry* helper unconditionally can double every
+request's upstream cost. Pin the "does NOT fire on the happy path" case
+explicitly (e.g. assert the fetch count is exactly 1 for a healthy response),
+because that regression is invisible in tests that only exercise failures.
+
+### Read the reference before declaring something unknowable
+
+If a comparison or research doc cites a donor checkout by path, that path is
+the first place to look — not `node_modules`, not a filesystem-wide `find`.
+Several items here were recorded as "blocked, undocumented" when the answer
+sat in the donor named in the doc's own header. "Not in this repo" is not
+"unknown".
+
+And a guess that compiles can still be wrong on the wire. Where a wire shape
+is unconfirmed, prefer an unwired, tested seam over a plausible invention:
+an invented request field is a 400 on a production path, which is worse than
+a missing feature.
+
 ## Cutover
 
 Rename, move, new feature, or contract change:
