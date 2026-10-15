@@ -9,7 +9,7 @@ import { gatewayErrorFromStreamError } from "../stream-error-frames";
 import { mergeResponsesUsage } from "./responses";
 import { usageFromProvider, readReasoningText } from "../../providers/provider-usage";
 import { createToolEmitLedger } from "../tool-identity";
-import { MimoThinkSplitter } from "../../providers/integrations/xiaomi-mimo/think-stream";
+import { MimoThinkSplitter, stripThinkingTags } from "../../providers/integrations/xiaomi-mimo/think-stream";
 import { parseDsmlToolCalls } from "./dsml";
 
 export function mapChatStopReason(
@@ -43,7 +43,13 @@ export function parseChatResponseToEvents(
   const first = choices[0] as Record<string, unknown> | undefined;
   const message = first?.["message"] as Record<string, unknown> | undefined;
   if (message) {
-    const reasoning = readReasoningText(message);
+    const reasoningRaw = readReasoningText(message);
+    // hy4-preview-f (and other buddy reasoning models) sometimes wraps its own
+    // reasoning in `<think>…</think>` inside `reasoning_content`, which then
+    // reaches the client as literal tag bytes. The field itself is the stream
+    // for reasoning here, so the tags cannot carry structure — strip them.
+    const reasoning =
+      typeof reasoningRaw === "string" ? stripThinkingTags(reasoningRaw) : reasoningRaw;
     if (typeof reasoning === "string" && reasoning.length > 0) {
       events.push({
         type: "content_delta",
@@ -262,7 +268,13 @@ export async function* decodeChatSseStream(
             }
           }
         }
-        const reasoningText = delta ? readReasoningText(delta) : undefined;
+        const reasoningRaw = delta ? readReasoningText(delta) : undefined;
+        // Strip stray `<think>` tags the upstream double-wrapped inside its own
+        // reasoning stream (buddy's hy4-preview-f leaks them per-delta). Done
+        // per delta rather than once at the end because an open-ended tag that
+        // spans multiple deltas is a splitter job, not this one.
+        const reasoningText =
+          typeof reasoningRaw === "string" ? stripThinkingTags(reasoningRaw) : reasoningRaw;
         if (typeof reasoningText === "string" && reasoningText.length > 0) {
           yield {
             type: "content_delta",
