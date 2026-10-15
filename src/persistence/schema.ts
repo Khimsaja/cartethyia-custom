@@ -330,6 +330,10 @@ export const models = pgTable(
       table.endpointPath,
     ),
     index("models_provider_enabled_idx").on(table.providerId, table.enabled),
+    // Bare-id lookups, with no provider named: see migration
+    // `0003_add_models_model_id_index`. Without it those seq-scan this table,
+    // which carries one row per provider x model x route.
+    index("models_model_id_idx").on(table.modelId),
   ],
 );
 

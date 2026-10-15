@@ -728,8 +728,18 @@ export async function recordAccountFailure(
   if (!classification.mutatesAccount) return classification;
 
   const persist = async (client: CartethyiaDatabase): Promise<AccountErrorClassification | null> => {
+    // Projected, not a bare `select()`: this runs on *every* attempt outcome,
+    // and a full row drags `credential_ciphertext` (the largest thing stored
+    // per account) and `auth_state` over the wire to read a status and a
+    // counter. `RouteCatalogRepository` already projects for the same reason.
     const accountRows = await client
-      .select()
+      .select({
+        status: providerAccounts.status,
+        staticToken: providerAccounts.staticToken,
+        consecutiveFailures: providerAccounts.consecutiveFailures,
+        modelCooldowns: providerAccounts.modelCooldowns,
+        cooldownUntil: providerAccounts.cooldownUntil,
+      })
       .from(providerAccounts)
       .where(eq(providerAccounts.id, accountId))
       .limit(1);
@@ -894,8 +904,15 @@ export async function recordAccountSuccess(
   accountId: string,
 ): Promise<boolean> {
   const mutate = async (client: CartethyiaDatabase): Promise<boolean> => {
+    // `recordAccountSuccess` runs on every successful dispatch, and for a
+    // healthy account `hadFailures` is false — the row was fetched purely to
+    // decide nothing. Projected so that no-op path does not pull the
+    // credential ciphertext across the wire.
     const rows = await client
-      .select()
+      .select({
+        status: providerAccounts.status,
+        consecutiveFailures: providerAccounts.consecutiveFailures,
+      })
       .from(providerAccounts)
       .where(eq(providerAccounts.id, accountId))
       .limit(1);
