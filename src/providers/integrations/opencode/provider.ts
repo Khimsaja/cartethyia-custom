@@ -12,17 +12,24 @@ import { buildOpenCodeHeaders } from "./fingerprint";
  *
  * - `opencodeft` (OpenCode Free): unauthenticated public route — no
  *   `Authorization` header is ever sent, even if a credential were somehow
- *   configured. Serves the free-tier model set on the same `/zen/v1` base
- *   as Zen.
- * - `opencodezen` (OpenCode Zen): billed API-key route on `/zen/v1`.
+ *   configured. Serves the free-tier model set.
+ * - `opencodezen` (OpenCode Zen): billed API-key route.
  * - `opencodego` (OpenCode Go): billed API-key route on the separate
  *   `/zen/go/v1` base — a bundled, higher-tier model set.
+ *
+ * Free and Zen dispatch on `/inference/v1`, NOT `/zen/v1`. The catalog is the
+ * other way round: `/zen/v1/models` publishes the listing while
+ * `/inference/v1/models` answers 404. A replay that hit `/inference/v1` directly
+ * returned 200 while the gateway kept failing, because every model row carried
+ * an explicit `/zen/v1` endpoint — which outranks the per-provider wire-family
+ * table at dispatch.
  *
  * Free and Zen use the OpenCode desktop-client header fingerprint
  * (`x-opencode-*` correlation IDs, `user-agent: opencode`). Go is
  * intentionally API-key-only.
  */
-const ZEN_PATH_PREFIX = "/zen/v1";
+/** Dispatch base for the Free and Zen tiers. */
+const ZEN_PATH_PREFIX = "/inference/v1";
 const GO_PATH_PREFIX = "/zen/go/v1";
 
 /**
@@ -144,6 +151,12 @@ const FREE_AGENT_TOOLS: readonly { readonly name: string; readonly description: 
   { name: "write", description: "Write a file. Do not call unless the user explicitly asks for a file write." },
   { name: "execute", description: "Execute a command. Do not call unless the user explicitly asks to execute a command." },
 ];
+
+/**
+ * The agent-tool names the free tier expects, exported so tests assert against
+ * the same list the adapter sends instead of a copy that can drift.
+ */
+export const FREE_AGENT_TOOL_NAMES: readonly string[] = FREE_AGENT_TOOLS.map((tool) => tool.name);
 
 function ensureFreeAgentRequest(request: CanonicalRequest): CanonicalRequest {
   const present: Record<string, true> = {};

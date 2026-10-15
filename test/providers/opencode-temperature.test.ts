@@ -7,7 +7,10 @@
  * unchanged, and a model that is not restricted must not be touched.
  */
 import { describe, expect, test } from "bun:test";
-import { OPENCODE_FREE_SPEC } from "../../src/providers/integrations/opencode/provider";
+import {
+  FREE_AGENT_TOOL_NAMES,
+  OPENCODE_FREE_SPEC,
+} from "../../src/providers/integrations/opencode/provider";
 import type { CanonicalRequest } from "../../src/protocol/canonical-model";
 import { encodeWireRequest } from "../../src/protocol/registry";
 import type { ProviderDispatchTarget } from "../../src/providers/provider-contracts";
@@ -41,22 +44,22 @@ describe("OpenCode Free restricted temperature", () => {
     const payload = await encodeWireRequest("responses", prepared);
     OPENCODE_FREE_SPEC.prePayload?.(payload, prepared, candidate);
 
-    expect(prepared.stream).toBe(true);
-    expect(prepared.tools?.map((tool) => tool.name)).toEqual(["read", "bash"]);
-    expect(payload.tools).toEqual([
-      {
+    // The gate refuses stream:false on free models, so the wire body is forced
+    // to stream regardless of what the caller asked for. The client-visible
+    // contract is left alone, which is why prepared.stream stays false.
+    expect(payload.stream).toBe(true);
+    // The full agent set, not just two: the free-tier gate reads the set, and a
+    // five-tool subset still answered 403. Asserted against the source list so
+    // the two cannot drift apart.
+    expect(prepared.tools?.map((tool) => tool.name)).toEqual([...FREE_AGENT_TOOL_NAMES]);
+    expect(payload.tools).toEqual(
+      FREE_AGENT_TOOL_NAMES.map((name) => ({
         type: "function",
-        name: "read",
-        description: "Read a file. Do not call unless the user explicitly asks for a file read.",
+        name,
+        description: expect.any(String),
         parameters: { type: "object", properties: {}, required: [] },
-      },
-      {
-        type: "function",
-        name: "bash",
-        description: "Run a shell command. Do not call unless the user explicitly asks to run a command.",
-        parameters: { type: "object", properties: {}, required: [] },
-      },
-    ]);
+      })),
+    );
     expect(payload.store).toBe(false);
   });
 

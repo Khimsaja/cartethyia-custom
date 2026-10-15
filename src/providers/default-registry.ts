@@ -233,9 +233,12 @@ export const PROVIDER_CAPABILITIES = {
     // registry map is what discovery and probing read, so listing `messages`
     // here would resolve a probe onto a wire with no endpoint path and no
     // catalog row behind it.
+    // Dispatch base, not the catalog base: `/zen/v1/models` publishes the
+    // listing while `/inference/v1/models` answers 404, and a byte-exact replay
+    // against `/inference/v1` returned 200 where `/zen/v1` did not.
     endpointPathsByWireFamily: {
-      chat: "/zen/v1/chat/completions",
-      responses: "/zen/v1/responses",
+      chat: "/inference/v1/chat/completions",
+      responses: "/inference/v1/responses",
     },
     loadAdapter: async () => createApiKeyAdapter((await import("./integrations/opencode/provider")).OPENCODE_FREE_SPEC),
     loadModels: async () => (await import("./integrations/opencode/provider")).OPENCODE_FREE_MODELS,
@@ -252,8 +255,8 @@ export const PROVIDER_CAPABILITIES = {
   },
   opencodezen: {
     endpointPathsByWireFamily: {
-      chat: "/zen/v1/chat/completions",
-      responses: "/zen/v1/responses",
+      chat: "/inference/v1/chat/completions",
+      responses: "/inference/v1/responses",
     },
     loadAdapter: async () => createApiKeyAdapter((await import("./integrations/opencode/provider")).OPENCODE_ZEN_SPEC),
     loadModels: async () => (await import("./integrations/opencode/provider")).OPENCODE_ZEN_MODELS,
