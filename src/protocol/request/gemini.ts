@@ -15,6 +15,7 @@ import {
   type RewriteWalk,
 } from "../codecs";
 import { geminiThinkingOutputFloor } from "../../providers/provider-reasoning";
+import { base64DecodedByteLength, clampImage } from "../image-clamp";
 
 export function geminiModelUrl(base: string, model: string, action: string): string {
   return `${base}/models/${encodeURIComponent(model)}:${action}`;
@@ -165,6 +166,21 @@ function toGeminiPart(
       // Bytes inline: Gemini carries them as `inlineData`. The media type comes
       // from the data URL itself, because that is the caller's own declaration.
       if (split !== undefined) {
+        // Pre-send clamp: an oversized inline image poisons every retry and
+        // every later turn that replays this history, and the upstream rejects
+        // the whole request rather than the one block. Refused blocks become a
+        // visible placeholder so the model is not left answering a question
+        // whose attachment silently vanished.
+        const decision = clampImage({
+          bytes: base64DecodedByteLength(split.data),
+        });
+        if (decision.action === "reject") {
+          // Only the byte ceiling refuses a block. A `downscale` decision is
+          // passed through: this layer cannot re-encode, and sending the
+          // original beats losing the attachment — the upstream's own limit is
+          // what the clamp approximates.
+          return [{ text: "[image omitted: over the provider size limit]" }];
+        }
         return [{ inlineData: { mimeType: split.mediaType, data: split.data } }];
       }
       // A URL is a reference, so it stays a reference. `mimeType` is omitted
