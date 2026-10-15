@@ -6,6 +6,12 @@
  * the `anthropic-user-profile-id` header (which profile). We already sent the
  * beta only, so profile-scoped credentials could never be addressed.
  *
+ * The beta is DATED (`user-profiles-2026-09-04`, donor
+ * `packages/ai/src/providers/anthropic-user-profiles.ts:4`). This file first
+ * asserted the bare `user-profiles` because that was what the code sent — a
+ * beta Anthropic has never published, which `ensureAnthropicBeta` accepted
+ * silently because it takes any string.
+ *
  * The header is stamped from `extension:user_profile_id`, the same key the
  * Messages parse surface already reads and `protocol/request/messages.ts`
  * already forwards as the `user_profile_id` body field.
@@ -15,6 +21,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { ClaudeAdapter } from "../../src/providers/integrations/claude/claude";
+import { CLAUDE_USER_PROFILES_BETA } from "../../src/providers/integrations/claude/claude-user-profiles";
 import type { CanonicalRequest, GenerationControls } from "../../src/protocol/canonical-model";
 import type {
   ProviderDispatchContext,
@@ -118,25 +125,25 @@ describe("claude anthropic-user-profile-id", () => {
     // The beta unlocks profile scoping; the header names the profile. Both must
     // travel together — one without the other is unaddressable.
     const headers = await dispatchHeaders(PROFILE_ID);
-    expect(betaTokens(headers)).toContain("user-profiles");
+    expect(betaTokens(headers)).toContain(CLAUDE_USER_PROFILES_BETA);
   });
 
   test("sends neither header nor beta when no profile id is present", async () => {
     const headers = await dispatchHeaders(undefined);
     expect(headerValue(headers, "anthropic-user-profile-id")).toBeUndefined();
-    expect(betaTokens(headers)).not.toContain("user-profiles");
+    expect(betaTokens(headers)).not.toContain(CLAUDE_USER_PROFILES_BETA);
   });
 
   test("treats an empty profile id as absent", async () => {
     const headers = await dispatchHeaders("");
     expect(headerValue(headers, "anthropic-user-profile-id")).toBeUndefined();
-    expect(betaTokens(headers)).not.toContain("user-profiles");
+    expect(betaTokens(headers)).not.toContain(CLAUDE_USER_PROFILES_BETA);
   });
 
   test("ignores a non-string profile id", async () => {
     const headers = await dispatchHeaders(42);
     expect(headerValue(headers, "anthropic-user-profile-id")).toBeUndefined();
-    expect(betaTokens(headers)).not.toContain("user-profiles");
+    expect(betaTokens(headers)).not.toContain(CLAUDE_USER_PROFILES_BETA);
   });
 
   test("drops a profile id carrying a control character", async () => {
@@ -144,5 +151,13 @@ describe("claude anthropic-user-profile-id", () => {
     const headers = await dispatchHeaders("prof_abc\r\nX-Injected: 1");
     expect(headerValue(headers, "anthropic-user-profile-id")).toBeUndefined();
     expect(headerValue(headers, "X-Injected")).toBeUndefined();
+  });
+});
+
+describe("the profile beta is the dated one the donor publishes", () => {
+  test("pins the literal, so the constant cannot drift unnoticed", () => {
+    // A dated beta must match the donor exactly: an undated or wrongly-dated
+    // value is accepted by every layer and silently ignored upstream.
+    expect(CLAUDE_USER_PROFILES_BETA).toBe("user-profiles-2026-09-04");
   });
 });

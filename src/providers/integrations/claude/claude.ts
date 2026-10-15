@@ -27,6 +27,7 @@ import {
 import { buildClaudeHeaders, type ClaudeHeaderOptions } from "./claude-credentials";
 import { isRecord } from "../../../protocol/codecs";
 import { HEADER_CONTROL } from "../../../security/outbound-headers";
+import { CLAUDE_USER_PROFILES_BETA } from "./claude-user-profiles";
 import { resolvePromptCacheKey } from "../../operations/session-resolution";
 import { ensureAnthropicBeta, filterClaudeCustomHeaders } from "../shared/claude-messages";
 import {
@@ -41,6 +42,15 @@ import { canonicalToClaudeMessagesPayload } from "../../../protocol/request/mess
 import { applyParamQuirks } from "../../../transport/translation/quirks";
 import { CLAUDE_BILLING_HEADER_PREFIX, endpointUrl } from "../../../protocol/codecs";
 import { sendClaudeMessagesRequest } from "../../../protocol/upstream/send-claude-messages";
+import {
+  FALLBACK_CREDIT_BETA,
+  fallbackCreditRequestBody,
+  fallbackCreditTargetModel,
+  hashBody,
+  isFallbackCreditTokenRejection,
+  refusalCreditToken,
+  sharedFallbackCreditCache,
+} from "./fallback-credit";
 import type { ProviderDispatchTarget, ProviderAdapter, ProviderDispatchContext } from "../../provider-contracts";
 import { defineModel } from "../../provider-model-definition";
 import type { ModelDefinition } from "../../provider-model-definition";
@@ -229,7 +239,12 @@ export class ClaudeAdapter implements ProviderAdapter {
     // the capability without ever addressing a profile, so a profile-scoped
     // credential could not be selected.
     if (typeof profileId === "string" && profileId.length > 0) {
-      ensureAnthropicBeta(headers, "user-profiles");
+      // Dated, not bare: the donor sends `user-profiles-2026-09-04`
+      // (oh-my-pi `packages/ai/src/providers/anthropic-user-profiles.ts:4`).
+      // `ensureAnthropicBeta` takes any string, so the bare "user-profiles"
+      // this used to send passed every check while being a beta Anthropic has
+      // never published — an undocumented value the upstream ignores.
+      ensureAnthropicBeta(headers, CLAUDE_USER_PROFILES_BETA);
       if (!HEADER_CONTROL.test(profileId)) {
         headers["anthropic-user-profile-id"] = profileId;
       } else {
@@ -317,6 +332,26 @@ export class ClaudeAdapter implements ProviderAdapter {
     }
     const outboundBody =
       patchedBody === undefined ? requestBody : new TextDecoder().decode(patchedBody);
+    // Fallback-credit redemption: a previous refusal of *this exact body* may
+    // have left a token that buys one free replay. Keyed by the frozen body
+    // because the donor binds the token to the request that was refused
+    // (`anthropic.ts:3303`, `params: structuredClone(params)`).
+    const creditKey = hashBody(outboundBody);
+    const creditToken = sharedFallbackCreditCache.get(creditKey);
+    let creditSent = false;
+    let body = outboundBody;
+    if (creditToken !== undefined) {
+      const target = fallbackCreditTargetModel(request.provider_options);
+      const redemption = fallbackCreditRequestBody(outboundBody, creditToken, target);
+      if (redemption !== undefined) {
+        body = redemption;
+        creditSent = true;
+        // The donor guarantees the beta is present on every redemption
+        // (`anthropic.ts:2433-2435`, `:2782-2784`); on this side it is only
+        // on the agent profile (`claude-credentials.ts:124`), so add it here.
+        ensureAnthropicBeta(headers, FALLBACK_CREDIT_BETA);
+      }
+    }
     // Adopt-on-rejection: a stale pinned CLI version costs one rejected
     // request, not an outage. The shared helper parses the server-named
     // minimum and promotes it process-wide; a retry at the same version
@@ -335,9 +370,33 @@ export class ClaudeAdapter implements ProviderAdapter {
         isClaudeCodeOAuth,
       );
     try {
-      yield* sendOnce(headers, outboundBody);
+      yield* this.sendWithCreditCapture(
+        sendOnce,
+        headers,
+        body,
+        creditSent ? creditKey : undefined,
+      );
+      if (creditSent) {
+        // One-shot spend. The donor consumes the handle once a turn is served
+        // (`consumeActiveFallbackCreditRedemption`, `turn-recovery.ts:510-519`);
+        // leaving it here would replay a spent token on the next identical
+        // request and cost it the 400 round trip below.
+        sharedFallbackCreditCache.delete(creditKey);
+      }
       return;
     } catch (error: unknown) {
+      if (creditSent && isFallbackCreditTokenRejection(error)) {
+        // Donor `anthropic.ts:3469-3481`: the token is rejected, so forfeit it
+        // and retry the standard request once without it. A rebuilt body no
+        // longer matches the refused one, so the credit cannot ride along.
+        sharedFallbackCreditCache.delete(creditKey);
+        log.warn("claude: fallback credit token rejected, retrying without it", {
+          provider: "claude",
+          error: error instanceof Error ? error.message : String(error),
+        });
+        yield* sendOnce(headers, outboundBody);
+        return;
+      }
       const adopted = adoptRequiredVersion(
         { get: getClaudeCliVersion },
         adoptClaudeCliVersion,
@@ -387,6 +446,43 @@ export class ClaudeAdapter implements ProviderAdapter {
         retryHeaders,
         retryBody === undefined ? outboundBody : new TextDecoder().decode(retryBody),
       );
+    }
+  }
+
+  /**
+   * Sends once, passing every event through, and banks a refusal's credit token
+   * against the body that was refused.
+   *
+   * Donor rule (`anthropic.ts:3287-3309`): only a refusal carries a token, and
+   * the frozen body is the request that produced it (`params: structuredClone(params)`).
+   * On this side the refusal surfaces as a terminal event whose canonical
+   * `stop_reason` is `error` (`mapClaudeStopReason`, `response/messages.ts:32-34`)
+   * carrying the provider's `stop_details`.
+   *
+   * `captureKey` is omitted for a redemption send: the token is bound to the
+   * caller's own body, and a body carrying a spent token is never reproduced,
+   * so banking against it would only occupy a cache slot for five minutes.
+   */
+  private async *sendWithCreditCapture(
+    sendOnce: (
+      headers: Record<string, string>,
+      body: string,
+    ) => AsyncIterable<CanonicalEvent>,
+    headers: Record<string, string>,
+    body: string,
+    captureKey: string | undefined,
+  ): AsyncIterable<CanonicalEvent> {
+    for await (const event of sendOnce(headers, body)) {
+      if (captureKey !== undefined && event.type === "terminal" && event.stop_reason === "error") {
+        const token = refusalCreditToken(event.stop_details);
+        if (token !== undefined) {
+          sharedFallbackCreditCache.set(captureKey, token);
+          log.warn("claude: refusal carried a fallback credit, banked for replay", {
+            provider: "claude",
+          });
+        }
+      }
+      yield event;
     }
   }
 }
