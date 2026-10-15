@@ -57,9 +57,9 @@ documentation/
 
 Procedure and the layer maps live in `.skills/`, not here. Each skill owns one
 topic: `cartethyia-engineering` (invariants, taste, gates, and the backend map),
-`cartethyia-reverse-engineering` (tracing Cartethyia's internal behavior),
-`cartethyia-client-protocol-reverse-engineering` (static inspection of an
-external client), `cartethyia-trace-replay` (reproducing a failing request, and
+`cartethyia-reverse-engineering` (tracing Cartethyia's internal behavior, and
+static inspection of an external client), `cartethyia-trace-replay` (reproducing
+a failing request, and
 the protocol seam map), `cartethyia-schema-telemetry` (schema and migrations),
 `cartethyia-health-routing` (account and model health),
 `cartethyia-provider-catalog` (adding and authenticating a provider),

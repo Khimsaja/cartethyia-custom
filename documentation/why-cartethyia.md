@@ -115,8 +115,8 @@ The lesson worth keeping: when several fields are wrong at once, changing one
 at a time never flips the status. Capture a real request, then correct the whole
 shape. The repeatable method is in the
 [trace-replay skill](../.skills/cartethyia-trace-replay/SKILL.md); the
-`cartethyia-client-protocol-reverse-engineering` skill covers inspecting an
-external client.
+[reverse-engineering skill](../.skills/cartethyia-reverse-engineering/SKILL.md)
+covers inspecting an external client.
 
 ## Credit
 

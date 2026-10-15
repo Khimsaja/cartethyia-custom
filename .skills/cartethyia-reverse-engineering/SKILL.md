@@ -21,11 +21,7 @@ compatibility change.
 For a reproducible failing request, wire payload, provider response, or live
 dispatch, continue with
 [`cartethyia-trace-replay`](../cartethyia-trace-replay/SKILL.md). For a focused
-domain change, use the closest skill listed in `AGENTS.md`. For an external
-desktop client or user-designated installer, use
-[`cartethyia-client-protocol-reverse-engineering`](../cartethyia-client-protocol-reverse-engineering/SKILL.md)
-instead; do not treat external-client investigation as Cartethyia source
-tracing.
+domain change, use the closest skill listed in `AGENTS.md`.
 
 ## Procedure
 
@@ -77,8 +73,9 @@ Locate the current implementation and tests before drawing conclusions.
 ## A desktop client that behaves differently
 
 When the question is why something works in a desktop client but not here, the
-investigation belongs to
-[`cartethyia-client-protocol-reverse-engineering`](../cartethyia-client-protocol-reverse-engineering/SKILL.md).
+investigation leaves Cartethyia's own source for the client's bundle. Inspect it
+statically — never launch an installer or extracted executable to discover its
+behavior — and pin the exact installed build before trusting any public source.
 What this repo has learned from doing it:
 
 - Pin the installed build before trusting any public source. A nearby version

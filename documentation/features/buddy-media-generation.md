@@ -46,7 +46,8 @@ traces the status request to its transport call. Use an existing task ID for a
 bounded, authorized read-only probe where possible; do not submit a new
 generation just to discover the polling path without explicit authorization.
 Follow the procedure in
-[`cartethyia-client-protocol-reverse-engineering`](../../.skills/cartethyia-client-protocol-reverse-engineering/SKILL.md).
+[`cartethyia-reverse-engineering`](../../.skills/cartethyia-reverse-engineering/SKILL.md)
+under "A desktop client that behaves differently".
 
 ## Where to change what
 

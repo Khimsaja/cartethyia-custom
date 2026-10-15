@@ -140,7 +140,6 @@ every skill for every task. The committed skill source lives under `.skills/`.
 |---|---|
 | Repository conventions, verification, or a cross-cutting change | `.skills/cartethyia-engineering/SKILL.md` |
 | Reverse-engineer an undocumented behavior or reconstruct an internal flow | `.skills/cartethyia-reverse-engineering/SKILL.md` |
-| Inspect an external client/installer or map its provider protocol | `.skills/cartethyia-client-protocol-reverse-engineering/SKILL.md` |
 | Reproducing a failing request, payloads, or provider wire behavior | `.skills/cartethyia-trace-replay/SKILL.md` |
 | Schema, migrations, usage, or telemetry | `.skills/cartethyia-schema-telemetry/SKILL.md` |
 | Adding or authenticating a provider, catalog, or capabilities | `.skills/cartethyia-provider-catalog/SKILL.md` |
