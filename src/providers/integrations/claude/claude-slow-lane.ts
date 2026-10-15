@@ -25,6 +25,42 @@ export type ClaudeSlowStatus =
 /** Whether the account was offered entry into the slow lane. */
 export type ClaudeSlowOffer = "treatment" | "control";
 
+/**
+ * Classifies one observed lane status for the retry loop (design doc §5).
+ *
+ * Three-way, because the loop must do three different things:
+ * - `wait`: the account has no spare capacity *right now* but is still in the
+ *   lane, so the retry belongs on the SAME account after the server-stated
+ *   interval. It is not a failure and must record no health.
+ * - `terminal`: the lane itself ended (weekly/budget exhausted, switched off,
+ *   ineligible). Staying would spin, so this is the point where health is
+ *   written and the attempt fails over.
+ * - `served`: the lane answered or was not needed. Nothing to wait for.
+ */
+export type ClaudeSlowRetryClass = "wait" | "terminal" | "served";
+
+export function classifyClaudeSlowStatus(
+  status: ClaudeSlowStatus | undefined,
+): ClaudeSlowRetryClass {
+  switch (status) {
+    case "slot_busy":
+      return "wait";
+    case "weekly_limit":
+    case "budget_exhausted":
+    case "ineligible":
+    case "off":
+      return "terminal";
+    case "active":
+    case "not_needed":
+      return "served";
+    default:
+      // `unrecognized` and an absent status: the lane said nothing actionable.
+      // Treating an unknown as `wait` would spin on a status nobody reads;
+      // treating it as terminal would write health for a non-event.
+      return "served";
+  }
+}
+
 export interface ClaudeSlowSignal {
   offer?: ClaudeSlowOffer;
   status?: ClaudeSlowStatus;

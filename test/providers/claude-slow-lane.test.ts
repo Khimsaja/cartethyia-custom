@@ -9,6 +9,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   ClaudeSlowLanes,
+  classifyClaudeSlowStatus,
   parseClaudeSlowHeaders,
   type ClaudeSlowSignal,
   type ClaudeSlowStatus,
@@ -427,5 +428,39 @@ describe("G. ClaudeSlowLanes", () => {
   test("a fresh instance has no lanes — restart starts idle", () => {
     const lanes = new ClaudeSlowLanes();
     expect(lanes.size).toBe(0);
+  });
+});
+
+describe("classifyClaudeSlowStatus", () => {
+  test("slot_busy waits on the same account", () => {
+    expect(classifyClaudeSlowStatus("slot_busy")).toBe("wait");
+  });
+
+  test("lane-ending statuses are terminal", () => {
+    expect(classifyClaudeSlowStatus("weekly_limit")).toBe("terminal");
+    expect(classifyClaudeSlowStatus("budget_exhausted")).toBe("terminal");
+    expect(classifyClaudeSlowStatus("ineligible")).toBe("terminal");
+    expect(classifyClaudeSlowStatus("off")).toBe("terminal");
+  });
+
+  test("serving statuses record nothing", () => {
+    expect(classifyClaudeSlowStatus("active")).toBe("served");
+    expect(classifyClaudeSlowStatus("not_needed")).toBe("served");
+  });
+
+  test("an unrecognized or absent status is treated as served, never as a wait", () => {
+    // An unknown status that spun would hang the attempt; one that wrote
+    // health would record a failure for a non-event. Both are worse than
+    // letting the normal error path handle it.
+    expect(classifyClaudeSlowStatus("unrecognized")).toBe("served");
+    expect(classifyClaudeSlowStatus(undefined)).toBe("served");
+  });
+
+  test("only slot_busy waits — no other status does", () => {
+    const all: (ClaudeSlowStatus | undefined)[] = [
+      "active", "not_needed", "slot_busy", "weekly_limit",
+      "budget_exhausted", "ineligible", "off", "unrecognized", undefined,
+    ];
+    expect(all.filter((s) => classifyClaudeSlowStatus(s) === "wait")).toEqual(["slot_busy"]);
   });
 });
