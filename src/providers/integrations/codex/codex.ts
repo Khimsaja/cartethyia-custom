@@ -782,6 +782,14 @@ export function createCodexAdapter(
       // official client sends this key on every Responses request; relying on
       // an optional inbound cache hint leaves Model Lab sessions uncached.
       payload["prompt_cache_key"] = effectiveSessionId;
+      // The session key alone buys only the default retention. When the caller
+      // declares a retention via `codex_prompt_cache_retention`, thread it
+      // alongside the key (reference `prompt_cache_retention` passthrough);
+      // a backend that does not know the field ignores it.
+      const retention = request.provider_options?.["codex_prompt_cache_retention"];
+      if (retention === "in_memory" || retention === "24h") {
+        payload["prompt_cache_retention"] = retention;
+      }
       payload["client_metadata"] = clientMetadata;
 
       const { res, release } = await postUpstreamJson(

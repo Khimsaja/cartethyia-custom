@@ -48,6 +48,7 @@ import {
 import type { ImageGenerationOutcome, ProviderDispatchTarget, ProviderAdapter, ProviderDispatchContext, WebSearchOutcome, WebSearchResult } from "../../provider-contracts";
 import { providerBaseUrl } from "../../provider-metadata";
 import { abortGatewayError, createUpstreamDeadlineLifecycle } from "../../operations/upstream-deadline";
+import { log } from "../../../observability/logger";
 
 export const ANTIGRAVITY_PROVIDER_ID = "antigravity" as const;
 export const ANTIGRAVITY_BASE_URL = providerBaseUrl("antigravity");
@@ -753,6 +754,21 @@ export function antigravityThinkingBudget(modelId: string): number | undefined {
 const ANTIGRAVITY_SYSTEM_INSTRUCTION =
   "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**";
 
+/**
+ * Restatement appended as a trailing user turn when a Gemini route carries a
+ * forced tool choice. The backend drops `toolConfig` on Gemini routes (answers
+ * in text under `mode: "ANY"`, still emits calls under `"NONE"`), so without
+ * the restatement `tool_choice=required` silently degrades to free text.
+ *
+ * UNCONFIRMED: the reference ships its directive text from an external file
+ * (`google-antigravity-forced-tool.md`, a 1-line "TOOL-ONLY TURN" stub at the
+ * compared commit) — no captured body shows the real wording. This constant is
+ * the explicit seam to confirm from live replay; the log line in
+ * `buildAntigravityEnvelope` marks every send for that comparison.
+ */
+const ANTIGRAVITY_FORCED_TOOL_DIRECTIVE =
+  "TOOL-ONLY TURN. Call exactly one available tool now. Do not emit any text before or after the call.";
+
 function sessionStateKey(routeIdentity: string, wireModelId: string): string {
   return `${sessionIdentityDigest(routeIdentity)}:antigravity:${wireModelId}`;
 }
@@ -815,8 +831,8 @@ function buildAntigravityEnvelope(
     ...(state.lastExecutionId ? { last_execution_id: state.lastExecutionId } : {}),
     trajectory_id: state.trajectoryId,
     last_step_index: String(step - 1),
-    used_claude: String(logicalModelId.includes("claude")),
-    used_claude_conservative: String(logicalModelId.includes("claude")),
+    used_claude: profile?.usageLabel ?? String(logicalModelId.includes("claude")),
+    used_claude_conservative: profile?.usageLabel ?? String(logicalModelId.includes("claude")),
   };
   if (profile?.modelEnum) {
     labels["model_enum"] = profile.modelEnum;
@@ -825,6 +841,27 @@ function buildAntigravityEnvelope(
   const existingContents = Array.isArray(geminiPayload["contents"])
     ? (geminiPayload["contents"] as Record<string, unknown>[])
     : [];
+  const isClaudeRoute = logicalModelId.toLowerCase().includes("claude");
+  // Forced choice on Gemini routes: the backend drops `toolConfig` here, so a
+  // canonical `tool_choice=required` with no declared change is restated as a
+  // trailing user directive (reference behavior). Claude routes implement
+  // VALIDATED natively and are left untouched.
+  if (
+    !isClaudeRoute &&
+    (request.tool_choice === "required" ||
+      (typeof request.tool_choice === "object" &&
+        request.tool_choice !== null &&
+        request.tool_choice.type !== undefined)) &&
+    existingContents.length > 0
+  ) {
+    existingContents.push({
+      role: "user",
+      parts: [{ text: ANTIGRAVITY_FORCED_TOOL_DIRECTIVE }],
+    });
+    log.info("antigravity: forced tool choice restated for Gemini route", {
+      model: wireModelId,
+    });
+  }
   const injectIdentity =
     logicalModelId.toLowerCase().includes("claude") || logicalModelId.toLowerCase().includes("gemini-3");
   // Identity rides the dedicated systemInstruction field (captured shape),
@@ -867,6 +904,10 @@ function buildAntigravityEnvelope(
   if (logicalModelId.includes("claude") && !isRecord(requestPayload["toolConfig"])) {
     requestPayload["toolConfig"] = { functionCallingConfig: { mode: "VALIDATED" } };
   }
+  // Gemini default is left unset: the shared Gemini builder owns toolConfig
+  // on this path, and stamping VALIDATED here would overwrite a caller choice
+  // the envelope cannot see. Only the forced-choice restatement above runs on
+  // the Gemini path.
   applySkipThoughtSignatureBypass(requestPayload, logicalModelId);
 
   const envelope: Record<string, unknown> = {

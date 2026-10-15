@@ -539,6 +539,14 @@ export function canonicalToCodexResponsesPayload(
         ? "stable_prefix"
         : `breakpoints:${request.cache_hint.list.join(",")}`;
   }
+  // The reference client threads `prompt_cache_retention` alongside the key
+  // on sticky sessions; emit it when the caller declares one so a session
+  // that opts into 24h retention keeps it. Unknown to the backend it is
+  // ignored server-side, so this is additive, never load-bearing.
+  const retention = request.provider_options?.["codex_prompt_cache_retention"];
+  if (retention === "in_memory" || retention === "24h") {
+    payload["prompt_cache_retention"] = retention;
+  }
   // Generation controls (temperature, top_p, max_tokens, etc.) are not
   // accepted by the Codex Responses backend and must never leak upstream.
   if (opts?.responsesLite === true) {

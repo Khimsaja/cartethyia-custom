@@ -33,7 +33,8 @@ import {
   createClaudeBillingText,
   patchClaudeCchBody,
 } from "./claude-cch";
-import { getClaudeCliVersion, getClaudeSdkVersion } from "../../operations/client-versions";
+import { getClaudeCliVersion, adoptClaudeCliVersion, getClaudeSdkVersion } from "../../operations/client-versions";
+import { adoptRequiredVersion } from "../../operations/client-version-resolver";
 import { getOrCreateInstallId } from "../shared/install-id";
 import { canonicalToClaudeMessagesPayload } from "../../../protocol/request/messages";
 import { applyParamQuirks } from "../../../transport/translation/quirks";
@@ -300,15 +301,77 @@ export class ClaudeAdapter implements ProviderAdapter {
     }
     const outboundBody =
       patchedBody === undefined ? requestBody : new TextDecoder().decode(patchedBody);
-    yield* sendClaudeMessagesRequest(
-      url,
-      headers,
-      outboundBody,
-      context,
-      request,
-      this.fetchFn,
-      isClaudeCodeOAuth,
-    );
+    // Adopt-on-rejection: a stale pinned CLI version costs one rejected
+    // request, not an outage. The shared helper parses the server-named
+    // minimum and promotes it process-wide; a retry at the same version
+    // cannot loop because the helper only reports a forward move.
+    const sendOnce = (
+      headers: Record<string, string>,
+      body: string,
+    ): AsyncIterable<CanonicalEvent> =>
+      sendClaudeMessagesRequest(
+        url,
+        headers,
+        body,
+        context,
+        request,
+        this.fetchFn,
+        isClaudeCodeOAuth,
+      );
+    try {
+      yield* sendOnce(headers, outboundBody);
+      return;
+    } catch (error: unknown) {
+      const adopted = adoptRequiredVersion(
+        { get: getClaudeCliVersion },
+        adoptClaudeCliVersion,
+        error,
+        {
+          marker: "claude_code_version_too_old",
+          pattern: /version (\d+\.\d+\.\d+) or newer is required/i,
+        },
+      );
+      if (adopted === null) throw error;
+      const retryCliVersion = getClaudeCliVersion();
+      log.warn("claude: adopted server-named CLI version, retrying once", {
+        provider: "claude",
+        version: retryCliVersion,
+      });
+      const retryBilling = {
+        type: "text",
+        text: createClaudeBillingText(firstUserText(request), retryCliVersion),
+      };
+      const parsedBody = JSON.parse(requestBody) as Record<string, unknown>;
+      const existingSystem = Array.isArray(parsedBody["system"])
+        ? (parsedBody["system"] as unknown[])
+        : [];
+      const retryBody = isClaudeCodeOAuth
+        ? patchClaudeCchBody(
+            JSON.stringify({
+              ...parsedBody,
+              system: [
+                retryBilling,
+                ...existingSystem.filter(
+                  (block) =>
+                    !(
+                      isRecord(block) &&
+                      typeof block["text"] === "string" &&
+                      (block["text"] as string).startsWith(CLAUDE_BILLING_HEADER_PREFIX)
+                    ),
+                ),
+              ],
+            }),
+          )
+        : undefined;
+      const retryHeaders: Record<string, string> = {
+        ...headers,
+        "User-Agent": `claude-cli/${retryCliVersion} (external, cli)`,
+      };
+      yield* sendOnce(
+        retryHeaders,
+        retryBody === undefined ? outboundBody : new TextDecoder().decode(retryBody),
+      );
+    }
   }
 }
 
