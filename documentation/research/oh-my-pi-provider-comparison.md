@@ -279,7 +279,7 @@ Ranked by impact first, effort second. Effort S/M/L. Legal-risk items need a leg
 
 | Rank | Item | Provider | Effort | Impact | Status |
 |---|---|---|---|---|---|
-| 1 | Slow-lane support (`anthropic-usage-limit: slow` + parse + retry) | Claude | M | High — serves exhausted subscriptions instead of failing them | Partial — §1 parse, §3 registry, §4 routing all done; §5 same-account retry loop not wired (classifier is ready) |
+| 1 | Slow-lane support (`anthropic-usage-limit: slow` + parse + retry) | Claude | M | High — serves exhausted subscriptions instead of failing them | Done — §1 parse, §3 registry, §4 routing, §5 capacity wait all wired. Default wait lowered from the donor's 20s to 2s for gateway deadlines |
 | 2 | Fallback-credit redemption (freeze + 5-min replay) | Claude | M | High — free retry on refusals | Done — token is **top-level** `body.fallback_credit_token` (donor `anthropic.ts:1640`), NOT in `stop_details`; 400 naming the token drops it and retries |
 | 3 | Daybreak `access_programs.cyber` + drop-on-rejection replay | Codex | S | High — fewer refusals for eligible accounts | Done — gated behind `provider_options`, eligibility signal unconfirmed |
 | 4 | Empty-stream replay + pre-start failover | Antigravity | M | High — 200-with-zero-SSE fails routable requests today | Done — helper + wired into the Antigravity stream leg |
