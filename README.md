@@ -20,46 +20,24 @@ cartethyia setup
 carte
 ```
 
-Setup asks for a database mode:
-
-- **Lite** — embedded SQLite. No database server. Fine for one instance.
-- **Full** — PostgreSQL you already run. Redis is optional until more than one
-process has to coordinate.
-
-`carte` starts the gateway in the system tray and returns the terminal to you.
-Closing that terminal does not stop it. `cartethyia start` stays in the
-foreground. Config and data live in your OS user directories, not inside the
-npm package.
-
-The tray shows the running version and the latest npm release, and can install
-an update. **Open Console** opens `http://127.0.0.1:<port>/console`. **Reset
-password** and **Backup & Restore** open Console Settings. **Exit** stops the
-gateway. This does not install a login/startup service.
-
-To remove it: `npm uninstall --global cartethyia`.
+Full install guide, modes, Docker, VPS, systemd, and the one-shot script:
+[getting started](documentation/getting-started.md). To remove it:
+`npm uninstall --global cartethyia`.
 
 ## <img src="https://api.iconify.design/lucide/sparkles.svg?color=%238b949e" width="20" height="20" alt=""> What it actually does
 
+- **Speaks the provider's own dialect.** Per-provider adapters reproduce the
+  client identity, headers, and billing signals the provider expects.
+- **Routing looks at health.** Model, alias, combo, capability, account state,
+  cooldown, quota, and whether the provider is up — one decision, one plan.
+- **A retry still counts.** Failover does not skip admission, usage, quota, or
+  telemetry; failures stay distinct instead of collapsing to one 502.
+- **You can see the whole hop.** Bounded, redacted capture of what the client
+  sent, what Cartethyia translated, what the provider returned, and what the
+  client got.
 
-|                                       |                                                                                                                                                  |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| <img src="https://api.iconify.design/lucide/languages.svg?color=%238b949e" width="16" height="16" alt=""> **Speaks the provider's own dialect** | Adapters reproduce the client identity, headers, and billing signals a provider expects, instead of sending every request as a generic API call. |
-| <img src="https://api.iconify.design/lucide/key-round.svg?color=%238b949e" width="16" height="16" alt=""> **Keeps credentials in their lane** | OAuth and client-specific behavior stays on the matching adapter. Ordinary API-key traffic is not silently treated as an OAuth client. |
-| <img src="https://api.iconify.design/lucide/refresh-cw.svg?color=%238b949e" width="16" height="16" alt=""> **Client versions stay current** | Version metadata is refreshed in the background and written into provider headers, instead of pinning an old build forever. |
-| <img src="https://api.iconify.design/lucide/activity.svg?color=%238b949e" width="16" height="16" alt=""> **Routing looks at health** | Model, alias, combo, capability, account state, cooldown, quota, and whether a provider is up. |
-| <img src="https://api.iconify.design/lucide/repeat.svg?color=%238b949e" width="16" height="16" alt=""> **A retry still counts** | Failover does not skip admission, usage, quota, or telemetry. |
-| <img src="https://api.iconify.design/lucide/eye.svg?color=%238b949e" width="16" height="16" alt=""> **You can see the whole hop** | Client request, what we translated, what the provider returned, what the client got. Bounded and redacted. |
-| <img src="https://api.iconify.design/lucide/triangle-alert.svg?color=%238b949e" width="16" height="16" alt=""> **Failures stay distinct** | Disabled, exhausted, cooling, missing model, and a dead pool are different answers. They are not all "502". |
-| <img src="https://api.iconify.design/lucide/globe.svg?color=%238b949e" width="16" height="16" alt=""> **Signed-in web sessions** | Some providers run on a pasted signed-in session and a static catalog. Those sessions are not API keys and they are not refresh grants. |
-| <img src="https://api.iconify.design/lucide/database.svg?color=%238b949e" width="16" height="16" alt=""> **Move up without rebuilding** | Start on SQLite. Move to PostgreSQL with a JSON backup. Add Redis only when several processes have to share state. |
-
-
-Most proxies stop at "send this somewhere else". The tables above exist so you
-can answer, without reading upstream logs: what did the client send, what did
-Cartethyia translate, which account and pool were picked, what did the provider
-return, and what did the client finally get?
-
-**Why it exists:** [Why Cartethyia](documentation/why-cartethyia.md) — the problem it was built for, how it differs from plain forwarders, and the custom-built capabilities shaped by operating it. It also covers the Bun + Elysia choice over Next.js and the reverse-engineering method behind the provider gates.
+Full list, with the custom-built capabilities and how they differ from plain
+forwarders: [Why Cartethyia](documentation/why-cartethyia.md).
 
 ## <img src="https://api.iconify.design/lucide/route.svg?color=%238b949e" width="20" height="20" alt=""> Routes
 

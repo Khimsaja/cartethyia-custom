@@ -13,8 +13,9 @@ Start here if you are installing or running Cartethyia:
   reasoning rather than the mechanics.
 - [Getting started](getting-started.md) — requirements, database mode, `bun setup`,
   encryption key, starting the stack, Docker, migrations, and verification.
-- [Installation](installation.md) — local / VPS / Docker, Lite and Full modes,
-  one-shot install script, systemd, auto-deploy, endpoints, backup.
+- [Installation](installation.md) — VPS/systemd, reverse-proxy wiring, and
+  the one-shot install script. Local, Docker, and mode choice are in
+  [getting started](getting-started.md).
 
 How the system is built — [reference/](reference/README.md), one page per layer:
 
@@ -48,7 +49,7 @@ manuals; add a page under `features/` instead.
 documentation/
 ├── agent-context.md      repository onboarding and verified subsystem map
 ├── getting-started.md    installing and running it
-├── installation.md       install variants, one-shot script, Docker
+├── installation.md       VPS/systemd, reverse proxy, one-shot script
 ├── archive/              superseded investigations, kept for the record
 ├── reference/            how it is built, one page per layer
 └── features/             one page per feature

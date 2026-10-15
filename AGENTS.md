@@ -170,20 +170,10 @@ trivial task; spend more time when the change has a wider blast radius.
 
 ## Testing and verification
 
-- Avoid over-testing. Start with the smallest check that can provide useful
-  confidence; do not run the full suite by default.
-- Run the relevant typecheck, focused test, build, or reproduction based on the
-  files and behavior changed. Use the scripts in `package.json`.
-- Typechecking confirms types, not runtime behavior. For a behavioral change,
-  run a focused test or exercise the relevant boundary when practical.
-- For UI claims about layout, styles, or interactions, use `agent-browser` when
-  available and report browser verification separately from static checks.
-- If the ideal check is unavailable or disproportionate, use a reasonable
-  alternative and state the limitation. Do not imply an unrun check passed.
-- Schema changes should be checked against an isolated database when practical.
-  Do not use a developer's normal database or production data as a test fixture.
-- Report the commands actually run and their outcomes. Keep the report concise
-  for a small change; include more detail when a check failed or was skipped.
+The gate list, the smallest-useful-check rule, boundary verification, and
+reporting expectations live in
+[`.skills/cartethyia-engineering/references/verification.md`](.skills/cartethyia-engineering/references/verification.md);
+follow it instead of restating the rules here.
 
 ## Documentation
 

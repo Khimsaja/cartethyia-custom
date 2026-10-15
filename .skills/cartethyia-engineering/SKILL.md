@@ -64,15 +64,10 @@ proof, not grep — see `references/verification.md`.
 
 ## Boundaries
 
-- `src/` is the production backend. `dashboard/` stays browser-safe: no Elysia,
-  DB, filesystem, secret, or Node-only imports.
-- `scripts/` is grouped by purpose (`commands/`, `build/`, `dev/`, `generate/`,
-  `internal/`). Names, comments, and error types follow `references/taste.md`.
-- Never hand-edit generated output; change its source or generator.
-- Typecheck and build must not need Buf, network, or external generators.
-- Preserve security boundaries and intentional provider wire bytes.
-- Never commit, push, deploy, alter production data, or discard unrelated
-  working-tree changes unless explicitly asked.
+Repo invariants, deadness rules, and the browser-safe boundary live in
+`references/guards.md` (consistent with how `references/verification.md`
+owns the gates). Read it when a change touches `src/` vs `dashboard/`,
+generated output, or security boundaries.
 
 ## Completing a change
 
