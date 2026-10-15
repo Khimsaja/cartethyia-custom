@@ -51,6 +51,8 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return rateLimitSleep(ms, signal);
 }
 import type { ImageGenerationOutcome, ProviderDispatchTarget, ProviderAdapter, ProviderDispatchContext, ResolvedCredential, WebSearchOutcome, WebSearchResult } from "../../provider-contracts";
+import type { FetchLike } from "../../quota/quota-contracts";
+import { boundedUpstreamArray, boundedUpstreamNumber, sanitizeUpstreamLabel } from "../../provider-sanitize";
 import {
   createCodexIdentity,
   getCodexAccountId,
@@ -367,6 +369,144 @@ function authHeadersForCodex(
   }
   const token = new TextDecoder().decode(credential.secret);
   return { authorization: `Bearer ${token}` };
+}
+
+/**
+ * Path of the Codex model registry, relative to the ChatGPT backend root.
+ *
+ * Donor `packages/catalog/src/discovery/codex.ts:9` tries `/codex/models` first
+ * and `/models` second. Only the first path is used here: it is the one the
+ * donor's own tests assert against
+ * (`packages/coding-agent/test/model-discovery.test.ts:568,598`), and the
+ * fallback exists upstream to accommodate relay base URLs this adapter does not
+ * support.
+ */
+const CODEX_MODELS_PATH = "/backend-api/codex/models";
+
+/**
+ * Shapes a client version may take for the `client_version` query parameter.
+ *
+ * The backend version-gates model availability on this value
+ * (`packages/catalog/src/wire/codex.ts:28-32`), and the donor refuses to send
+ * anything that is not `^\d+\.\d+\.\d+$`
+ * (`packages/catalog/src/discovery/codex.ts:216-225`). Our pin is a discovered
+ * npm version, so a malformed discovery result must not reach the query string:
+ * a rejected URL would silently falsify the whole roster.
+ */
+const CODEX_CLIENT_VERSION_PATTERN = /^\d+\.\d+\.\d+$/;
+
+/**
+ * Builds the Codex model-registry URL, version-gated by our pinned client
+ * version.
+ *
+ * The backend gates model availability against `client_version` on `/models`
+ * independently of a model's own `minimal_client_version`
+ * (`packages/catalog/src/wire/codex.ts:28-32`), so omitting the parameter asks
+ * for a roster the backend did not gate — which is why a SKU can appear in
+ * discovery and then fail at dispatch, or be hidden while the pin can serve it.
+ *
+ * Fails closed on an unusable version by returning the un-gated URL rather than
+ * throwing: version gating is an accuracy improvement, and a discovery call
+ * that cannot be built must still be attempted. Matches the donor, which only
+ * sets the parameter when it has a valid version
+ * (`packages/catalog/src/discovery/codex.ts:195-201`).
+ */
+export function buildCodexModelsUrl(
+  baseUrl: string,
+  path = CODEX_MODELS_PATH,
+  clientVersion = getCodexVersion(),
+): string {
+  const root = baseUrl.replace(/\/+$/, "");
+  const url = `${root}${path}`;
+  const version = clientVersion.trim();
+  if (!CODEX_CLIENT_VERSION_PATTERN.test(version)) return url;
+  return `${url}?client_version=${encodeURIComponent(version)}`;
+}
+
+/**
+ * Limits assumed for a discovered SKU the registry did not state.
+ *
+ * The registry omits `context_window` for some SKUs, which is why the donor
+ * carries its own fallback (`packages/catalog/src/discovery/codex.ts:10-11`,
+ * `17`). These mirror it and the 128k output ceiling `CODEX_MODELS` uses, so a
+ * discovered row is sized the way a static row would be rather than inheriting
+ * `defineModel`'s unrelated 500k/128k defaults.
+ */
+const DEFAULT_CODEX_DISCOVERY_CONTEXT_LIMIT = 272_000;
+const DEFAULT_CODEX_DISCOVERY_OUTPUT_LIMIT = 128_000;
+
+/**
+ * Reads the Codex model registry as `ModelDefinition` rows.
+ *
+ * `{ models: [...] }` is the shape the donor parses
+ * (`packages/catalog/src/discovery/codex.ts:76-79`, `237`), and `slug` is the
+ * id (`316`). Rows are registered on the Codex Responses endpoint, matching
+ * `CODEX_MODELS`, so a discovered SKU dispatches the same way as a static one.
+ *
+ * Returns `null` on any transport, status, or parse failure. Discovery is an
+ * enrichment over the static catalog: failing it must fall back to
+ * `CODEX_MODELS`, never to an empty model list.
+ */
+export async function discoverCodexModels(input: {
+  readonly credential: string;
+  readonly baseUrl?: string;
+  readonly signal?: AbortSignal;
+  readonly fetcher?: FetchLike;
+}): Promise<readonly ModelDefinition[] | null> {
+  const token = input.credential.trim();
+  if (token.length === 0) return null;
+  const accountId = getCodexAccountId(token);
+  const residency = getCodexResidency({ accessToken: token });
+  const version = getCodexVersion();
+  const headers: Record<string, string> = {
+    accept: "application/json",
+    authorization: `Bearer ${token}`,
+    "user-agent": buildCodexUserAgent(version),
+    // Identity headers as the donor builds them
+    // (`packages/catalog/src/discovery/codex.ts:203-214`): `version` carries the
+    // same value as the query parameter, and `originator` is our own CLI
+    // identity rather than the donor's `omp`, for the same reason dispatch does.
+    originator: "codex_cli_rs",
+    version,
+    "OpenAI-Beta": "responses=experimental",
+    ...(accountId === undefined || accountId.length === 0 ? {} : { "chatgpt-account-id": accountId }),
+    ...(residency === undefined || residency.length === 0
+      ? {}
+      : { "x-openai-internal-codex-residency": residency }),
+  };
+  try {
+    const response = await (input.fetcher ?? globalThis.fetch)(
+      buildCodexModelsUrl(input.baseUrl ?? DEFAULT_CHATGPT_BASE_URL, CODEX_MODELS_PATH, version),
+      {
+        method: "GET",
+        headers,
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+      },
+    );
+    if (!response.ok) return null;
+    const payload = (await response.json()) as unknown;
+    const entries = boundedUpstreamArray(isRecord(payload) ? payload["models"] : undefined);
+    if (entries === undefined) return null;
+    const byId = new Map<string, ModelDefinition>();
+    for (const entry of entries) {
+      if (!isRecord(entry)) continue;
+      const id = sanitizeUpstreamLabel(entry["slug"] ?? entry["id"]);
+      if (id === undefined) continue;
+      const contextLimit = boundedUpstreamNumber(entry["context_window"], { min: 1, max: 1_000_000_000 });
+      const outputLimit = boundedUpstreamNumber(entry["max_output_tokens"], { min: 1, max: 1_000_000_000 });
+      byId.set(
+        id,
+        codexResponsesModel(
+          id,
+          contextLimit ?? DEFAULT_CODEX_DISCOVERY_CONTEXT_LIMIT,
+          outputLimit ?? DEFAULT_CODEX_DISCOVERY_OUTPUT_LIMIT,
+        ),
+      );
+    }
+    return [...byId.values()].sort((a, b) => a.modelId.localeCompare(b.modelId));
+  } catch {
+    return null;
+  }
 }
 
 /** Reads just enough of an untyped body to tell SSE from JSON, then replays it. */
