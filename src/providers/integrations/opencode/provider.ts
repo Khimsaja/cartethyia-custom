@@ -157,12 +157,29 @@ const FREE_AGENT_TOOLS: readonly { readonly name: string; readonly description: 
  * the same list the adapter sends instead of a copy that can drift.
  */
 export const FREE_AGENT_TOOL_NAMES: readonly string[] = FREE_AGENT_TOOLS.map((tool) => tool.name);
+/**
+ * Schema the free-tier gate accepts for a backfilled tool.
+ *
+ * An empty `properties` object is refused: the gate reads the schema, and a
+ * tool with no parameters at all is not agent-shaped — an otherwise-correct
+ * dispatch carrying eleven such tools returned 403 `FreeTierError`, while the
+ * same dispatch with one declared property returned 200 (verified live
+ * 2026-10-15). The property is never called; it only has to exist.
+ */
+const FREE_AGENT_TOOL_SCHEMA = {
+  type: "object",
+  properties: {
+    input: { type: "string", description: "Input for the tool." },
+  },
+  required: [] as string[],
+} as const;
+
 
 function ensureFreeAgentRequest(request: CanonicalRequest): CanonicalRequest {
   const present: Record<string, true> = {};
   for (const tool of request.tools ?? []) present[tool.name] = true;
   const missing: ToolDefinition[] = FREE_AGENT_TOOLS.filter((tool) => !present[tool.name]).map(
-    (tool) => ({ name: tool.name, description: tool.description, jsonSchema: { type: "object", properties: {} } }),
+    (tool) => ({ name: tool.name, description: tool.description, jsonSchema: FREE_AGENT_TOOL_SCHEMA }),
   );
   const temperature = snapRestrictedTemperature(request);
   if (missing.length === 0 && temperature === undefined) return request;

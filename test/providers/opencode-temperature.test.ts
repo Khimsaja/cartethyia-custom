@@ -57,7 +57,11 @@ describe("OpenCode Free restricted temperature", () => {
         type: "function",
         name,
         description: expect.any(String),
-        parameters: { type: "object", properties: {}, required: [] },
+        parameters: {
+          type: "object",
+          properties: { input: { type: "string", description: expect.any(String) } },
+          required: [],
+        },
       })),
     );
     expect(payload.store).toBe(false);
