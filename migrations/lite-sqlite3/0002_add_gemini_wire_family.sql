@@ -61,6 +61,8 @@ CREATE TABLE "models__new" (
 INSERT INTO "models__new" SELECT "id", "provider_id", "model_id", "wire_family", "service_kind", "endpoint_path", "context_limit", "output_limit", "modalities", "reasoning", "tool_call", "cost", "source", "source_updated_at", "enabled" FROM "models";
 DROP TABLE "models";
 ALTER TABLE "models__new" RENAME TO "models";
+CREATE UNIQUE INDEX "models_provider_model_route_uidx" ON "models" ("provider_id", "model_id", "endpoint_path");
+CREATE INDEX "models_provider_enabled_idx" ON "models" ("provider_id", "enabled");
 
 -- Enforcement resumes at commit; if the rebuild left a dangling reference the
 -- commit fails and startup aborts rather than persisting a broken schema.

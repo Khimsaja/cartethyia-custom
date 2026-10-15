@@ -15,7 +15,10 @@
  *   PORT                    gateway port (default 12800)
  *   DRAIN_WAIT_MS           how long to wait for the drain to finish (default 30000)
  */
+import { resolve } from "node:path";
 import { compiledBinaryPath } from "../build/binary";
+
+const projectRoot = resolve(import.meta.dir, "..", "..");
 
 function intEnv(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -109,9 +112,18 @@ async function main(): Promise<number> {
     return build.exitCode ?? 1;
   }
 
-  const binary = compiledBinaryPath();
+  const binary = resolve(projectRoot, compiledBinaryPath());
   console.log(`[restart] starting ${binary}`);
-  const child = Bun.spawn([binary], { stdin: "ignore", stdout: "inherit", stderr: "inherit" });
+  const packageRoot = process.env.CARTETHYIA_PACKAGE_ROOT?.trim()
+    ? process.env.CARTETHYIA_PACKAGE_ROOT
+    : projectRoot;
+  const child = Bun.spawn([binary], {
+    cwd: projectRoot,
+    env: { ...process.env, CARTETHYIA_PACKAGE_ROOT: packageRoot },
+    stdin: "ignore",
+    stdout: "inherit",
+    stderr: "inherit",
+  });
   return await child.exited;
 }
 

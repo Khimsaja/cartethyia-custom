@@ -28,6 +28,7 @@ import {
   modelAliases,
   modelCombos,
   models,
+  modelTemplates,
   networkPools,
   poolRoutingSettings,
   providerAccounts,
@@ -92,6 +93,10 @@ export const CONFIG_TABLES = [
   cliToolSettings,
   consoleSettings,
   apiKeys,
+  // Parent of `api_keys.model_template_id`: deletes run children-first in
+  // this list and inserts in reverse, so templates are deleted after (and
+  // inserted before) the keys that reference them.
+  modelTemplates,
 ] as const satisfies readonly Table[];
 
 /**

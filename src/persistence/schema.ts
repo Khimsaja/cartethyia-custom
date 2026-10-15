@@ -608,6 +608,28 @@ export type ApiKeyMode = (typeof API_KEY_MODES)[number];
  * `/v1/models`, and the share page — reads this one pair.
  */
 export const API_KEY_MODEL_ACCESS_MODES = ["whitelist", "blacklist"] as const;
+/**
+ * A named model whitelist preset a tenant reuses when provisioning keys.
+ *
+ * A template stores the list once (an empty `models` list means "every
+ * model", mirroring an empty whitelist `api_keys.model_list`) and the
+ * console applies it into the key form. Templates never gate traffic
+ * themselves — applying one copies the list onto the key, and later template
+ * edits do not rewrite issued keys unless explicitly synced.
+ */
+export const modelTemplates = pgTable(
+  "model_templates",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: tenantRefRequired(),
+    name: text("name").notNull(),
+    models: jsonb("models").notNull().$type<readonly string[]>(),
+    ...timestampColumns(),
+  },
+  (t) => [uniqueIndex("model_templates_tenant_name_uidx").on(t.tenantId, t.name)],
+);
+export type ModelTemplate = typeof modelTemplates.$inferSelect;
+
 export type ApiKeyModelAccessMode = (typeof API_KEY_MODEL_ACCESS_MODES)[number];
 
 /**
@@ -658,6 +680,10 @@ export const apiKeys = pgTable(
       .notNull()
       .default("whitelist"),
     modelList: jsonb("model_list").$type<readonly string[]>(),
+    /** Template this key mirrors, when it was provisioned from one. */
+    modelTemplateId: uuid("model_template_id").references(() => modelTemplates.id, {
+      onDelete: "set null",
+    }),
     /**
      * Client-router ids this key refuses. A request whose fingerprint names one
      * of these is rejected before routing, so an operator can stop a downstream
@@ -673,6 +699,13 @@ export const apiKeys = pgTable(
     enabled: boolean("enabled").notNull().default(true),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
     /**
+     * Optional hard expiry for time-boxed keys (e.g. a 30-day subscription).
+     * NULL means the key never expires on its own. Enforced on the gateway
+     * auth path: an expired key authenticates exactly like a revoked one, and
+     * an expired parent template cuts off its children as well.
+     */
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    /**
      * The tenant's mandatory gateway key. Seeded at first boot whether or not
      * `CARTETHYIA_API_KEY` was configured, and the one key the console refuses
      * to revoke — it may only be rotated. A column rather than a label match,
@@ -684,6 +717,7 @@ export const apiKeys = pgTable(
   (table) => [
     uniqueIndex("api_keys_key_hash_idx").on(table.keyHash),
     index("api_keys_tenant_id_idx").on(table.tenantId),
+    index("api_keys_model_template_id_idx").on(table.modelTemplateId),
     index("api_keys_enabled_tenant_idx").on(table.tenantId).where(sql`${table.enabled} = true`),
     index("api_keys_parent_key_id_idx").on(table.parentKeyId),
     check(

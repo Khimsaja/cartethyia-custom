@@ -18,9 +18,10 @@
  *    change it. What depends on it is the logger: the `pino-pretty` transport
  *    is attached only in development, and that transport spawns a worker thread
  *    loading `real-require`, which a standalone executable does not carry. A
- *    binary built without this line therefore bundles a logger that crashes on
- *    first use. The migrations folder is not part of this decision —
- *    `resolveMigrationsFolder()` resolves `<cwd>/migrations` unconditionally.
+ *    binary built without this line therefore bundles a logger that crashes
+ *    on first use. Package assets (migrations, dashboard) are resolved via
+ *    CARTETHYIA_PACKAGE_ROOT; the production launchers default it to the
+ *    repository root because a compiled binary's import.meta.dir is virtual.
  *
  * Usage: `bun run scripts/build/binary.ts [--outfile dist/cartethyia]`
  */
