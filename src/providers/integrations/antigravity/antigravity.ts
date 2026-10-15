@@ -49,6 +49,11 @@ import type { ImageGenerationOutcome, ProviderDispatchTarget, ProviderAdapter, P
 import { providerBaseUrl } from "../../provider-metadata";
 import { abortGatewayError, createUpstreamDeadlineLifecycle } from "../../operations/upstream-deadline";
 import { log } from "../../../observability/logger";
+import {
+  fetchWithEmptyStreamRecovery,
+  isEmptyStream,
+  type StreamTally,
+} from "../../../transport/dispatch/empty-stream";
 
 export const ANTIGRAVITY_PROVIDER_ID = "antigravity" as const;
 export const ANTIGRAVITY_BASE_URL = providerBaseUrl("antigravity");
@@ -361,6 +366,40 @@ class AntigravityAdapter implements ProviderAdapter {
           {},
           "upstream",
         );
+      }
+      // Empty-stream recovery: a 200 whose first burst carries nothing is a
+      // routable request the backend answered with silence. Peek on a *clone*
+      // (the original reader stays untouched and fully readable) and stop at
+      // the first meaningful event, so a healthy stream costs one bounded read
+      // of its opening burst and no extra request. Only a silent first burst
+      // triggers the byte-identical replay across prod → sandbox.
+      {
+        const firstBurst = await peekAntigravityTally(response.clone(), lifecycle.signal);
+        if (isEmptyStream(firstBurst)) {
+          const frozenBody = JSON.stringify(payload);
+          const sandbox = failoverAntigravityUrl(url, this.baseUrl);
+          const recovery = await fetchWithEmptyStreamRecovery(
+            sandbox === undefined ? [url] : [url, sandbox],
+            { headers, body: frozenBody },
+            {
+              fetch: (target, init) =>
+                outboundFetch(target, {
+                  method: "POST",
+                  headers: init.headers,
+                  body: init.body,
+                  signal: init.signal,
+                }),
+              drain: (res, signal) => peekAntigravityTally(res.clone(), signal),
+              signal: lifecycle.signal,
+              deadlineMs: context.deadline,
+            },
+          );
+          log.warn("antigravity: empty stream, replayed", {
+            endpoint: recovery.endpoint,
+            replays: recovery.replaysUsed,
+          });
+          response = recovery.response;
+        }
       }
       let seq = 1;
       yield {
@@ -776,6 +815,46 @@ function sessionStateKey(routeIdentity: string, wireModelId: string): string {
 /** Statuses worth one bounded sandbox failover (throttled or server-side). */
 function isFailoverStatus(status: number): boolean {
   return status === 429 || (status >= 500 && status <= 599);
+}
+
+/**
+ * Drains just enough of an Antigravity SSE body to know whether it carries
+ * anything, then stops.
+ *
+ * The caller passes a *clone*, so the original body reader is never consumed
+ * and the real stream still flows untouched. Reading stops at the first
+ * meaningful event or after `maxChunks` data events, whichever comes first —
+ * a healthy stream therefore costs one bounded read of its opening burst
+ * rather than a full drain, which is what makes the pre-commit peek cheap
+ * enough to sit on the hot path.
+ */
+async function peekAntigravityTally(
+  response: Response,
+  signal: AbortSignal,
+  maxChunks = 8,
+): Promise<StreamTally> {
+  const body = response.body;
+  if (body === null) return { dataEvents: 0, meaningful: false, thoughtOnly: false };
+  let dataEvents = 0;
+  let thought = false;
+  for await (const sse of decodeSseEvents(body, { signal })) {
+    const data = sse.data.trim();
+    if (data.length === 0 || data === "[DONE]") continue;
+    dataEvents++;
+    const parsed = decodeGeminiStreamEvent(data, "antigravity stream error");
+    if (parsed === undefined) continue;
+    const { parts } = geminiCandidate(parsed);
+    const output = responseParts(parts);
+    if (output.thought) thought = true;
+    if (output.text || output.calls.length > 0) {
+      return { dataEvents, meaningful: true, thoughtOnly: false };
+    }
+    if (dataEvents >= maxChunks) break;
+  }
+  // A stream that ended with reasoning but no final output is a complete
+  // provider response (the donor's thought-only carve-out): replaying it
+  // burns a full reasoning pass for nothing, so it is never treated as empty.
+  return { dataEvents, meaningful: false, thoughtOnly: thought };
 }
 
 /**
