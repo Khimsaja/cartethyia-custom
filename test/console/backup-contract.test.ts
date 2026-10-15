@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { encryptCredential, setCredentialEncryptionKeyForTesting } from "../../src/security/crypto";
+import { encryptCredential, setCredentialEncryptionKeyForTesting, snapshotCredentialEncryptionKeyForTesting } from "../../src/security/crypto";
 import { CONFIG_TABLES, droppedColumns, ownershipOf, tableName, tablesForSection } from "../../src/console/backup/contracts";
 import { DEFAULT_API_KEY_LABEL, isDefaultGatewayApiKey } from "../../src/console/api-keys/contracts";
 import { DELETE_ALL_SCOPES, type DeleteAllScope } from "../../src/console/backup/store";
@@ -220,6 +220,7 @@ describe("legacy dropped columns on restore", () => {
 
 describe("partial restore of an old backup", () => {
   test("opens legacy ciphertext when the source encryption key is available", () => {
+    const previousKey = snapshotCredentialEncryptionKeyForTesting();
     const sourceKey = randomBytes(32);
     setCredentialEncryptionKeyForTesting(sourceKey);
     const legacyCiphertext = encryptCredential("legacy-provider-token").toString("base64");
@@ -251,11 +252,12 @@ describe("partial restore of an old backup", () => {
       expect(account?.credential_ciphertext).toBe("legacy-provider-token");
       expect(result.value.warnings.some((warning) => warning.column === "credential_ciphertext")).toBe(false);
     } finally {
-      setCredentialEncryptionKeyForTesting(undefined);
+      setCredentialEncryptionKeyForTesting(previousKey);
     }
   });
 
   test("drops legacy ciphertext when it cannot be authenticated by the current key", () => {
+    const previousKey = snapshotCredentialEncryptionKeyForTesting();
     const sourceKey = randomBytes(32);
     setCredentialEncryptionKeyForTesting(sourceKey);
     const legacyCiphertext = encryptCredential("legacy-provider-token").toString("base64");
@@ -288,7 +290,7 @@ describe("partial restore of an old backup", () => {
       expect(account).not.toHaveProperty("credential_ciphertext");
       expect(result.value.warnings.some((warning) => warning.column === "credential_ciphertext")).toBe(true);
     } finally {
-      setCredentialEncryptionKeyForTesting(undefined);
+      setCredentialEncryptionKeyForTesting(previousKey);
     }
   });
 

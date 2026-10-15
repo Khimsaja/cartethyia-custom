@@ -38,13 +38,25 @@ const SQLITE_LEDGER_DDL = `CREATE TABLE IF NOT EXISTS ${MIGRATION_LEDGER_TABLE} 
  * connection rather than trusted to a default. WAL keeps a reader from
  * blocking the single writer.
  */
+/**
+ * Databases whose `prepare`/`exec` have already been wrapped.
+ *
+ * Keyed weakly so a closed in-memory database is not retained by the registry.
+ */
+const SQLITE_PREPARED = new WeakSet<Database>();
+
 export function createSqliteDatabase(file: string): Database {
   if (file !== ":memory:") mkdirSync(dirname(file), { recursive: true });
   const db = new Database(file);
   db.exec("PRAGMA foreign_keys = ON");
   if (file !== ":memory:") applyFilePragmas(db);
-  // Installed before anything prepares a statement, so every caller — the
-  // handle, Drizzle, a test wrapping `exec` — sees SQL SQLite can run.
+  // Guarded: this function has to run per database, but a caller may hand it
+  // one that already went through here (a test builds a handle over a booted
+  // handle). Wrapping `prepare` twice ran the translation twice, and the
+  // second pass mangled SQL the first had already rewritten — `unrecognized
+  // token: ":"` from a placeholder the first pass produced.
+  if (SQLITE_PREPARED.has(db)) return db;
+  SQLITE_PREPARED.add(db);
   const prepare = db.prepare.bind(db);
   db.prepare = ((text: string) => {
     const statement = prepare(sqliteSql(text));

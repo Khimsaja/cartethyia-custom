@@ -34,6 +34,19 @@ export function setCredentialEncryptionKeyForTesting(key: Buffer | undefined): v
   cachedKey = key;
 }
 
+/**
+ * Captures the active key so a test can put it back.
+ *
+ * Resetting to `undefined` was the bug: test files share this module's cached
+ * key within a worker, so one file clearing it left the next deriving a key
+ * from a different environment — credentials sealed by one test then failed to
+ * open in another. Restoring the captured value keeps an override local to the
+ * test that made it.
+ */
+export function snapshotCredentialEncryptionKeyForTesting(): Buffer | undefined {
+  return cachedKey;
+}
+
 /** Encrypts plaintext credential material (e.g. a raw API key) for storage. */
 export function encryptCredential(plaintext: string | Uint8Array): Buffer {
   const key = getCredentialEncryptionKey();

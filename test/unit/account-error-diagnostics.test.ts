@@ -75,9 +75,18 @@ describe("account error diagnostics", () => {
    * with it. `rate_limit_transient` is what scopes the write to the model.
    */
   test("a buddy frequency window parks the model, not the account", () => {
-    const reset = "2026-10-15 07:45:46 UTC+8";
+    // Built from `now` rather than a literal: a hardcoded stamp silently
+    // became a past date, and a past stamp is correctly rejected as unusable
+    // (clock skew or a stale cached error) — so the assertion failed for a
+    // reason that had nothing to do with the behavior it pins.
+    const resetAt = new Date(Date.now() + 30 * 60_000);
+    const stamp = `${resetAt.getUTCFullYear()}-${String(resetAt.getUTCMonth() + 1).padStart(2, "0")}-${String(
+      resetAt.getUTCDate(),
+    ).padStart(2, "0")} ${String(resetAt.getUTCHours()).padStart(2, "0")}:${String(
+      resetAt.getUTCMinutes(),
+    ).padStart(2, "0")}:${String(resetAt.getUTCSeconds()).padStart(2, "0")} UTC+0`;
     const message =
-      `usage exceeds frequency limit, but don't worry, your usage will reset at ${reset}, ` +
+      `usage exceeds frequency limit, but don't worry, your usage will reset at ${stamp}, ` +
       "alternatively, you can switch to the other models to continue using it.";
     const classification = classifyAccountError(
       { message, status: 429 },

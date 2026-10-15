@@ -28,10 +28,22 @@ export function sqliteDialect(): boolean {
  * as text, so the merge is `json_patch`, which has the same overwrite-right
  * semantics for objects.
  */
-export function mergeJson(column: SQL, patch: SQL): SQL {
-  return sqliteDialect()
-    ? sql`json_patch(${column}, ${patch})`
-    : sql`${column} || ${patch}::jsonb`;
+export function mergeJson(column: SQL, patch: SQL, database?: unknown): SQL {
+  // Derived from the connection when one is given, not from the environment:
+  // `resolveDbMode()` answers what the *process* is configured for, but a
+  // caller may hold a handle to the other backend (a test builds an in-memory
+  // SQLite database while the suite runs in full mode). Trusting the env there
+  // emitted `::jsonb` into SQLite, which rejects the cast outright.
+  const isSqlite =
+    database === undefined ? sqliteDialect() : hasSqliteDialect(database);
+  return isSqlite ? sql`json_patch(${column}, ${patch})` : sql`${column} || ${patch}::jsonb`;
+}
+
+/** True when `database` is a Drizzle handle whose session speaks SQLite. */
+function hasSqliteDialect(database: unknown): boolean {
+  const dialect = (database as { dialect?: { constructor?: { name?: string } } } | undefined)
+    ?.dialect?.constructor?.name;
+  return typeof dialect === "string" && dialect.startsWith("SQLite");
 }
 
 /**

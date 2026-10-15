@@ -110,3 +110,4 @@ Variables read outside the spec are therefore **not** listed below:
 | `CARTETHYIA_SERVER_IDLE_TIMEOUT` | integer | 60 | 0 – 86400 |
 | `CARTETHYIA_FORCED_GC` | flag | enabled (disabled only when literally `false`) | — |
 | `CARTETHYIA_RUNTIME_METRICS_INTERVAL_MS` | integer | 30000 | 1000 – 300000 |
+| `CARTETHYIA_DISABLED_TASKS` | comma-separated list | unset | — |

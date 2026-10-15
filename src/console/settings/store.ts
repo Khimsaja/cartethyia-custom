@@ -141,7 +141,7 @@ export class DrizzleRuntimeSettingsStore implements RuntimeSettingsStore {
         target: consoleSettings.tenantId,
         set: {
           // preferences, everything else on the row is left untouched.
-          preferences: mergeJson(sql`${consoleSettings.preferences}`, sql`${JSON.stringify(patchPrefs)}`),
+          preferences: mergeJson(sql`${consoleSettings.preferences}`, sql`${JSON.stringify(patchPrefs)}`, this.db),
           updatedAt: now,
         },
       })

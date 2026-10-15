@@ -240,7 +240,12 @@ export const providerAccounts = pgTable("provider_accounts", {
   (table) => [
     uniqueIndex("provider_accounts_identity_uidx").on(
       table.providerId,
-      sql`coalesce(${table.tenantId}, '00000000-0000-0000-0000-000000000000'::uuid)`,
+      // No `::uuid` cast: the migrations create this index without one on
+      // SQLite (baseline l.440) and with one on Postgres (l.423), and the
+      // Drizzle definition is what a test's in-memory database is built
+      // from — a Postgres-only cast there made every account insert fail
+      // with `unrecognized token: ":"`.
+      sql`coalesce(${table.tenantId}, '00000000-0000-0000-0000-000000000000')`,
       table.credentialFingerprint,
     ),
     index("provider_accounts_status_cooldown_idx").on(table.status, table.cooldownUntil),

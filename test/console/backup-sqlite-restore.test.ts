@@ -7,10 +7,12 @@ import {
   decryptCredentialToString,
   encryptCredential,
   setCredentialEncryptionKeyForTesting,
+  snapshotCredentialEncryptionKeyForTesting,
 } from "../../src/security/crypto";
 import { seedBundledProviders } from "../../src/providers/operations/provider-catalog-service";
 
 test("restores legacy sealed credentials with the active encryption key", async () => {
+  const previousKey = snapshotCredentialEncryptionKeyForTesting();
   const key = randomBytes(32);
   setCredentialEncryptionKeyForTesting(key);
   const tenantId = randomUUID();
@@ -55,7 +57,7 @@ test("restores legacy sealed credentials with the active encryption key", async 
     expect(decryptCredentialToString(account.credentialCiphertext)).toBe("legacy-provider-token");
   } finally {
     sqlite.close();
-    setCredentialEncryptionKeyForTesting(undefined);
+    setCredentialEncryptionKeyForTesting(previousKey);
   }
 });
 

@@ -18,7 +18,7 @@ import { afterAll, expect, test } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { getDb } from "../../src/persistence/boot";
-import { decryptCredentialToString, setCredentialEncryptionKeyForTesting } from "../../src/security/crypto";
+import { decryptCredentialToString, setCredentialEncryptionKeyForTesting, snapshotCredentialEncryptionKeyForTesting } from "../../src/security/crypto";
 import { BackupService } from "../../src/console/backup/service";
 import { compressBackup, exportBackup } from "../../src/console/backup/store";
 import { tablesForSection } from "../../src/console/backup/contracts";
@@ -70,10 +70,13 @@ async function sealedCredentialOf(tenantId: string): Promise<Buffer | null> {
 }
 
 dbDescribe("backup credential portability", () => {
+  const previousKey = snapshotCredentialEncryptionKeyForTesting();
   afterAll(() => {
-    // Hand the cached key back to the environment, or every later suite in this
-    // process seals its fixtures under the wrong one.
-    setCredentialEncryptionKeyForTesting(undefined);
+    // Hand the cached key back to whatever was active before this suite, not
+    // `undefined`: test files share this module's cached key within a worker,
+    // so clearing it left the next suite deriving a key from a different
+    // environment and its sealed fixtures failed to open.
+    setCredentialEncryptionKeyForTesting(previousKey);
   });
 
   test("a restore re-seals provider credentials under the importing install's key", async () => {

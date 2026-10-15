@@ -136,8 +136,13 @@ export const CONFIG_SPEC = {
     min: 1_000,
     max: 300_000,
   },
+  /**
+   * Periodic maintenance tasks switched off entirely, by name. A small
+   * deployment that does not need live quota or version polling can cut the
+   * heaviest sweeps here instead of carrying one flag per task.
+   */
+  CARTETHYIA_DISABLED_TASKS: { kind: "list" },
 
-  // Durable, metadata-only request telemetry retention.
   CARTETHYIA_TELEMETRY_RETENTION_DAYS: { kind: "int", default: 30, min: 3, max: 365 },
   CARTETHYIA_TELEMETRY_PAYLOAD_MAX_BYTES: {
     kind: "int",

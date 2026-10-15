@@ -67,7 +67,7 @@ import {
 import { resolveSsrfPolicy, resolveTrustedProxyBoundary } from "../config/network";
 import type { TrustedProxyBoundary } from "../config/network";
 import { resolveTelemetryRetentionDays } from "../config/telemetry";
-import { CONFIG_SPEC, readInt } from "../config/spec";
+import { CONFIG_SPEC, readInt, readList } from "../config/spec";
 import type { ProviderAdapter } from "../providers/provider-contracts";
 import type { ProviderRegistry } from "../providers/provider-registry";
 import type { ByokUpstreamHost } from "../providers/operations/provider-catalog-service";
@@ -239,7 +239,12 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
     banTtlMs: resolveModelBanTtlMs(),
   });
   const readiness = () => checkReadiness(db, redis, resolveRedisBackend(redis));
-  const scheduledTasks = new ScheduledTaskRegistry();
+  // One list covers every periodic task: a small deployment can cut the
+  // heaviest sweeps (quota refresh, OAuth refresh, client-version polling)
+  // without the codebase growing a flag per task.
+  const scheduledTasks = new ScheduledTaskRegistry(
+    readList("CARTETHYIA_DISABLED_TASKS", CONFIG_SPEC.CARTETHYIA_DISABLED_TASKS) ?? [],
+  );
   if (redis) {
     scheduledTasks.register({
       name: "lease-sweep",

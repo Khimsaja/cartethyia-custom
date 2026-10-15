@@ -63,8 +63,26 @@ export class ScheduledTaskRegistry {
   private started = false;
   private readonly running = new Set<string>();
   private readonly inFlight = new Set<Promise<void>>();
+  /**
+   * Task names an operator has switched off. Read once at construction from
+   * `CARTETHYIA_DISABLED_TASKS` rather than per interval: the list cannot
+   * change without a restart, and re-parsing it on every tick would put a
+   * string split on the maintenance path.
+   */
+  private readonly disabled: ReadonlySet<string>;
+
+  constructor(disabledTaskNames: readonly string[] = []) {
+    this.disabled = new Set(disabledTaskNames);
+  }
 
   register(task: ScheduledTask): void {
+    if (this.disabled.has(task.name)) {
+      // Logged once, not per interval: a disabled task is a deliberate
+      // operator choice, and repeating it every tick would be noise in the
+      // very log the operator is reading to find out why a sweep is stale.
+      log.info(`[scheduled-task:${task.name}] disabled by CARTETHYIA_DISABLED_TASKS`);
+      return;
+    }
     this.tasks.push(task);
     if (this.started) this.schedule(task);
   }

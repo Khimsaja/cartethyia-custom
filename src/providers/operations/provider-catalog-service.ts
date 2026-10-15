@@ -56,6 +56,7 @@ export async function seedBundledProviders(db: CartethyiaDatabase): Promise<void
         compatibilityProfile: mergeJson(
           sql`COALESCE(${providers.compatibilityProfile}, '{}')`,
           sql`COALESCE(excluded.compatibility_profile, '{}')`,
+          db,
         ),
       },
     });

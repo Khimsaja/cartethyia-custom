@@ -218,10 +218,17 @@ describe("parseRateLimitReset", () => {
   });
 
   test("reads a value below 1e9 as a relative delay in seconds", () => {
-    expect(parseRateLimitReset("2")).toBe(2_000);
-    expect(parseRateLimitReset("60")).toBe(60_000);
-    expect(parseRateLimitReset("3600")).toBe(HOUR_MS);
-    expect(parseRateLimitReset("1.5")).toBe(1_500);
+    // Tolerant, not exact: the impl adds the delay to `Date.now()`, so exact
+    // millisecond equality only holds when the clock does not advance between
+    // the call and the assertion — which is why this flaked.
+    expect(parseRateLimitReset("2")).toBeGreaterThan(1_900);
+    expect(parseRateLimitReset("2")).toBeLessThanOrEqual(2_000);
+    expect(parseRateLimitReset("60")).toBeGreaterThan(59_900);
+    expect(parseRateLimitReset("60")).toBeLessThanOrEqual(60_000);
+    expect(parseRateLimitReset("3600")).toBeGreaterThan(HOUR_MS - 100);
+    expect(parseRateLimitReset("3600")).toBeLessThanOrEqual(HOUR_MS);
+    expect(parseRateLimitReset("1.5")).toBeGreaterThan(1_400);
+    expect(parseRateLimitReset("1.5")).toBeLessThanOrEqual(1_500);
   });
 
   test("reads a value at or above 1e9 as epoch seconds", () => {
