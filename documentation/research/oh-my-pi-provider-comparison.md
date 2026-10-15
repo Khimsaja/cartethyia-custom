@@ -273,16 +273,16 @@ Ranked by impact first, effort second. Effort S/M/L. Legal-risk items need a leg
 
 | Rank | Item | Provider | Effort | Impact | Status |
 |---|---|---|---|---|---|
-| 1 | Slow-lane support (`anthropic-usage-limit: slow` + parse + retry) | Claude | M | High — serves exhausted subscriptions instead of failing them | Partial — header parse + lane registry only (see `slow-lane-design.md` §1/§3); routing + retry not wired |
+| 1 | Slow-lane support (`anthropic-usage-limit: slow` + parse + retry) | Claude | M | High — serves exhausted subscriptions instead of failing them | Partial — §1 parse, §3 registry, §4 routing all done; §5 same-account retry loop not wired (classifier is ready) |
 | 2 | Fallback-credit redemption (freeze + 5-min replay) | Claude | M | High — free retry on refusals | Blocked — cache module built + tested but NOT wired; request-side replay shape undocumented (see note below) |
 | 3 | Daybreak `access_programs.cyber` + drop-on-rejection replay | Codex | S | High — fewer refusals for eligible accounts | Done — gated behind `provider_options`, eligibility signal unconfirmed |
 | 4 | Empty-stream replay + pre-start failover | Antigravity | M | High — 200-with-zero-SSE fails routable requests today | Done — helper + wired into the Antigravity stream leg |
-| 5 | Gemini `google-generate` wire | Factory | L | High — Gemini models cannot route at all | Open — and the premise conflicts with the catalog, which lists Gemini ids on `chat`; contradiction documented in `factory-models.ts` |
-| 6 | 429 retry budget honoring server delays | Codex | M | High — transient quota becomes latency, not errors | In progress |
-| 7 | Server-side `fallbacks` chain + iteration billing | Claude | M | High — classifier-blocked primaries need the retry path | In progress |
+| 5 | Gemini `google-generate` wire | Factory | L | High — Gemini models cannot route at all | Open — the premise conflicts with the catalog, which lists Gemini ids on `chat`; contradiction documented in `factory-models.ts` |
+| 6 | 429 retry budget honoring server delays | Codex | M | High — transient quota becomes latency, not errors | Done — waits the server delay, bounded by budget + deadline, leases released during the wait |
+| 7 | Server-side `fallbacks` chain + iteration billing | Claude | M | High — classifier-blocked primaries need the retry path | Done — chain via `provider_options` (per-attempt field names UNCONFIRMED), served-by-fallback signal surfaced |
 | 8 | `x-api-provider` selector + rotation/region narrowing | Factory | M | Med — all traffic takes Factory default routing today | Partial — selector done (provider_options), value vocabulary unconfirmed; region mapping pre-existing |
 | 9 | Forced-choice restatement for Gemini routes | Antigravity | S | Med — `tool_choice=required` silently degrades otherwise (directive text unconfirmed) | Done — directive is an explicit seam; text itself still UNCONFIRMED |
-| 10 | Pre-send image clamp (shared helper) | Claude + Antigravity | M | Med — oversized blocks poison retries and later turns | In progress |
+| 10 | Pre-send image clamp (shared helper) | Claude + Antigravity | M | Med — oversized blocks poison retries and later turns | Done — one shared module, wired into both the Claude and Gemini inline paths |
 | 11 | Version-gated model availability | Codex | M | Med — prevents routing to 404 SKUs | Open — no per-SKU version data in repo |
 | 12 | Adopt server-named version on rejection, retry once (shared helper) | Claude (+ all) | S | Med — stale pin costs one rejection, not an outage | Done |
 | 13 | `X-Stainless-Retry-Count: 0` | Claude | S | Low — one-line fingerprint parity | Done |
