@@ -26,6 +26,7 @@ import { getOrCreateRoundRobin, RoundRobinState } from "./round-robin";
 import { totalRemainingCredit, totalRemainingPercent, type ProviderQuotaWindow } from "../../providers/quota/quota-contracts";
 import { getCachedQuotaEntry, quotaLens } from "../../console/quota/cache";
 import type { RedisClient } from "../../persistence/redis";
+import { sharedClaudeSlowLanes } from "../../providers/integrations/claude/claude-slow-lane";
 
 function searchModelPreference(modelId: string): number {
   const id = modelId.toLowerCase();
@@ -275,6 +276,30 @@ function earliestResetMs(decisions: readonly EligibilityDecision[]): number | un
   return earliest;
 }
 
+/**
+ * Stamps the slow lane onto candidates whose account is currently lane-active.
+ *
+ * Read at plan time from the live lane registry, exactly as `applyUsageFloor`
+ * reads live quota: lane state changes per response, so baking it into the
+ * snapshot would route on a stale observation. An account with no lane state
+ * is untouched, which keeps every non-Claude provider byte-identical here.
+ */
+function applySlowLane(
+  candidates: readonly RouteCandidate[],
+): readonly RouteCandidate[] {
+  let stamped = false;
+  const out = candidates.map((candidate) => {
+    const accountId = (
+      candidate as RouteCandidate & { readonly provider_account_id?: string }
+    ).provider_account_id;
+    if (accountId === undefined || !sharedClaudeSlowLanes.isActive(accountId))
+      return candidate;
+    stamped = true;
+    return { ...candidate, lane: "slow" as const };
+  });
+  return stamped ? out : candidates;
+}
+
 export class EligibilityEvaluator {
   evaluate(candidate: RouteCandidate): EligibilityDecision {
     const state = candidate as RouteCandidate & {
@@ -286,6 +311,8 @@ export class EligibilityEvaluator {
       readonly usage_floor?: number;
       readonly usage_floor_unit?: "credit" | "percent";
       readonly quota_windows?: readonly ProviderQuotaWindow[] | undefined;
+      /** Slow-lane stamp applied at plan time; see `applySlowLane`. */
+      readonly lane?: "slow";
     };
     if (state.account_locked || state.locked)
       return { eligible: false, reason: "locked", candidate };
@@ -306,6 +333,17 @@ export class EligibilityEvaluator {
         candidate,
         ...spreadDeadline(earliestWindowResetMs(state.quota_windows, Date.now())),
       };
+    // A slow lane is orthogonal to cooldown, never a member of it: the account
+    // still serves on spare capacity when the request carries the slow usage
+    // limit, so excluding it would park a serving credential. It stays eligible
+    // and only orders behind fresh siblings (see the ordering below).
+    //
+    // Deliberately AFTER the floor gate: orthogonal means it does not add an
+    // exclusion, not that it overrides one. An account with no usable allowance
+    // is not rescued by the lane — the lane is a latency budget against spare
+    // capacity, and an account below its floor has none.
+    if (state.lane === "slow")
+      return { eligible: true, reason: "slow", candidate };
     if (state.health_status === "cooldown")
       return { eligible: true, reason: "cooldown", candidate, ...spreadDeadline(state.cooldown_until) };
     return { eligible: true, reason: "healthy", candidate };
@@ -547,7 +585,8 @@ export class RoutingEngine {
     // this model is currently unusable — NOT a missing model. Distinct from
     // the `matching.length === 0` throw in the resolver, which is a genuine 404.
     const gated = await this.applyUsageFloor(matching, snapshot, tid);
-    const decisions = gated.map((candidate) => this.eligibility.evaluate(candidate));
+    const laned = applySlowLane(gated);
+    const decisions = laned.map((candidate) => this.eligibility.evaluate(candidate));
     let eligible = decisions.filter((d) => d.eligible).map((d) => d.candidate);
     if (eligible.length === 0) {
       // A time-bounded exclusion answers 429, not 503. Both reasons here carry
@@ -600,8 +639,11 @@ export class RoutingEngine {
     // the gateway "still hit a cooled-down account" instead of answering the
     // client honestly. Answer 429 (rate limited) so the client retries after
     // the reset rather than 503 capacity that is merely resting.
+    // A slow-lane account still serves on spare capacity, so it counts as
+    // servable: an all-slow pool must plan and dial rather than answer 429
+    // while capacity sits idle.
     const healthyCount = decisions.filter(
-      (d) => d.eligible && d.reason !== "cooldown",
+      (d) => d.eligible && (d.reason === "healthy" || d.reason === "slow"),
     ).length;
     if (healthyCount === 0) {
       throw accountsRateLimitedError(requestedModel, resolved.model, earliestResetMs(decisions));
@@ -611,6 +653,22 @@ export class RoutingEngine {
     // cooling still routes instead of failing. Sorted on the evaluator's reason
     // so the ordering and the eligibility rule cannot disagree about which
     // candidates are cooling.
+    // Slow-lane accounts are eligible but tried behind fresh siblings, and
+    // ahead of cooling ones: fresh → slow → cooling → saturated. A slow account
+    // serves on spare capacity, so it must be reached when no fresh candidate
+    // remains, but it should not absorb traffic a fresh account could take
+    // without the lane's latency.
+    const slow = new Set(
+      decisions
+        .filter((decision) => decision.eligible && decision.reason === "slow")
+        .map((decision) => decision.candidate),
+    );
+    if (slow.size > 0 && slow.size < eligible.length) {
+      eligible = [
+        ...eligible.filter((candidate) => !slow.has(candidate)),
+        ...eligible.filter((candidate) => slow.has(candidate)),
+      ];
+    }
     const cooling = new Set(
       decisions
         .filter((decision) => decision.eligible && decision.reason === "cooldown")
