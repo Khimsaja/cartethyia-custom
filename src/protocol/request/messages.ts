@@ -24,6 +24,7 @@ import {
   isRecord,
   resolveImageSource,
   splitDataUrl,
+  finiteNumber,
 } from "../codecs";
 import { log } from "../../observability/logger";
 import { base64DecodedByteLength, clampImage } from "../image-clamp";
@@ -440,6 +441,115 @@ function stablePartitionToolUse(blocks: ClaudeWireObject[]): void {
   blocks.push(...nonToolUse, ...toolUse);
 }
 
+/**
+ * Maximum entries in a Claude server-side `fallbacks` chain.
+ *
+ * Donor-captured limit (research `## Claude Code` → "Multi-model"): the chain
+ * carries at most 3 models. A longer declared chain is trimmed with a warning
+ * rather than rejected, matching how an over-long `stop_sequences` degrades
+ * below — the request still goes out, it just carries fewer fallbacks.
+ */
+export const CLAUDE_FALLBACKS_CHAIN_LIMIT = 3;
+
+/**
+ * `provider_options` key that declares a server-side `fallbacks` chain.
+ *
+ * The chain is opt-in per request because it is not a canonical field and no
+ * local state can decide whether a route honors it; see the UNCONFIRMED note on
+ * `claudeFallbacksChain`. Default (no declaration) is no `fallbacks` key at all.
+ */
+export const CLAUDE_FALLBACKS_OPTION = "claude_fallbacks";
+
+/**
+ * Per-attempt override keys forwarded inside one `fallbacks[]` entry.
+ *
+ * UNCONFIRMED — the donor research names the *concept* ("per-attempt
+ * max_tokens/thinking/output_config/speed",
+ * `documentation/research/oh-my-pi-provider-comparison.md` → "Multi-model",
+ * citing `anthropic-wire.ts:297-308` and `anthropic.ts:1868-1901`) but no
+ * request capture in this repository shows the field names or their value
+ * grammar inside a chain entry. Only the chain key (`fallbacks`) and the
+ * ≤3-model cap are named at that level. These keys are therefore whitelisted
+ * rather than passed through blindly: a key we cannot name is dropped with a
+ * warning instead of being invented onto the wire.
+ */
+const FALLBACK_ATTEMPT_NUMBER_KEYS: readonly string[] = ["max_tokens"];
+const FALLBACK_ATTEMPT_RECORD_KEYS: readonly string[] = ["thinking", "output_config"];
+/** The only `speed` value the research captures (`anthropic.ts:5578-5580`). */
+const FALLBACK_SPEED_VALUE = "fast";
+
+/**
+ * Validates one declared chain entry into a `fallbacks[]` object.
+ *
+ * A bare string is accepted as a model id. Anything that cannot yield a
+ * non-empty model id is dropped: a chain entry without a model names nothing
+ * to fall back to, so forwarding it would only invite an upstream 400.
+ */
+function claudeFallbackAttempt(entry: unknown): ClaudeWireObject | undefined {
+  if (typeof entry === "string") {
+    const model = entry.trim();
+    return model.length > 0 ? { model } : undefined;
+  }
+  if (!isRecord(entry)) return undefined;
+  const model = typeof entry["model"] === "string" ? entry["model"].trim() : "";
+  if (model.length === 0) return undefined;
+  const attempt: ClaudeWireObject = { model };
+  for (const key of FALLBACK_ATTEMPT_NUMBER_KEYS) {
+    const value = entry[key];
+    if (value === undefined) continue;
+    if (finiteNumber(value) && value > 0) attempt[key] = value;
+    else
+      log.warn(`claude: fallbacks entry ${key} dropped, expected a positive number`, {
+        received: value,
+      });
+  }
+  for (const key of FALLBACK_ATTEMPT_RECORD_KEYS) {
+    const value = entry[key];
+    if (value === undefined) continue;
+    if (isRecord(value)) attempt[key] = toWellFormedDeep(value);
+    else
+      log.warn(`claude: fallbacks entry ${key} dropped, expected an object`, {
+        received: value,
+      });
+  }
+  const speed = entry["speed"];
+  if (speed === undefined) return attempt;
+  if (speed === FALLBACK_SPEED_VALUE) attempt["speed"] = speed;
+  else
+    log.warn(`claude: fallbacks entry speed dropped, only "${FALLBACK_SPEED_VALUE}" is captured`, {
+      received: speed,
+    });
+  return attempt;
+}
+
+/**
+ * Builds the Claude server-side `fallbacks` chain from `provider_options`, or
+ * `undefined` when the caller declared none — in which case no `fallbacks` key
+ * is emitted, so a route that does not know the field is unaffected.
+ *
+ * Declared as `provider_options.claude_fallbacks`: an array of model-id strings
+ * or of objects carrying `model` plus optional per-attempt overrides. Entries
+ * beyond `CLAUDE_FALLBACKS_CHAIN_LIMIT` are dropped.
+ */
+export function claudeFallbacksChain(
+  provider_options: Readonly<Record<string, unknown>> | undefined,
+): readonly ClaudeWireObject[] | undefined {
+  const declared = provider_options?.[CLAUDE_FALLBACKS_OPTION];
+  if (!Array.isArray(declared) || declared.length === 0) return undefined;
+  if (declared.length > CLAUDE_FALLBACKS_CHAIN_LIMIT) {
+    log.warn(
+      `claude: fallbacks chain exceeds ${CLAUDE_FALLBACKS_CHAIN_LIMIT}; extra entries dropped`,
+      { received: declared.length, kept: CLAUDE_FALLBACKS_CHAIN_LIMIT },
+    );
+  }
+  const attempts: ClaudeWireObject[] = [];
+  for (const entry of declared.slice(0, CLAUDE_FALLBACKS_CHAIN_LIMIT)) {
+    const attempt = claudeFallbackAttempt(entry);
+    if (attempt !== undefined) attempts.push(attempt);
+  }
+  return attempts.length > 0 ? attempts : undefined;
+}
+
 export function canonicalToClaudeMessagesPayload(
   request: CanonicalRequest,
   options: { isOAuth?: boolean } = {},
@@ -749,6 +859,11 @@ export function canonicalToClaudeMessagesPayload(
   if (stringValue(userProfileId)) payload.user_profile_id = userProfileId;
   const workspaceId = controls["extension:workspace_id"];
   if (stringValue(workspaceId)) payload.workspace_id = workspaceId;
+  // Server-side `fallbacks` chain: opt-in per request via
+  // `provider_options.claude_fallbacks`. Absent by default — see the
+  // UNCONFIRMED note on `claudeFallbacksChain`.
+  const fallbacks = claudeFallbacksChain(request.provider_options);
+  if (fallbacks !== undefined) payload.fallbacks = fallbacks;
   const metadataUserId = controls["extension:metadata_user_id"];
   if (stringValue(metadataUserId)) {
     const existingMetadata = isRecord(payload.metadata) ? { ...payload.metadata } : {};
