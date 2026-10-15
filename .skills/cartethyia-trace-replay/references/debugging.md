@@ -27,6 +27,13 @@ For duplicate tools, inspect request history, tool-call ids, retry boundaries, a
 whether the adapter emitted or replayed the same call. For image failures, verify
 media type, encoding, and the provider's accepted field shape.
 
+Messages `thinking.display` is a closed set in
+`src/transport/surface/messages/parse.ts`: `summarized` and `omitted` forward
+as-is, `updates` degrades to `summarized` so the request keeps working, and
+any other value is rejected with the received value echoed in the message.
+Do not silently coerce an unknown value — surfaces downstream read the parsed
+field as authoritative.
+
 Wire normalization lives in `src/transport/translation/quirks.ts`
 (`resolveWireMaxTokens`): a caller value below `minTokens: 16` is lifted to 16
 for chat/responses/messages before any tool-floor or ceiling clamps, and the

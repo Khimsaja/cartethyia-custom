@@ -56,6 +56,19 @@ Before changing a status or timeout, trace every reader and branch that uses it.
 - The same wording *without* "switch to the other models" is an account-wide `quota_exhausted` window instead: only the extra phrase is evidence that other models still work. A 429 with no quota phrasing at all is an ordinary `rate_limit_transient`.
 - A retry must preserve the original request contract and release
   leases/resources.
+- `plan()` orders accounts already at their admission inflight ceiling behind
+  siblings with room, same as it deprioritizes cooling accounts. Saturated
+  candidates are deprioritized, not excluded, so a request still gets a 429
+  when every eligible account is genuinely busy instead of answering `503
+  accounts_unavailable`.
+- A follow-on attempt is skipped when the wall-clock left against the request
+  deadline is below the per-attempt floor; the first attempt is never guarded,
+  and the first attempt's error (with its last upstream exchange) is surfaced
+  rather than a second attempt's deadline timeout.
+- A proxy's `CONNECT` refusal with `402` or `407` is attributed to the pool
+  (typed `ProxyConnectRefusalError`), not the account dialed through it. The
+  pool is disabled; the account's health is untouched. The symmetric Buddy
+  rules above still apply to upstream `402`.
 
 ## Debug
 

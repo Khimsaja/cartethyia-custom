@@ -33,6 +33,13 @@ For OAuth, verify the real browser callback, state single-use behavior,
 persistence, refresh registration, and one real request through the account when
 safe.
 
+Credentials that arrive nameless — polished tokens, plain JWTs — are labelled
+`<providerId>-key-N` or `<providerId>-jwt-N` by `nextGeneratedAccountLabel`
+(`src/console/providers/catalog/store.ts`). Numbering is per kind and per
+provider, case-insensitive against existing labels, so pasting five keys into
+one provider yields `dcint-key-1 … dcint-key-5` instead of five identical
+"<providerId> account" rows.
+
 ## Fetch a Buddy model catalog
 
 CodeBuddy and WorkBuddy (including WorkBuddy CN) expose two different catalog
@@ -108,6 +115,21 @@ id roster and the model metadata (`id`, `name`, token limits, `supportsImages`,
 `data/provider-catalogs/buddy-live-model-catalogs-<date>.json`. Never persist
 headers, tokens, the account UID, or email. CN hosts are a separate variant and
 are not covered by that snapshot.
+## Daily check-in coordination
+
+Buddy accounts have three check-in paths and they must not race:
+
+- **Queue** (`enqueueCheckin`/`dequeueCheckin` in `src/workers/daily-checkin.ts`)
+  — bounded in-process queue of pending claims; a new account's claim is
+  parked here instead of a second timer.
+- **Sweep ride-along** (`src/workers/quota-refresh-sweep.ts`) — the sweep
+  drains the queue past the usual freshness gate, so a queued claim does not
+  wait for the next scheduled refresh.
+- **Manual** (dashboard button → `src/console/quota/account-quota-tenant.ts`)
+  — bypasses `markCheckinAttempted` on the inbound call but stamps it on the
+  way out, so a manual claim still blocks the automatic paths from a second
+  attempt in the same window.
+
 ## BYOK and custom providers
 
 Derive the wire contract from the compatibility profile. Validate base URL,
@@ -117,6 +139,12 @@ Dashboard forms submit data; they do not implement auth or routing policy.
 `resolveByokWireProfile` (`src/providers/operations/byok-wire-profile.ts`) is the
 authority. Do not re-hardcode authentication or wire-family mappings in
 registration, discovery, or connection-test paths.
+
+A newly-created custom OpenAI-/Anthropic-compatible provider defaults to
+`skipProxy: true`: `DEFAULT_PROXY_SKIP_PROVIDER_IDS` is built from the
+bundled catalog, so the "not bundled" test on the create path is what
+applies the default. An explicit `skipProxy` in a later patch still wins —
+an operator who turned proxying back on keeps it on.
 
 ## Model catalog
 
