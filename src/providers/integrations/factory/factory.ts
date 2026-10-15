@@ -78,6 +78,30 @@ function factoryClientHeaders(orgId: string): Record<string, string> {
 }
 
 /**
+ * Names the upstream provider Factory should route this request to.
+ *
+ * Without it every request takes Factory's default routing. The research
+ * (rank #8) documents the header's purpose — a selector plus rotation/region
+ * narrowing — but not the accepted value vocabulary, so the value is not
+ * pinned here: it is read from the caller's `factory_api_provider`
+ * provider_options key and passed through verbatim. An unknown value is the
+ * caller's choice to make, not ours to invent.
+ *
+ * UNCONFIRMED: accepted values and whether rotation is expressed in the same
+ * header. Settle from a captured request before relying on this for routing.
+ */
+export function factoryApiProviderHeader(
+  options: Readonly<Record<string, unknown>> | undefined,
+): Record<string, string> {
+  const value = options?.["factory_api_provider"];
+  if (typeof value !== "string" || value.length === 0) return {};
+  // A header value carrying a newline would let a caller inject one; the
+  // selector is a token, not free text.
+  if (/[\r\n\0]/.test(value)) return {};
+  return { "x-api-provider": value };
+}
+
+/**
  * The API host for this account.
  *
  * Residency is read from account `auth_state`, where the login recorded what
@@ -115,7 +139,10 @@ function factoryEnvelope(context: ProviderDispatchContext): { token: string; org
 }
 
 /** Shared spec for the two OpenAI-family legs, with the envelope applied. */
-function openAiWireSpec(context: ProviderDispatchContext): ApiKeyProviderSpec {
+function openAiWireSpec(
+  context: ProviderDispatchContext,
+  request: CanonicalRequest,
+): ApiKeyProviderSpec {
   const { token, orgId } = factoryEnvelope(context);
   return {
     provider_id: FACTORY_PROVIDER_ID,
@@ -124,7 +151,11 @@ function openAiWireSpec(context: ProviderDispatchContext): ApiKeyProviderSpec {
       responses: `${OPENAI_WIRE_BASE}/responses`,
     },
     resolveBaseUrl: () => factoryBaseUrl(context),
-    extra_headers: { ...factoryClientHeaders(orgId), authorization: `Bearer ${token}` },
+    extra_headers: {
+      ...factoryClientHeaders(orgId),
+      ...factoryApiProviderHeader(request.provider_options),
+      authorization: `Bearer ${token}`,
+    },
   };
 }
 
@@ -161,6 +192,7 @@ class FactoryDroidAdapter implements ProviderAdapter {
           secret: token,
           customHeaders: {
             ...factoryClientHeaders(orgId),
+            ...factoryApiProviderHeader(request.provider_options),
             ...filterClaudeCustomHeaders({ ...context.credential.custom_headers }),
           },
         },
@@ -181,7 +213,7 @@ class FactoryDroidAdapter implements ProviderAdapter {
     // The OpenAI-shaped legs are built per dispatch: the bearer and the org id
     // are read from the credential then, not captured when the registry
     // resolved this adapter. One spec carries both paths.
-    yield* createApiKeyAdapter(openAiWireSpec(context), this.fetchFn).dispatch(
+    yield* createApiKeyAdapter(openAiWireSpec(context, request), this.fetchFn).dispatch(
       request,
       candidate,
       context,
