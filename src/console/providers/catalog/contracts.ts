@@ -365,6 +365,40 @@ export interface SetModelEnabledRequest {
   route: string;
   enabled: boolean;
 }
+
+/**
+ * Operator-supplied metadata for a model whose limits the catalog cannot know
+ * — a manually added id, or one discovery fetched without a context size.
+ *
+ * `passthrough` is the "accept everything" escape hatch: it grants every
+ * capability at once rather than enumerating them, so the caller does not have
+ * to guess which flags a model it has never probed actually supports. It
+ * supersedes the individual flags rather than adding to them.
+ *
+ * Absent fields mean "leave the stored value alone" on update, and "derive from
+ * the catalog" on register.
+ */
+export interface ModelMetadataOverride {
+  readonly contextLimit?: number | null;
+  readonly outputLimit?: number | null;
+  /** True to grant every capability; overrides the per-flag fields below. */
+  readonly passthrough?: boolean;
+  readonly image?: boolean;
+  readonly reasoning?: boolean;
+  readonly toolCall?: boolean;
+}
+
+/** Register payload: model ids plus optional operator metadata. */
+export interface RegisterModelsRequest {
+  readonly modelIds: readonly string[];
+  readonly wireFamily?: string;
+  readonly metadata?: ModelMetadataOverride;
+}
+
+/** Update payload for one existing model row. */
+export interface UpdateModelMetadataRequest extends SetModelEnabledRequest {
+  readonly metadata?: ModelMetadataOverride;
+}
 /** Credential input accepted when provisioning a provider account. Never echoed back.
  * Concurrency is governed by Routing Strategy, not by an account field. */
 export interface CreateProviderAccountRequest {
@@ -679,7 +713,14 @@ export interface ProviderCatalogStore {
     providerId: string,
     modelIds: readonly string[],
     wireFamily?: string,
+    metadata?: ModelMetadataOverride,
   ): Promise<void>;
+  /** Edits one owned model's limits and capability flags. False for a shared row. */
+  updateModelMetadata(
+    tenantId: string,
+    providerId: string,
+    request: UpdateModelMetadataRequest,
+  ): Promise<boolean>;
   syncModels(tenantId: string, providerId: string): Promise<{ synced: number }>;
   listAccounts(tenantId: string, providerId: string): Promise<readonly ProviderAccountResponse[]>;
   listAllAccounts(tenantId: string): Promise<readonly ProviderAccountResponse[]>;

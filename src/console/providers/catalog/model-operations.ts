@@ -17,13 +17,37 @@ import type {
   ByokConnectionTestResult,
   FlatModelCatalogEntry,
   ModelCatalogEntry,
+  ModelMetadataOverride,
   ProbeAllAccountsResult,
   ProbeAllModelsResult,
   ProbeModelRequest,
   ProbeModelResult,
   SetModelEnabledRequest,
+  UpdateModelMetadataRequest,
 } from "./contracts";
 import type { ProviderCatalogConfig } from "./provider-operations";
+
+/**
+ * Rejects an operator metadata override that would poison routing.
+ *
+ * A context ceiling of zero or a negative one is worse than an unknown limit:
+ * the router would refuse or truncate every request against this model, and the
+ * failure reads as the model being broken rather than the number being wrong.
+ * `null` is the honest "unknown" and stays allowed.
+ */
+function validateModelMetadata(metadata: ModelMetadataOverride | undefined): void {
+  if (metadata === undefined) return;
+  for (const field of ["contextLimit", "outputLimit"] as const) {
+    const value = metadata[field];
+    if (value === undefined || value === null) continue;
+    if (!Number.isInteger(value) || value <= 0)
+      throw new ConsoleDomainError(
+        "invalid_request",
+        400,
+        `${field} must be a positive integer, or null for unknown`,
+      );
+  }
+}
 
 export function createModelCatalogOperations(config: ProviderCatalogConfig) {
   const operations = {
@@ -153,19 +177,45 @@ export function createModelCatalogOperations(config: ProviderCatalogConfig) {
         providerId: string,
         modelIds: readonly string[],
         wireFamily?: string,
+        metadata?: ModelMetadataOverride,
       ): Promise<{ registered: number }> {
         const a = requireTenantAnyScope(access, MODEL_WRITE_SCOPES);
         if (modelIds.length === 0)
           throw new ConsoleDomainError("invalid_request", 400, "modelIds must be non-empty");
-        await config.store.registerModels(a.tenantId, providerId, modelIds, wireFamily);
+        validateModelMetadata(metadata);
+        await config.store.registerModels(a.tenantId, providerId, modelIds, wireFamily, metadata);
         await config.auditSink?.record({
           access: a,
           action: "provider.models.registered",
           target: providerId,
-          detail: { modelIds },
+          detail: { modelIds, ...(metadata ? { metadata } : {}) },
         });
         await config.snapshotInvalidator?.invalidate();
         return { registered: modelIds.length };
+      }
+      /** Edits one owned model's limits and capability flags. */,
+    async updateModelMetadata(
+        access: AccessDecision | undefined,
+        providerId: string,
+        request: UpdateModelMetadataRequest,
+      ): Promise<{ success: boolean }> {
+        const a = requireTenantAnyScope(access, MODEL_WRITE_SCOPES);
+        validateModelMetadata(request.metadata);
+        const ok = await config.store.updateModelMetadata(a.tenantId, providerId, request);
+        if (!ok)
+          throw new ConsoleDomainError(
+            "model_not_found",
+            404,
+            `Model ${request.modelId} not found`,
+          );
+        await config.auditSink?.record({
+          access: a,
+          action: "provider.model.metadata_updated",
+          target: providerId,
+          detail: { modelId: request.modelId, route: request.route, metadata: request.metadata },
+        });
+        await config.snapshotInvalidator?.invalidate();
+        return { success: true };
       }
       /** One-shot connectivity test dispatched through the real provider adapter and
        * recorded into telemetry — never a hardcoded chat-completions shape; it reads

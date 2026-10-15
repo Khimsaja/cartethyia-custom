@@ -18,10 +18,13 @@ import { invalidateCredentialCache } from "../../../providers/operations/provide
 import { encryptCredential, hashSecret } from "../../../security/crypto";
 import type { TelemetryBatchBuffer } from "../../../observability/telemetry-buffer";
 import type { BundledProviderCatalog } from "../../../providers/operations/provider-catalog-service";
-import type { AccountInflightReading, ByokConnectionTestRequest, ByokConnectionTestResult, CreateProviderAccountBatchItemResult, CreateProviderAccountBatchResult, CreateProviderAccountRequest, CredentialMode, ModelCatalogEntry, ProbeAllAccountsResult, ProbeAllModelsResult, ProbeModelRequest, ProbeModelResult, ProviderAccountResponse, ProviderAccountTokenUsage, ProviderCatalogStore, ProviderRecord, SetModelEnabledRequest, UpdateProviderAccountRequest } from "./contracts";
+import type { AccountInflightReading, ByokConnectionTestRequest, ByokConnectionTestResult, CreateProviderAccountBatchItemResult, CreateProviderAccountBatchResult, CreateProviderAccountRequest, CredentialMode, ModelCatalogEntry, ProbeAllAccountsResult, ProbeAllModelsResult, ProbeModelRequest, ProbeModelResult, ProviderAccountResponse, ProviderAccountTokenUsage, ProviderCatalogStore, ProviderRecord, SetModelEnabledRequest, UpdateModelMetadataRequest, UpdateProviderAccountRequest, ModelMetadataOverride } from "./contracts";
 import { isServiceKind, validateCompatibilityProfile } from "./contracts";
 import { ProviderProbingService, type ProbeOutboundResolver } from "../../../providers/discovery/probing-service";
-import { resolveManualModelMetadata } from "../../../providers/provider-model-definition";
+import {
+  applyModelMetadataOverride,
+  resolveManualModelMetadata,
+} from "../../../providers/provider-model-definition";
 import { isUniqueViolation } from "../../../persistence/boot";
 import { DEFAULT_ENDPOINT_BY_WIRE_FAMILY, endpointPathForProviderModel, mapProviderRow } from "./catalog-projections";
 import { pushStructuredConsoleLog } from "../../../observability/log-ring";
@@ -202,6 +205,46 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
+}
+
+/**
+ * Adds or removes the `image` input modality on a stored modalities blob.
+ *
+ * The blob is a JSON string whose shape varies by source (bundled seed,
+ * discovery, manual add), so it is normalized rather than pattern-matched: an
+ * unparseable blob is replaced with the minimal text shape rather than left to
+ * corrupt capability preflight.
+ */
+export function withImageModality(stored: string | null | undefined, image: boolean): string {
+  const parsed = asRecord(safeParseJson(stored));
+  const input = Array.isArray(parsed?.input)
+    ? (parsed.input as unknown[]).filter((m): m is string => typeof m === "string")
+    : ["text"];
+  const output = Array.isArray(parsed?.output)
+    ? (parsed.output as unknown[]).filter((m): m is string => typeof m === "string")
+    : ["text"];
+  const nextInput = image
+    ? Array.from(new Set([...input, "image"]))
+    : input.filter((m) => m !== "image");
+  return JSON.stringify({
+    ...(parsed ?? {}),
+    input: nextInput.length > 0 ? nextInput : ["text"],
+    output: output.length > 0 ? output : ["text"],
+  });
+}
+
+function safeParseJson(value: string | null | undefined): unknown {
+  if (typeof value !== "string" || value.length === 0) return undefined;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Normalizes a text column read as `unknown` back to a string or null. */
+function asStoredText(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
 }
 
 function firstStringFrom(
@@ -546,6 +589,7 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
     providerId: string,
     modelIds: readonly string[],
     wireFamily?: string,
+    metadata?: ModelMetadataOverride,
   ): Promise<void> {
     const owner = await this.db
       .select({
@@ -586,7 +630,10 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
           modelId,
           wireFamily: family,
           endpointPath,
-          ...resolveManualModelMetadata(providerId, modelId),
+          ...applyModelMetadataOverride(
+            resolveManualModelMetadata(providerId, modelId),
+            metadata,
+          ),
           source: "manual",
           sourceUpdatedAt: new Date(),
           enabled: true,
@@ -732,6 +779,59 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
           tenantDisabledModels.endpointPath,
         ],
       });
+    return true;
+  }
+
+  /**
+   * Updates one model's limits and capability flags.
+   *
+   * Only rows the tenant owns are writable: a global/built-in model is shared,
+   * so editing it here would change routing for every tenant at once. Those are
+   * rejected as `not_found` rather than silently no-op'd.
+   *
+   * Absent override fields leave the stored value untouched — an edit that only
+   * sets the context ceiling must not reset the capability flags.
+   */
+  async updateModelMetadata(
+    tenantId: string,
+    providerId: string,
+    request: UpdateModelMetadataRequest,
+  ): Promise<boolean> {
+    const target = await this.db
+      .select({ id: models.id, modalities: models.modalities })
+      .from(models)
+      .innerJoin(providers, eq(models.providerId, providers.id))
+      .where(
+        and(
+          eq(models.providerId, providerId),
+          eq(models.modelId, request.modelId),
+          eq(models.endpointPath, request.route),
+          ownedByOnly(providers.tenantId, tenantId),
+        ),
+      )
+      .limit(1);
+    const row = target[0];
+    if (row === undefined) return false;
+
+    const override = request.metadata;
+    const set: Record<string, unknown> = { sourceUpdatedAt: new Date() };
+    if (override?.contextLimit !== undefined) set.contextLimit = override.contextLimit;
+    if (override?.outputLimit !== undefined) set.outputLimit = override.outputLimit;
+    // Passthrough grants every capability and cannot be partly revoked by a
+    // per-flag field: the point of the flag is that the operator does not know
+    // which capabilities the model has, so an explicit `false` alongside it is
+    // either stale or a mistake.
+    if (override?.passthrough === true) {
+      set.reasoning = true;
+      set.toolCall = true;
+      set.modalities = withImageModality(asStoredText(row.modalities), true);
+    } else {
+      if (override?.reasoning !== undefined) set.reasoning = override.reasoning;
+      if (override?.toolCall !== undefined) set.toolCall = override.toolCall;
+      if (override?.image !== undefined)
+        set.modalities = withImageModality(asStoredText(row.modalities), override.image);
+    }
+    await this.db.update(models).set(set).where(eq(models.id, row.id));
     return true;
   }
 

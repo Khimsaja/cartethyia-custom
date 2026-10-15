@@ -18,7 +18,9 @@ import type {
   CreateProviderAccountRequest,
   CreateProviderRequest,
   ProbeModelRequest,
+  RegisterModelsRequest,
   SetModelEnabledRequest,
+  UpdateModelMetadataRequest,
   UpdateProviderAccountRequest,
   UpdateProviderRequest,
 } from "./contracts";
@@ -93,9 +95,25 @@ const updateAccountBody = t.Object({
   status: t.Optional(literalUnion(ACCOUNT_STATUSES)),
   staticToken: t.Optional(t.Boolean()),
 });
+/**
+ * Operator-supplied limits/capabilities for a model the catalog cannot size.
+ *
+ * `passthrough` grants every capability at once and supersedes the per-flag
+ * fields, so an operator who cannot know a model's capabilities does not have
+ * to guess them one by one.
+ */
+const modelMetadataOverrideBody = t.Object({
+  contextLimit: t.Optional(t.Union([t.Integer({ minimum: 1 }), t.Null()])),
+  outputLimit: t.Optional(t.Union([t.Integer({ minimum: 1 }), t.Null()])),
+  passthrough: t.Optional(t.Boolean()),
+  image: t.Optional(t.Boolean()),
+  reasoning: t.Optional(t.Boolean()),
+  toolCall: t.Optional(t.Boolean()),
+});
 const registerModelsBody = t.Object({
   modelIds: t.Array(t.String()),
   wireFamily: t.Optional(t.String()),
+  metadata: t.Optional(modelMetadataOverrideBody),
 });
 const probeModelBody = t.Object({
   modelId: t.String(),
@@ -119,6 +137,7 @@ const setModelEnabledBody = t.Object({
   modelId: t.String(),
   route: t.String(),
   enabled: t.Boolean(),
+  metadata: t.Optional(modelMetadataOverrideBody),
 });
 const deleteModelBody = t.Object({
   modelId: t.String(),
@@ -195,12 +214,13 @@ export function createProviderCatalogRoutes(config: ProviderCatalogConfig): Elys
       "/:providerId/models",
       { body: registerModelsBody },
       async ({ request, params, body }) => {
-        const b = body as { modelIds: readonly string[]; wireFamily?: string };
+        const b = body as RegisterModelsRequest;
         return await modelFactory.registerModels(
           config.accessResolver(request),
           params.providerId,
           b.modelIds,
           b.wireFamily,
+          b.metadata,
         );
 },
     )
@@ -233,6 +253,18 @@ export function createProviderCatalogRoutes(config: ProviderCatalogConfig): Elys
       "/:providerId/models",
       { body: setModelEnabledBody },
       async ({ request, params, body }) => {
+        const b = body as UpdateModelMetadataRequest;
+        // One PATCH, two operations. A payload carrying `metadata` is an edit;
+        // one without it is the enable/disable toggle this route has always
+        // served. A separate path would split one row's mutation surface across
+        // two endpoints for no gain.
+        if (b.metadata !== undefined) {
+          return await modelFactory.updateModelMetadata(
+            config.accessResolver(request),
+            params.providerId,
+            b,
+          );
+        }
         return await modelFactory.setModelEnabled(
           config.accessResolver(request),
           params.providerId,

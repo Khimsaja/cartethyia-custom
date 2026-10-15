@@ -288,3 +288,59 @@ export function resolveManualModelMetadata(
     toolCall: true,
   };
 }
+
+/**
+ * Limits assumed when neither the catalog nor the operator supplies any.
+ *
+ * Deliberately generous: a context ceiling that is too *low* truncates a
+ * working request, while one that is too high only means the upstream rejects
+ * the call on its own terms. Chosen as a round number above every current
+ * frontier model so the fallback is never the binding constraint.
+ *
+ * A row carrying these is flagged as estimated, so the UI can say the number is
+ * a guess rather than presenting it as a fact about the model.
+ */
+export const FALLBACK_CONTEXT_LIMIT = 512_000;
+export const FALLBACK_OUTPUT_LIMIT = 131_072;
+
+/**
+ * Folds operator-supplied metadata over a resolved model's metadata.
+ *
+ * `passthrough` wins over the individual flags: it grants everything, so a
+ * caller that cannot know which capabilities a model has does not have to
+ * guess. When it is set the per-flag fields are ignored rather than merged —
+ * merging would let a stale `image: false` silently revoke what passthrough
+ * just granted.
+ */
+export function applyModelMetadataOverride(
+  base: ManualModelMetadata,
+  override: {
+    readonly contextLimit?: number | null;
+    readonly outputLimit?: number | null;
+    readonly passthrough?: boolean;
+    readonly image?: boolean;
+    readonly reasoning?: boolean;
+    readonly toolCall?: boolean;
+  } | undefined,
+): ManualModelMetadata {
+  if (override === undefined) return base;
+  const passthrough = override.passthrough === true;
+  const image = passthrough ? true : override.image;
+  const reasoning = passthrough ? true : override.reasoning;
+  const toolCall = passthrough ? true : override.toolCall;
+  return {
+    contextLimit: override.contextLimit ?? base.contextLimit,
+    outputLimit: override.outputLimit ?? base.outputLimit,
+    modalities: {
+      ...base.modalities,
+      input:
+        image === undefined
+          ? base.modalities.input
+          : image
+            ? Array.from(new Set([...base.modalities.input, "image"]))
+            : base.modalities.input.filter((m) => m !== "image"),
+    },
+    reasoning: reasoning ?? base.reasoning,
+    toolCall: toolCall ?? base.toolCall,
+  };
+}
