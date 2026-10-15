@@ -28,14 +28,6 @@ import { getCachedQuotaEntry, quotaLens } from "../../console/quota/cache";
 import type { RedisClient } from "../../persistence/redis";
 import { sharedClaudeSlowLanes } from "../../providers/integrations/claude/claude-slow-lane";
 
-function searchModelPreference(modelId: string): number {
-  const id = modelId.toLowerCase();
-  if (id === "gpt-5.6-luna" || id === "gemini-2.5-flash" || id.includes("flash-lite") || id.endsWith("-flash")) return 0;
-  if (id.includes("flash")) return 1;
-  return 2;
-}
-
-
 function parseModel(model: string): { providerId: string | null; bare: string } {
   const slash = model.indexOf("/");
   if (slash === -1) return { providerId: null, bare: model };
@@ -488,45 +480,6 @@ export class RoutingEngine {
     }
     return result;
   }
-  /**
-   * Resolves configured search providers after a model emits a search call.
-   */
-  webSearchFallbackCandidates(
-    snapshot: RouteSnapshot,
-    tenantId: string | null,
-  ): RouteCandidate[] {
-    const ranked = snapshot.candidates
-      .filter(
-        (candidate) =>
-          // A fallback source is a *search route*: a catalog row whose declared
-          // service kind is `websearch`. An `llm` row is never one, regardless
-          // of what its adapter can do — letting `llm` rows in here is what
-          // made an ordinary chat model double as a search route.
-          candidate.service_kind === "websearch" &&
-          (candidate.tenant_id == null || candidate.tenant_id === tenantId),
-      )
-      .sort((left, right) => searchModelPreference(left.model_id) - searchModelPreference(right.model_id));
-    const seenProviders = new Set<string>();
-    const unique = ranked.filter((candidate) => {
-      const provider = candidate.provider_id.toLowerCase();
-      if (seenProviders.has(provider)) return false;
-      seenProviders.add(provider);
-      return true;
-    });
-    const decisions = unique
-      .map((candidate) => this.eligibility.evaluate(candidate))
-      .filter((decision) => decision.eligible);
-    const ordered = this.applyProviderRouting(
-      [
-        ...decisions.filter((decision) => decision.reason !== "cooldown").map((decision) => decision.candidate),
-        ...decisions.filter((decision) => decision.reason === "cooldown").map((decision) => decision.candidate),
-      ],
-      snapshot,
-      tenantId,
-    );
-    return ordered;
-  }
-
   /**
    * Stamps each account with its provider's usage floor and the quota reading
    * the console last fetched, so eligibility can reject an account that has
