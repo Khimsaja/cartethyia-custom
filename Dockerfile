@@ -35,12 +35,11 @@ FROM alpine:latest
 WORKDIR /app
 
 # curl powers HEALTHCHECK; util-linux provides setpriv for non-root startup.
-RUN apk add ca-certificates curl libgcc libstdc++ util-linux \
+RUN apk add --no-cache ca-certificates curl libgcc libstdc++ util-linux \
     && addgroup -S -g 10001 cartethyia \
     && adduser -S -D -H -u 10001 -G cartethyia cartethyia \
     && mkdir -p /app/data \
-    && chown -R cartethyia:cartethyia /app \
-    && rm -rf /var/lib/apk /etc/apk/repositories
+    && chown -R cartethyia:cartethyia /app
 
 COPY --from=builder --chown=cartethyia:cartethyia /build/migrations ./migrations
 RUN test -f /app/migrations/full-postgres/0000_baseline.sql \
