@@ -178,6 +178,12 @@ export async function runAttemptLoop<TResult, TAdapter>(
   const perMemberCap =
     memberCount > 1 ? Math.max(1, Math.ceil(maxAttempts / memberCount)) : maxAttempts;
   const attemptsByMember = new Map<string, number>();
+  // Minimum wall-clock left before a follow-on attempt is worth starting. A
+  // retry repeats the whole pre-dispatch phase (credential, admission, pool
+  // slot, prepare), so it needs at least that much budget on top of whatever
+  // the upstream itself takes. Below this, the attempt would be killed by the
+  // deadline before it could return anything the client could use.
+  const MIN_RETRY_BUDGET_MS = 15_000;
   let index = 0;
   let attempts = 0;
   while (index < candidates.length && attempts < maxAttempts) {
@@ -193,6 +199,54 @@ export async function runAttemptLoop<TResult, TAdapter>(
     ) {
       index += 1;
       continue;
+    }
+    // Do not start an attempt that cannot finish. The measured pre-dispatch
+    // cost of the previous attempt (`resolveMs` ran 60s+ on a slow upstream)
+    // is what a follow-on attempt has to spend again before the upstream is
+    // even called, so a retry that begins with less than that left is a retry
+    // the deadline will kill mid-flight. Stopping here surfaces the first
+    // attempt's own error instead of a second one's timeout.
+    if (attempts > 0) {
+      const remainingMs = state.deadlineMs - Date.now();
+      if (remainingMs < MIN_RETRY_BUDGET_MS) {
+        if (lastError !== undefined && !state.completed) {
+          const terminal = classifyTerminalOutcome(lastError, state.abortController.signal);
+          const lastFired = [...firedCaptures]
+            .reverse()
+            .find((capture) => capture.request !== null);
+          await completeAttempt(state, {
+            status: terminal.status,
+            providerId: candidate.provider_id,
+            ...(candidate.provider_account_id
+              ? { accountId: candidate.provider_account_id }
+              : {}),
+            ...(candidate.provider_account_label
+              ? { accountLabel: candidate.provider_account_label }
+              : {}),
+            errorCategory: terminal.errorCategory,
+            errorOrigin: terminal.errorOrigin,
+            modelId: candidate.model_id,
+            error: lastError,
+            terminal: true,
+            tenantId: input.tenantId,
+            ingressBody: state.ingressBody,
+            responseBody: null,
+            ...(terminal.status !== "cancelled"
+              ? { clientResponseText: errorClientResponseBody(lastError) }
+              : {}),
+            // Same fallback the terminal catch uses: a request that did fire
+            // upstream keeps that exchange in Request Detail.
+            ...(lastFired ? { providerCapture: lastFired } : {}),
+            db: deps.db,
+            ...(deps.telemetryBuffer ? { telemetryBuffer: deps.telemetryBuffer } : {}),
+            ...(deps.snapshotService ? { snapshotService: deps.snapshotService } : {}),
+          });
+          metrics.proxy_requests_total.inc(1, {
+            status: terminal.status === "cancelled" ? "cancelled" : "failed",
+          });
+        }
+        throw lastError;
+      }
     }
     let lease: AdmissionLease | undefined;
     let reservation: Reservation | undefined;
