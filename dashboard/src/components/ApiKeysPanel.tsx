@@ -4,16 +4,20 @@ import {
   Pencil,
   Plus,
   RotateCw,
+  Search,
   Share2,
   ShieldOff,
   Trash2,
+  X,
 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Card, CardBody, CardHeader } from "./ui/card";
 import { Dialog } from "./ui/dialog";
 import { EmptyState, ErrorState, LoadingState } from "./ui/state";
+import { Input } from "./ui/input";
+import { filterApiKeys } from "../lib/api-key-search";
 import { Switch } from "./ui/switch";
 import { ApiKeyForm, oneTimeSecretForMode, type KeyFormInput } from "./ApiKeyForm";
 import { ApiKeySecretDialog } from "./ApiKeySecretDialog";
@@ -62,8 +66,11 @@ export function ApiKeysPanel(): ReactNode {
   const [bansOpen, setBansOpen] = useState(false);
   const [createActions, setCreateActions] = useState<ReactNode>(null);
   const [editActions, setEditActions] = useState<ReactNode>(null);
+  const [keySearch, setKeySearch] = useState("");
 
   const keys = keysQuery.data ?? [];
+  const searching = keySearch.trim().length > 0;
+  const visibleKeys = useMemo(() => filterApiKeys(keys, keySearch), [keys, keySearch]);
   // Bans are keyed on the client address, so they are cross-tenant: only a
   // platform admin may see or lift one, and the entry point is hidden for
   // everyone else. The endpoint enforces this too — the gate here is UX.
@@ -122,6 +129,35 @@ export function ApiKeysPanel(): ReactNode {
         }
       />
       <CardBody>
+        {keys.length > 0 ? (
+          <div className="flex items-center gap-3 mb-4">
+            <label className="relative flex-1">
+              <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary" aria-hidden="true" />
+              <Input
+                value={keySearch}
+                onChange={(event) => setKeySearch(event.target.value)}
+                placeholder="Search keys by name, prefix, or model…"
+                aria-label="Search API keys by name, prefix, or model"
+                className="pl-9"
+              />
+            </label>
+            {searching ? (
+              <>
+                <span className="text-badge text-text-tertiary whitespace-nowrap">
+                  {visibleKeys.length} of {keys.length}
+                </span>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  icon={<X size={13} />}
+                  onClick={() => setKeySearch("")}
+                >
+                  Clear
+                </Button>
+              </>
+            ) : null}
+          </div>
+        ) : null}
         {keysQuery.isPending && !keysQuery.data ? (
           <LoadingState label="Loading API keys…" />
         ) : keysQuery.isError && !keysQuery.data ? (
@@ -135,14 +171,25 @@ export function ApiKeysPanel(): ReactNode {
             message="Generate a secret key to authenticate your SDK or CLI client against the gateway."
             icon={<KeyRound size={20} />}
           />
+        ) : visibleKeys.length === 0 ? (
+          <EmptyState
+            title="No API keys match your search"
+            message={`No key name, prefix, or model matches "${keySearch.trim()}".`}
+            icon={<Search size={20} />}
+            action={
+              <Button variant="secondary" size="sm" onClick={() => setKeySearch("")}>
+                Clear search
+              </Button>
+            }
+          />
         ) : (
           // The key list is the tallest thing on the page; bounding it keeps the
           // page chrome in place and scrolls only the rows, like the sidebar.
           <div className="scroll-region max-h-280 pr-1">
           <SortableList
-            items={keys}
+            items={visibleKeys}
             label="API credentials"
-            disabled={reorderKeys.isPending}
+            disabled={searching || reorderKeys.isPending}
             onReorder={(ids) =>
               reorderKeys.mutate(ids, {
                 onError: (error) =>
@@ -158,8 +205,8 @@ export function ApiKeysPanel(): ReactNode {
                     <strong className="text-body">
                       {key.label || "Unnamed credential"}
                     </strong>
-                    <Badge tone={key.revokedAt ? "err" : key.enabled ? "ok" : "warn"}>
-                      {key.revokedAt ? "revoked" : key.enabled ? "enabled" : "disabled"}
+                    <Badge tone={key.revokedAt ? "err" : key.expiresAt !== undefined && new Date(key.expiresAt).getTime() <= Date.now() ? "err" : key.enabled ? "ok" : "warn"}>
+                      {key.revokedAt ? "revoked" : key.expiresAt !== undefined && new Date(key.expiresAt).getTime() <= Date.now() ? "expired" : key.enabled ? "enabled" : "disabled"}
                     </Badge>
                     <Badge tone={key.keyMode === "share" ? "accent" : "default"}>
                       {key.keyMode === "share" ? "share template" : "personal"}
@@ -207,6 +254,12 @@ export function ApiKeysPanel(): ReactNode {
                         ? (key.modelList?.length ?? 0)
                         : key.modelList?.length ? key.modelList.length : "All"}
                     </span>
+                    {key.expiresAt !== undefined ? (
+                      <span className="inline-flex items-center gap-2.5 px-3.5 py-1 border border-inner-border rounded-chip bg-surface-1 text-text-secondary text-badge leading-normal whitespace-nowrap max-medium:justify-between">
+                        <span className="text-text-tertiary text-micro font-semibold uppercase tracking-label">{new Date(key.expiresAt).getTime() <= Date.now() ? "Expired" : "Expires"}</span>
+                        {new Date(key.expiresAt).toLocaleString()}
+                      </span>
+                    ) : null}
                   </div>
                 </div>
                 <div className="flex gap-3 shrink-0 flex-wrap">
@@ -396,6 +449,7 @@ export function ApiKeysPanel(): ReactNode {
       />
 
       {bansOpen ? <ModelBansDialog onClose={() => setBansOpen(false)} /> : null}
+
 
       <ApiKeySecretDialog secret={revealedSecret} onClose={() => setRevealedSecret(null)} />
 

@@ -50,6 +50,8 @@ test("each backend has matching baseline and incremental migrations", () => {
     "0006_add_buddy_task_ledger.sql",
     "0007_add_telemetry_payload_capture_state.sql",
     "0008_add_models_route_unique_index.sql",
+    "0009_model_templates.sql",
+    "0010_api_key_expires_at.sql",
   ];
   expect(postgres).toEqual(expected);
   expect(sqlite).toEqual(expected);
@@ -154,6 +156,87 @@ test("SQLite migration upgrades existing databases to allow multiple shared keys
       .query("SELECT count(*) AS count FROM api_keys WHERE parent_key_id = 'template' AND revoked_at IS NULL")
       .get() as { count: number };
     expect(children.count).toBe(2);
+  } finally {
+    sqlite.close();
+  }
+});
+
+test("SQLite migrations keep the models route unique index after the wire-family rebuild", async () => {
+  const sqlite = createSqliteDatabase(":memory:");
+  try {
+    await applySqliteMigrations(sqlite);
+    const indexes = sqlite
+      .query("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'models'")
+      .all() as Array<{ name: string }>;
+    expect(indexes.map((index) => index.name)).toContain("models_provider_model_route_uidx");
+    expect(indexes.map((index) => index.name)).toContain("models_provider_enabled_idx");
+
+    // The rebuilt table accepts the widened wire family, and the restored
+    // unique index is what the bundled-model seed's ON CONFLICT relies on.
+    sqlite.exec("INSERT INTO providers (id, enabled) VALUES ('gemini', 1)");
+    sqlite.exec(
+      "INSERT INTO models (id, provider_id, model_id, wire_family, endpoint_path) VALUES ('m1', 'gemini', 'gemini-x', 'gemini', '/generate')",
+    );
+    expect(() =>
+      sqlite.exec(
+        "INSERT INTO models (id, provider_id, model_id, wire_family, endpoint_path) VALUES ('m2', 'gemini', 'gemini-x', 'gemini', '/generate')",
+      ),
+    ).toThrow();
+  } finally {
+    sqlite.close();
+  }
+});
+
+test("SQLite migrations add model templates and detach keys on template delete", async () => {
+  const sqlite = createSqliteDatabase(":memory:");
+  try {
+    await applySqliteMigrations(sqlite);
+    sqlite.exec("PRAGMA foreign_keys = ON");
+    const tables = sqlite
+      .query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'model_templates'")
+      .all() as Array<{ name: string }>;
+    expect(tables.map((table) => table.name)).toEqual(["model_templates"]);
+    const templateIndexes = sqlite
+      .query("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'model_templates'")
+      .all() as Array<{ name: string }>;
+    expect(templateIndexes.map((index) => index.name)).toContain("model_templates_tenant_name_uidx");
+    const keyColumns = sqlite
+      .query("SELECT name FROM pragma_table_info('api_keys') WHERE name = 'model_template_id'")
+      .all() as Array<{ name: string }>;
+    expect(keyColumns).toEqual([{ name: "model_template_id" }]);
+
+    sqlite.exec("INSERT INTO tenants (id, name, status) VALUES ('tenant', 'Test', 'active')");
+    sqlite.exec(
+      "INSERT INTO model_templates (id, tenant_id, name, models) VALUES ('tpl-1', 'tenant', 'Preset', '[\"m1\"]')",
+    );
+    // Name uniqueness is per tenant: the same (tenant, name) pair is rejected.
+    expect(() =>
+      sqlite.exec(
+        "INSERT INTO model_templates (id, tenant_id, name, models) VALUES ('tpl-2', 'tenant', 'Preset', '[]')",
+      ),
+    ).toThrow();
+    sqlite.exec(
+      "INSERT INTO api_keys (id, tenant_id, key_mode, key_hash, label, scopes, model_template_id) " +
+        "VALUES ('key-1', 'tenant', 'personal', 'hash-1', 'Key', '[]', 'tpl-1')",
+    );
+    sqlite.exec("DELETE FROM model_templates WHERE id = 'tpl-1'");
+    const key = sqlite
+      .query("SELECT model_template_id FROM api_keys WHERE id = 'key-1'")
+      .get() as { model_template_id: string | null };
+    expect(key.model_template_id).toBeNull();
+  } finally {
+    sqlite.close();
+  }
+});
+
+test("SQLite migrations add the api_keys expiry column", async () => {
+  const sqlite = createSqliteDatabase(":memory:");
+  try {
+    await applySqliteMigrations(sqlite);
+    const columns = sqlite
+      .query("SELECT name FROM pragma_table_info('api_keys') WHERE name = 'expires_at'")
+      .all() as Array<{ name: string }>;
+    expect(columns).toEqual([{ name: "expires_at" }]);
   } finally {
     sqlite.close();
   }

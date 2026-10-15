@@ -6,6 +6,7 @@
 import type { AuditSink } from "../audit/contracts";
 import { randomBytes } from "node:crypto";
 import type { ApiKeyRecord, ApiKeyStore } from "../../persistence/stores/api-key-store";
+import type { DrizzleModelTemplateStore } from "../../persistence/stores/model-template-store";
 import { hashSecret } from "../../security/crypto";
 import { type ShareLinkStore, type ShareLinkSummary } from "../../persistence/stores/share-store";
 import { API_KEY_MODES, type ApiKeyMode, type ApiKeyModelAccessMode, type ShareLinkKind } from "../../persistence/schema";
@@ -49,7 +50,35 @@ export interface CreateApiKeyRequest {
   monthlyTokenLimit?: number | null;
   lifetimeTokenBudget?: number | null;
   maxConcurrentRequests?: number | null;
+  /**
+   * Hard expiry as an ISO timestamp for time-boxed keys (e.g. a subscription
+   * key that dies 30 days after issue). `null` clears a previously set expiry
+   * on update; omitting it leaves any stored expiry unchanged.
+   */
+  expiresAt?: string | null;
+  /**
+   * Duration-based alternative to `expiresAt`, for automation that thinks in
+   * subscription lengths ("30 days", "12 hours") rather than absolute
+   * timestamps. The two fields sum; combining either with an explicit
+   * `expiresAt` in the same request is rejected.
+   */
+  expiresInDays?: number | null;
+  expiresInHours?: number | null;
+  /**
+   * Update-only: pushes the key's existing expiry out by this duration
+   * instead of replacing it, so a renewal never changes the buyer's key and
+   * never shortens time they already paid for — the base is the later of now
+   * and the stored expiry. Rejected on create and for keys with no expiry.
+   */
+  extendByDays?: number;
+  extendByHours?: number;
   modelPrefix?: string;
+  /**
+   * The model template this key mirrors. On create, a string links the new
+   * key to that template; on update, a string links (or re-links) and `null`
+   * detaches. Omitting the field leaves any existing link untouched.
+   */
+  modelTemplateId?: string | null;
   modelAccessMode?: ApiKeyModelAccessMode;
   modelList?: readonly string[];
   /** Client-router ids this key refuses; see `client-router-fingerprint.ts`. */
@@ -84,6 +113,8 @@ export interface ApiKeyResponse {
   readonly monthlyTokenLimit?: number;
   readonly lifetimeTokenBudget?: number;
   readonly modelPrefix?: string;
+  /** Template this key mirrors, when it was provisioned from one. */
+  readonly modelTemplateId?: string;
   readonly modelAccessMode?: ApiKeyModelAccessMode;
   readonly modelList?: readonly string[];
   readonly clientRouterDenylist?: readonly string[];
@@ -98,6 +129,8 @@ export interface ApiKeyResponse {
   readonly sharePopupBody?: string;
   readonly createdAt: string;
   readonly revokedAt?: string;
+  /** ISO expiry for time-boxed keys; absent when the key never expires. */
+  readonly expiresAt?: string;
   readonly tokensConsumed: number;
 }
 /** Creation result; plaintext is returned only when a personal key is minted. */
@@ -134,6 +167,12 @@ export interface ApiKeyConfig {
     keyId: string,
     now: Date,
   ) => Promise<{ daily: number; monthly: number }>;
+  /**
+   * Tenant-scoped template lookup used to validate a key's template link.
+   * Optional: without it, requests that name a template are rejected, since
+   * an unvalidated link would let one tenant pin keys to another's template.
+   */
+  readonly modelTemplateStore?: Pick<DrizzleModelTemplateStore, "get">;
 }
 
 /** Result of minting a share link. The bearer token is returned exactly once. */
@@ -278,6 +317,46 @@ export function validateApiKeyRequest(request: CreateApiKeyRequest): readonly Ac
   finitePositive(request.monthlyTokenLimit, "monthlyTokenLimit");
   finitePositive(request.lifetimeTokenBudget, "lifetimeTokenBudget");
   finitePositive(request.maxConcurrentRequests, "maxConcurrentRequests");
+  if (request.expiresAt !== undefined && request.expiresAt !== null) {
+    // Fail closed on a malformed timestamp: an unparseable expiry that
+    // persisted anyway would read as "never expires" on the auth path.
+    if (typeof request.expiresAt !== "string" || Number.isNaN(new Date(request.expiresAt).getTime())) {
+      throw new ConsoleDomainError(
+        "invalid_expiry",
+        400,
+        "expiresAt must be a valid ISO timestamp",
+      );
+    }
+  }
+  finitePositive(request.expiresInDays, "expiresInDays");
+  finitePositive(request.expiresInHours, "expiresInHours");
+  finitePositive(request.extendByDays, "extendByDays");
+  finitePositive(request.extendByHours, "extendByHours");
+  if (
+    request.expiresAt != null &&
+    (request.expiresInDays != null || request.expiresInHours != null)
+  ) {
+    throw new ConsoleDomainError(
+      "invalid_expiry",
+      400,
+      "expiresAt cannot be combined with expiresInDays/expiresInHours",
+    );
+  }
+  const requestedHours =
+    (request.expiresInDays ?? 0) * 24 +
+    (request.expiresInHours ?? 0) +
+    (request.extendByDays ?? 0) * 24 +
+    (request.extendByHours ?? 0);
+  // A duration past ~10 years is a data-entry error, not a subscription;
+  // rejecting it keeps a stray unit slip (days typed as hours, x24) from
+  // minting an effectively permanent key against the operator's intent.
+  if (requestedHours > 24 * 366 * 10) {
+    throw new ConsoleDomainError(
+      "invalid_expiry",
+      400,
+      "expiry duration must not exceed 10 years",
+    );
+  }
   parseSharePopupImage(request.sharePopupImage);
   if (request.sharePopupTitle != null && request.sharePopupTitle.length > 120) {
     throw new ConsoleDomainError("invalid_share_popup", 400, "Share popup title is too long");
@@ -361,6 +440,7 @@ export function sanitizeApiKeyResponse(record: ApiKeyRecord): ApiKeyResponse {
     ...(record.lifetimeTokenBudget === undefined ? {} : { lifetimeTokenBudget: record.lifetimeTokenBudget }),
     ...(record.maxConcurrentRequests === undefined ? {} : { maxConcurrentRequests: record.maxConcurrentRequests }),
     ...(record.modelPrefix === undefined ? {} : { modelPrefix: record.modelPrefix }),
+    ...(record.modelTemplateId === undefined ? {} : { modelTemplateId: record.modelTemplateId }),
     ...(record.modelAccessMode === undefined ? {} : { modelAccessMode: record.modelAccessMode }),
     ...(record.modelList === undefined ? {} : { modelList: record.modelList }),
     ...(record.clientRouterDenylist === undefined
@@ -368,6 +448,7 @@ export function sanitizeApiKeyResponse(record: ApiKeyRecord): ApiKeyResponse {
       : { clientRouterDenylist: record.clientRouterDenylist }),
     createdAt: record.createdAt.toISOString(),
     ...(record.revokedAt === undefined ? {} : { revokedAt: record.revokedAt.toISOString() }),
+    ...(record.expiresAt === undefined ? {} : { expiresAt: record.expiresAt.toISOString() }),
     tokensConsumed: record.tokensConsumed,
   };
 }
@@ -376,6 +457,17 @@ export function parseRequest(value: unknown): CreateApiKeyRequest {
   if (typeof value !== "object" || value === null)
     throw new ConsoleDomainError("invalid_request", 400, "Request body must be an object");
   return value as CreateApiKeyRequest;
+}
+
+/**
+ * Resolves the expiry to persist at key creation: an explicit `expiresAt`
+ * wins; otherwise the summed `expiresInDays`/`expiresInHours` duration is
+ * measured from now. `undefined` means the key never expires.
+ */
+export function resolveCreateExpiresAt(request: CreateApiKeyRequest): Date | undefined {
+  if (request.expiresAt != null) return new Date(request.expiresAt);
+  const hours = (request.expiresInDays ?? 0) * 24 + (request.expiresInHours ?? 0);
+  return hours > 0 ? new Date(Date.now() + hours * 3_600_000) : undefined;
 }
 
 /** Maps a persisted share link to the console response (ISO timestamps, no token). */
