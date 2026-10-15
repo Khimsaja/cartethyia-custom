@@ -4,10 +4,30 @@ import type { CartethyiaDatabase } from "../../../persistence/db-handle";
 import { providerRoutingSettings } from "../../../persistence/schema";
 import { resolveTenantOverride } from "../../../persistence/tenant-scope";
 import { DEFAULT_PROXY_SKIP_PROVIDER_IDS } from "../../../providers/provider-metadata";
+import { isBundledProviderId } from "../../../providers/provider-contracts";
 import type { ProviderRoutingResponse, UpdateProviderRoutingRequest } from "../catalog/contracts";
 import { DEFAULT_PROVIDER_MAX_INFLIGHT } from "../../../persistence/schema";
 import { buildClaudeCliUserAgent } from "../../../providers/operations/custom-cli-headers";
 import type { ProviderDetailStore } from "./contracts";
+/**
+ * Whether a provider should start with proxying skipped.
+ *
+ * Bundled providers opt in through their own metadata (`defaultSkipProxy`).
+ * A custom (BYOK) compatible provider cannot: its id is chosen at creation
+ * time, so it is absent from `DEFAULT_PROXY_SKIP_PROVIDER_IDS` — a set built
+ * from the bundled catalog alone — and every one of them started with
+ * `skipProxy: false`. Those upstreams are the operator's own endpoint, reached
+ * over plain HTTP/S by an OpenAI- or Anthropic-compatible client, which is the
+ * case the flag exists for; making the operator discover it after the first
+ * failures is the wrong default.
+ *
+ * Only the initial value. An explicit `skipProxy` in a patch always wins, so
+ * an operator who turned it back on keeps it on.
+ */
+export function defaultSkipProxy(providerId: string): boolean {
+  return DEFAULT_PROXY_SKIP_PROVIDER_IDS.has(providerId) || !isBundledProviderId(providerId);
+}
+
 function mapRow(row: typeof providerRoutingSettings.$inferSelect): ProviderRoutingResponse {
   return {
     providerId: row.providerId,
@@ -70,7 +90,7 @@ export class DrizzleProviderDetailStore implements ProviderDetailStore {
       usageFloor: null,
       usageFloorUnit: "percent",
       enabled: false,
-      skipProxy: DEFAULT_PROXY_SKIP_PROVIDER_IDS.has(providerId),
+      skipProxy: defaultSkipProxy(providerId),
       userAgent: buildClaudeCliUserAgent(),
     };
   }
@@ -91,7 +111,7 @@ export class DrizzleProviderDetailStore implements ProviderDetailStore {
       usageFloor: patch.usageFloor ?? null,
       usageFloorUnit: patch.usageFloorUnit ?? "percent",
       enabled: patch.enabled ?? false,
-      skipProxy: patch.skipProxy ?? DEFAULT_PROXY_SKIP_PROVIDER_IDS.has(providerId),
+      skipProxy: patch.skipProxy ?? defaultSkipProxy(providerId),
       userAgent: patch.userAgent ?? buildClaudeCliUserAgent(),
     };
     const setClause: Record<string, unknown> = {};
