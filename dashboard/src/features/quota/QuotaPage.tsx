@@ -256,10 +256,10 @@ function DailyGrowthActions({
 
   return (
     <div
-      className="flex min-w-0 flex-wrap items-center gap-2.5"
+      className="flex w-full min-w-0 flex-wrap items-center justify-between gap-2.5"
       aria-label="Daily growth actions"
     >
-      <div className="min-w-0 w-full max-w-67.5">
+      <div className="min-w-0 w-67.5">
         <Select
           aria-label="Provider for the daily growth pass"
           value={activeId}
