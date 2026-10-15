@@ -18,11 +18,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 ### Changed
 
 - Newly issued personal API keys use `carte_` followed by 12 random characters;
-  share templates issue `sh-carte_` keys, upgrading the legacy `rk_` prefix.
 - PostgreSQL and SQLite now ship only a complete baseline. Existing databases
   with retired migration history must be recreated and recovered through
   backup/restore; startup rejects in-place upgrades. Restore maps retired
   routing and pool fields/values into the current schema.
+- A chat turn is dispatched once, to the route its model selects. The gateway
+  no longer executes a model-emitted `web_search` call against a configured
+  search provider: a hosted search declaration is forwarded to the upstream
+  that owns it, and `POST /v1/search` on a `websearch` catalog row is the only
+  way to run a search.
 
 ### Fixed
 
