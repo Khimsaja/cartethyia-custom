@@ -1,7 +1,7 @@
 /**
  * Canonical → Claude Messages request builder.
  */
-import type { CanonicalRequest, ContentPart } from "../canonical-model";
+import { allParts, type CanonicalRequest, type ContentPart } from "../canonical-model";
 import { buildAnthropicThinkingPayload } from "../../providers/provider-reasoning";
 import { anthropicCacheControl } from "../../transport/translation/cache-controls";
 import {
@@ -26,6 +26,7 @@ import {
   splitDataUrl,
 } from "../codecs";
 import { log } from "../../observability/logger";
+import { base64DecodedByteLength, clampImage } from "../image-clamp";
 import { clampReasoningEffort, claudeUsesAdaptiveThinking, LEVEL_TO_BUDGET, resolveSupportedReasoningEfforts } from "../../transport/translation/thinking";
 import { claudeResponseToEvents, parseClaudeSseStream } from "../response/messages";
 
@@ -73,6 +74,77 @@ function normalizeAnthropicImageMediaType(mediaType: string): string {
     return mediaType;
   }
   return normalized;
+}
+
+/**
+ * Placeholder substituted for an image block the clamp refuses to send.
+ *
+ * A `reject` decision means the block would be accepted and then poison every
+ * retry and every later turn that replays the history. Dropping it silently
+ * would leave the model answering a question whose attachment is gone, so the
+ * block is replaced by visible text — the same degrade-to-placeholder shape the
+ * `audio` case below uses for a part this wire cannot encode.
+ */
+function clampedImagePlaceholder(): ClaudeWireObject {
+  return { type: "text", text: "[image omitted: over the provider size limit]" };
+}
+
+/**
+ * Reads a declared pixel dimension (`width`/`height`) off an image payload.
+ *
+ * No wire this gateway speaks carries one — an Anthropic `source` has only
+ * `type`/`media_type`/`data` and an OpenAI `image_url` only `url`/`detail` — so
+ * this is a courtesy read for a client that declares it anyway. Both plausible
+ * declaration sites are checked: the payload itself and its nested `source`.
+ */
+function declaredDimension(payload: unknown, key: "width" | "height"): number | undefined {
+  if (!isRecord(payload)) return undefined;
+  const direct = payload[key];
+  if (typeof direct === "number" && Number.isFinite(direct)) return direct;
+  const source = payload["source"];
+  if (isRecord(source)) {
+    const nested = source[key];
+    if (typeof nested === "number" && Number.isFinite(nested)) return nested;
+  }
+  return undefined;
+}
+
+/**
+ * Applies the shared pre-send image clamp to an already-projected block.
+ *
+ * Only inline bytes are measurable here: a `url` or `file` source carries no
+ * payload in this request, so it is forwarded untouched rather than refused for
+ * being unmeasurable. Dimensions are honoured when the origin declared them.
+ */
+function applyImageClamp(
+  block: ClaudeWireObject,
+  imageCount: number,
+  payload: unknown,
+): ClaudeWireObject {
+  const source = block["source"];
+  const data = isRecord(source) ? source["data"] : undefined;
+  const width = declaredDimension(payload, "width");
+  const height = declaredDimension(payload, "height");
+  const decision = clampImage({
+    ...(typeof data === "string" ? { bytes: base64DecodedByteLength(data) } : {}),
+    ...(width === undefined ? {} : { width }),
+    ...(height === undefined ? {} : { height }),
+    imageCount,
+  });
+  if (decision.action === "pass") return block;
+  log.warn(
+    decision.action === "reject"
+      ? "claude: image block over the send limit, omitted"
+      : "claude: image block over the dimension limit, omitted (no re-encode in the router)",
+    {
+      action: decision.action,
+      reason: decision.reason,
+      max_dimension_px: decision.maxDimensionPx,
+      max_bytes: decision.maxBytes,
+      image_count: imageCount,
+    },
+  );
+  return clampedImagePlaceholder();
 }
 
 /**
@@ -203,13 +275,22 @@ function anthropicDocumentSource(
 
 function partToClaudeBlock(
   part: ContentPart,
-  ctx?: { seen: Map<string, number>; idMap: Map<string, string>; isOAuth: boolean },
+  ctx?: {
+    seen: Map<string, number>;
+    idMap: Map<string, string>;
+    isOAuth: boolean;
+    imageCount: number;
+  },
 ): ClaudeWireObject | undefined {
   switch (part.kind) {
     case "text":
       return { type: "text", text: toWellFormedString(part.text) };
     case "image":
-      return normalizeImageBlock(part.payload);
+      return applyImageClamp(
+        normalizeImageBlock(part.payload),
+        ctx?.imageCount ?? 1,
+        part.payload,
+      );
     case "file":
       return {
         type: "document",
@@ -365,7 +446,10 @@ export function canonicalToClaudeMessagesPayload(
 ): ClaudeWireObject {
   const seen = new Map<string, number>();
   const idMap = new Map<string, string>();
-  const ctx = { seen, idMap, isOAuth: options.isOAuth ?? false };
+  // The clamp's per-image ceiling depends on how many images the whole request
+  // carries, so it is counted once over every part rather than per message.
+  const imageCount = allParts(request).filter((part) => part.kind === "image").length;
+  const ctx = { seen, idMap, isOAuth: options.isOAuth ?? false, imageCount };
   const messages: ClaudeWireObject[] = [];
   // Anthropic accepts system content only at the top level. Chat `developer`
   // turns and Responses `instructions` have no `developer` role upstream, and
