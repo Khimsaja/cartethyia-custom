@@ -374,7 +374,7 @@ export class ClaudeAdapter implements ProviderAdapter {
         sendOnce,
         headers,
         body,
-        creditSent ? creditKey : undefined,
+        creditSent ? undefined : creditKey,
       );
       if (creditSent) {
         // One-shot spend. The donor consumes the handle once a turn is served
@@ -459,9 +459,9 @@ export class ClaudeAdapter implements ProviderAdapter {
    * `stop_reason` is `error` (`mapClaudeStopReason`, `response/messages.ts:32-34`)
    * carrying the provider's `stop_details`.
    *
-   * `captureKey` is omitted for a redemption send: the token is bound to the
-   * caller's own body, and a body carrying a spent token is never reproduced,
-   * so banking against it would only occupy a cache slot for five minutes.
+   * `captureKey` is omitted for a redemption send: a body already carrying a
+   * token is never the body that was refused, so banking against it would only
+   * occupy a cache slot for five minutes with a token that cannot be replayed.
    */
   private async *sendWithCreditCapture(
     sendOnce: (
