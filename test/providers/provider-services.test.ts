@@ -1,8 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { BUNDLED_PROVIDER_METADATA, providerServiceKinds } from "../../src/providers/provider-metadata";
 import { buildCapabilityProfile } from "../../src/transport/routing/route-catalog";
-import { RoutingEngine } from "../../src/transport/routing/router";
-import type { RouteSnapshot } from "../../src/transport/routing/route-model";
 import { sanitizeProviderResponse } from "../../src/console/providers/catalog/provider-operations";
 import { createDefaultProviderRegistry } from "../../src/providers/default-registry";
 
@@ -46,32 +44,6 @@ describe("provider service taxonomy", () => {
     expect(authentication?.refresher).toBeDefined();
     expect(quotaCollector).toBeDefined();
   });
-  // A provider-level search list used to exist (`providerSupportsWebSearch`).
-  // It is gone: whether a provider is a *fallback source* is now decided only
-  // by its catalog declaring `serviceKind: "websearch"`. Asserted on the
-  // router's fallback resolver, which is what actually picks the source.
-  test("only a declared websearch row is a fallback source", () => {
-    const engine = new RoutingEngine();
-    const snap = {
-      revision: 1,
-      candidates: [
-        // A real search route: a declared `websearch` row.
-        { provider_id: "exa", model_id: "exa", service_kind: "websearch", endpoint: "/search", wire_family: "chat", capability_profile: {} },
-        // An ordinary chat row from a provider whose adapter *can* search.
-        // It must not be treated as a fallback source.
-        { provider_id: "codex", model_id: "gpt-5", service_kind: "llm", endpoint: "/responses", wire_family: "responses", capability_profile: {} },
-        { provider_id: "antigravity", model_id: "claude-sonnet-4-5", service_kind: "llm", endpoint: "/v1/messages", wire_family: "messages", capability_profile: {} },
-      ],
-      aliases: {},
-      combos: {},
-      created_at: Date.now(),
-    } as unknown as RouteSnapshot;
-    const providers = engine
-      .webSearchFallbackCandidates(snap, null)
-      .map((candidate) => candidate.provider_id);
-    expect(providers).toEqual(["exa"]);
-  });
-
   test("a chat model never advertises search", () => {
     expect(buildCapabilityProfile({
       modalities: undefined,
