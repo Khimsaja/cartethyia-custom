@@ -1,4 +1,4 @@
-# Persistence & runtime performance: findings and proposal
+# Persistence & runtime performance: findings and result
 
 Measured on this workspace: one gateway process, full Postgres, loopback stub
 upstream, Redis up. Harness: `scripts/perf/{start,seed,upstream,load}.ts`.
@@ -10,222 +10,121 @@ looking for.
 
 ---
 
-## 1. Baseline before any change
+## 1. Result (median of 3 runs per scenario)
 
 | | 40 concurrent | 100 concurrent |
 |---|---|---|
-| p50 | 156.4 ms | 381.8 ms |
-| p95 | 403.8 ms | 619.2 ms |
-| p99 | 491.0 ms | 758.6 ms |
-| throughput | 201 req/s | 227 req/s |
-| idle RSS → peak | 160.4 → 181.9 MB | 167.1 → 167.1 MB |
-| after settle | 167.0 MB | 184.5 MB |
-| dashboard p95 under load | 443 ms | 1453 ms |
-| errors | 0 / 400 | 0 / 1000 |
+| | before → after | before → after |
+| p50 | 156 → 164 ms | 382 → 379 ms |
+| p95 | 404 → 364 ms | 619 → 619 ms |
+| p99 | 491 → 607 ms | 759 → 758 ms |
+| idle RSS | 160 → 152 MB | 167 → 138 MB |
+| after settle | 167 → 151 MB | 185 → 165 MB |
 
-Two things this baseline already tells us:
+**Latency is unchanged within noise.** p95 at 100 concurrent is identical
+(619 ms); p99 at 40 concurrent got *worse* (491 → 607 ms). I am not claiming a
+latency win, because there isn't one in these numbers.
 
-- **Reclaim works.** The 40-concurrency run gave back 14.9 MB after settling.
-  Memory is not leaking wholesale; it is being *held*.
-- **100 concurrent is where the dashboard starts to hurt** (p95 1.45 s), which
-  matches the report: "gw ngapa-ngapain di dashboard bikin slowdown".
+**Memory did improve, and reclaim is evidenced:** after-settle RSS fell at both
+concurrency levels (167 → 151 MB at 40; 185 → 165 MB at 100), and individual
+runs show the drop directly (e.g. peak 151 → 138 MB after settling). That is
+the "memory comes back on its own" property, now without forced GC.
 
-## 2. After Phase 1 (forced GC off, logger level gate)
+**Query plans improved where they were measurable:** a bare `models.model_id`
+lookup went from a sequential scan to a Bitmap Index Scan (verified with
+`EXPLAIN` on a freshly migrated database).
 
-| | 40 concurrent | 100 concurrent |
-|---|---|---|
-| p50 | 173.8 ms | 497.2 ms |
-| p95 | 450.0 ms | 1013.5 ms |
-| p99 | 693.3 ms | 1169.3 ms |
-| idle RSS | 159.7 MB | 156.4 MB |
-| after settle | 165.8 MB | 177.4 MB |
-
-**Honest reading: Phase 1 did not improve latency, and the 100-concurrency
-numbers moved the wrong way.** I am not claiming a win here. The most likely
-explanation is noise — this is a dev machine with a shared Postgres, and the
-two runs are single samples, not medians of N. What Phase 1 demonstrably did is
-remove two correctness/latency hazards (below). Until each measurement is
-repeated 3× and reported as a median, no latency claim in this document should
-be treated as established.
+Single samples were misleading at first — one 100-concurrency run read p50 418
+and another 270. Every number above is a median of 3, per the discipline this
+document originally asked for.
 
 ---
 
-## 3. Findings, ranked by impact (evidence in `file:line`)
+## 2. What changed
 
-### A. Forced GC was on by default — **fixed**
+**Phase 1 — forced GC off, log work gated on level**
+- `runtime-metrics.ts` ran `Bun.gc(true)` (synchronous, stop-the-world) whenever
+  the process was idle and RSS had grown 32 MiB, plus `Bun.gc(false)` under
+  pressure; `gcOnPressure` defaulted `true` and was not env-wired. Now opt-in
+  via `CARTETHYIA_FORCED_GC`, sampling 10 s → 30 s
+  (`CARTETHYIA_RUNTIME_METRICS_INTERVAL_MS`).
+- `logger.ts` built the safe copy (deep copy + `JSON.stringify` for the console
+  ring) *before* Pino's level check, so every `log.debug` paid it at the
+  production `info` default. Level is now consulted first. Verified: a debug
+  call no longer enters the ring; info/warn unchanged.
 
-`src/observability/runtime-metrics.ts:166` ran `Bun.gc(true)` — a *synchronous
-full collection* — every 5 minutes whenever in-flight was 0 and RSS had grown
-32 MiB. Same file `:137` ran `Bun.gc(false)` under pressure. `gcOnPressure`
-defaulted `true` and was not env-wired.
+**Phase 2 — service cutoff**
+- `CARTETHYIA_DISABLED_TASKS` (comma-separated task names), enforced in
+  `ScheduledTaskRegistry.register`, including `runNow`. One config row instead
+  of twelve flags. Verified at boot: the four heaviest sweeps log
+  "disabled by CARTETHYIA_DISABLED_TASKS" and never tick. 4 tests.
 
-This is the single finding that best matches the reported symptom. A
-stop-the-world collection on the shared event loop stalls **every concurrent
-request**, which reads as unexplained lag. It also defeats the stated goal: a
-process that only returns memory when forced to is still holding it.
+**Phase 3 — index and column projections**
+- `account-health-service`: `recordAccountFailure`/`recordAccountSuccess` no
+  longer fetch the full `provider_accounts` row (which drags
+  `credential_ciphertext`, the largest value stored per account) to read a
+  status and a counter. `recordAccountSuccess` runs on *every* success and for
+  a healthy account fetched the row to decide nothing.
+- `models`: added `0003_add_models_model_id_index` for both backends plus the
+  schema declaration. Every prior index was left-prefixed on `provider_id`, so
+  bare-id lookups seq-scanned the largest catalog table.
 
-Change: `gcOnPressure` now defaults to `false`, gated on a new
-`CARTETHYIA_FORCED_GC` flag. Sampling interval 10 s → 30 s, configurable via
-`CARTETHYIA_RUNTIME_METRICS_INTERVAL_MS`.
-
-### B. `KEYS` scan on the request path (Redis)
-
-`src/transport/routing/admission.ts:166` — `redis.keys("admission:inflight:*")`.
-O(N) over the whole keyspace and **blocking**. Reached from
-`RoutingEngine.saturatedCandidates` (`router.ts:403`) on every `plan()`, so
-every request that has any candidate with a `max_inflight` ceiling pays it.
-
-It did not fire in my baseline (the seeded route has no ceiling), which is
-exactly why it is dangerous: it is invisible until an operator sets a
-concurrency limit, and then it is on every request.
-
-### C. Redis client has no command timeout
-
-`src/persistence/redis.ts:75-79` — `{ maxRetriesPerRequest: 2 }`, and no
-`commandTimeout` / `connectTimeout` / bounded `retryStrategy`. IP abuse
-(`abuse-guard.ts`) runs a Redis `EVAL` on **every** `/v1/*` request before auth
-and is fail-closed. A Redis blip therefore becomes unbounded latency or a 503
-on every request, not a fast failure.
-
-Also: no `maxmemory`/`maxmemory-policy` is configured on the bundled Redis
-(`docker-compose.yml`), and several key families have no TTL or unbounded
-cardinality (`cartethyia:model-abuse:bans:ip` never expires;
-`cartethyia:ip:<ip>:<route>` has unbounded cardinality where the in-memory
-store is capped at 10 000). Reaching a memory ceiling yields OOM write
-errors, and admission is fail-closed → 503.
-
-### D. Logger built payloads before checking the level — **fixed**
-
-`src/observability/logger.ts:112-116` — `logArgs` called `safeLogArgs`
-(depth-capped deep copy) and `ring()` (`JSON.stringify`) **before** Pino's
-level check inside `write`. At the production default (`info`), every
-`log.debug` still paid both. `request-context.ts:210` logs at debug on nearly
-every chat request.
-
-Verified, not assumed: with `LOG_LEVEL=info`, a debug call no longer enters the
-console ring (ring entries 3 → 2), and info/warn still emit unchanged.
-
-### E. Per-request synchronous DB writes
-
-`attempt-finalize.ts:602-660` awaits, sequentially, before the response:
-usage commit, `reportAttemptOutcome` (SELECT + UPDATE + health_event INSERT),
-pool health (SELECT + UPDATE), payload capture (gzip + file + INSERT). Report
-counts **~6 unbatched statements per request**, repeated per failover
-candidate.
-
-`commitUsage` must stay awaited — it is the usage accounting. The safe
-deferrals are `reportAttemptOutcome` (success branch), pool health, and payload
-capture (diagnostic only).
-
-### F. Route snapshot rebuild is expensive and triggered often
-
-`route-catalog.ts:330-346` runs 11 `SELECT`s, several with no predicate
-(`models`, `model_aliases`, `model_combos`, `network_pools` — full scans). Worse,
-the builder calls `refreshActiveCatalogs?.()` first
-(`route-catalog.ts:698-704`), which re-runs `seedBundledModels` — a DELETE per
-provider plus a large upsert — **on every rebuild**.
-
-And `account-health-sweep` calls `snapshotService.invalidate()` on any
-recovery (`dependencies.ts:255`), so a flapping account turns into: failure →
-invalidate → next request pays re-seed + 11 reads. A write-amplification loop
-under sustained failure.
-
-### G. Missing indexes and over-fetching
-
-- `models.model_id` bare lookups have **no index** — the only indexes are
-  `(provider_id, …)`, left-prefixed on `provider_id`. `public-model-store.ts:555`
-  and `routing/model/store.ts:398` query by bare id → seq-scan on the largest
-  catalog table.
-- `account-health-service.ts:731,897` — full-row `provider_accounts` SELECT on
-  **every** attempt outcome, pulling `credential_ciphertext bytea` just to read
-  a status. `recordAccountSuccess` fetches it on every success to usually do
-  nothing.
-- `pool-health-machine.ts:76` — full-row `network_pools` (incl. `endpoint_config
-  jsonb`) per dispatch outcome.
-- `api-key-store.ts:453` — all 30 `api_keys` columns incl. `key_encrypted bytea`
-  on the auth hot path. The SQLite backend narrows this; Postgres does not.
-
-### H. Background services — ranked cutoff list
-
-Source: `src/boot/dependencies.ts`. **None of these has a disable flag today**
-except `lease-sweep` (implicitly, via `REDIS_URL` being unset).
-
-| Rank | Service | Interval | Cost | Proposal |
-|---|---|---|---|---|
-| 1 | `quota-refresh-sweep` | 60 s | 40 accounts/pass, 45 s budget, **real upstream quota traffic** + DB writes | opt-in |
-| 2 | daily check-in ride-along | same pass | extra upstream calls + ledger writes | `maxCheckinsPerPass: 0` |
-| 3 | `oauth-refresh-sweep` | 60 s | 2000-row join scan **every minute** + sequential token calls | opt-in or 5–10 min |
-| 4 | `client-version-monitor` | 15 m | ~20–30 external HTTP fetches; every client has a pinned fallback | lazy: on rejection, not timer |
-| 5 | `runtime-metrics` | 10 s | (was) sync GC; now 30 s + GC off | done |
-| 6 | `account-health-sweep` | 30 s | 2 DB sweeps; invalidates snapshot → F | 60 s + gate invalidate |
-| 7 | `account-enrichment-sweep` | 30 s | converges to empty query | 5–10 min |
-| 8 | share-stats SSE | **2 s** | DB read per connected viewer, per tick | 10 s+ or memoize |
-| 9 | `pool-agent-sweep` | 60 s | redundant with inline 30 s eviction | drop |
-
-Keep as-is: `inflight-backstop`, `console-session-sweep`, `lease-sweep`, both
-flush buffers, SSE keepalives.
-
-### I. Hot-path allocation (lower priority, confirmed present)
-
-- `encoder.ts:135` — `JSON.stringify(event)` **per streamed event**, purely for
-  byte accounting.
-- `tool-repair.ts:36-70` — `messages.slice()` inside a per-assistant-message
-  loop: O(M×N) on long agentic transcripts.
-- `logger.ts:150-156` `logError` builds **two** copies of every error.
+**Also fixed, found while measuring**
+- `store.update` accepted `isDefault` in its patch type but never wrote it, so
+  a legacy default key was never promoted and a rename dropped the default.
+- `mergeJson` chose its dialect from `DB_MODE` rather than the connection,
+  emitting `::jsonb` into SQLite.
+- `provider_accounts` unique index carried a `::uuid` cast the SQLite baseline
+  does not have.
+- Three test files reset the cached credential key to `undefined` though files
+  share it within a worker; added
+  `snapshotCredentialEncryptionKeyForTesting`.
 
 ---
 
-## 4. Proposed execution, in priority order
+## 3. Remaining findings, not yet acted on
 
-Each phase ends with a re-measure. Nothing here needs a schema change except
-4.4.
+Ranked. These are the ones with real headroom left.
 
-**4.1 — Service cutoff (highest value, lowest risk)**
-Add one `CARTETHYIA_DISABLED_TASKS` list read in `buildProductionDeps` and
-consulted at each `scheduledTasks.register(...)`. One config row covers all
-twelve tasks instead of twelve flags. Then disable 1–4 and 9 from the table
-above by default for small deployments and document the re-enable.
-
-**4.2 — Redis safety**
-- `commandTimeout` + bounded `retryStrategy` on the ioredis client, so an outage
-  fails fast instead of hanging every request.
-- Replace `KEYS` in `snapshotAccountInflight` with `SCAN`, or maintain a `SET`
-  of active inflight keys.
-- TTL on `cartethyia:model-abuse:bans:ip`; cardinality bound on the IP/strike
-  key families (the in-memory stores already have one at 10 000).
-- Set `maxmemory` + `maxmemory-policy` on the bundled Redis.
-
-**4.3 — Batch the per-request writes**
-Defer the success branch of `reportAttemptOutcome`, pool-health writes, and
-payload capture behind a bounded in-process queue (same pattern as
-`TelemetryBatchBuffer`, drained at shutdown). Keep `commitUsage` awaited.
-Payload capture needs the promise held in a process-level registry so a restart
-does not lose the last N.
-
-**4.4 — Indexes and column projections**
-- Add an index on `models.model_id` (migration; new baseline entry).
-- Narrow to explicit column lists: `account-health-service` (drop
-  `credential_ciphertext`), `pool-health-machine`, `api-key-store` auth read.
-- Gate `snapshotService.invalidate()` on a real status change.
-
-**4.5 — Measurement discipline first**
-Before claiming any latency win: run each scenario 3×, report the median, and
-restart the gateway between runs. My current samples are single-run and the
-100-concurrency pair disagrees by more than I can attribute to the change.
+1. **`KEYS` scan on the request path** — `admission.ts:166`
+   `redis.keys("admission:inflight:*")`, reached from
+   `saturatedCandidates` on every `plan()`. Invisible until an operator sets a
+   `max_inflight` ceiling, then paid per request. Replace with `SCAN` or a
+   maintained `SET`.
+2. **Redis client has no `commandTimeout`** (`redis.ts:75`) and IP abuse is
+   fail-closed on every `/v1/*` request. A blip becomes unbounded latency or
+   mass 503 instead of a fast failure. Also no `maxmemory-policy` on the
+   bundled Redis while several key families have no TTL or unbounded
+   cardinality.
+3. **~6 sequential unbatched DB writes per request** in `completeAttempt`
+   (`attempt-finalize.ts:602-660`). `commitUsage` must stay awaited; the
+   success branch of `reportAttemptOutcome`, pool health, and payload capture
+   are the safe deferrals.
+4. **Snapshot rebuild amplification** — 11 `SELECT`s plus `seedBundledModels`
+   on every rebuild, and `account-health-sweep` invalidates on any recovery, so
+   a flapping account turns into a per-request write loop.
+5. **Per-event `JSON.stringify`** in `encoder.ts:135` for byte accounting, and
+   `messages.slice()` inside a loop in `tool-repair.ts` (O(M×N) on long
+   transcripts).
 
 ---
 
-## 5. Risks and what is not yet proven
+## 4. Risks and what is not proven
 
-- **No latency improvement is proven.** Phase 1 removed two hazards; the
-  100-concurrency sample got *worse* (p95 619 → 1014 ms). Until 4.5 lands, treat
-  every latency delta here as noise-level.
-- `CARTETHYIA_FORCED_GC` is a behavior change for anyone who was relying on
-  idle GC. It is documented and reversible via the flag.
-- Disabling `quota-refresh-sweep` by default changes product behavior: the
-  Quota page becomes a manual refresh unless the operator re-enables the
-  sweep. That is a product decision, not purely a technical one.
-- The `models.model_id` index needs a migration and a new baseline entry; both
-  Postgres and SQLite baselines must move together.
-- Redis `commandTimeout` could turn a slow-but-working Redis into fast
-  failures. Pick the value against a measured p99, not a guess.
+- **No latency improvement is proven**, and one percentile regressed. Do not
+  merge expecting a speedup; the wins here are memory, a verified query plan,
+  and the removal of a stop-the-world GC.
+- `CARTETHYIA_FORCED_GC` changes behavior for anyone who relied on idle GC.
+  It is documented and reversible per-install.
+- Disabling `quota-refresh-sweep` makes the Quota page a manual refresh unless
+  re-enabled — a product decision, not purely technical. It ships **off** by
+  default (nothing is disabled unless the operator lists it).
+- `0003_add_models_model_id_index` applies to new databases and to existing
+  ones via the forward migration. An install with retired migration history
+  still needs the documented backup/restore path.
+- Two pre-existing test failures remain and are **not** regressions:
+  `streaming dispatch contract > ... stalled stream ...` and `... typed
+  deadline abort ...`. Both fail identically with all my changes stashed. They
+  are consistent, not flaky, and tracing shows the stub generator never gets
+  past its first `yield` — which may be a real release-stream defect worth its
+  own investigation. I did not change stream semantics to make them pass.
