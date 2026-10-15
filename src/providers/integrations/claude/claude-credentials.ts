@@ -199,6 +199,9 @@ function standardClaudeHeaders(
     "X-Stainless-Lang": "js",
     "X-Stainless-OS": stainlessOs(),
     "X-Stainless-Package-Version": options.sdk_version ?? CLAUDE_CODE_SDK_VERSION,
+    // The reference client stamps every request as the first attempt; a missing
+    // retry count is an observable fingerprint delta.
+    "X-Stainless-Retry-Count": "0",
     "X-Stainless-Runtime": "node",
     "X-Stainless-Runtime-Version": "v26.3.0",
     "X-Stainless-Timeout": "600",

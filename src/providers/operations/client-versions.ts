@@ -469,11 +469,15 @@ export function pinnedClientVersions(): readonly PinnedClientVersion[] {
  */
 function accessor<K extends keyof typeof resolvers>(name: K): {
   readonly get: () => string;
+  readonly adopt: (version: string) => void;
   readonly reset: (version?: string | null) => void;
 } {
   const resolver = resolvers[name];
   return {
     get: () => resolver.get(),
+    adopt: (version: string) => {
+      resolver.adopt(version);
+    },
     reset: (version?: string | null) => {
       resolver.reset(version);
     },
@@ -533,6 +537,8 @@ export const _resetCodeBuddyVersionCache = accessor("codebuddy").reset;
 export const _resetCodeBuddyCnVersionCache = accessor("codebuddyCn").reset;
 
 export const getClaudeCliVersion = accessor("claudeCli").get;
+export const adoptClaudeCliVersion = accessor("claudeCli").adopt;
+export const _resetClaudeCliVersionCache = accessor("claudeCli").reset;
 export const getClaudeSdkVersion = accessor("claudeSdk").get;
 
 export const getKiroVersion = accessor("kiro").get;

@@ -49,6 +49,14 @@ export function getAntigravityUserAgent(): string {
 interface AntigravityModelWireProfile {
   readonly modelEnum?: string;
   readonly maxOutputTokens: number;
+  /**
+   * Telemetry label for the `used_claude` / `used_claude_conservative` request
+   * labels. The reference client honors a per-model compat value and falls back
+   * to the model-class test; a model whose billing identity differs from its
+   * id substring (a Claude-route Gemini id, or vice versa) declares it here
+   * instead of relying on `id.includes("claude")`.
+   */
+  readonly usageLabel?: string;
 }
 
 /**
