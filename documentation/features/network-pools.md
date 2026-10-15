@@ -56,6 +56,9 @@ advancing and skips a pool the same way account failover does.
 
 An operator may set a pool to `disabled`; network failures can park it in
 `cooldown`, and a successful dispatch or recovery restores it to `active`.
+A proxy's `CONNECT` refusal with `402` or `407` is attributed to the pool,
+not the account dialed through it: the typed `ProxyConnectRefusalError` is
+the pool's own verdict and never cools a provider account.
 Only active pools enter automatic selection. `quota_bytes` is a metering/display
 allowance, not a dispatch stop: the gateway records sent/received totals but
 does not block traffic when those totals reach the allowance.

@@ -31,7 +31,7 @@ multiple related modules (Buddy: `buddy/codebuddy/`, `buddy/workbuddy/`).
 
 ## Boot, and bundled vs BYOK
 
-`buildProductionDeps()` (`src/boot/dependencies.ts:130-142`) runs, in order:
+`buildProductionDeps()` (`src/boot/dependencies.ts`) runs, in order:
 seed bundled providers (additive upsert) → retire unbundled rows (boot-only
 delete) → register bundled modules synchronously (only loaders are lazy) →
 resolve live upstream hosts (closure over the registry, so late registrations
@@ -47,26 +47,27 @@ an id has metadata but no implementation.
 tenant-owned, slug must not collide with a bundled id, always dispatched through
 `OpenAICompatibleAdapter` — no bespoke wire, no OAuth, no quota collector. Its
 wire contract comes from `resolveByokWireProfile`
-(`operations/byok-wire-profile.ts:55`) — the authority; re-hardcoding wire
+(`operations/byok-wire-profile.ts`) — the authority; re-hardcoding wire
 mappings elsewhere is the recurring bug the catalog skill warns about.
-Re-registration is idempotent by fingerprint: `upsert` (`registry.ts:163`)
-drops the cached adapter, so editing a BYOK row from the console changes
-dispatch without a restart.
+Re-registration is idempotent by fingerprint: `upsert`
+(`provider-registry.ts`) drops the cached adapter, so editing a BYOK row from
+the console changes dispatch without a restart.
 
 ## Credentials and auth
 
 `CredentialKind` is a closed union: `none`, `api_key`, `oauth`,
 `scoped_access_token`, `workload_identity` (`provider-contracts.ts`). The
-storage enum is narrower — `api_key`, `oauth`, `none` (`schema.ts:106`).
+storage enum is narrower — `api_key`, `oauth`, `none` (`schema.ts`,
+`credentialKind`).
 
 | Shape | Where the secret lives | Where the rest lives |
 | --- | --- | --- |
 | API key | `provider_accounts.credential_ciphertext` (encrypted) | — |
-| OAuth | same column, access token | `provider_oauth_states` (`schema.ts:238`): refresh ciphertext, optional client-secret ciphertext, `expires_at`, refresh lease |
+| OAuth | same column, access token | `provider_oauth_states` (`schema.ts`): refresh ciphertext, optional client-secret ciphertext, `expires_at`, refresh lease |
 | Device code | mints one of the two above | — |
 | No credential | nothing; `requires_account = false` and `credential_forwarding: "never"` | — |
 
-`provider_accounts.auth_state` (`schema.ts:195`) holds non-secret per-account
+`provider_accounts.auth_state` (`schema.ts`) holds non-secret per-account
 upstream configuration — region, profile ARN, OAuth client id, token endpoint —
 traveling beside the secret in `ResolvedCredential.auth_state`, because a
 single opaque credential string cannot express both.
@@ -83,8 +84,8 @@ Three auth client shapes:
 
 | Shape | Base class | Family examples |
 | --- | --- | --- |
-| Browser PKCE | `OAuthClient.buildAuthorizeUrl`/`exchangeCode` (`authentication/oauth-client.ts`) | claude, antigravity, kiro, codex, openrouter, zcode |
-| Device code (RFC 8628) | `OAuthDeviceFlow` (`authentication/oauth-device-flow.ts`) | codex, github, cursor, grok, xai, kimi, cline, kiro, kilo, muse, qoder, factory |
+| Browser PKCE | `OAuthClient.buildAuthorizeUrl`/`exchangeCode` (`authentication/oauth-client.ts`) | claude, antigravity, openrouter, zcode; kiro overrides it in addition to the device flow for its browser login |
+| Device code (RFC 8628) | `OAuthDeviceFlow` (`authentication/oauth-device-flow.ts`) | codex, github, grok, xai, kimi, cline, kiro, kilo, muse, qoder, factory, cb/cbcn/workbuddy/workbuddycn |
 | No OAuth | plain key path; `probeApiKeyConnectivity` is the account test (`quota/quota-support.ts`) | openai, anthropic, mistral, meta, most compatible API-key providers |
 
 Whether a refresher is registered is per-family and deliberate: a grant that is
@@ -141,7 +142,7 @@ gone, and `totalRemainingCredit` ignores independent usage limits even when
 they expose absolute `used`/`limit`.
 
 Health state lives on `provider_accounts` via `healthColumns()`
-(`schema.ts:93,198`): status, `cooldown_until`, per-model cooldowns, last error
+(`schema.ts`): status, `cooldown_until`, per-model cooldowns, last error
 category. Cooldown classes, recovery sweeps, leases, and pool selection are
 owned by the [health-routing skill](../../.skills/cartethyia-health-routing/SKILL.md).
 
@@ -150,31 +151,31 @@ tier, attempt and successful-fetch timestamps recorded separately. A failed
 refresh retains a successful reading for up to 30 minutes while exposing the
 refresh error — never replaces usable quota with an empty result.
 `quota-refresh-sweep` runs every minute, refreshes entries at least four
-minutes old, bounds each pass to 40 accounts / 90 seconds. See
+minutes old, bounds each pass to 40 accounts / 45 seconds (set in
+`src/boot/dependencies.ts`). See
 [Usage floor](../features/usage-floor.md) for how readings affect eligibility.
 
 ## Per-family notes
 
-Verified in code only. `bespokeWire` = the adapter frames its own protocol, not a canonical codec (`metadata.ts:316`).
+Verified in code only. `bespokeWire` = the adapter frames its own protocol, not a canonical codec (`provider-metadata.ts`).
 
 | Family | What is non-standard |
 | --- | --- |
-| kiro | Bespoke (`metadata.ts:112`). AWS EventStream wire over `q.us-east-1.amazonaws.com`, no chat-shaped endpoint; reasoning arrives as its own event or `<thinking>` markers in text. Device + PKCE. |
-| cursor | Bespoke (`metadata.ts:118`). Connect-RPC over HTTP/2: unary `application/proto`, the turn is a bidirectional `application/connect+proto` frame stream on `node:http2` because `fetch` cannot hold it. Catalog is per-account. |
+| kiro | Bespoke (`provider-metadata.ts`). AWS EventStream wire over `q.us-east-1.amazonaws.com`, no chat-shaped endpoint; reasoning arrives as its own event or `<thinking>` markers in text. Device + PKCE. |
 | github | Base URL is only a fallback: the real host comes from the Copilot token's `proxy-ep` claim per dispatch. Short-lived token, real refresher. |
 | antigravity | Google OAuth, but the wire is a Gemini payload wrapped in an agent envelope POSTed to `v1internal:{generate,stream}GenerateContent` — no per-model path. Image generation uses the same envelope with `responseModalities: ["IMAGE"]`; `/v1/search` adds Google Search grounding. |
 | muse | Device-code login yields an OAuth token, exchanged by `POST /muse-code/key` for the `api_key` the backend accepts; the stored `oauth` secret is a `{oauthAccessToken, apiKey}` JSON blob. |
-| meta | A plain developer-dashboard API key, no OAuth (`default-registry.ts:172`). |
+| meta | A plain developer-dashboard API key, no OAuth (`default-registry.ts`, `meta` row). |
 | claude / codex | Subscription OAuth on Messages / Responses. Codex also serves websearch; its image path is a Responses `image_generation` tool on a chat carrier, without the chat identity envelope. A catalog row is not an entitlement — a ChatGPT account can reject the tool. |
 | gemini | `x-goog-api-key` header, per-model `:generateContent`/`:streamGenerateContent` paths; not OpenAI-shaped. Image generation uses the same path. |
-| xai / grok | Same issuer and JWKS, different surfaces: `grok` is the free Grok Build CLI proxy, `xai` is the paid API (`metadata.ts:64-78`). |
+| xai / grok | Same issuer and JWKS, different surfaces: `grok` is the free Grok Build CLI proxy, `xai` is the paid API (`provider-metadata.ts`, `grok`/`xai` rows). |
 | kilo | Resells the OpenRouter catalog behind a `{accessToken, orgId}` JSON credential. No refresh grant. |
 | qoder | Device flow whose refresh endpoint answers 403; no refresher. |
 | cline | Discovery reads only `recommended` + `free` — the pass roster would write subscription rows an operator's account can only 401 on. |
 | openrouter / zcode | PKCE ends by minting a **durable API key**, not an access token; no refresher. |
 | xiaomi-mimo | Two ids: `xiaomipg`, `xiaomitp`, both key-based. MiMo Studio browser-cookie login is not supported. |
 | cb / cbcn / workbuddy / workbuddycn | One billing system: `BUDDY_PROVIDER_IDS` names the family for health, request prep, and daily check-in. WorkBuddy CN mirrors WorkBuddy on `www.workbuddy.cn` plus recent CN model additions. See the [catalog-fetch procedure](../../.skills/cartethyia-provider-catalog/SKILL.md#fetch-a-buddy-model-catalog). |
-| opencodeft / opencodezen / opencodego | Three tiers on `opencode.ai`: free (`requires_account: false`, `ipScopedRateLimit: true` — 429 cools the pool, not the account), Zen (billed), Go (billed, `/zen/go/v1`). Every tier's dispatch carries the client-identity fingerprint (`integrations/opencode/fingerprint.ts`): `x-opencode-client: desktop`, a canonical `ses_` session whose hex decodes to a plausible inverted-millisecond timestamp (6-hour-bucket jitter, stable per conversation), project/UA/trace headers (no `x-opencode-request` — the current client dropped it, and sending it now makes the free-tier gate refuse the dispatch, verified live 2026-10-14). **Free-model dispatches** (`-free` suffix or `big-pickle`) additionally get the gate workarounds: the client's full agent-tool set backfilled, `stream:true` forced at the wire layer, SSE accept — the gate refuses tool-less or non-streaming free dispatches with `403 FreeTierError`; the client-visible stream contract is untouched and non-stream aggregation decodes the forced SSE. Verified live 2026-10-14. |
+| opencodeft / opencodezen / opencodego | Three tiers on `opencode.ai`: free and Zen dispatch on `/inference/v1` (free: `requires_account: false`, `ipScopedRateLimit: true` — 429 cools the pool, not the account; Zen: billed), Go on the separate `/zen/go/v1` base. The `/zen/v1/models` listing is the catalog surface for free/Zen (`/inference/v1/models` answers 404), see `integrations/opencode/provider.ts`. Every tier's dispatch carries the client-identity fingerprint (`integrations/opencode/fingerprint.ts`): `x-opencode-client: desktop`, a canonical `ses_` session whose hex decodes to a plausible inverted-millisecond timestamp (6-hour-bucket jitter, stable per conversation), project/UA/trace headers (no `x-opencode-request` — the current client dropped it, and sending it now makes the free-tier gate refuse the dispatch, verified live 2026-10-14). **Free-model dispatches** (`-free` suffix or `big-pickle`) additionally get the gate workarounds: the client's full agent-tool set backfilled, `stream:true` forced at the wire layer, SSE accept — the gate refuses tool-less or non-streaming free dispatches with `403 FreeTierError`; the client-visible stream contract is untouched and non-stream aggregation decodes the forced SSE. Verified live 2026-10-14. |
 | exa / parallel | `serviceKinds: ["websearch"]` only; served by `/v1/search`, never the chat pipeline. No account uses the public MCP; a stored API key uses the higher-limit HTTP API. |
 | deepseek | Bundled API-key provider on the Anthropic Messages adapter at `/anthropic/v1/messages`; its OpenAI-compatible `/v1/models` discovery is separate (`deepseek.ts`). |
 | mistral, fireworks, nvidia, gmi, ollamacloud | Shared configured OpenAI-compatible spec rows. |
@@ -190,11 +191,11 @@ Verified in code only. `bespokeWire` = the adapter frames its own protocol, not 
 | --- | --- |
 | New provider, family, or catalog row | [Provider-catalog skill](../../.skills/cartethyia-provider-catalog/SKILL.md) |
 | Identity, base URL, default wire, service kinds | `src/providers/provider-metadata.ts` |
-| Wire a bundled provider's adapter/auth/quota/discovery | `src/providers/default-registry.ts:82` |
+| Wire a bundled provider's adapter/auth/quota/discovery | `src/providers/default-registry.ts` (`PROVIDER_CAPABILITIES`) |
 | One provider's wire behavior | its module under `src/providers/integrations/<family>/` or `src/providers/adapters/` |
-| Standard OpenAI chat/responses provider | add an `ApiKeyProviderSpec`, not an adapter (`configured-provider.ts`); per-account base-URL state via `resolveBaseUrl` (`compatible-adapter.ts:45`) |
+| Standard OpenAI chat/responses provider | add an `ApiKeyProviderSpec`, not an adapter (`configured-provider.ts`); per-account base-URL state via `resolveBaseUrl` (`compatible-adapter.ts`) |
 | Shared HTTP/SSE adapter, registration, caching | `src/providers/adapters/`, `provider-registry.ts` |
-| BYOK wire derivation, registration, SSRF | `operations/byok-wire-profile.ts:55`, `operations/provider-catalog-service.ts:182` |
-| Catalog seeding, offline limits/pricing, live listing | `provider-catalog-seeder.ts:8`, `discovery/base-models.json` + `models-dev-catalog.ts`, the family's `loadModelDiscovery` |
+| BYOK wire derivation, registration, SSRF | `operations/byok-wire-profile.ts` (`resolveByokWireProfile`), `operations/provider-catalog-service.ts` (`registerByokProviders`) |
+| Catalog seeding, offline limits/pricing, live listing | `provider-catalog-seeder.ts` (`seedBundledModels`), `discovery/base-models.json` + `models-dev-catalog.ts`, the family's `loadModelDiscovery` |
 | Quota, OAuth, account health | the family's `*-quota.ts`; `src/providers/authentication/` + `*-oauth.ts`; [Health-routing skill](../../.skills/cartethyia-health-routing/SKILL.md) |
 

@@ -12,7 +12,7 @@ until the boot retirement step runs.
 ## Cutover
 
 1. Remove the provider's row from `RAW_BUNDLED_PROVIDER_METADATA` in
-   `src/providers/metadata.ts` and its entry from `PROVIDER_CAPABILITIES` in
+   `src/providers/provider-metadata.ts` and its entry from `PROVIDER_CAPABILITIES` in
    `src/providers/default-registry.ts`. `BUNDLED_PROVIDER_MODULES` is derived
    from those declarations; its construction throws if metadata names a
    provider with no capability entry. `isBundledProviderId` derives from the

@@ -51,7 +51,7 @@ treated as a successful balance.
 
 The `quota-refresh-sweep` worker runs every 60 seconds, selects entries at
 least four minutes old, orders them oldest first, and bounds a pass to 40
-accounts and 90 seconds. It is registered in Lite and Full modes; Redis is not
+accounts and 45 seconds (set in `src/boot/dependencies.ts`). It is registered in Lite and Full modes; Redis is not
 a prerequisite. Opening a quota view normally reads the warmed cache, while a
 cold account read can still wait for its first upstream fetch. Queued and
 in-flight background refreshes are included in the overview's pending state.

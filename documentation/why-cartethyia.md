@@ -18,8 +18,7 @@ way. Point them at an arbitrary compatible endpoint and three things break:
    ids, a current client version in the user agent, and billing signals. Send a
    generic call and the provider answers differently — or refuses, as OpenCode's
    free tier does with `403 FreeTierError` for anything that is not
-   agent-shaped. See
-   [the free-tier replay](archive/opencode-freetier-replay-2.0.29.md).
+   agent-shaped.
 2. **Operations.** Which account should serve this request, is it healthy, has
    it hit a quota, is it cooling down, which egress should it leave through, and
    what happens when it fails. Most proxies answer "send it somewhere else".
@@ -107,20 +106,17 @@ These are implemented here from scratch, shaped by operating this gateway — no
 ## Reverse engineering is part of the work
 
 Providers change their gates without announcing them, and the fix is not
-guessable from a status code. This repository keeps the method and the evidence:
-
-- [OpenCode free-tier replay, 2.0.29](archive/opencode-freetier-replay-2.0.29.md)
-  — extracting a DMG and an RPM without `7z` or `hdiutil`, reading the client's
-  request builder, capturing a real dispatch by redirecting the provider through
-  its own config (mitm is unusable: the CLI ignores proxy environment), and
-  bisecting to a 200. Includes a tutorial another agent can re-run.
-- [OpenCode cache replay, 2.0.28](archive/opencode-cache-replay-2.0.28.md)
-  — superseded history, kept because it records how the earlier fingerprint was
-  derived.
+guessable from a status code. The OpenCode free-tier gate is the worked
+example: the CLI ignores proxy environment, so the dispatch had to be captured
+by redirecting the provider through its own config, and the fix was bisected
+to a 200 by changing one field at a time against a byte-exact replay.
 
 The lesson worth keeping: when several fields are wrong at once, changing one
 at a time never flips the status. Capture a real request, then correct the whole
-shape.
+shape. The repeatable method is in the
+[trace-replay skill](../.skills/cartethyia-trace-replay/SKILL.md); the
+`cartethyia-client-protocol-reverse-engineering` skill covers inspecting an
+external client.
 
 ## Credit
 
