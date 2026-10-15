@@ -6,11 +6,17 @@
  * model id. Limits and the text/image split come from each seed row there, not
  * from a guess: Factory bills credits and publishes no prices, so `cost` stays null.
  *
- * The Gemini ids (`garnet-07-15`, `gemini-3.1-pro-preview`, `gemini-3.8-flash`,
- * `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.5-flash`,
- * `gemini-3-flash-preview`) are absent. Factory serves them on its
- * `google-generate` wire, which this gateway does not implement; routing them
- * onto chat would post to an endpoint Factory does not serve rather than say so.
+ * Gemini ids are listed below on the `chat` wire family.
+ *
+ * UNCONFIRMED — the research behind this catalog (rank #5, effort L) states
+ * Factory serves Gemini on a separate `google-generate` wire that this gateway
+ * does not implement, and that routing Gemini onto chat "posts to an endpoint
+ * Factory does not serve". These rows do route Gemini onto chat. Exactly one of
+ * that statement and these rows is stale; no capture in this repo settles which.
+ *
+ * If the research is right, these requests fail at the endpoint rather than
+ * being rejected at routing. Confirm from a captured Factory Gemini request
+ * before treating these rows as working.
  */
 import { defineModel } from "../../provider-model-definition";
 import type { ModelDefinition } from "../../provider-model-definition";
