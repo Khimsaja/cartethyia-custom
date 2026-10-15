@@ -85,14 +85,31 @@ export interface ModelDefinition {
 }
 
 /**
+ * Limits assumed when neither the catalog nor the operator supplies any.
+ *
+ * Deliberately generous: a context ceiling that is too *low* truncates a
+ * working request, while one that is too high only means the upstream rejects
+ * the call on its own terms. Chosen as a round number above every current
+ * frontier model so the fallback is never the binding constraint.
+ *
+ * A row carrying these because nothing filed the model is flagged as estimated,
+ * so the UI can say the number is a guess rather than presenting it as a fact
+ * about the model.
+ */
+export const FALLBACK_CONTEXT_LIMIT = 512_000;
+export const FALLBACK_OUTPUT_LIMIT = 131_072;
+
+/**
  * Limits assumed for a model the catalog has never filed.
  *
  * Fit comfortably rather than tightly: a fallback that is too small silently
  * truncates a request that would have been fine, while one that is too large
- * only costs an admission estimate no upstream enforces.
+ * only costs an admission estimate no upstream enforces. The two spellings above
+ * are one number, so a row rendered in the console and a row routed through
+ * discovery cannot disagree about what "unfiled" means.
  */
-const UNFILED_CONTEXT_LIMIT = 500_000;
-const UNFILED_OUTPUT_LIMIT = 128_000;
+const UNFILED_CONTEXT_LIMIT = FALLBACK_CONTEXT_LIMIT;
+const UNFILED_OUTPUT_LIMIT = FALLBACK_OUTPUT_LIMIT;
 
 /** Fields accepted by `defineModel`; every field except `id` falls back to the shared default. */
 export interface ModelHelperRow {
@@ -288,20 +305,6 @@ export function resolveManualModelMetadata(
     toolCall: true,
   };
 }
-
-/**
- * Limits assumed when neither the catalog nor the operator supplies any.
- *
- * Deliberately generous: a context ceiling that is too *low* truncates a
- * working request, while one that is too high only means the upstream rejects
- * the call on its own terms. Chosen as a round number above every current
- * frontier model so the fallback is never the binding constraint.
- *
- * A row carrying these is flagged as estimated, so the UI can say the number is
- * a guess rather than presenting it as a fact about the model.
- */
-export const FALLBACK_CONTEXT_LIMIT = 512_000;
-export const FALLBACK_OUTPUT_LIMIT = 131_072;
 
 /**
  * Folds operator-supplied metadata over a resolved model's metadata.

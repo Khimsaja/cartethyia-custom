@@ -23,6 +23,8 @@ import { isServiceKind, validateCompatibilityProfile } from "./contracts";
 import { ProviderProbingService, type ProbeOutboundResolver } from "../../../providers/discovery/probing-service";
 import {
   applyModelMetadataOverride,
+  FALLBACK_CONTEXT_LIMIT,
+  FALLBACK_OUTPUT_LIMIT,
   resolveManualModelMetadata,
 } from "../../../providers/provider-model-definition";
 import { isUniqueViolation } from "../../../persistence/boot";
@@ -288,8 +290,11 @@ function liveModelCooldowns(
  * the bulk read has to look it up across every provider at once while the
  * single-provider read looks it up for one; the projection itself is identical
  * either way, so it lives here rather than being written twice.
+ *
+ * Exported so a test can pin the unsized-model substitution without a database:
+ * which rows get the fallback, and that they are the same rows marked estimated.
  */
-function mapModelRow(
+export function mapModelRow(
   row: typeof models.$inferSelect,
   disabled: boolean,
 ): ModelCatalogEntry {
@@ -299,6 +304,16 @@ function mapModelRow(
       : undefined;
   const inputModalities = Array.isArray(modalities?.input) ? modalities.input : [];
   const outputModalities = Array.isArray(modalities?.output) ? modalities.output : [];
+  // Nothing filed this model — not its own row, not the base catalog under this
+  // provider's id, not a majority across the catalog's other resellers. The
+  // fallback is substituted here rather than persisted: the stored `null` is the
+  // honest record of what upstream said, and substituting at the write would
+  // make a guess indistinguishable from a measurement on the next read. The
+  // marker rides along so the card can say which one it is showing.
+  const unfiled =
+    row.contextLimit === null &&
+    modelsDevCatalog.resolve(row.providerId, row.modelId) === undefined &&
+    modelsDevCatalog.majorityFor(row.modelId) === undefined;
   return {
     modelId: row.modelId,
     route: row.endpointPath,
@@ -306,8 +321,11 @@ function mapModelRow(
     wireFamily: row.wireFamily,
     serviceKind: row.serviceKind,
     enabled: disabled ? false : row.enabled,
-    contextLimit: row.contextLimit,
-    outputLimit: row.outputLimit,
+    // A fetched model that published no context size read `n/a ctx · n/a out`
+    // while still being routable — a working model that looked unusable. These
+    // rows get the same ceilings a manual add is offered, flagged as estimated.
+    contextLimit: unfiled ? FALLBACK_CONTEXT_LIMIT : row.contextLimit,
+    outputLimit: unfiled ? FALLBACK_OUTPUT_LIMIT : row.outputLimit,
     reasoning: row.reasoning,
     toolCall: row.toolCall,
     vision: inputModalities.includes("image"),
@@ -316,11 +334,7 @@ function mapModelRow(
     mediaGeneration: outputModalities.includes("image"),
     cost: row.cost as ModelCatalogEntry["cost"],
     source: row.source,
-    // Nothing filed this model, so whatever the row carries for limits came
-    // from the shared fallback rather than from a catalog entry.
-    ...(row.contextLimit === null && modelsDevCatalog.resolve(row.providerId, row.modelId) === undefined
-      ? { limitsEstimated: true }
-      : {}),
+    ...(unfiled ? { limitsEstimated: true } : {}),
     sourceUpdatedAt: row.sourceUpdatedAt?.toISOString() ?? null,
   } satisfies ModelCatalogEntry;
 }

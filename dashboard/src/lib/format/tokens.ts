@@ -104,6 +104,18 @@ export const UNKNOWN_LIMITS_TOOLTIP =
   "Upstream provided no context metadata; limits are unavailable, not estimated.";
 
 /**
+ * The ceilings the operator is offered when the real ones are unknown.
+ *
+ * Mirrors the backend's `FALLBACK_CONTEXT_LIMIT` / `FALLBACK_OUTPUT_LIMIT`, which
+ * is what an unsized row is actually persisted with. Kept as a literal rather
+ * than imported: the backend module pulls in the compiled base catalog, and that
+ * is far too much to ship to the browser for two numbers. A test pins the pair
+ * so the two copies cannot drift apart unnoticed.
+ */
+export const FALLBACK_CONTEXT_TOKENS = 512_000;
+export const FALLBACK_OUTPUT_TOKENS = 131_072;
+
+/**
  * Shown beside a limit the catalog could not file.
  *
  * Distinct from {@link UNKNOWN_LIMITS_TOOLTIP} on purpose. That one says the
@@ -111,9 +123,35 @@ export const UNKNOWN_LIMITS_TOOLTIP =
  * have no row, so the number on screen is a placeholder chosen to keep the
  * model routable — a different claim, and one an operator has to be able to
  * tell apart from a real measurement.
+ *
+ * The numbers are interpolated, not spelled out: a fallback that changed on the
+ * backend while the tooltip still quoted the old pair would describe a model's
+ * limits wrongly.
  */
 export const ESTIMATED_LIMITS_TOOLTIP =
-  "No catalog row files this model, so these limits are a fallback (500k context, 128k output) to keep it routable — not a measurement of the model.";
+  `No catalog row files this model, so these limits are a fallback ` +
+  `(${formatModelTokens(FALLBACK_CONTEXT_TOKENS)} context, ${formatModelTokens(FALLBACK_OUTPUT_TOKENS)} output) ` +
+  `to keep it routable — not a measurement of the model.`;
+
+/**
+ * Reads a token-ish entry ("512k", "131072", "1.5m") as a token count.
+ *
+ * Three outcomes, deliberately: `undefined` for blank input, which the caller
+ * sends as `null` — the honest "unknown"; `null` for input it cannot read, so
+ * the UI can refuse to submit rather than persist a wrong ceiling. A context
+ * limit the operator mistyped makes every request against that model truncate,
+ * which reads as the model being broken.
+ */
+export function parseTokenInput(raw: string): number | null | undefined {
+  const value = raw.trim().toLowerCase();
+  if (value.length === 0) return undefined;
+  const matched = /^(\d+(?:\.\d+)?)\s*([km])?$/.exec(value);
+  if (matched === null) return null;
+  const amount = Number(matched[1]);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  const multiplier = matched[2] === "k" ? 1_000 : matched[2] === "m" ? 1_000_000 : 1;
+  return Math.floor(amount * multiplier);
+}
 
 /**
  * A model limit as a card shows it: `400k`, `1.0M`.

@@ -14,6 +14,7 @@ import type { CartethyiaDatabase } from "../../../persistence/db-handle";
 import { modelAliases, modelCombos, models, providerAccounts, providers } from "../../../persistence/schema";
 import { isModelAllowed, listIncludes, type ApiKeyAuthorizationSnapshot } from "../../../security/api-key-auth";
 import { modelsDevCatalog } from "../../../providers/discovery/models-dev-catalog";
+import { FALLBACK_CONTEXT_LIMIT, FALLBACK_OUTPUT_LIMIT } from "../../../providers/provider-model-definition";
 
 export interface AllowedModelEntry {
   id: string;
@@ -539,10 +540,11 @@ export class PublicModelCatalogStore {
         modelsDevCatalog.resolve(row.providerId, row.modelId) !== undefined ||
         modelsDevCatalog.majorityFor(row.modelId) !== undefined;
       const metadata = {
-        contextLimit: row.contextLimit,
-        outputLimit: row.outputLimit,
-        // Nothing filed this model, so whatever the row carries came from the
-        // shared fallback rather than from a catalog entry.
+        // An unfiled model gets the shared fallback rather than `null`, so a
+        // routable model is not advertised as having no window at all. Matches
+        // the console catalog projection, which substitutes the same pair.
+        contextLimit: filed ? row.contextLimit : FALLBACK_CONTEXT_LIMIT,
+        outputLimit: filed ? row.outputLimit : FALLBACK_OUTPUT_LIMIT,
         ...(filed ? {} : { limitsEstimated: true }),
         modalities: row.modalities,
         reasoning: row.reasoning,

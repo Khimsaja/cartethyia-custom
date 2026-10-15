@@ -10,7 +10,11 @@ import { describe, expect, test } from "bun:test";
 import { modelsDevCatalog } from "../../src/providers/discovery/models-dev-catalog";
 import { PROVIDER_CAPABILITIES } from "../../src/providers/default-registry";
 import type { ModelDefinition } from "../../src/providers/provider-model-definition";
-import { defineModel } from "../../src/providers/provider-model-definition";
+import {
+  defineModel,
+  FALLBACK_CONTEXT_LIMIT,
+  FALLBACK_OUTPUT_LIMIT,
+} from "../../src/providers/provider-model-definition";
 
 async function catalogFor(providerId: string): Promise<readonly ModelDefinition[]> {
   const capabilities = (PROVIDER_CAPABILITIES as Record<
@@ -187,8 +191,8 @@ describe("unfiled model limits", () => {
     // routable, so it gets a number — and a marker saying the number is ours,
     // not the model's.
     const model = defineModel({ id: "totally-unfiled-model-xyz", providerId: "opencodeft" });
-    expect(model.contextLimit).toBe(500_000);
-    expect(model.outputLimit).toBe(128_000);
+    expect(model.contextLimit).toBe(FALLBACK_CONTEXT_LIMIT);
+    expect(model.outputLimit).toBe(FALLBACK_OUTPUT_LIMIT);
     expect(model.limitsEstimated).toBe(true);
   });
 

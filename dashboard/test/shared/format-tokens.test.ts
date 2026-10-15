@@ -10,13 +10,18 @@
  */
 import { describe, expect, test } from "bun:test";
 import {
+  formatModelTokens,
   formatTokens,
+  parseTokenInput,
   tokenScaleIndex,
   tokenScaleValue,
   DEFAULT_TOKEN_SCALE,
   RAW_TOKEN_SCALE,
   TOKEN_SCALE_AUTO,
   TOKEN_SCALES,
+  ESTIMATED_LIMITS_TOOLTIP,
+  FALLBACK_CONTEXT_TOKENS,
+  FALLBACK_OUTPUT_TOKENS,
 } from "../../src/lib/format/tokens";
 
 /** A locale with `,` thousands and `.` decimals, pinned for determinism. */
@@ -138,6 +143,92 @@ describe("TOKEN_SCALES ordering", () => {
     for (const scale of TOKEN_SCALES) {
       expect(scale.divisor).toBe(scale.threshold);
     }
+  });
+});
+
+/**
+ * The unsized-model fallback.
+ *
+ * A model the catalog cannot size is persisted with these ceilings so the row
+ * stays routable instead of reading `n/a ctx · n/a out`. The pair is duplicated
+ * on the backend because importing it would drag the compiled base catalog into
+ * the browser bundle; these assertions are what keep the two copies honest.
+ */
+describe("unsized-model fallback", () => {
+  test("mirrors the backend ceilings exactly", async () => {
+    const backend = await import("../../../src/providers/provider-model-definition");
+    expect(FALLBACK_CONTEXT_TOKENS).toBe(backend.FALLBACK_CONTEXT_LIMIT);
+    expect(FALLBACK_OUTPUT_TOKENS).toBe(backend.FALLBACK_OUTPUT_LIMIT);
+  });
+
+  test("sits above every frontier window, so it is never the binding constraint", () => {
+    // The point of the fallback: a ceiling that is too low truncates a working
+    // request, while one that is too high only means the upstream rejects the
+    // call on its own terms.
+    expect(FALLBACK_CONTEXT_TOKENS).toBeGreaterThanOrEqual(200_000);
+    expect(FALLBACK_OUTPUT_TOKENS).toBeGreaterThanOrEqual(32_000);
+    expect(FALLBACK_OUTPUT_TOKENS).toBeLessThanOrEqual(FALLBACK_CONTEXT_TOKENS);
+  });
+
+  test("the estimated-limit tooltip quotes the ceilings it describes", () => {
+    // Interpolated rather than spelled out, so the tooltip cannot keep quoting
+    // an old pair after the constants change.
+    expect(ESTIMATED_LIMITS_TOOLTIP).toContain(formatModelTokens(FALLBACK_CONTEXT_TOKENS));
+    expect(ESTIMATED_LIMITS_TOOLTIP).toContain(formatModelTokens(FALLBACK_OUTPUT_TOKENS));
+    expect(ESTIMATED_LIMITS_TOOLTIP).not.toContain("500k");
+  });
+});
+
+/**
+ * Operator-entered token counts.
+ *
+ * `parseTokenInput` has three outcomes on purpose, and the defect it is here to
+ * catch is the middle one collapsing into the others: blank ("unknown") and
+ * unreadable ("refuse to submit") must not read the same, or a mistyped ceiling
+ * gets persisted and every request against that model truncates.
+ */
+describe("parseTokenInput", () => {
+  test("reads a bare count", () => {
+    expect(parseTokenInput("200000")).toBe(200_000);
+    expect(parseTokenInput("131072")).toBe(131_072);
+  });
+
+  test("reads the k and m suffixes, either case, with or without a space", () => {
+    expect(parseTokenInput("512k")).toBe(512_000);
+    expect(parseTokenInput("512K")).toBe(512_000);
+    expect(parseTokenInput("131 k")).toBe(131_000);
+    expect(parseTokenInput("1.5m")).toBe(1_500_000);
+    expect(parseTokenInput("2M")).toBe(2_000_000);
+  });
+
+  test("blank is unknown, not invalid", () => {
+    // The caller sends this as `null`: the operator left it blank on purpose.
+    expect(parseTokenInput("")).toBeUndefined();
+    expect(parseTokenInput("   ")).toBeUndefined();
+  });
+
+  test("unreadable input is refused rather than guessed", () => {
+    expect(parseTokenInput("abc")).toBeNull();
+    expect(parseTokenInput("12k34")).toBeNull();
+    expect(parseTokenInput("-5k")).toBeNull();
+    expect(parseTokenInput("0")).toBeNull();
+    expect(parseTokenInput("0.4k")).toBe(400);
+    expect(parseTokenInput("1e6")).toBeNull();
+    expect(parseTokenInput("128 b")).toBeNull();
+  });
+
+  test("a fractional suffix floors to a whole token count", () => {
+    // The backend rejects a non-integer limit outright, so the floor happens
+    // here rather than as a 400 the operator has to decode.
+    expect(parseTokenInput("1.5k")).toBe(1_500);
+    expect(parseTokenInput("0.5m")).toBe(500_000);
+  });
+
+  test("the fallback ceilings round-trip through the text the UI seeds", () => {
+    // The draft is seeded with `String(...)`, not the rounded `131k` a card
+    // shows — parsing that back would persist 131000 in place of 131072.
+    expect(parseTokenInput(String(FALLBACK_CONTEXT_TOKENS))).toBe(FALLBACK_CONTEXT_TOKENS);
+    expect(parseTokenInput(String(FALLBACK_OUTPUT_TOKENS))).toBe(FALLBACK_OUTPUT_TOKENS);
   });
 });
 

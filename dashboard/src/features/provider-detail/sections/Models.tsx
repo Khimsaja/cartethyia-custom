@@ -11,6 +11,7 @@ import {
   Globe,
   Loader2,
   LockOpen,
+  Pencil,
   PowerOff,
   Trash2,
   Wrench,
@@ -30,8 +31,16 @@ import {
   useProbeModel,
   useRegisterProviderModels,
   useSetModelEnabled,
+  useUpdateModelMetadata,
 } from "../../../hooks/providers";
-import { formatModelTokens, UNKNOWN_LIMITS_TOOLTIP, ESTIMATED_LIMITS_TOOLTIP } from "../../../lib/format/tokens";
+import {
+  formatModelTokens,
+  parseTokenInput,
+  UNKNOWN_LIMITS_TOOLTIP,
+  ESTIMATED_LIMITS_TOOLTIP,
+  FALLBACK_CONTEXT_TOKENS,
+  FALLBACK_OUTPUT_TOKENS,
+} from "../../../lib/format/tokens";
 import { toast } from "../../../lib/toast";
 import { useTrackedTimeout } from "../../../hooks/use-timeout";
 import { PROBE_REASONING_EFFORTS, formatThinkingSuffix, type ModelCatalogEntry, type ProbeReasoningEffort } from "../../../data/contracts";
@@ -218,6 +227,7 @@ export function AddModelModal({
   const [thinking, setThinking] = useState<ProbeReasoningEffort>("auto");
   const [testState, setTestState] = useState<"idle" | "testing" | "passed" | "failed">("idle");
   const [testError, setTestError] = useState("");
+  const [draft, setDraft] = useState<ModelMetadataDraft>(newModelDraft);
 
   const trimmed = modelId.trim();
   // Accept a pasted qualified id (`cline/cline-free/…`): the provider is
@@ -254,8 +264,29 @@ export function AddModelModal({
 
   const handleAdd = () => {
     if (!normalized) return;
+    const contextLimit = parseTokenInput(draft.contextLimit);
+    const outputLimit = parseTokenInput(draft.outputLimit);
+    // Refuse unreadable input rather than persisting a wrong ceiling: a context
+    // limit the operator mistyped makes every request against this model
+    // truncate, which reads as the model being broken.
+    if (contextLimit === null || outputLimit === null) {
+      toast.error("Invalid limits", "Use a token count such as 512k, 200000, or 1.5m.");
+      return;
+    }
     register.mutate(
-      { providerId, modelIds: [normalized], wireFamily },
+      {
+        providerId,
+        modelIds: [normalized],
+        wireFamily,
+        metadata: {
+          contextLimit: contextLimit ?? null,
+          outputLimit: outputLimit ?? null,
+          passthrough: draft.passthrough,
+          image: draft.passthrough ? true : draft.image,
+          reasoning: draft.passthrough ? true : draft.reasoning,
+          toolCall: draft.passthrough ? true : draft.toolCall,
+        },
+      },
       {
         onSuccess: () => {
           toast.success("Custom model added", `Sent to ${providerId}/${normalized}`);
@@ -350,6 +381,12 @@ export function AddModelModal({
             Sent with the test. Auto leaves the model's own reasoning default in place.
           </div>
         </div>
+        <ModelMetadataFields
+          draft={draft}
+          onChange={setDraft}
+          idPrefix="add-model"
+          disabled={register.isPending}
+        />
         {declaredWires !== undefined && !declaredWires.includes(wireFamily) && (
           <div className="mt-1 text-badge text-text-tertiary">
             This provider does not declare the{" "}
@@ -372,6 +409,255 @@ export function AddModelModal({
   );
 }
 
+/** Operator-entered limits/capabilities for a model the catalog cannot size. */
+interface ModelMetadataDraft {
+  /** Empty string means "unknown" — the operator left it blank. */
+  readonly contextLimit: string;
+  readonly outputLimit: string;
+  readonly passthrough: boolean;
+  readonly image: boolean;
+  readonly reasoning: boolean;
+  readonly toolCall: boolean;
+}
+
+/** Draft used when a model's own limits are already known (edit of a fetched row). */
+function emptyDraft(): ModelMetadataDraft {
+  return {
+    contextLimit: "",
+    outputLimit: "",
+    passthrough: false,
+    image: true,
+    reasoning: true,
+    toolCall: true,
+  };
+}
+
+/**
+ * The fallback ceilings, spelled so the input field reads them back exactly.
+ *
+ * The exact counts, not `formatModelTokens`' rounded `131k`: that spelling is
+ * what a card shows, but parsing it back yields 131000, so a draft seeded from
+ * it would persist a different number than the one on screen.
+ */
+const FALLBACK_CONTEXT_TEXT = String(FALLBACK_CONTEXT_TOKENS);
+const FALLBACK_OUTPUT_TEXT = String(FALLBACK_OUTPUT_TOKENS);
+
+/** Draft for a brand-new manual add: start on the documented fallback ceilings. */
+function newModelDraft(): ModelMetadataDraft {
+  return { ...emptyDraft(), contextLimit: FALLBACK_CONTEXT_TEXT, outputLimit: FALLBACK_OUTPUT_TEXT };
+}
+
+/**
+ * Limits + capabilities editor, shared by the add and edit dialogs.
+ *
+ * `passthrough` disables the per-capability switches instead of clearing them:
+ * it grants everything, so showing them unchecked would misrepresent the
+ * result. They keep their last state so unchecking passthrough restores the
+ * operator's own choices.
+ */
+function ModelMetadataFields({
+  draft,
+  onChange,
+  idPrefix,
+  disabled = false,
+}: {
+  readonly draft: ModelMetadataDraft;
+  readonly onChange: (next: ModelMetadataDraft) => void;
+  readonly idPrefix: string;
+  readonly disabled?: boolean;
+}): ReactNode {
+  const passthrough = draft.passthrough;
+  return (
+    <Stack gap="10px">
+      <div>
+        <div className="text-badge font-semibold text-text-secondary mb-2">Limits</div>
+        <Inline gap="8px">
+          <Input
+            label="Context"
+            id={`${idPrefix}-context`}
+            placeholder={FALLBACK_CONTEXT_TEXT}
+            value={draft.contextLimit}
+            disabled={disabled}
+            onChange={(event) =>
+              onChange({ ...draft, contextLimit: event.target.value })
+            }
+            className="flex-1"
+          />
+          <Input
+            label="Output"
+            id={`${idPrefix}-output`}
+            placeholder={FALLBACK_OUTPUT_TEXT}
+            value={draft.outputLimit}
+            disabled={disabled}
+            onChange={(event) => onChange({ ...draft, outputLimit: event.target.value })}
+            className="flex-1"
+          />
+        </Inline>
+        <label className="inline-flex items-center gap-2 mt-2 text-badge text-text-secondary cursor-pointer">
+          <input
+            type="checkbox"
+            id={`${idPrefix}-fallback-limits`}
+            checked={
+              draft.contextLimit === FALLBACK_CONTEXT_TEXT &&
+              draft.outputLimit === FALLBACK_OUTPUT_TEXT
+            }
+            disabled={disabled}
+            onChange={(event) =>
+              onChange(
+                event.target.checked
+                  ? {
+                      ...draft,
+                      contextLimit: FALLBACK_CONTEXT_TEXT,
+                      outputLimit: FALLBACK_OUTPUT_TEXT,
+                    }
+                  : { ...draft, contextLimit: "", outputLimit: "" },
+              )
+            }
+          />
+          Use fallback — {formatModelTokens(FALLBACK_CONTEXT_TOKENS)} ctx ·{" "}
+          {formatModelTokens(FALLBACK_OUTPUT_TOKENS)} out
+        </label>
+      </div>
+      <div>
+        <div className="text-badge font-semibold text-text-secondary mb-2">Capabilities</div>
+        <Stack gap="6px">
+          {(
+            [
+              ["image", "Can image", draft.image],
+              ["reasoning", "Reasoning", draft.reasoning],
+              ["toolCall", "Tools", draft.toolCall],
+            ] as const
+          ).map(([field, label, checked]) => (
+            <label
+              key={field}
+              className="inline-flex items-center gap-2 text-badge text-text-secondary"
+              style={passthrough ? { opacity: 0.5 } : undefined}
+            >
+              <input
+                type="checkbox"
+                id={`${idPrefix}-${field}`}
+                checked={passthrough ? true : checked}
+                disabled={disabled || passthrough}
+                onChange={(event) => onChange({ ...draft, [field]: event.target.checked })}
+              />
+              {label}
+            </label>
+          ))}
+        </Stack>
+        <label className="inline-flex items-center gap-2 mt-2 text-badge text-text-secondary cursor-pointer">
+          <input
+            type="checkbox"
+            id={`${idPrefix}-passthrough`}
+            checked={draft.passthrough}
+            disabled={disabled}
+            onChange={(event) => onChange({ ...draft, passthrough: event.target.checked })}
+          />
+          Passthrough — accept every capability
+        </label>
+        {passthrough ? (
+          <div className="text-badge text-text-tertiary mt-2">
+            Passthrough grants all of the above, so they are locked on. Uncheck it to
+            restore your own choices.
+          </div>
+        ) : null}
+      </div>
+    </Stack>
+  );
+}
+
+/**
+ * Edits one existing model's limits and capabilities.
+ *
+ * Only the fields the operator changes are sent: an absent field leaves the
+ * stored value alone, so correcting a context ceiling cannot silently reset the
+ * capability flags to their defaults.
+ */
+export function EditModelModal({
+  providerId,
+  model,
+  onClose,
+}: {
+  readonly providerId: string;
+  readonly model: ModelCatalogEntry;
+  readonly onClose: () => void;
+}): ReactNode {
+  const update = useUpdateModelMetadata();
+  // Seeded from the row so the form shows what is stored, not a blank slate —
+  // an edit dialog that starts empty makes "I only wanted to fix the context
+  // number" silently clear the capabilities too.
+  const [draft, setDraft] = useState<ModelMetadataDraft>(() => ({
+    contextLimit: model.contextLimit ? String(model.contextLimit) : "",
+    outputLimit: model.outputLimit ? String(model.outputLimit) : "",
+    passthrough: false,
+    image: model.vision === true,
+    reasoning: model.reasoning === true,
+    toolCall: model.toolCall === true,
+  }));
+
+  const handleSave = () => {
+    const contextLimit = parseTokenInput(draft.contextLimit);
+    const outputLimit = parseTokenInput(draft.outputLimit);
+    if (contextLimit === null || outputLimit === null) {
+      toast.error("Invalid limits", "Use a token count such as 512k, 200000, or 1.5m.");
+      return;
+    }
+    update.mutate(
+      {
+        providerId,
+        modelId: model.modelId,
+        route: model.route ?? "",
+        metadata: {
+          contextLimit: contextLimit ?? null,
+          outputLimit: outputLimit ?? null,
+          passthrough: draft.passthrough,
+          image: draft.passthrough ? true : draft.image,
+          reasoning: draft.passthrough ? true : draft.reasoning,
+          toolCall: draft.passthrough ? true : draft.toolCall,
+        },
+      },
+      {
+        onSuccess: () => onClose(),
+        onError: (err) =>
+          toast.error(
+            "Failed to update model",
+            (err as { message?: string }).message ?? "Unable to update model",
+          ),
+      },
+    );
+  };
+
+  return (
+    <Dialog
+      open={true}
+      onClose={onClose}
+      title="Edit Model"
+      size="sm"
+      footer={
+        <>
+          <Button variant="secondary" size="sm" onClick={onClose} disabled={update.isPending}>
+            Cancel
+          </Button>
+          <Button variant="primary" size="sm" disabled={update.isPending} onClick={handleSave}>
+            {update.isPending ? "Saving..." : "Save"}
+          </Button>
+        </>
+      }
+    >
+      <Stack gap="10px">
+        <div className="text-badge text-text-tertiary">
+          Editing <span className="font-mono tabular-nums">{model.modelId}</span>
+        </div>
+        <ModelMetadataFields
+          draft={draft}
+          onChange={setDraft}
+          idPrefix="edit-model"
+          disabled={update.isPending}
+        />
+      </Stack>
+    </Dialog>
+  );
+}
+
 function ModelCard({
   providerId,
   model,
@@ -379,6 +665,7 @@ function ModelCard({
   searchCapable,
   thinkingEffort,
   onDeleteRequest,
+  onEditRequest,
   deletePending,
 }: {
   readonly providerId: string;
@@ -391,6 +678,8 @@ function ModelCard({
    * its own — which is what made "set thinking, then test" need a per-card repeat. */
   readonly thinkingEffort: ProbeReasoningEffort;
   readonly onDeleteRequest: (model: ModelCatalogEntry) => void;
+  /** Absent for a shared/built-in row, which the tenant cannot edit. */
+  readonly onEditRequest?: ((model: ModelCatalogEntry) => void) | undefined;
   readonly deletePending: boolean;
 }): ReactNode {
   const probe = useProbeModel();
@@ -578,6 +867,20 @@ function ModelCard({
               </span>
             )}
           </span>
+          {/* Edit sits on the meta line, right after the limits it changes —
+              not in the action row below, where it would read as another
+              test/delete action rather than as editing these numbers. */}
+          {onEditRequest ? (
+            <button
+              type="button"
+              className="shrink-0 grid place-items-center w-6 h-6 p-0 border-0 bg-transparent text-text-tertiary cursor-pointer rounded-tiny hover:bg-inner-border hover:text-text-primary"
+              title="Edit limits and capabilities"
+              aria-label={`Edit ${model.modelId} limits and capabilities`}
+              onClick={() => onEditRequest(model)}
+            >
+              <Pencil size={11} />
+            </button>
+          ) : null}
         </div>
 
         {/* Actions: equal-weight buttons; the thinking setting lives in the
@@ -692,6 +995,7 @@ export function ModelGrid({
 }): ReactNode {
   const deleteModel = useDeleteProviderModel();
   const [deleteTarget, setDeleteTarget] = useState<ModelCatalogEntry | null>(null);
+  const [editTarget, setEditTarget] = useState<ModelCatalogEntry | null>(null);
   // Built-in catalog rows and provider-sourced rows are different things: a
   // built-in row is the compiled catalog and can only be disabled, while a
   // fetched or manually added row is this deployment's own data and can be
@@ -718,6 +1022,10 @@ export function ModelGrid({
       thinkingEffort={thinkingEffort}
       deletePending={deleteModel.isPending}
       onDeleteRequest={setDeleteTarget}
+      // A built-in row is the compiled catalog shared by every tenant, so the
+      // backend refuses to edit it. Offering the pencil there would let the
+      // operator fill in a form that always fails.
+      onEditRequest={model.source === "builtin" ? undefined : setEditTarget}
     />
   );
   return (
@@ -785,6 +1093,13 @@ export function ModelGrid({
         confirmLabel="Delete"
         danger
       />
+      {editTarget !== null ? (
+        <EditModelModal
+          providerId={providerId}
+          model={editTarget}
+          onClose={() => setEditTarget(null)}
+        />
+      ) : null}
     </>
   );
 }

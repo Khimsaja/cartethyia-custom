@@ -10,6 +10,22 @@ import { toast } from "../lib/toast";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
 
+/**
+ * Operator-supplied limits/capabilities sent with a register or metadata update.
+ *
+ * `null` means "unknown" and is distinct from an absent field, which means
+ * "leave the stored value alone" — an edit that only sets the context ceiling
+ * must not reset the capability flags.
+ */
+export interface ModelMetadataPayload {
+  readonly contextLimit?: number | null;
+  readonly outputLimit?: number | null;
+  readonly passthrough?: boolean;
+  readonly image?: boolean;
+  readonly reasoning?: boolean;
+  readonly toolCall?: boolean;
+}
+
 
 /**
  * Loads the tenant provider catalog and observes background metadata refreshes.
@@ -59,14 +75,23 @@ export function useRegisterProviderModels() {
   return useMutation<
     { registered: number },
     ApiErrorShape,
-    { providerId: string; modelIds: readonly string[]; wireFamily?: string }
+    {
+      providerId: string;
+      modelIds: readonly string[];
+      wireFamily?: string;
+      metadata?: ModelMetadataPayload;
+    }
   >({
-    mutationFn: ({ providerId, modelIds, wireFamily }) =>
+    mutationFn: ({ providerId, modelIds, wireFamily, metadata }) =>
       consoleRequest<{ registered: number }>(
         `/providers/${encodeURIComponent(providerId)}/models`,
         {
           method: "POST",
-          body: JSON.stringify({ modelIds, ...(wireFamily ? { wireFamily } : {}) }),
+          body: JSON.stringify({
+            modelIds,
+            ...(wireFamily ? { wireFamily } : {}),
+            ...(metadata ? { metadata } : {}),
+          }),
         },
       ),
     onSuccess: async (_result, variables) => {
@@ -160,6 +185,37 @@ export function useSetModelEnabled() {
       await queryClient.invalidateQueries({
         queryKey: queryKeys.providers.models(variables.providerId),
       });
+    },
+  });
+}
+/**
+ * Edits one model's limits and capability flags.
+ *
+ * Rides the same PATCH as the enable toggle: a payload carrying `metadata` is an
+ * edit, one without is the toggle. The caller must therefore always send
+ * `metadata` here — an accidental omission would toggle the model's enabled
+ * flag instead of editing it.
+ */
+export function useUpdateModelMetadata() {
+  const queryClient = useQueryClient();
+  return useMutation<
+    { success: boolean },
+    ApiErrorShape,
+    { providerId: string; modelId: string; route: string; metadata: ModelMetadataPayload }
+  >({
+    mutationFn: ({ providerId, modelId, route, metadata }) =>
+      consoleRequest<{ success: boolean }>(`/providers/${encodeURIComponent(providerId)}/models`, {
+        method: "PATCH",
+        body: JSON.stringify({ modelId, route, enabled: true, metadata }),
+      }),
+    onSuccess: async (_result, variables) => {
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.providers.models(variables.providerId),
+      });
+      toast.success("Model updated", `${variables.modelId} limits and capabilities saved`);
+    },
+    onError: (error) => {
+      toast.error("Failed to update model", getErrorMessage(error));
     },
   });
 }
