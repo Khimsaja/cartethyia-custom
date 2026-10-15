@@ -27,11 +27,10 @@ import type { ValidatedFetch } from "../../network/outbound-fetch";
 import type { ProviderId } from "../../providers/provider-contracts";
 import {
   DAILY_CHECKIN_PROVIDER_IDS,
-  checkinDayKey,
+  checkinAttemptedToday,
   dailyCheckinEgressForPass,
-  ledgerKey,
+  markCheckinAttempted,
 } from "../../workers/daily-checkin";
-import { dailyCheckinLedger } from "../../persistence/schema";
 import {
   fetchBuddyActivityReport,
   fetchDailyCheckin,
@@ -154,6 +153,14 @@ async function runDailyGrowthForAccount(
       result.state === "error"
         ? { ok: false, message: result.error ?? "Daily check-in failed" }
         : { ok: true, message: checkinStateMessage(result) };
+    // A manual trigger bypasses the day marker on the way in — the operator
+    // asked for "now", and a marker must not be able to refuse that — but it
+    // still leaves the marker behind, so the sweep does not spend another
+    // claim on the same account later today and the console can answer
+    // "attempted today" for an attempt made outside the sweep.
+    if (result.state !== "error") {
+      await markCheckinAttempted({ db: refreshDeps.db, redis: refreshDeps.redis, accountId: account.id });
+    }
   } catch (error) {
     checkin = {
       ok: false,
@@ -166,40 +173,16 @@ async function runDailyGrowthForAccount(
 /**
  * Reads today's check-in attempt from the ledger.
  *
- * With Redis the day marker is the source; without it the `daily_checkin_ledger`
- * row is, which is what makes Lite answer the same question the console asks.
- * Absent (or unreadable) means unknown — never "not claimed", since the sweep
- * may simply not have reached it yet.
+ * Delegates to the module that owns the write: the marker lives in Redis when
+ * Redis is present and in `daily_checkin_ledger` when it is not, and only that
+ * module knows which one its own writes used.
  */
 async function todayCheckinAttempted(
   db: AccountQuotaRoutesDeps["db"] | undefined,
   redis: AccountQuotaRoutesDeps["redis"],
   accountId: string,
 ): Promise<boolean> {
-  if (redis !== undefined) {
-    try {
-      const marker = await redis.get(ledgerKey(checkinDayKey(), accountId));
-      return marker !== null;
-    } catch {
-      return false;
-    }
-  }
-  if (db === undefined) return false;
-  try {
-    const rows = await db
-      .select({ dayKey: dailyCheckinLedger.dayKey })
-      .from(dailyCheckinLedger)
-      .where(
-        and(
-          eq(dailyCheckinLedger.dayKey, checkinDayKey()),
-          eq(dailyCheckinLedger.accountId, accountId),
-        ),
-      )
-      .limit(1);
-    return rows.length > 0;
-  } catch {
-    return false;
-  }
+  return checkinAttemptedToday({ db, redis, accountId });
 }
 
 /**
@@ -865,6 +848,11 @@ export function registerAccountQuotaTenantRoutes(
           code: "checkin_failed",
         };
       }
+      // The trigger bypassed the ledger on the way in; leaving the marker
+      // behind is what stops the sweep spending a second claim on this account
+      // today and lets the console read "attempted today" for an attempt the
+      // sweep did not make.
+      await markCheckinAttempted({ db, redis, accountId: account.id });
       return {
         ok: true,
         status: 200,
@@ -903,15 +891,12 @@ export function registerAccountQuotaTenantRoutes(
       // The marker only proves an attempt happened today — the growth event is
       // a different upstream call, but sharing the marker keeps the "one
       // growth action per day" budget honest across both buttons.
-      let alreadyReported = false;
-      if (redis !== undefined) {
-        try {
-          alreadyReported = (await redis.get(ledgerKey(checkinDayKey(), account.id))) !== null;
-        } catch {
-          alreadyReported = false;
-        }
-      }
-      if (alreadyReported) {
+      //
+      // Read through the same helper the console's own overview uses rather
+      // than the Redis key directly: without Redis the marker lives in
+      // `daily_checkin_ledger`, so a Redis-only read answered "not yet" for
+      // every Lite deployment and let the report be re-sent all day.
+      if (await todayCheckinAttempted(db, redis, account.id)) {
         return {
           ok: true,
           status: 200,
@@ -961,6 +946,10 @@ export function registerAccountQuotaTenantRoutes(
           code: "report_failed",
         };
       }
+      // Same reasoning as the check-in button: the growth budget is one per
+      // day across both buttons, so a report that landed stamps the marker the
+      // other button reads.
+      await markCheckinAttempted({ db, redis, accountId: account.id });
       return {
         ok: true,
         status: 200,

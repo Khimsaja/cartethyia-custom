@@ -30,9 +30,12 @@ import type { ValidatedFetch } from "../network/outbound-fetch";
 import type { ProviderId } from "../providers/provider-contracts";
 import {
   attemptDailyGrowthPass,
+  dequeueCheckin,
+  pendingCheckinRequests,
   supportsDailyCheckin,
   type BuddyActivityReportResult,
   type DailyCheckinResult,
+  type PendingCheckinRequest,
 } from "./daily-checkin";
 
 export interface QuotaRefreshSweepDeps extends QuotaRefreshDeps {
@@ -52,6 +55,12 @@ export interface QuotaRefreshSweepDeps extends QuotaRefreshDeps {
   readonly maxCheckinsPerPass?: number;
   /** Injectable fetch for the check-in ride-along (tests). */
   readonly checkinFetcher?: typeof fetch;
+  /**
+   * Accounts a caller outside the sweep asked to check in — a newly imported
+   * buddy account, whose import deliberately made no upstream call. Defaults to
+   * the module queue `enqueueCheckin` writes; injected in tests.
+   */
+  readonly listPendingCheckins?: () => readonly PendingCheckinRequest[];
   /**
    * Builds the fetch the check-in ride-along uses for one account.
    *
@@ -241,6 +250,7 @@ export async function quotaRefreshSweep(deps: QuotaRefreshSweepDeps): Promise<vo
   // but resolve it again next pass so OAuth refreshes and credential edits
   // are observed and secrets are not retained in a process-wide cache.
   const credentialCache = deps.credentialCache ?? new Map<string, string>();
+  const listPendingCheckins = deps.listPendingCheckins ?? pendingCheckinRequests;
   const resolveCredentialCached = async (
     providerId: ProviderId,
     accountId: string,
@@ -339,8 +349,24 @@ export async function quotaRefreshSweep(deps: QuotaRefreshSweepDeps): Promise<vo
     // and quota is refreshed every pass, so letting the check-in go first
     // costs the quota leg nothing.
     select: (entries) => {
-      const due = entries.filter((entry) => entry.ageMs >= minAgeMs);
+      // An account added since the last pass is admitted regardless of cache
+      // age: it has no quota reading at all yet, so the normal freshness gate
+      // would make a brand-new buddy account wait a full sweep cycle before it
+      // could claim its credit — the import enqueued it precisely so it would
+      // not have to. Only the check-in needs this; the quota leg is happy to
+      // fill a cold cache the moment it is asked to.
+      const queued = new Set(
+        listPendingCheckins()
+          .filter((request) => supportsDailyCheckin(request.providerId))
+          .map((request) => request.accountId),
+      );
+      const due = entries.filter(
+        (entry) => entry.ageMs >= minAgeMs || queued.has(entry.target.accountId),
+      );
       due.sort((left, right) => {
+        const leftQueued = queued.has(left.target.accountId) ? 0 : 1;
+        const rightQueued = queued.has(right.target.accountId) ? 0 : 1;
+        if (leftQueued !== rightQueued) return leftQueued - rightQueued;
         const leftBuddy = supportsDailyCheckin(left.target.providerId) ? 0 : 1;
         const rightBuddy = supportsDailyCheckin(right.target.providerId) ? 0 : 1;
         if (leftBuddy !== rightBuddy) return leftBuddy - rightBuddy;
@@ -411,6 +437,11 @@ export async function quotaRefreshSweep(deps: QuotaRefreshSweepDeps): Promise<vo
           resolveCredential: resolveCredentialCached,
           ...(fetcher ? { fetcher } : {}),
         });
+        // The request has been served: the pass either ran and wrote its own
+        // day marker, or declined because today's slot was already settled.
+        // Holding the entry would only make the next pass re-admit an account
+        // it just handled.
+        dequeueCheckin(entry.target.accountId);
         if (pass !== null) {
           if (pass.checkin.state === "claimed") claimed += 1;
           checkinOutcomes.set(entry.target.accountId, pass.checkin);

@@ -24,6 +24,7 @@ import type { OAuthLoginField } from "../../../providers/authentication/oauth-fl
 import { providerCredentialHint, providerCredentialUrl, providerDisplayName, providerHasAdapterUserAgent, providerOperatorNotice, providerServiceKinds, type CompatibilityProfile } from "../../../providers/provider-metadata";
 import type { AccountHealthEventRecord } from "../../../providers/operations/account-health-service";
 import { CREDENTIAL_MODES, PROVIDER_READ_SCOPES, PROVIDER_WRITE_SCOPES } from "./contracts";
+import { enqueueCheckin } from "../../../workers/daily-checkin";
 import {
   isWireFamily,
   validateCompatibilityProfile,
@@ -40,6 +41,28 @@ import {
   type UpdateProviderAccountRequest,
   type UpdateProviderRequest,
 } from "./contracts";
+/**
+ * Asks the quota sweep to claim the daily check-in credit for a just-created
+ * account on its next pass.
+ *
+ * A no-op for every provider outside the buddy family, and it never touches
+ * upstream: it records an id and returns, so an import of a hundred accounts
+ * still answers as one local write. The sweep that drains this already has the
+ * refreshed credential, the egress rotation, and the once-per-day marker, so
+ * adding a timer here would only duplicate that work — which is the same
+ * reason the check-in has no timer of its own.
+ */
+function queueNewAccountCheckin(
+  providerId: string,
+  account: { readonly id: string; readonly tenantId?: string | null },
+): void {
+  enqueueCheckin({
+    accountId: account.id,
+    providerId,
+    tenantId: account.tenantId ?? null,
+  });
+}
+
 export function sanitizeProviderResponse(
   provider: unknown,
   includeSecrets = false,
@@ -421,6 +444,7 @@ export function createProviderCatalogOperations(config: ProviderCatalogConfig) {
           providerId,
           request,
         );
+        queueNewAccountCheckin(providerId, created);
         await config.auditSink?.record({
           access: a,
           action: "provider_account.created",
@@ -479,6 +503,9 @@ export function createProviderCatalogOperations(config: ProviderCatalogConfig) {
       }
 
       const result = await config.store.createAccountBatch(a.tenantId, providerId, requests);
+      for (const created of result.results) {
+        if (created.account !== undefined) queueNewAccountCheckin(providerId, created.account);
+      }
 
       // One audit row per successful account, but written after the batch lands
       // rather than inside the request path that used to await it per account.

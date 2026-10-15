@@ -36,6 +36,73 @@ import {
 export { DAILY_CHECKIN_PROVIDER_IDS, checkinDayKey };
 export type { BuddyActivityReportResult, DailyCheckinResult };
 
+/**
+ * Pending check-in requests handed to the sweep by a caller outside it.
+ *
+ * A newly imported account is the reason this exists: the import path is
+ * deliberately free of upstream calls so a paste of forty credentials lands as
+ * one local write, and the credit claim therefore has to happen later. Rather
+ * than giving it a second timer — which would duplicate the credential
+ * resolution the quota sweep already does — the import enqueues here and the
+ * sweep drains this on its next pass.
+ *
+ * Bounded: an import bigger than the cap drops the excess instead of growing
+ * without limit, because every entry is still subject to the day marker and a
+ * later pass picks the account up anyway. This queue is a nudge, not a
+ * guarantee — it says "worth trying on the next pass", never "must run".
+ */
+const QUEUE_MAX = 200;
+const checkinQueue = new Map<string, PendingCheckinRequest>();
+
+/** One account a caller asked the sweep to consider for a check-in. */
+export interface PendingCheckinRequest {
+  readonly accountId: string;
+  readonly providerId: string;
+  readonly tenantId: string | null;
+}
+
+/** Accounts a caller has asked the sweep to check in, oldest request first. */
+export function pendingCheckinRequests(): readonly PendingCheckinRequest[] {
+  return [...checkinQueue.values()];
+}
+
+/** Number of accounts currently waiting. Bounded by `QUEUE_MAX`. */
+export function pendingCheckinCount(): number {
+  return checkinQueue.size;
+}
+
+/** Drops every queued request. Tests only. */
+export function clearPendingCheckinRequests(): void {
+  checkinQueue.clear();
+}
+
+/**
+ * Queues a check-in for a newly added account.
+ *
+ * Non-blocking by construction: it records the id and returns, so an import
+ * that adds a hundred accounts still answers as one local write. Returns
+ * `false` for an account the check-in cannot serve at all (wrong provider, or
+ * a queue already at its cap) so the caller can skip the work rather than
+ * enqueue something the sweep would silently drop.
+ */
+export function enqueueCheckin(request: PendingCheckinRequest): boolean {
+  if (!supportsDailyCheckin(request.providerId)) return false;
+  // Already queued: keep the original position rather than re-inserting, which
+  // in a Map would move it to the back and let a repeated import starve it.
+  if (checkinQueue.has(request.accountId)) return true;
+  // Oldest requests drain first, so a bounded queue drops the newest rather
+  // than the ones that have already waited a pass. A dropped request is not a
+  // lost check-in: the sweep reaches the account through its normal listing.
+  if (checkinQueue.size >= QUEUE_MAX) return false;
+  checkinQueue.set(request.accountId, request);
+  return true;
+}
+
+/** Removes one account's queued request once the sweep has acted on it. */
+export function dequeueCheckin(accountId: string): void {
+  checkinQueue.delete(accountId);
+}
+
 const LEDGER_KEY_PREFIX = "cartethyia:daily-checkin";
 /**
  * Ledger TTL. The key is already scoped to one calendar day, so the TTL only
@@ -126,6 +193,90 @@ async function releaseDaySlot(
   }
 }
 
+/**
+ * Stamps today's check-in slot for an account.
+ *
+ * Exists so a caller that deliberately bypasses the ledger — an operator
+ * pressing "check in now" — still leaves the evidence that today's attempt
+ * happened. Without the stamp the sweep re-POSTs the claim on its next pass
+ * and the console reads "Check-in due" for an account that was checked in
+ * minutes ago; the request itself is harmless (`forceClaim` answers
+ * `already_claimed` upstream) but the day's budget is spent twice.
+ *
+ * Only writes the slot; it never releases one. A caller that attempted the
+ * check-in is asserting "this account is settled for today", which is exactly
+ * what the slot means.
+ */
+export async function markCheckinAttempted(args: {
+  readonly db: CartethyiaDatabase | undefined;
+  readonly redis: RedisClient | undefined;
+  readonly accountId: string;
+  readonly now?: () => Date;
+}): Promise<void> {
+  const dayKey = checkinDayKey(args.now?.() ?? new Date());
+  if (args.redis !== undefined) {
+    await args.redis
+      .set(ledgerKey(dayKey, args.accountId), "1", "EX", LEDGER_TTL_SECONDS)
+      .catch((error: unknown) => {
+        log.warn(`[daily-checkin] ledger stamp failed for account=${args.accountId}`, error as Error);
+      });
+    return;
+  }
+  if (args.db === undefined) return;
+  try {
+    await args.db
+      .insert(dailyCheckinLedger)
+      .values({ dayKey, accountId: args.accountId })
+      .onConflictDoNothing();
+  } catch (error) {
+    log.warn(`[daily-checkin] ledger stamp failed for account=${args.accountId}`, error as Error);
+  }
+}
+
+/**
+ * Reads whether today's check-in slot is settled for an account.
+ *
+ * The read belongs next to the writes because there are two places the marker
+ * can live — the Redis key when Redis is present, the `daily_checkin_ledger`
+ * row when it is not — and only this module knows which one its own writes
+ * used. A caller that read the Redis key directly answered "not attempted" on
+ * every Lite deployment, where the sweep had written the row.
+ *
+ * Absent or unreadable means unknown, never "not claimed": the sweep may
+ * simply not have reached the account yet.
+ */
+export async function checkinAttemptedToday(args: {
+  readonly db: CartethyiaDatabase | undefined;
+  readonly redis: RedisClient | undefined;
+  readonly accountId: string;
+  readonly now?: () => Date;
+}): Promise<boolean> {
+  const dayKey = checkinDayKey(args.now?.() ?? new Date());
+  if (args.redis !== undefined) {
+    try {
+      return (await args.redis.get(ledgerKey(dayKey, args.accountId))) !== null;
+    } catch {
+      return false;
+    }
+  }
+  if (args.db === undefined) return false;
+  try {
+    const rows = await args.db
+      .select({ dayKey: dailyCheckinLedger.dayKey })
+      .from(dailyCheckinLedger)
+      .where(
+        and(
+          eq(dailyCheckinLedger.dayKey, dayKey),
+          eq(dailyCheckinLedger.accountId, args.accountId),
+        ),
+      )
+      .limit(1);
+    return rows.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 /** Providers whose billing facade exposes the daily check-in routes. */
 export function supportsDailyCheckin(providerId: string): boolean {
   return (DAILY_CHECKIN_PROVIDER_IDS as readonly string[]).includes(providerId);
@@ -135,6 +286,8 @@ export type DailyGrowthPassResult = {
   readonly checkin: DailyCheckinResult;
   readonly report: BuddyActivityReportResult;
 };
+
+/**
 
 /**
  * Runs the full daily growth pass for one account, once per calendar day:
