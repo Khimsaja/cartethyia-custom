@@ -104,6 +104,8 @@ export function assertUsageSummary(value: unknown): UsageSummaryResponse {
     "latencyP50Ms",
     "latencyP95Ms",
     "latencyP99Ms",
+    "latencySampleCount",
+    "resolveSampleCount",
     "estimatedCostUsd",
     "cacheHitRate",
   ];

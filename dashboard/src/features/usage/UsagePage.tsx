@@ -1261,11 +1261,17 @@ function RequestsStatCard({
  * summarise it. Hidden while the summary is still loading so the panel does
  * not flash a "—" row before real numbers arrive.
  *
- * One row, four figures of the same size: `LATENCY 367 ms · P50 … · P95 … ·
+ * One row, four figures of the same size: `RESOLVE 367 ms · P50 … · P95 … ·
  * P99 …`. The average used to be larger and labelled "Route latency AVG",
- * which read as a heading sitting on top of the percentiles. Shortening it to
- * "Latency" and dropping the accent size keeps the row even. It wraps rather
- * than overflows when there is no room.
+ * which read as a heading sitting on top of the percentiles, then "Latency" —
+ * which put it in the same series as the percentiles beside it when it is a
+ * different measurement entirely (pre-dispatch delay, not response time).
+ * "Resolve" says which one it is. It wraps rather than overflows when there is
+ * no room.
+ *
+ * Each figure carries a native `title` explaining the metric, the window, and
+ * how many requests it was computed from — a percentile over twenty requests
+ * and one over twenty thousand do not deserve the same confidence.
  *
  * It sits outside `DataTable`'s own scroll box, so it stays put while the
  * rows scroll under it.
@@ -1276,23 +1282,44 @@ function RoutingLatencyBar({
   p50Ms,
   p95Ms,
   p99Ms,
+  latencySampleCount,
+  resolveSampleCount,
+  periodLabel: windowLabel,
 }: {
   readonly pending: boolean;
   readonly avgMs: number | undefined;
   readonly p50Ms: number | undefined;
   readonly p95Ms: number | undefined;
   readonly p99Ms: number | undefined;
+  readonly latencySampleCount: number | undefined;
+  readonly resolveSampleCount: number | undefined;
+  readonly periodLabel: string;
 }): ReactNode {
   // The summary is shared across the whole page; treat the first paint the
   // same way the top tiles do (a "…") so a long load reads as one state,
   // not a mix of numbers and placeholders.
   if (pending) return null;
 
-  const tiles: ReadonlyArray<{ readonly label: string; readonly value: number | undefined }> = [
-    { label: "Latency", value: avgMs },
-    { label: "P50", value: p50Ms },
-    { label: "P95", value: p95Ms },
-    { label: "P99", value: p99Ms },
+  // The first tile is the pre-dispatch delay, not end-to-end latency —
+  // labelling it "Latency" put it in the same series as the percentiles
+  // beside it, and the two were read as one metric.
+  const resolveTitle =
+    `Resolve — average time from request arrival to just before the upstream is called ` +
+    `(credential, admission, pool slot, preparation). Not response latency. ` +
+    `${windowLabel} · ${formatNumber(resolveSampleCount ?? 0)} requests with a resolve measurement.`;
+  const percentileTitle = (name: string, percentile: string): string =>
+    `${name} — the ${percentile} of total request duration (arrival to final byte), nearest rank. ` +
+    `${windowLabel} · from ${formatNumber(latencySampleCount ?? 0)} requests.`;
+
+  const tiles: ReadonlyArray<{
+    readonly label: string;
+    readonly value: number | undefined;
+    readonly title: string;
+  }> = [
+    { label: "Resolve", value: avgMs, title: resolveTitle },
+    { label: "P50", value: p50Ms, title: percentileTitle("P50", "median") },
+    { label: "P95", value: p95Ms, title: percentileTitle("P95", "95th percentile") },
+    { label: "P99", value: p99Ms, title: percentileTitle("P99", "99th percentile") },
   ];
 
   return (
@@ -1305,6 +1332,9 @@ function RoutingLatencyBar({
       {tiles.map((tile) => (
         <span
           key={tile.label}
+          // Native title, matching the other hover hints on this page: the
+          // explanation costs no space until asked for.
+          title={tile.title}
           className="inline-flex items-baseline gap-1.5 font-mono tabular-nums leading-none text-caption"
         >
           <span className="font-semibold tracking-label uppercase text-text-tertiary">
@@ -1771,6 +1801,9 @@ export default function Usage(): ReactNode {
                 p50Ms={summary?.latencyP50Ms}
                 p95Ms={summary?.latencyP95Ms}
                 p99Ms={summary?.latencyP99Ms}
+                latencySampleCount={summary?.latencySampleCount}
+                resolveSampleCount={summary?.resolveSampleCount}
+                periodLabel={periodLabel(period)}
               />
               <DataTable
                 maxHeight={445}

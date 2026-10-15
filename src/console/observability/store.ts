@@ -201,6 +201,9 @@ export interface UsagePerformanceSummary {
   latencyP50Ms: number;
   latencyP95Ms: number;
   latencyP99Ms: number;
+  /** Events each series was computed from; see `UsageSummaryTotals`. */
+  latencySampleCount: number;
+  resolveSampleCount: number;
 }
 
 /** Summarizes routing delay and request latency for an already-filtered period. */
@@ -228,6 +231,8 @@ export function summarizeUsagePerformance(
     latencyP50Ms: percentile(latencies, 0.5),
     latencyP95Ms: percentile(latencies, 0.95),
     latencyP99Ms: percentile(latencies, 0.99),
+    latencySampleCount: latencies.length,
+    resolveSampleCount: resolveCount,
   };
 }
 

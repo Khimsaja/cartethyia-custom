@@ -92,6 +92,14 @@ export interface UsageSummaryTotals {
   latencyP50Ms: number;
   latencyP95Ms: number;
   latencyP99Ms: number;
+  /**
+   * How many events each latency series was computed from. A percentile over
+   * twenty requests and one over twenty thousand do not deserve the same
+   * confidence, and the count is the only thing that says which it is.
+   */
+  latencySampleCount: number;
+  /** Events carrying a resolve measurement; differs when a row never dispatched. */
+  resolveSampleCount: number;
   estimatedCostUsd: number;
   /** True when completed rows without persisted cost exist in the window. */
   partial: boolean;
