@@ -40,6 +40,7 @@ import { applyParamQuirks } from "../../../transport/translation/quirks";
 import { createApiKeyAdapter } from "../../configured-provider";
 import type { ApiKeyProviderSpec } from "../../configured-provider";
 import { decodeFactoryDroidCredential } from "../../../security/credential-codec";
+import { log } from "../../../observability/logger";
 
 import { FACTORY_MODELS, FACTORY_PROVIDER_ID } from "./factory-models";
 
@@ -78,17 +79,67 @@ function factoryClientHeaders(orgId: string): Record<string, string> {
 }
 
 /**
+ * Upstream routers Factory dispatches to, sent as `x-api-provider`.
+ *
+ * Copied verbatim from the donor's registry vocabulary
+ * (`packages/catalog/src/wire/factory-droid.ts:30-45`, `FACTORY_DROID_UPSTREAMS`),
+ * which is also the set the KDL compiler validates the rotation and region axes
+ * against. Cross-checked against every `upstream-rotation` and
+ * `region-upstreams-*` value in
+ * `packages/catalog/src/compat/rules/providers/factory-droid.kdl`: the two sets
+ * are identical, so no KDL row names an upstream outside this list.
+ *
+ * The donor's provider pins the header from that same vocabulary
+ * (`packages/ai/src/providers/factory-droid.ts:271` — `"x-api-provider":
+ * input.upstream`), so a value outside it has no meaning on this wire.
+ */
+export const FACTORY_DROID_UPSTREAMS = [
+  "fireworks",
+  "baseten",
+  "mistral",
+  "anthropic",
+  "azure_anthropic",
+  "vertex_anthropic",
+  "bedrock_anthropic",
+  "openai",
+  "azure_openai",
+  "bedrock_openai",
+  "google",
+  "xai",
+  "snowflake",
+  "databricks",
+] as const;
+
+export type FactoryDroidUpstream = (typeof FACTORY_DROID_UPSTREAMS)[number];
+
+const FACTORY_DROID_UPSTREAM_SET: ReadonlySet<string> = new Set(FACTORY_DROID_UPSTREAMS);
+
+/** Narrows a raw string to the declared vocabulary, or `undefined` when outside it. */
+function factoryDroidUpstream(value: string): FactoryDroidUpstream | undefined {
+  return FACTORY_DROID_UPSTREAM_SET.has(value) ? (value as FactoryDroidUpstream) : undefined;
+}
+
+/** Logs the rejected token truncated: enough to name it, never enough to smuggle a payload. */
+function logDroppedUpstream(reason: string, value: string): void {
+  log.warn(`factory: dropping x-api-provider value (${reason})`, {
+    providerId: FACTORY_PROVIDER_ID,
+    rejected: value.slice(0, 64),
+  });
+}
+
+/**
  * Names the upstream provider Factory should route this request to.
  *
- * Without it every request takes Factory's default routing. The research
- * (rank #8) documents the header's purpose — a selector plus rotation/region
- * narrowing — but not the accepted value vocabulary, so the value is not
- * pinned here: it is read from the caller's `factory_api_provider`
- * provider_options key and passed through verbatim. An unknown value is the
- * caller's choice to make, not ours to invent.
+ * Without it every request takes Factory's default routing. The value is a
+ * token from {@link FACTORY_DROID_UPSTREAMS}, read from the caller's
+ * `factory_api_provider` provider_options key.
  *
- * UNCONFIRMED: accepted values and whether rotation is expressed in the same
- * header. Settle from a captured request before relying on this for routing.
+ * A value outside the vocabulary is **omitted**, not forwarded. The donor only
+ * ever sends a declared upstream, so an undeclared token is not "a routing hint
+ * Factory may understand" — it is a value this gateway has no evidence for, and
+ * sending it would make Factory's refusal (or its silent fallthrough) our own
+ * unmapped failure. Omitting falls back to Factory's default routing, which is
+ * the behavior a request that names no upstream already gets.
  */
 export function factoryApiProviderHeader(
   options: Readonly<Record<string, unknown>> | undefined,
@@ -97,7 +148,14 @@ export function factoryApiProviderHeader(
   if (typeof value !== "string" || value.length === 0) return {};
   // A header value carrying a newline would let a caller inject one; the
   // selector is a token, not free text.
-  if (/[\r\n\0]/.test(value)) return {};
+  if (/[\r\n\0]/.test(value)) {
+    logDroppedUpstream("header injection", value);
+    return {};
+  }
+  if (factoryDroidUpstream(value) === undefined) {
+    logDroppedUpstream("not a declared upstream", value);
+    return {};
+  }
   return { "x-api-provider": value };
 }
 
@@ -111,6 +169,162 @@ export function factoryApiProviderHeader(
 export function factoryBaseUrl(context: ProviderDispatchContext): string {
   const region = context.credential.auth_state?.["region"];
   return region === "eu" ? FACTORY_DROID_EU_BASE_URL : FACTORY_DROID_BASE_URL;
+}
+
+/**
+ * The inference region that decides which upstreams may serve an account.
+ *
+ * The donor keeps residency (which chooses the API host) and inference region
+ * (which chooses eligible upstreams) as separate axes, and an EU-host account
+ * can legitimately have global inference
+ * (`packages/catalog/src/wire/factory-droid.ts:50-67`):
+ * `inferenceRegion` wins when recorded, EU residency infers EU, everything else
+ * is global.
+ *
+ * NOTE: our login records residency only (`factory-oauth.ts:128-132` writes
+ * `orgId`, `email`, `userId` and no `region`), so the inference axis is always
+ * the global one today and `region` here comes from whatever the console/or
+ * operator wrote into `auth_state`. The two-axis read is kept because the donor
+ * needs it, not because we currently populate the second axis.
+ */
+export function factoryInferenceRegion(
+  context: ProviderDispatchContext,
+): "global" | "us" | "eu" {
+  const state = context.credential.auth_state;
+  const inference = state?.["inference_region"] ?? state?.["inferenceRegion"];
+  // An explicit axis wins, including an explicit `global`: that is the case the
+  // donor calls out, an EU-host account with global inference. Only its absence
+  // falls back to inferring from residency.
+  if (inference === "global" || inference === "us" || inference === "eu") return inference;
+  return state?.["region"] === "eu" ? "eu" : "global";
+}
+
+/**
+ * Upstreams Factory's registry serves for a region.
+ *
+ * Transcribed from
+ * `packages/catalog/src/compat/rules/providers/factory-droid.kdl:402-406`,
+ * where a bare `region-upstreams-<region>` directive means the region does not
+ * serve the model at all.
+ */
+const REGION_UPSTREAMS: Readonly<Record<"global" | "us" | "eu", readonly FactoryDroidUpstream[]>> =
+  {
+    global: [
+      "fireworks",
+      "baseten",
+      "mistral",
+      "anthropic",
+      "azure_anthropic",
+      "vertex_anthropic",
+      "bedrock_anthropic",
+      "openai",
+      "azure_openai",
+      "bedrock_openai",
+      "google",
+      "xai",
+      "snowflake",
+      "databricks",
+    ],
+    us: [
+      "baseten",
+      "anthropic",
+      "vertex_anthropic",
+      "bedrock_anthropic",
+      "openai",
+      "bedrock_openai",
+      "google",
+      "xai",
+    ],
+    eu: ["vertex_anthropic", "bedrock_anthropic", "openai", "bedrock_openai"],
+  };
+
+/**
+ * The region-unavailable rejection, typed instead of opaque.
+ *
+ * The donor raises exactly this when no upstream is eligible for the account's
+ * region — `requireUpstream`
+ * (`packages/ai/src/providers/factory-droid.ts:100-103`) throws
+ * `AIError.ConfigurationError("Factory Droid model is unavailable in this
+ * account region.")`, reached from both the no-identity and the
+ * narrowed-rotation arms (`factory-droid.ts:131,148`).
+ *
+ * `capability_unsupported` is the closest code in our vocabulary
+ * (`gateway-error.ts:6`): the account cannot be served this model from where it
+ * is, which is a property of the route rather than of the request. The donor's
+ * own message text is preserved as the `reason` so the mapping is traceable.
+ */
+export function factoryRegionUnavailable(modelId: string, region: string): GatewayError {
+  return new GatewayError(
+    "capability_unsupported",
+    400,
+    `factory: ${modelId} is unavailable in this account region (${region})`,
+    { model: modelId, region, reason: "Factory Droid model is unavailable in this account region." },
+  );
+}
+
+/**
+ * Declares how this request's upstream was chosen (research Factory #3).
+ *
+ * The donor sends `x-provider-routing-source` on every inference call
+ * (`packages/ai/src/providers/factory-droid.ts:272`), computed at
+ * `factory-droid.ts:586-593`:
+ *
+ * - `session_lock` once the session has a locked upstream — any continuation
+ *   (a prior assistant turn), or from the start on routes whose policy locks it;
+ * - `configured_order` when live routing chose the rotation;
+ * - `registry_default` when it did not.
+ *
+ * The `configured_order` arm needs live routing discovery
+ * (`packages/catalog/src/discovery/factory-droid.ts:204` sets
+ * `factoryDroidRoutingSource` only there), which this gateway does not do, so
+ * the only rungs reachable here are `session_lock` and `registry_default`.
+ * Sending `configured_order` without that discovery would claim a rotation we
+ * never resolved.
+ */
+export function factoryRoutingSourceHeader(request: CanonicalRequest): Record<string, string> {
+  const continuing = request.messages.some((message) => message.role === "assistant");
+  return { "x-provider-routing-source": continuing ? "session_lock" : "registry_default" };
+}
+
+/**
+ * The upstream this request is routed to, narrowed to the account's region.
+ *
+ * The donor narrows the caller's rotation to what the region serves and refuses
+ * when the intersection is empty (`packages/ai/src/providers/factory-droid.ts:146-150`,
+ * then `requireUpstream` at :100). This is the same decision with our inputs: the
+ * caller's single `factory_api_provider` token instead of a discovered rotation.
+ *
+ * A caller that names no upstream gets no header — Factory's default routing,
+ * which is what a request naming none already gets. Only a caller that *asked*
+ * for an upstream this region does not serve is refused, and refused with the
+ * donor's own region-unavailable error rather than an upstream 4xx this layer
+ * cannot explain.
+ */
+export function factoryRegionCheckedApiProviderHeader(
+  request: CanonicalRequest,
+  context: ProviderDispatchContext,
+): Record<string, string> {
+  const header = factoryApiProviderHeader(request.provider_options);
+  const upstream = header["x-api-provider"];
+  if (upstream === undefined) return header;
+  // Narrows rather than casts: the header only carries a value that passed
+  // `factoryDroidUpstream`, but the type is re-derived so the region lookup stays
+  // a check on the vocabulary instead of a claim about a string.
+  const declared = factoryDroidUpstream(upstream);
+  const region = factoryInferenceRegion(context);
+  if (declared !== undefined && REGION_UPSTREAMS[region].includes(declared)) return header;
+  throw factoryRegionUnavailable(request.model, region);
+}
+
+/** The two routing headers together, as every Factory wire sends them. */
+export function factoryRoutingHeaders(
+  request: CanonicalRequest,
+  context: ProviderDispatchContext,
+): Record<string, string> {
+  return {
+    ...factoryRegionCheckedApiProviderHeader(request, context),
+    ...factoryRoutingSourceHeader(request),
+  };
 }
 
 /**
@@ -153,7 +367,7 @@ function openAiWireSpec(
     resolveBaseUrl: () => factoryBaseUrl(context),
     extra_headers: {
       ...factoryClientHeaders(orgId),
-      ...factoryApiProviderHeader(request.provider_options),
+      ...factoryRoutingHeaders(request, context),
       authorization: `Bearer ${token}`,
     },
   };
@@ -192,7 +406,7 @@ class FactoryDroidAdapter implements ProviderAdapter {
           secret: token,
           customHeaders: {
             ...factoryClientHeaders(orgId),
-            ...factoryApiProviderHeader(request.provider_options),
+            ...factoryRoutingHeaders(request, context),
             ...filterClaudeCustomHeaders({ ...context.credential.custom_headers }),
           },
         },
