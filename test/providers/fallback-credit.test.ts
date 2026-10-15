@@ -2,8 +2,8 @@
  * Fallback-credit token cache + refusal redemption tests.
  *
  * Research item #2 (rank M) from
- * `documentation/research/oh-my-pi-provider-comparison.md`. The wire shape is
- * taken from the donor (`oh-my-pi@packages/ai/src/providers/anthropic.ts`):
+ * the provider comparison research. The wire shape is
+ * taken from the reference client source (`packages/ai/src/providers/anthropic.ts`):
  * the redemption body is the refused body with `fallback_credit_token` set
  * **top-level** (`:1633-1646`), captured from a refusal's `stop_details`
  * (`:3295-3309`), forfeited and retried once without it on a 400 that names

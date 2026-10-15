@@ -250,7 +250,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     // credential could not be selected.
     if (typeof profileId === "string" && profileId.length > 0) {
       // Dated, not bare: the donor sends `user-profiles-2026-09-04`
-      // (oh-my-pi `packages/ai/src/providers/anthropic-user-profiles.ts:4`).
+      // (the reference client `packages/ai/src/providers/anthropic-user-profiles.ts:4`).
       // `ensureAnthropicBeta` takes any string, so the bare "user-profiles"
       // this used to send passed every check while being a beta Anthropic has
       // never published — an undocumented value the upstream ignores.

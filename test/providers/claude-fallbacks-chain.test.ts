@@ -2,7 +2,7 @@
  * Claude server-side `fallbacks` chain + served-by-fallback detection.
  *
  * Research rank #7 (effort M) from
- * `documentation/research/oh-my-pi-provider-comparison.md` → "## Claude Code":
+ * the provider comparison research → "## Claude Code":
  * the donor sends a `fallbacks` chain (≤3 models, per-attempt settings) behind
  * the `server-side-fallback-2026-06-01` beta, and detects that a fallback
  * answered from `usage.iterations[].type == "fallback_message"`.

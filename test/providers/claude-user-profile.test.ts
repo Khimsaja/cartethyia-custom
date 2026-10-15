@@ -1,7 +1,7 @@
 /**
  * Claude `anthropic-user-profile-id` header.
  *
- * Rank #14 from `documentation/research/oh-my-pi-provider-comparison.md`: the
+ * Rank #14 from the provider comparison research: the
  * donor sends the profile two ways — the `user-profiles` beta (capability) and
  * the `anthropic-user-profile-id` header (which profile). We already sent the
  * beta only, so profile-scoped credentials could never be addressed.

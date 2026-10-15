@@ -7,7 +7,7 @@
  * account is still in the lane, and failing over would abandon capacity that is
  * merely busy.
  *
- * Donor contract (oh-my-pi @ c2cb79e4c2, `packages/ai/src/providers/anthropic.ts`):
+ * Donor contract (the reference client, `packages/ai/src/providers/anthropic.ts`):
  * - Gate `:3726-3731` — the loop runs only when slow mode is active AND no first
  *   token has arrived AND the stream produced no replay-unsafe content AND the
  *   abort was not the caller's. Once tokens have flowed, a retry would duplicate

@@ -3,8 +3,8 @@
  *
  * When Claude returns a refusal carrying `stop_details.fallback_credit_token`,
  * that token buys one free replay of the *refused* body within its redemption
- * window. The wire shape is taken verbatim from the donor
- * (`oh-my-pi`, `packages/ai/src/providers/anthropic.ts`, commit c2cb79e4c2):
+ * window. The wire shape is taken verbatim from the reference client source
+ * (`packages/ai/src/providers/anthropic.ts`):
  *
  * - `:243-248` — `FALLBACK_CREDIT_TTL_MS = 5 * 60 * 1000`. `stop_details`
  *   reports no expiry; five minutes from the refusal is the documented window
@@ -24,8 +24,6 @@
  *
  * The token is bound to the body that was refused, so entries are keyed by a
  * hash of that body: only an identical replay may spend it.
- *
- * Design: documentation/research/oh-my-pi-provider-comparison.md (#2, M).
  */
 
 import { GatewayError } from "../../../protocol/gateway-error";

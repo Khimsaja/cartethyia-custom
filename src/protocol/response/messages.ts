@@ -122,7 +122,7 @@ export function responseUsage(value: unknown): UsageRecord | undefined {
  * The upstream `usage.iterations[]` type that marks a turn answered by a
  * fallback model rather than the requested primary.
  *
- * Donor-captured signal (`documentation/research/oh-my-pi-provider-comparison.md`
+ * Donor-captured signal (the provider comparison research
  * → "Claude response", citing `anthropic-wire.ts:1829-1838`). This value is
  * named at the same level of confidence as the research states it, so it is
  * compared literally; no other iteration type is interpreted.

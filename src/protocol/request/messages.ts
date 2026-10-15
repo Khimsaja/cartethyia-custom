@@ -465,7 +465,7 @@ export const CLAUDE_FALLBACKS_OPTION = "claude_fallbacks";
  *
  * UNCONFIRMED — the donor research names the *concept* ("per-attempt
  * max_tokens/thinking/output_config/speed",
- * `documentation/research/oh-my-pi-provider-comparison.md` → "Multi-model",
+ * the provider comparison research → "Multi-model",
  * citing `anthropic-wire.ts:297-308` and `anthropic.ts:1868-1901`) but no
  * request capture in this repository shows the field names or their value
  * grammar inside a chain entry. Only the chain key (`fallbacks`) and the

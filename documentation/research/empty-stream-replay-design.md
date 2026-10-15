@@ -1,7 +1,7 @@
 # Empty-stream replay + pre-start failover — design
 
 - Date: 2026-10-15. Type: design spike, no source changes.
-- Donor: oh-my-pi `packages/ai/src/providers/google-gemini-cli.ts:931-1102`
+- Donor: the reference client `packages/ai/src/providers/google-gemini-cli.ts:931-1102`
   (`MAX_EMPTY_STREAM_RETRIES = 2`, `EMPTY_STREAM_BASE_DELAY_MS = 500` in
   `google-shared.ts:446-447`; first-event default 300s at `:324`;
   per-endpoint retry `MAX_RETRIES = 3`, 1s exponential, 5-min budget at `:322-329`).

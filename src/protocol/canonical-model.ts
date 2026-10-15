@@ -7,7 +7,7 @@
  */
 /**
  * `gemini` is Factory's native `generateContent` wire (`/api/llm/g/v1/generate`,
- * oh-my-pi `packages/catalog/src/wire/factory-droid.ts:83-84`). It is not
+ * the reference client `packages/catalog/src/wire/factory-droid.ts:83-84`). It is not
  * chat-shaped, so routing a Gemini id onto `chat` posts to an endpoint that
  * does not serve it. Adding it here is what lets the catalog name the right
  * wire instead of lying about it.

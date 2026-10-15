@@ -566,7 +566,7 @@ class AntigravityAdapter implements ProviderAdapter {
     });
     const aspectRatio = imageAspectRatio(body.size);
     const count = typeof body.n === "number" && Number.isFinite(body.n) ? Math.max(1, Math.floor(body.n)) : 1;
-    // oh-my-pi's Antigravity image client streams the agent envelope and asks
+    // the reference client's Antigravity image client streams the agent envelope and asks
     // for IMAGE only. The chat envelope (tools, thinking, identity turn) makes
     // Cloud Code answer as an agent instead of returning inline image bytes.
     const payload: Record<string, unknown> = {

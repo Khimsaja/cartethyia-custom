@@ -14,7 +14,7 @@
  * (see `protocol/request/messages.ts`, which degrades it to a placeholder).
  *
  * Limits come from the donor behaviour recorded in
- * `documentation/research/oh-my-pi-provider-comparison.md` (rank #10). They are
+ * the provider comparison research (rank #10). They are
  * declared here and nowhere else.
  */
 

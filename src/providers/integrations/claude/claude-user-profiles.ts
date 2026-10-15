@@ -1,7 +1,7 @@
 /**
  * Claude User Profiles REST client.
  *
- * Research item #14 (`documentation/research/oh-my-pi-provider-comparison.md`).
+ * Research item #14 (the provider comparison research).
  * The `anthropic-user-profile-id` header half of that item is already done in
  * `claude.ts:225-242`; this module is the REST half — the read-only surface
  * that lets a console/ops caller resolve which profiles exist before any

@@ -1,6 +1,6 @@
 /**
  * Antigravity parity items 10, 4, 6 and 3 from
- * `documentation/research/oh-my-pi-provider-comparison.md` ("Antigravity" →
+ * the provider comparison research ("Antigravity" →
  * "Missing (prioritized)").
  *
  * All four are unit-level and offline: no network, no database, no real

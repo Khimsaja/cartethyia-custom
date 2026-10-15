@@ -1,14 +1,14 @@
 /**
  * Factory Droid model catalog.
  *
- * Transcribed from oh-my-pi `packages/catalog/src/compat/rules/providers/factory-droid.kdl`
+ * Transcribed from the reference client `packages/catalog/src/compat/rules/providers/factory-droid.kdl`
  * and the wire routing in `runtime/behavior.kdl`, which names the upstream wire per
  * model id. Limits and the text/image split come from each seed row there, not
  * from a guess: Factory bills credits and publishes no prices, so `cost` stays null.
  *
  * Gemini ids are listed below on the `gemini` wire family.
  *
- * Settled from the donor checkout (`Public/oh-my-pi`, commit c2cb79e4c2): the
+ * Settled from the reference client source: the
  * research was right and the old rows were wrong. Factory serves Gemini on a
  * native generateContent wire at `/api/llm/g/v1/generate`
  * (`packages/catalog/src/wire/factory-droid.ts:83-84`,

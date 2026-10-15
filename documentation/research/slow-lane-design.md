@@ -1,7 +1,7 @@
 # Slow-lane support — design spike
 
-Source: `documentation/research/oh-my-pi-provider-comparison.md` (#1, effort M, impact High).
-Donor: oh-my-pi `packages/ai/src/providers/anthropic-slow-mode.ts` (wire contract +
+Source: the provider comparison research (#1, effort M, impact High).
+Donor: the reference client `packages/ai/src/providers/anthropic-slow-mode.ts` (wire contract +
 `parseAnthropicSlowModeHeaders`), `packages/ai/src/providers/anthropic.ts:2695-2771,2862-2864,3727-3756`
 (request gating + failure loop), `packages/coding-agent/src/session/anthropic-slow-mode.ts`
 (`AnthropicSlowModeController` state machine, per-account lanes).

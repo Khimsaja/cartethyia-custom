@@ -12,7 +12,7 @@
  *    broken.
  * 2. **The ids are the bare Anthropic names.** On the `/anthropic` route the
  *    gateway resolves `claude-opus-5`; the `anthropic/` prefix is how models.dev
- *    namespaces it among the gateway's 47, and oh-my-pi's own seed row for this
+ *    namespaces it among the gateway's 47, and the reference client's own seed row for this
  *    provider carries the bare id against the same base URL.
  *
  * No cost column: a gateway bills through the operator's own Cloudflare plan,

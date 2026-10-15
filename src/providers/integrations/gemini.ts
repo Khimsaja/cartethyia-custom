@@ -392,7 +392,7 @@ class GeminiAdapter implements ProviderAdapter {
     const lifecycle = createUpstreamDeadlineLifecycle(context);
     let response: Response;
     try {
-      // oh-my-pi's Gemini image client asks for IMAGE only. TEXT+IMAGE lets
+      // the reference client's Gemini image client asks for IMAGE only. TEXT+IMAGE lets
       // the model answer in prose and skip the inline image part.
       response = await outboundFetch(geminiModelUrl(this.baseUrl, model, "generateContent"), {
         method: "POST",
