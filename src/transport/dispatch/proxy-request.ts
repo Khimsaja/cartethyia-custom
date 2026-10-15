@@ -1,7 +1,7 @@
 import { isBundledProviderId } from "../../providers/provider-contracts";
 import type { ProviderDispatchContext, ProviderId, ProviderAdapter } from "../../providers/provider-contracts";
 import { GatewayError } from "../../protocol/gateway-error";
-import type { CanonicalEvent, CanonicalRequest } from "../../protocol/canonical-model";
+import type { CanonicalEvent } from "../../protocol/canonical-model";
 import { resolveCredentialForAccount } from "../../providers/operations/provider-credential-service";
 import type { OAuthTokenRefresher } from "../../providers/authentication/oauth-refresh-service";
 import type { OAuthRefreshService } from "../../providers/authentication/oauth-refresh-service";
@@ -9,7 +9,6 @@ import type { ValidatedNetworkBindingFactory } from "../../network/pool/resolver
 import type { ByokUpstreamHost } from "../../providers/operations/provider-catalog-service";
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import type { RouteSnapshotService } from "../routing/route-model";
-import type { RouteCandidate } from "../routing/route-model";
 import { chatAdapter } from "../surface/chat/adapter";
 import { responsesAdapter } from "../surface/responses/adapter";
 import { messagesAdapter } from "../surface/messages/adapter";
@@ -35,14 +34,6 @@ import {
 import { runAttemptLoop } from "./attempt-loop";
 import { projectForRoute, routeCapabilitiesFor } from "../translation/capabilities";
 import { dispatchStreamingAttempt } from "./streaming/stream";
-import {
-  appendEventsAfter,
-  runWebSearchBridge,
-  servedSearchEvents,
-  pendingWebSearchToolCall,
-  withAnsweredWebSearchToolCall,
-} from "./websearch-bridge";
-import type { WebSearchBridgeResult } from "./websearch-bridge";
 
 export interface ProviderProxyHandlerDeps {
   readonly db: CartethyiaDatabase;
@@ -118,56 +109,7 @@ export async function handleProviderProxyRequest(
   const candidates =
     prepared.eligibleRouteCandidates.length > 0 ? prepared.eligibleRouteCandidates : [prepared.candidate];
   const attemptCandidates = candidates;
-  const bridgeDeps = {
-    db: deps.db,
-    ...(deps.resolveProviderAdapter ? { resolveProviderAdapter: deps.resolveProviderAdapter } : {}),
-    ...(deps.providerAdapters ? { providerAdapters: deps.providerAdapters } : {}),
-    ...(deps.networkBindingFactory ? { networkBindingFactory: deps.networkBindingFactory } : {}),
-  };
-  const resolveSearchCandidates = async (): Promise<readonly RouteCandidate[]> => {
-    if (!deps.snapshotService) return [];
-    const snapshot = await deps.snapshotService.getSnapshot();
-    return prepared.routingEngine.webSearchFallbackCandidates(
-      snapshot,
-      prepared.authorization.tenantId,
-    );
-  };
   const dispatchRequest = canonicalRequest;
-  let servedSearch: WebSearchBridgeResult | undefined;
-  // Resolve search providers only after the selected model emits a tool call;
-  // search availability never participates in chat route selection.
-  const runSearchToolLoop = async (
-    request: CanonicalRequest,
-    events: readonly CanonicalEvent[],
-    dispatch: (input: CanonicalRequest) => Promise<{ events: CanonicalEvent[] }>,
-    routeCandidate: RouteCandidate,
-  ): Promise<{ events: readonly CanonicalEvent[]; served: boolean }> => {
-    const searchCall = pendingWebSearchToolCall(events);
-    if (searchCall === undefined) return { events, served: false };
-    const searchCandidates = await resolveSearchCandidates();
-    if (searchCandidates.length === 0) return { events, served: false };
-    const served = await runWebSearchBridge({
-      state,
-      deps: bridgeDeps,
-      invocation: {
-        query: searchCall.query,
-        callId: searchCall.callId,
-        maxResults: 10,
-      },
-      candidates: searchCandidates,
-    });
-    if (served === undefined) return { events, served: false };
-    servedSearch = served;
-    const continued = projectForRoute(
-      withAnsweredWebSearchToolCall(request, searchCall, served),
-      routeCapabilitiesFor(routeCandidate),
-    );
-    const next = await dispatch(continued);
-    return {
-      events: appendEventsAfter(servedSearchEvents(served, request.source_surface), next.events),
-      served: true,
-    };
-  };
   const inboundHeaders = forwardedRequestHeaders(request);
   // Stable per-conversation affinity for every attempt on every wire: caller
   // key first, then inbound session headers, then a hash of the opening turn.
@@ -276,17 +218,6 @@ export async function handleProviderProxyRequest(
           : {}),
       });
       if (dispatchRequest.stream) {
-        const streamDispatch = async (input: CanonicalRequest): Promise<{ events: CanonicalEvent[] }> => {
-          const events: CanonicalEvent[] = [];
-          for await (const event of adapter.dispatch(
-            input,
-            providerRouteCandidate as never,
-            dispatchContextBase as never,
-          )) {
-            events.push(event);
-          }
-          return { events };
-        };
         return dispatchStreamingAttempt({
           state,
           deps,
@@ -304,14 +235,6 @@ export async function handleProviderProxyRequest(
           proxySlot,
           networkPoolId,
           providerCapture,
-          ...(servedSearch === undefined
-            ? {}
-            : { servedSearch: servedSearchEvents(servedSearch, dispatchRequest.source_surface) }),
-          searchLoop: {
-            run: async (request, events) => {
-              return runSearchToolLoop(request, events, streamDispatch, candidate);
-            },
-          },
           retainLeases: context.retainLeases,
           ttfbFields,
         });
@@ -341,38 +264,7 @@ export async function handleProviderProxyRequest(
         return { events, firstContentDeltaAtMs };
       };
       state.upstreamDispatchStartedAtMs = Date.now();
-      let { events, firstContentDeltaAtMs } = await dispatch(attemptRequest);
-      if (servedSearch !== undefined) {
-        events = appendEventsAfter(servedSearchEvents(servedSearch, dispatchRequest.source_surface), events);
-      }
-      // Only a completed model tool call starts a search round. Limit repeated
-      // model requests so a provider cannot keep the turn in a search loop.
-      for (let round = 0; round < 4; round += 1) {
-        const searchCall = pendingWebSearchToolCall(events);
-        if (searchCall === undefined) break;
-        const searchCandidates = await resolveSearchCandidates();
-        if (searchCandidates.length === 0) break;
-        const served = await runWebSearchBridge({
-          state,
-          deps: bridgeDeps,
-          invocation: {
-            query: searchCall.query,
-            callId: searchCall.callId,
-            maxResults: 10,
-          },
-          candidates: searchCandidates,
-        });
-        if (served === undefined) break;
-        servedSearch = served;
-        const continued = projectForRoute(
-          withAnsweredWebSearchToolCall(dispatchRequest, searchCall, served),
-          routeCapabilitiesFor(candidate),
-        );
-        ({ events, firstContentDeltaAtMs } = await dispatch(continued));
-        if (servedSearch !== undefined) {
-          events = appendEventsAfter(servedSearchEvents(servedSearch, dispatchRequest.source_surface), events);
-        }
-      }
+      const { events, firstContentDeltaAtMs } = await dispatch(attemptRequest);
       const terminal = events.find((event) => event.type === "terminal");
       if (terminal === undefined) throw terminalFailure(undefined);
       const terminalError = terminalFailure(terminal);
