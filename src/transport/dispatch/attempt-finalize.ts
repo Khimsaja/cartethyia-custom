@@ -18,6 +18,7 @@ import {
   disablePoolForProxyHttpStatus,
   recordPoolDispatchOutcome,
 } from "../../network/pool-health-machine";
+import { ProxyConnectRefusalError } from "../../network/pool/agent";
 
 /**
  * Settings-gated payload capture. Request-event metadata is always retained;
@@ -504,6 +505,51 @@ export function completionContext(input: {
   };
 }
 
+/**
+ * Decides whether a failed attempt proves *the pool* is unusable, and which
+ * HTTP status that verdict rests on.
+ *
+ * Both a proxy and an upstream can answer 402, and the two mean opposite
+ * things: a proxy's 402 says this pool cannot carry traffic (disable it), while
+ * an upstream's 402 is that provider's billing verdict on the account that was
+ // dialed (cool the account down, leave the pool alone). The status alone
+ * cannot separate them, so the decision rides on who answered.
+ *
+ * A proxy that refuses the CONNECT handshake answers *before* any upstream is
+ * dialed, so its status is unambiguously the proxy's own. That refusal is not a
+ * `GatewayError` — it is a typed `ProxyConnectRefusalError` — so reading the
+ * status off `error.status` alone saw `undefined` here, the 402/407 check never
+ * fired, and a pool that had refused to tunnel stayed enabled and kept being
+ * selected.
+ */
+export function resolveProxyDisableDecision(completion: AttemptCompletion): {
+  readonly disableProxy: boolean;
+  readonly responseHttpStatus: number | undefined;
+} {
+  const proxyConnectStatus =
+    completion.error instanceof ProxyConnectRefusalError
+      ? completion.error.statusCode
+      : undefined;
+  const responseHttpStatus =
+    completion.error instanceof GatewayError
+      ? completion.error.status
+      : (proxyConnectStatus ?? completion.httpStatus);
+  // Only a proxy-origin payment/auth response proves the pool itself is unusable;
+  // an upstream provider's 402 is a quota/billing response for that provider.
+  const errorOrigin =
+    completion.error instanceof GatewayError
+      ? completion.error.origin
+      : proxyConnectStatus !== undefined
+        ? "network"
+        : completion.errorOrigin;
+  const disableProxy =
+    completion.networkPoolId !== undefined &&
+    completion.status !== "completed" &&
+    errorOrigin === "network" &&
+    (responseHttpStatus === 402 || responseHttpStatus === 407);
+  return { disableProxy, responseHttpStatus };
+}
+
 export async function completeAttempt(
   state: ProxyRequestState,
   completion: AttemptCompletion,
@@ -558,19 +604,7 @@ export async function completeAttempt(
       // Swallowed: usage reconciliation is non-critical bookkeeping.
     }
   }
-  const responseHttpStatus =
-    completion.error instanceof GatewayError ? completion.error.status : completion.httpStatus;
-  // Only a proxy-origin payment/auth response proves the pool itself is unusable;
-  // an upstream provider's 402 is a quota/billing response for that provider.
-  const errorOrigin =
-    completion.error instanceof GatewayError
-      ? completion.error.origin
-      : completion.errorOrigin;
-  const disableProxy =
-    completion.networkPoolId !== undefined &&
-    completion.status !== "completed" &&
-    errorOrigin === "network" &&
-    (responseHttpStatus === 402 || responseHttpStatus === 407);
+  const { disableProxy, responseHttpStatus } = resolveProxyDisableDecision(completion);
   // Cancelled attempts write no health (client gone; outcome unknown) —
   // matches the historical `!cancelled` guards at every site. Health is
   // advisory: a failed report must never re-enter the retry path (a retry
