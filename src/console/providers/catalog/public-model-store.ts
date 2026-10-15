@@ -167,9 +167,19 @@ export function resolveTargetIds(
 /**
  * The metadata a routing name advertises, given the ids it can reach.
  *
- * A pool may route to any member, so the conservative claim is the minimum
- * across them and only the modalities every member shares. `null` limits mean
- * "no catalog row described this id"; the caller substitutes the defaults.
+ * The first member that states its own metadata wins, wholesale — limits,
+ * capabilities, and cost together. Averaging across members made a pool read
+ * as its weakest member: an alias over a 1M/384k row and a 200k/64k row
+ * advertised 200k/64k and dropped vision, because the conservative rule
+ * (minimum limits, only capabilities every member shares) describes the worst
+ * route rather than the one the pool exists to serve.
+ *
+ * "States its own" carries as much weight as "first". A member whose limits are
+ * the estimated fallback is skipped, so a placeholder never outranks a real
+ * measurement merely by coming first in the member list.
+ *
+ * When no member states its own, the conservative aggregate is still the honest
+ * answer: every candidate is a placeholder, so there is no better one to prefer.
  */
 export function advertisedMetadata(
   ids: readonly string[],
@@ -189,6 +199,18 @@ export function advertisedMetadata(
       cost: undefined,
     };
   }
+  const filed = found.find((m) => m.limitsEstimated !== true && m.contextLimit !== null);
+  if (filed !== undefined) {
+    return {
+      contextLimit: filed.contextLimit,
+      outputLimit: filed.outputLimit,
+      modalities: filed.modalities,
+      reasoning: filed.reasoning,
+      toolCall: filed.toolCall,
+      webSearch: filed.webSearch,
+      cost: filed.cost,
+    };
+  }
   return {
     contextLimit: Math.min(...found.map((m) => m.contextLimit ?? DEFAULT_CONTEXT_LIMIT)),
     outputLimit: Math.min(...found.map((m) => m.outputLimit ?? DEFAULT_OUTPUT_LIMIT)),
@@ -196,9 +218,9 @@ export function advertisedMetadata(
     // enough to describe the alias.
     ...(found.every((m) => m.limitsEstimated === true) ? { limitsEstimated: true } : {}),
     modalities: intersectModalities(found.map((m) => m.modalities).filter((m) => m != null)),
-    // A pool may route to any member, so a capability is claimed only when
-    // every member has it; a single member's rate is quoted only when all
-    // members bill alike.
+    // Every candidate here is a placeholder, so none is preferable: a
+    // capability is claimed only when all of them carry it, and a rate is
+    // quoted only when all bill alike.
     reasoning: found.every((m) => m.reasoning),
     toolCall: found.every((m) => m.toolCall),
     webSearch: found.every((m) => m.webSearch),
@@ -560,6 +582,22 @@ export class PublicModelCatalogStore {
       const matches = rows.filter((row) => row.modelId === id).map((row) => out.get(`${row.providerId}/${row.modelId}`));
       if (matches.length > 0 && matches.every((entry) => entry !== undefined)) {
         const found = matches.filter((entry): entry is ModelMetadata => entry !== undefined);
+        // Same intent as `advertisedMetadata`: describe the id by a row that
+        // states its own limits, not by the weakest provider carrying it. The
+        // tie-break differs because a bare id has no member order to defer to —
+        // there is no declared list, only whichever rows the query happened to
+        // return — so "first" would be whichever the database yielded. The
+        // largest filed window is chosen instead: among interchangeable
+        // providers it is the one the route can actually serve, and it is
+        // deterministic.
+        const filed = found.filter((entry) => entry.limitsEstimated !== true && entry.contextLimit !== null);
+        if (filed.length > 0) {
+          const best = filed.reduce((a, b) =>
+            (b.contextLimit ?? 0) > (a.contextLimit ?? 0) ? b : a,
+          );
+          out.set(id, best);
+          continue;
+        }
         out.set(id, {
           contextLimit: Math.min(...found.map((entry) => entry.contextLimit ?? DEFAULT_CONTEXT_LIMIT)),
           outputLimit: Math.min(...found.map((entry) => entry.outputLimit ?? DEFAULT_OUTPUT_LIMIT)),

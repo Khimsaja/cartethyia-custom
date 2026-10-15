@@ -21,8 +21,18 @@ import type {
   ModelRoutingStore,
 } from "./contracts";
 import { modelsDevCatalog } from "../../../providers/discovery/models-dev-catalog";
-function mapAliasRow(row: ModelAlias): ModelAliasRow {
-  const meta = modelsDevCatalog.resolve("", row.targetModel);
+/**
+ * Projects one alias row, including the limits the console shows for it.
+ *
+ * Exported for the same reason as {@link mapComboRow}: which window an alias
+ * publishes is a function of the row alone, so a test can pin it without a
+ * database.
+ */
+export function mapAliasRow(row: ModelAlias): ModelAliasRow {
+  // Same resolution as a combo member: `resolve("", …)` alone fails closed on
+  // any catalog disagreement, so an alias to a widely-resold id always showed
+  // the hardcoded default instead of the model's real window.
+  const meta = memberLimits(row.targetModel);
   return {
     id: row.id,
     tenantId: row.tenantId,
@@ -35,19 +45,49 @@ function mapAliasRow(row: ModelAlias): ModelAliasRow {
   };
 }
 
-function mapComboRow(row: ModelCombo): ModelComboRow {
+/**
+ * The window one combo member advertises, or `undefined` when nothing files it.
+ *
+ * `resolve("", member)` alone almost never answers: it fails closed on any
+ * disagreement between the catalog's rows, and a popular bare id is filed by
+ * many resellers that rarely agree. Every combo therefore fell through to the
+ * hardcoded defaults, whatever its members were. `majorityFor` is the tier that
+ * exists for exactly this case — the model is known, the catalog merely
+ * disagrees — so it is consulted second rather than giving up.
+ */
+function memberLimits(member: string): { contextLimit: number; outputLimit: number } | undefined {
+  const resolved = modelsDevCatalog.resolve("", member);
+  if (resolved !== undefined) {
+    return { contextLimit: resolved.contextLimit ?? 200_000, outputLimit: resolved.outputLimit ?? 64_192 };
+  }
+  const bare = member.includes("/") ? member.slice(member.lastIndexOf("/") + 1) : member;
+  return modelsDevCatalog.majorityFor(bare);
+}
+
+/**
+ * Projects one combo row, including the limits the console shows for it.
+ *
+ * Exported so a test can pin which member's window a combo publishes: the
+ * choice is a function of the row alone, with no store or query involved.
+ */
+export function mapComboRow(row: ModelCombo): ModelComboRow {
   const metas = row.members
-    .map((m) => modelsDevCatalog.resolve("", m))
+    .map((m) => memberLimits(m))
     .filter((m): m is NonNullable<typeof m> => m !== undefined);
 
+  // The widest filed member, not the narrowest. Taking the minimum across
+  // members described the pool by its weakest route: a combo whose members
+  // include a 1M/384k row still advertised 64k output, so the console row for
+  // the pool contradicted what the pool could serve. Largest is also
+  // deterministic, where "first member" would depend on row order.
   const contextLimit =
     metas.length > 0
-      ? Math.min(...metas.map((m) => m.contextLimit ?? 200_000))
+      ? Math.max(...metas.map((m) => m.contextLimit ?? 200_000))
       : 200_000;
 
   const outputLimit =
     metas.length > 0
-      ? Math.min(...metas.map((m) => m.outputLimit ?? 64_192))
+      ? Math.max(...metas.map((m) => m.outputLimit ?? 64_192))
       : 64_192;
 
   return {
