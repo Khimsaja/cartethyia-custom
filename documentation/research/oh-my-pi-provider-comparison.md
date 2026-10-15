@@ -289,6 +289,24 @@ Ranked by impact first, effort second. Effort S/M/L. Legal-risk items need a leg
 | 14 | `anthropic-user-profile-id` + Profiles REST | Claude | M | Low — only matters for profile-scoped credentials | Partial — header stamped from `provider_options`; REST client not built (endpoint undocumented) |
 | 15 | `prompt_cache_retention` passthrough | Codex | S | Low — cheaper sticky sessions (backend support unconfirmed) | Done |
 
+### Notes on the done items with open assumptions
+
+- **#6 Codex 429 budget.** Honors the server-stated delay inside one attempt,
+  bounded by a 5-min total budget, a 60s per-wait cap, and the request deadline
+  (reserving the 15s `MIN_RETRY_BUDGET_MS` floor). Three caveats worth knowing
+  before trusting it:
+  1. **Whether Codex actually sends `retry-after` on a 429 is UNCONFIRMED** — no
+     local capture shows it. A bare 429 falls back to one short (50ms) backoff
+     rather than looping, so if the header never appears in practice this item
+     delivers little.
+  2. The 5-min budget and 60s cap are donor-derived, not measured.
+  3. **Intentional latency trade:** the delay is honored even when the upstream's
+     window is long, so a genuinely exhausted quota now costs up to 5 minutes of
+     latency before erroring. That *is* the item's goal ("transient quota becomes
+     latency"), but it is user-visible and depends on the deadline clamp to be
+     safe. The loop also sits inside one attempt, so the attempt loop's
+     `maxAttempts` does not see it.
+
 ### Notes on the blocked / open items
 
 - **#2 fallback-credit.** The response side is documented (`stop_details.fallback_credit_token`,
