@@ -20,7 +20,7 @@ import { providerBaseUrl } from "../../provider-metadata";
 import type { ModelDefinition } from "../../provider-model-definition";
 import { isRecord } from "../../../protocol/codecs";
 import { modelsDevCatalog } from "../../discovery/models-dev-catalog";
-import type { CanonicalRequest } from "../../../protocol/canonical-model";
+import type { CanonicalRequest, ReasoningIntent } from "../../../protocol/canonical-model";
 import type { FetchLike } from "../../authentication/oauth-client";
 import { getAntigravityVersion } from "../../operations/client-versions";
 export { getAntigravityVersion };
