@@ -28,6 +28,16 @@ import { buildClaudeHeaders, type ClaudeHeaderOptions } from "./claude-credentia
 import { isRecord } from "../../../protocol/codecs";
 import { HEADER_CONTROL } from "../../../security/outbound-headers";
 import { CLAUDE_USER_PROFILES_BETA } from "./claude-user-profiles";
+import { sharedClaudeSlowLanes } from "./claude-slow-lane";
+import { planSlowLaneRetry } from "./claude-slow-lane-retry";
+import { sleep } from "../../../transport/failure-policy";
+
+/**
+ * Floor reserved out of the request deadline before a slow-lane wait, so a
+ * wait can never consume the budget the next real attempt needs. Mirrors
+ * `MIN_RETRY_BUDGET_MS` in the attempt loop.
+ */
+const SLOW_LANE_DEADLINE_FLOOR_MS = 15_000;
 import { resolvePromptCacheKey } from "../../operations/session-resolution";
 import { ensureAnthropicBeta, filterClaudeCustomHeaders } from "../shared/claude-messages";
 import {
@@ -352,6 +362,17 @@ export class ClaudeAdapter implements ProviderAdapter {
         ensureAnthropicBeta(headers, FALLBACK_CREDIT_BETA);
       }
     }
+    // Slow lane (design doc §5): attach the usage limit when this account's
+    // lane is active, so the upstream knows it may serve us on spare capacity.
+    // First-party OAuth only, mirroring the donor's gate
+    // (`anthropic.ts:2695-2705`). Nothing changes for every other request.
+    const accountId = context.credential.account_id;
+    const slowEligible =
+      isClaudeCodeOAuth && accountId !== undefined && sharedClaudeSlowLanes.isActive(accountId);
+    const slowHeaders: Record<string, string> = slowEligible
+      ? { ...headers, "anthropic-usage-limit": "slow" }
+      : headers;
+
     // Adopt-on-rejection: a stale pinned CLI version costs one rejected
     // request, not an outage. The shared helper parses the server-named
     // minimum and promotes it process-wide; a retry at the same version
@@ -372,7 +393,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     try {
       yield* this.sendWithCreditCapture(
         sendOnce,
-        headers,
+        slowHeaders,
         body,
         creditSent ? undefined : creditKey,
       );
@@ -385,6 +406,27 @@ export class ClaudeAdapter implements ProviderAdapter {
       }
       return;
     } catch (error: unknown) {
+      // Slow-lane capacity wait (design doc §5): a 429 `slot_busy` or a 529 /
+      // `overloaded_error` while the slow limit was sent means "no spare
+      // capacity right now", not "this account is done". Retry the SAME
+      // account after the server-stated interval rather than failing over —
+      // and record no health, because nothing failed.
+      //
+      // Runs before every other error branch so a capacity wait is never
+      // misread as a version rejection or a credential problem.
+      if (slowEligible && accountId !== undefined) {
+        const waited = await this.planAndWaitSlowLane(error, accountId, context);
+        if (waited) {
+          // Same account, same bytes: the capacity wait is not a failover.
+          yield* this.sendWithCreditCapture(
+            sendOnce,
+            slowHeaders,
+            body,
+            creditSent ? undefined : creditKey,
+          );
+          return;
+        }
+      }
       if (creditSent && isFallbackCreditTokenRejection(error)) {
         // Donor `anthropic.ts:3469-3481`: the token is rejected, so forfeit it
         // and retry the standard request once without it. A rebuilt body no
@@ -463,6 +505,56 @@ export class ClaudeAdapter implements ProviderAdapter {
    * token is never the body that was refused, so banking against it would only
    * occupy a cache slot for five minutes with a token that cannot be replayed.
    */
+  /**
+   * Waits out a slow-lane capacity signal and reports whether to retry.
+   *
+   * Returns true when the failure was a capacity wait that has now elapsed and
+   * the caller should resend; false when it was anything else, so the normal
+   * error path proceeds untouched.
+   *
+   * Bounded by the server's own max-wait and by the request deadline minus the
+   * attempt-loop's floor, so a wait can never eat the budget a real retry
+   * needs. No health is recorded here — a capacity wait is not a failure.
+   */
+  private async planAndWaitSlowLane(
+    error: unknown,
+    accountId: string,
+    context: ProviderDispatchContext,
+  ): Promise<boolean> {
+    const httpStatus =
+      error instanceof GatewayError && typeof error.status === "number" ? error.status : undefined;
+    const decision = planSlowLaneRetry(
+      {
+        ...(httpStatus === undefined ? {} : { httpStatus }),
+        message: error instanceof Error ? error.message : String(error),
+        sentSlow: true,
+        // One wait per dispatch: this adapter carries no cross-attempt counter,
+        // and a single wait is the conservative bound.
+        waitedMs: 0,
+        attempts: 0,
+      },
+      sharedClaudeSlowLanes,
+      accountId,
+    );
+    if (decision === null) return false;
+
+    const allowance = context.deadline - Date.now() - SLOW_LANE_DEADLINE_FLOOR_MS;
+    if (allowance <= 0) return false;
+    const waitMs = Math.min(decision.delayMs, allowance);
+    log.warn("claude: slow lane busy, waiting for capacity on the same account", {
+      provider: "claude",
+      waitMs,
+    });
+    try {
+      await sleep(waitMs, context.abort_signal);
+    } catch {
+      // Aborted mid-wait: let the caller surface the original failure rather
+      // than a bare cancel, so the client still sees the rate limit.
+      return false;
+    }
+    return true;
+  }
+
   private async *sendWithCreditCapture(
     sendOnce: (
       headers: Record<string, string>,

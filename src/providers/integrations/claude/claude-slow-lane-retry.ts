@@ -77,9 +77,16 @@ export function planSlowLaneRetry(
   const maxWaitMs = observation.headers?.maxWaitMs ?? 20 * 60 * 1000;
   if (observation.waitedMs >= maxWaitMs) return null;
 
-  // The server's stated interval, clamped so a missing or absurd value cannot
-  // turn into a hot loop or an unbounded stall.
-  const stated = observation.headers?.retryAfterMs ?? 20_000;
+  // The server's stated interval when we have one, else a conservative default.
+  //
+  // The donor's own default here is 20s, sized for an interactive CLI session
+  // that can afford to wait. A gateway sits inside a request deadline and
+  // typically cannot, so the fallback is much shorter: a long unconditional
+  // wait would turn every unlabelled capacity signal into seconds of latency
+  // for a caller that has already given up. Raise it only alongside real
+  // deadline measurements.
+  const DEFAULT_WAIT_MS = 2_000;
+  const stated = observation.headers?.retryAfterMs ?? DEFAULT_WAIT_MS;
   const remaining = maxWaitMs - observation.waitedMs;
   const delayMs = Math.max(0, Math.min(stated, remaining));
   if (delayMs <= 0) return null;
