@@ -20,7 +20,7 @@ import {
   candidateSupportsRequest,
   type RequiredCapability,
 } from "../translation/capabilities";
-import { InMemoryAdmissionController } from "./admission";
+import { InMemoryAdmissionController, admissionKey } from "./admission";
 import { ReservationManager } from "./reservations";
 import { getOrCreateRoundRobin, RoundRobinState } from "./round-robin";
 import { totalRemainingCredit, totalRemainingPercent, type ProviderQuotaWindow } from "../../providers/quota/quota-contracts";
@@ -350,6 +350,40 @@ export class RoutingEngine {
     return (await this.admission.snapshotAccountInflight?.()) ?? new Map();
   }
 
+  /**
+   * Which candidates are already at their concurrency ceiling.
+   *
+   * The admission controller already holds these counters and will refuse the
+   * account the moment it is asked; reading them here lets the plan *order*
+   * use the same fact, so the first attempt goes to an account with room
+   * instead of to one that is certain to answer 429.
+   *
+   * A counter read is a snapshot, so it can be a little stale — a slot freed
+   * between here and `admit()` only costs a retry, which is the behavior
+   * today anyway. A candidate with no configured ceiling is never saturated:
+   * admission treats it as unlimited.
+   */
+  private async saturatedCandidates(
+    candidates: readonly RouteCandidate[],
+  ): Promise<ReadonlySet<RouteCandidate>> {
+    const bounded = candidates.filter(
+      (candidate) => typeof candidate.max_inflight === "number" && candidate.max_inflight > 0,
+    );
+    if (bounded.length === 0) return new Set();
+    const snapshot = await this.accountInflightSnapshot().catch(() => new Map<string, number>());
+    if (snapshot.size === 0) return new Set();
+    const saturated = new Set<RouteCandidate>();
+    for (const candidate of bounded) {
+      const limit = candidate.max_inflight;
+      if (limit === undefined) continue;
+      const inflight = snapshot.get(admissionKey(candidate));
+      if (inflight !== undefined && inflight >= limit) {
+        saturated.add(candidate);
+      }
+    }
+    return saturated;
+  }
+
   private resolveProviderRouting(
     snapshot: RouteSnapshot,
     providerId: string,
@@ -586,6 +620,24 @@ export class RoutingEngine {
       eligible = [
         ...eligible.filter((candidate) => !cooling.has(candidate)),
         ...eligible.filter((candidate) => cooling.has(candidate)),
+      ];
+    }
+    // Accounts already at their concurrency ceiling go last, for the same
+    // reason cooling ones do. Without this the plan order put a saturated
+    // account first and the first attempt was spent learning it was full —
+    // an admission 429, a retry, and only then the sibling that had room. The
+    // caller paid a round-trip to be told something the gateway already knew
+    // from its own inflight counters.
+    //
+    // Deprioritized, not dropped: when every account is genuinely saturated
+    // the request must still be dialed somewhere and answered 429, rather than
+    // reading as "no account available" (503) for a deployment that is merely
+    // busy.
+    const saturated = await this.saturatedCandidates(eligible);
+    if (saturated.size > 0 && saturated.size < eligible.length) {
+      eligible = [
+        ...eligible.filter((candidate) => !saturated.has(candidate)),
+        ...eligible.filter((candidate) => saturated.has(candidate)),
       ];
     }
     // Capability-aware routing: filter against snapshot capability profiles

@@ -14,7 +14,14 @@ import type {
  * enforces its own concurrency ceiling; candidates without an account id
  * (credential-less providers) fall back to the provider:model bucket.
  */
-function admissionKey(candidate: RouteCandidate): string {
+/**
+ * The admission bucket one candidate draws from.
+ *
+ * Exported so the router can order candidates by the same counters admission
+ * enforces against: a second copy of this format would drift and quietly
+ * deprioritize the wrong accounts.
+ */
+export function admissionKey(candidate: RouteCandidate): string {
   const base = `${candidate.provider_id}:${candidate.model_id}`;
   return candidate.provider_account_id === undefined
     ? base
