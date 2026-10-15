@@ -67,6 +67,7 @@ import {
 import { resolveSsrfPolicy, resolveTrustedProxyBoundary } from "../config/network";
 import type { TrustedProxyBoundary } from "../config/network";
 import { resolveTelemetryRetentionDays } from "../config/telemetry";
+import { CONFIG_SPEC, readInt } from "../config/spec";
 import type { ProviderAdapter } from "../providers/provider-contracts";
 import type { ProviderRegistry } from "../providers/provider-registry";
 import type { ByokUpstreamHost } from "../providers/operations/provider-catalog-service";
@@ -298,7 +299,10 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
   });
   scheduledTasks.register({
     name: "runtime-metrics",
-    intervalMs: 10_000,
+    intervalMs: readInt(
+      "CARTETHYIA_RUNTIME_METRICS_INTERVAL_MS",
+      CONFIG_SPEC.CARTETHYIA_RUNTIME_METRICS_INTERVAL_MS,
+    ),
     run: () => runtimeMetricsSampler.sample(),
   });
   scheduledTasks.register({

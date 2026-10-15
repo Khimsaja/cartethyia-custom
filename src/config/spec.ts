@@ -125,6 +125,17 @@ export const CONFIG_SPEC = {
     min: 1,
     max: Number.MAX_SAFE_INTEGER,
   },
+  // Opt-in forced garbage collection. Off by default: see
+  // `observability/runtime-metrics.ts` — a forced collection is not
+  // reclamation, and the synchronous form stalls concurrent requests.
+  CARTETHYIA_FORCED_GC: { kind: "flag" },
+  // How often runtime gauges (memory + bounded-collection sizes) are sampled.
+  CARTETHYIA_RUNTIME_METRICS_INTERVAL_MS: {
+    kind: "int",
+    default: 30_000,
+    min: 1_000,
+    max: 300_000,
+  },
 
   // Durable, metadata-only request telemetry retention.
   CARTETHYIA_TELEMETRY_RETENTION_DAYS: { kind: "int", default: 30, min: 3, max: 365 },

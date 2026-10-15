@@ -12,7 +12,7 @@ import { metrics } from "./metrics";
 import { trackMemoryUsage } from "./performance-metrics";
 import { log } from "./logger";
 import { resolveMemoryLimitOverrideBytes } from "../config/timeouts";
-
+import { CONFIG_SPEC, readFlag } from "../config/spec";
 /** Live collection sizes sampled alongside process memory. */
 export interface RuntimeMetricSources {
   readonly routingRoundRobinEntries: () => { readonly combo: number; readonly provider: number };
@@ -99,7 +99,15 @@ export class RuntimeMetricsSampler {
   constructor(
     private readonly sources: RuntimeMetricSources,
     limitBytes: number | undefined = resolveMemoryLimitBytes(),
-    gcOnPressure = true,
+    // Off by default: a forced collection is not how memory is meant to come
+    // back. The synchronous form (`Bun.gc(true)`) stops the shared event loop
+    // outright, so every concurrent request stalls inside it — which reads as
+    // a latency spike with no upstream cause. And it hides the actual defect:
+    // a process that only returns memory when something forces it to is a
+    // process that is still holding it. Bounded caches, released streams, and
+    // batched writers reclaim naturally; this is opt-in for an operator who
+    // has measured that they need it.
+    gcOnPressure = readFlag("CARTETHYIA_FORCED_GC", CONFIG_SPEC.CARTETHYIA_FORCED_GC),
   ) {
     this.limitBytes = limitBytes;
     this.gcOnPressure = gcOnPressure;
