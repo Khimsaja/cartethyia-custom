@@ -4,6 +4,12 @@
 - Donor (oh-my-pi): `D:\MyGitRepository\Projects\HoneyC\ProxyRouter-Project\Public\oh-my-pi` @ `c2cb79e4c227aa4b22c4ccb933ff72fd88bceba4`.
 - Ours (Cartethyia): repo root @ `4a8444f2576e8bc67a034f52df87dad8395f14ba`.
 - Scope: 4 providers (Factory, Antigravity, Claude Code, Codex).
+
+> **The donor checkout is on disk at the path above** — one directory level above
+> this repo, under `ProxyRouter-Project/Public/oh-my-pi`. Read it before marking
+> any item "blocked on undocumented behavior": several items in this file were
+> recorded as blocked when the answer was available there all along. Donor paths
+> cited below are relative to that checkout.
 - **Correction to the task brief: our Codex side is NOT a Rust CLI.** Investigation found `src/providers/integrations/codex/` and `src/protocol/*codex*` are TypeScript speaking the Codex Responses wire directly. The Codex section below treats it as a TS dispatch boundary. No rewrite is proposed anywhere.
 
 Donor paths below are under `packages/ai/src/` unless `packages/catalog/src/` is named. Ours are under `src/`.
