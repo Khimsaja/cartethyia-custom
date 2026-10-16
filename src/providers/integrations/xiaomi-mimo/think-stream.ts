@@ -110,8 +110,13 @@ export class MimoThinkSplitter {
     const held = danglingTagPrefix(this.#buffer);
     const settled = held.length > 0 ? this.#buffer.slice(0, -held.length) : this.#buffer;
     this.#buffer = held;
+    // A lone closing tag lands here when the upstream dropped the opener before
+    // committing the answer — the same quirk `stripThinkingTags` handles for
+    // settled values, and just as bad to forward: the tag bytes are rendered in
+    // the chat. Inside a reasoning span the text is already tag-free, so only
+    // the answer side is swept.
     if (this.#inReasoning) reasoning += settled;
-    else text += settled;
+    else text += stripThinkingTags(settled);
 
     return { text, reasoning };
   }
@@ -120,7 +125,9 @@ export class MimoThinkSplitter {
   flush(): ThinkSplit {
     const rest = this.#buffer;
     this.#buffer = "";
-    return this.#inReasoning ? { text: "", reasoning: rest } : { text: rest, reasoning: "" };
+    return this.#inReasoning
+      ? { text: "", reasoning: rest }
+      : { text: stripThinkingTags(rest), reasoning: "" };
   }
 
   #findOpen(): { index: number; length: number } | undefined {
