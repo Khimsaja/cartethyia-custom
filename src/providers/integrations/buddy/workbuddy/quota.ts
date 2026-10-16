@@ -9,6 +9,7 @@ import {
 } from "../../../operations/client-versions";
 import { WORKBUDDY_DOMAIN } from "./shared";
 import { fetchTencentBillingQuota } from "../buddy-quota-shared";
+import { fetchBuddyRequestUsage, type BuddyUsageResult } from "../buddy-usage-shared";
 import { buddyAccountUid } from "../buddy-oauth-shared";
 
 /**
@@ -27,6 +28,11 @@ import { buddyAccountUid } from "../buddy-oauth-shared";
 
 export const WORKBUDDY_USAGE_URL =
   `${providerBaseUrl("workbuddy")}/v2/billing/meter/get-user-resource`;
+
+export const WORKBUDDY_REQUEST_USAGE_URL =
+  `${providerBaseUrl("workbuddy")}/billing/meter/get-user-request-usage`;
+export const WORKBUDDY_CN_REQUEST_USAGE_URL =
+  `${providerBaseUrl("workbuddycn")}/billing/meter/get-user-request-usage`;
 
 async function billingHeaders(
   domain: string,
@@ -109,3 +115,45 @@ async function fetchWorkBuddyQuotaFor(args: {
     uid: buddyAccountUid(credential),
   });
 }
+
+/**
+ * Real credit deductions for one WorkBuddy account.
+ *
+ * Mirrors {@link fetchWorkBuddyQuotaFor} in every respect but the endpoint —
+ * same billing host, same client-version identity headers, same account UID —
+ * because the usage-detail surface is the billing meter's other read.
+ */
+export async function fetchWorkBuddyRequestUsage(
+  credential: string,
+  fetcher: FetchLike,
+  args: {
+    readonly providerId?: "workbuddy" | "workbuddycn";
+    readonly days?: number;
+    readonly context?: QuotaCollectionContext;
+  } = {},
+): Promise<BuddyUsageResult> {
+  const providerId = args.providerId ?? "workbuddy";
+  const domain = providerId === "workbuddycn" ? "www.workbuddy.cn" : WORKBUDDY_DOMAIN;
+  const authState = typeof args.context?.auth_state === "object" && args.context?.auth_state !== null
+    ? (args.context.auth_state as Record<string, unknown>)
+    : undefined;
+  const enterpriseId = typeof authState?.enterpriseId === "string" ? authState.enterpriseId : undefined;
+  const clientVersion = providerId === "workbuddycn"
+    ? getWorkBuddyCnClientVersion()
+    : getWorkBuddyClientVersion();
+  return fetchBuddyRequestUsage({
+    url: `${providerBaseUrl(providerId)}/billing/meter/get-user-request-usage`,
+    headers: await billingHeaders(domain, clientVersion, enterpriseId),
+    credential,
+    fetcher,
+    days: args.days ?? 30,
+    uid: buddyAccountUid(credential),
+  });
+}
+
+export const fetchWorkBuddyCnRequestUsage = (
+  credential: string,
+  fetcher: FetchLike,
+  days: number = 30,
+): Promise<BuddyUsageResult> =>
+  fetchWorkBuddyRequestUsage(credential, fetcher, { providerId: "workbuddycn", days });

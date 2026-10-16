@@ -81,8 +81,9 @@ export function codeBuddyCnPrePayload(
   candidate: ProviderDispatchTarget,
   _context?: ProviderDispatchContext,
 ): void {
-  payload["x-buddy-realm"] = "cn";
-  buddyPrePayloadCommon(payload, request);
+  // CN ladder: the CN backend serves `low`/`max` levels the international one
+  // rejects, so the realm must be named rather than left to default to intl.
+  buddyPrePayloadCommon(payload, request, "cn");
   if (Array.isArray(payload["messages"])) {
     const messages = payload["messages"] as Array<Record<string, unknown>>;
     neutralizeCnMessages(messages);
@@ -96,7 +97,9 @@ export function codeBuddyCnPrePayload(
 }
 
 // Model catalog — CodeBuddy CN console and CLI catalog.
-const CODEBUDDY_CN_RAW: readonly BuddyRawEntry[] = [
+// Exported because `buddyModelOutputLimit` searches every buddy raw table, and
+// a CN-only id would otherwise never get an output limit.
+export const CODEBUDDY_CN_RAW: readonly BuddyRawEntry[] = [
   ["glm-5.1", "GLM 5.1", true, true, 200_000, 131_072],
   ["glm-5.2", "GLM 5.2", true, true, 1_000_000, 131_072],
   ["glm-5.3", "GLM 5.3", true, true, 1_000_000, 131_072],
@@ -116,6 +119,33 @@ const CODEBUDDY_CN_RAW: readonly BuddyRawEntry[] = [
   ["deepseek-v4-flash", "DeepSeek V4 Flash", true, true, 1_000_000, 384_000],
   ["deepseek-v4-pro", "DeepSeek V4 Pro", true, true, 1_000_000, 384_000],
   ["deepseek-v4.1-flash", "DeepSeek V4.1 Flash", true, true, 1_000_000, 384_000],
+  // ---- Legacy CN fallback ids (reference `DEFAULT_MODELS`) ------------------
+  // The reference's CN fallback table carries these and we did not. They are
+  // *fallback* rows: the reference has no static international roster at all, so
+  // an id appearing there means "there is a fallback value", not "the upstream
+  // serves it today". Limits below are the closest sibling's where the
+  // reference states none — unverified — confirm against a live account before
+  // trusting the numbers.
+  // unverified — confirm first: limits inherited from the sibling generation.
+  // `hy4-preview-x` is deliberately absent: the reference's fallback list has
+  // it, but a live CN CLI directory read does not publish it
+  // (`test/providers/buddy-model-catalog.test.ts`), and live discovery beats a
+  // fallback table.
+  ["hy3-x", "Hy3 X", true, true, 192_000, 64_000],
+  ["deepseek-v3-2-volc", "DeepSeek V3.2 Volc", true, true, 1_000_000, 384_000],
+  ["glm-5.0", "GLM 5.0", true, true, 200_000, 131_072],
+  ["glm-5.0-turbo", "GLM 5.0 Turbo", true, true, 200_000, 131_072],
+  ["glm-4.7", "GLM 4.7", true, true, 200_000, 131_072],
+  ["glm-4.6", "GLM 4.6", true, true, 200_000, 131_072],
+  ["glm-4.6v", "GLM 4.6V", true, true, 200_000, 131_072],
+  ["minimax-m2.7", "MiniMax M2.7", true, true, 512_000, 512_000],
+  ["minimax-m2.5", "MiniMax M2.5", true, true, 512_000, 512_000],
+  ["kimi-k2-thinking", "Kimi K2 Thinking", true, true, 256_000, 65_536],
+  ["hunyuan-chat", "Hunyuan Chat", true, true, 256_000, 32_000],
+  // `default` is the CN backend-selected id, the CN counterpart of the intl
+  // `default-model`. Limits are the conservative floor of the roster.
+  // unverified — confirm first.
+  ["default", "Default", true, true, 200_000, 32_000],
 ];
 export const CODEBUDDY_CN_MODELS: readonly ModelDefinition[] = CODEBUDDY_CN_RAW.map((entry) => makeBuddyModel(entry, "cbcn"));
 

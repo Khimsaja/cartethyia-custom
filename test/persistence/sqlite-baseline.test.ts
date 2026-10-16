@@ -45,6 +45,9 @@ test("each backend has matching baseline and incremental migrations", () => {
     "0001_allow_multiple_shared_keys_per_ip.sql",
     "0002_add_gemini_wire_family.sql",
     "0003_add_models_model_id_index.sql",
+    "0004_add_model_block_hits.sql",
+    "0005_add_buddy_usage_snapshots.sql",
+    "0006_add_buddy_task_ledger.sql",
   ];
   expect(postgres).toEqual(expected);
   expect(sqlite).toEqual(expected);

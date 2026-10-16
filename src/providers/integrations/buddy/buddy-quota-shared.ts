@@ -105,7 +105,10 @@ function refillCadence(acc: TencentBillingAccount): string {
  * JSON (`{accessToken, apiKey, token, ...}`), so both shapes resolve here and a
  * non-JSON credential passes through unchanged.
  */
-function resolveBearerToken(credential: string): string | null {
+// Exported: the usage-detail read (`buddy-usage-shared.ts`) needs the same
+// credential resolution and must not re-implement it — an account stored as an
+// OAuth envelope has to resolve identically on both surfaces.
+export function resolveBearerToken(credential: string): string | null {
   const trimmed = credential.trim();
   if (!trimmed) return null;
   if (trimmed.startsWith("{")) {

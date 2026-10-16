@@ -203,8 +203,16 @@ afterAll(async () => {
  * Asserts that a service is reachable *before* a suite's tests run, so a
  * connection failure reads as an infrastructure problem instead of a failing
  * assertion inside a test body.
+ *
+ * No-ops — rather than throwing — when no isolated database is configured.
+ * The suites that call this are mixed: they carry pure-unit blocks next to
+ * database blocks, so a throw here failed blocks that never needed a database
+ * at all and left the whole suite red on a machine with no test database. The
+ * blocks that genuinely need it call {@link getTestPool} themselves, which
+ * still throws with the real reason.
  */
 export function requireDatabase(): void {
+  if (!testDatabaseUrl) return;
   beforeAll(async () => {
     await getTestPool();
   });

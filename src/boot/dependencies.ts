@@ -49,6 +49,15 @@ import { NetworkPoolSelector } from "../network/pool/selector";
 import { ScheduledTaskRegistry } from "../workers/scheduler";
 import { quotaRefreshSweep } from "../workers/quota-refresh-sweep";
 import { dailyCheckinEgressForPass } from "../workers/daily-checkin";
+import {
+  buddyAdoptTask,
+  buddyLotteryTask,
+  buddyRedeemTask,
+  buddyStreakTask,
+  buddyTravelTask,
+  buddyTrialTask,
+  syncBuddyUsage,
+} from "../workers/buddy-growth-tasks";
 import { createAccountSecretResolver } from "../providers/operations/provider-credential-service";
 import { quotaCacheSize } from "../console/quota/cache";
 import { preferencesReaderFor } from "../persistence/tenant-preferences";
@@ -417,6 +426,68 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
         // itself at `info` level, so they survive the production LOG_LEVEL.
         // `onTick` is left for tests.
       }),
+  });
+  // The buddy growth/credit tasks: one per upstream capability, each
+  // independently switchable with `CARTETHYIA_DISABLED_TASKS`. Every one of
+  // them is a credit gain the account is entitled to, and none of them can mark
+  // an account unhealthy — a growth endpoint that 404s is a display miss, not a
+  // dispatch failure.
+  //
+  // Hourly, not minute-cadenced: each claim is once per account per day, and a
+  // task that ticks every minute would spend its whole budget re-reading the
+  // day marker.
+  const buddyTaskDeps = {
+    db,
+    resolveCredential: quotaResolveCredential,
+    fetcher: fetch,
+    // Spread across accounts so a pass does not look like a burst to the
+    // upstream's risk gate.
+    interAccountDelayMs: 800,
+  };
+  scheduledTasks.register({
+    name: "buddy-streak",
+    intervalMs: 60 * 60_000,
+    initialDelayMs: 5 * 60_000,
+    run: () => buddyStreakTask(buddyTaskDeps),
+  });
+  scheduledTasks.register({
+    name: "buddy-redeem",
+    intervalMs: 60 * 60_000,
+    initialDelayMs: 8 * 60_000,
+    run: () => buddyRedeemTask(buddyTaskDeps),
+  });
+  scheduledTasks.register({
+    name: "buddy-lottery",
+    intervalMs: 60 * 60_000,
+    initialDelayMs: 11 * 60_000,
+    run: () => buddyLotteryTask(buddyTaskDeps),
+  });
+  scheduledTasks.register({
+    name: "buddy-travel",
+    intervalMs: 60 * 60_000,
+    initialDelayMs: 14 * 60_000,
+    run: () => buddyTravelTask(buddyTaskDeps),
+  });
+  scheduledTasks.register({
+    name: "buddy-adopt",
+    intervalMs: 60 * 60_000,
+    initialDelayMs: 17 * 60_000,
+    run: () => buddyAdoptTask(buddyTaskDeps),
+  });
+  scheduledTasks.register({
+    name: "buddy-trial",
+    intervalMs: 6 * 60 * 60_000,
+    initialDelayMs: 20 * 60_000,
+    run: () => buddyTrialTask(buddyTaskDeps),
+  });
+  // Real credit deductions, stored so the console renders a figure the upstream
+  // actually reported. Six-hourly: the upstream's own window is 30 days, so a
+  // day's number does not change intraday.
+  scheduledTasks.register({
+    name: "buddy-usage-sync",
+    intervalMs: 6 * 60 * 60_000,
+    initialDelayMs: 23 * 60_000,
+    run: () => syncBuddyUsage(buddyTaskDeps),
   });
   // The scheduled tasks are registered here but started by the caller once the
   // listener is actually serving (`main.ts`). Starting them inside this builder

@@ -22,6 +22,12 @@ import type { CanonicalRequest } from "../../../protocol/canonical-model";
 import { isRecord } from "../../../protocol/codecs";
 import { applyDeepSeekReasoning, applyOpenAIReasoning, backfillDeepSeekReasoningContent, clampedEffortOutputFloor } from "../../provider-reasoning";
 import { BUDDY_SHARED_RAW } from "./buddy-catalog-shared";
+// Imported for the CN roster only: a CN-only id has no row in the shared
+// table, and without one `raiseOutputForRaisedEffort` silently no-ops, so a
+// raised effort still answers inside a budget sized for the lower one. It is
+// read inside the function below — never at module init — so the cycle with
+// cn-provider (which imports this module) resolves before any call.
+import { CODEBUDDY_CN_RAW } from "./codebuddy/cn-provider";
 
 const BUDDY_TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
 const INVALID_BUDDY_TOOL_NAME_CHARS = /[^a-zA-Z0-9_-]/g;
@@ -153,6 +159,32 @@ export function normalizeBuddyToolNames(payload: Record<string, unknown>): void 
 
 
 /**
+ * The upstream id `auto` resolves to, per realm.
+ *
+ * Both realms have a "let the backend choose" id, and the reference rewrites
+ * `auto` onto it before anything downstream keys on the name — so eligibility,
+ * cooldowns and the catalog all see one id. CN's is `default`; intl's is
+ * `default-model`.
+ */
+const BUDDY_AUTO_TARGET: Readonly<Record<"intl" | "cn", string>> = {
+  intl: "default-model",
+  cn: "default",
+};
+
+/**
+ * Rewrites `auto` onto the realm's backend-selected id.
+ *
+ * Only a bare, exact `auto` is rewritten (after trimming): a provider-qualified
+ * name or anything carrying a prefix is a different request and is left alone.
+ */
+function resolveBuddyAutoModel(payload: Record<string, unknown>, realm: "intl" | "cn"): void {
+  const value = payload["model"];
+  if (typeof value !== "string") return;
+  if (value.trim().toLowerCase() !== "auto") return;
+  payload["model"] = BUDDY_AUTO_TARGET[realm];
+}
+
+/**
  * Payload prefix shared by the buddy pre-payload hooks: force `stream=true`,
  * apply the provider's DeepSeek thinking contract, opt `reasoning_summary` in
  * only when an effort is requested, and drop agent-namespace fields.
@@ -162,6 +194,16 @@ export function buddyPrePayloadCommon(
   request?: CanonicalRequest,
   realm: "intl" | "cn" = "intl",
 ): void {
+  // `auto` and `default-model` are the same upstream model under two names, and
+  // the reference resolves one to the other everywhere — catalog, eligibility,
+  // cooldown keys. Treating them as two independent rows meant a client that
+  // sent `auto` got a different (account, model) cooldown key from a client that
+  // sent `default-model` for the same backend model, so one could be cooling
+  // while the other dialed it.
+  //
+  // Resolved here rather than in the generic router because it is a buddy-family
+  // fact: `auto` is a real model name on other providers.
+  resolveBuddyAutoModel(payload, realm);
   // Canonical upstream renames: max_completion_tokens is OpenAI compat alias, buddy only reads max_tokens
   if (payload["max_tokens"] === undefined && payload["max_completion_tokens"] !== undefined) {
     const v = payload["max_completion_tokens"];
@@ -456,9 +498,17 @@ function raiseOutputForRaisedEffort(
   payload["max_tokens"] = floor;
 }
 
-/** The catalog output limit for one buddy model id, when the catalog names it. */
+/**
+ * The catalog output limit for one buddy model id, when a catalog names it.
+ *
+ * Both rosters are searched: CN-only ids (glm-5.1, hy4-preview, the CN
+ * DeepSeek rows) exist only in the CN table, and searching the shared one
+ * alone left every CN model without a limit.
+ */
 function buddyModelOutputLimit(model: string): number | undefined {
-  const row = BUDDY_SHARED_RAW.find((entry) => entry[0]?.toLowerCase() === model);
+  const row =
+    BUDDY_SHARED_RAW.find((entry) => entry[0]?.toLowerCase() === model) ??
+    CODEBUDDY_CN_RAW.find((entry) => entry[0]?.toLowerCase() === model);
   const out = row?.[5];
   return typeof out === "number" && Number.isFinite(out) && out > 0 ? out : undefined;
 }

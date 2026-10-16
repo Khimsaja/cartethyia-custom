@@ -6,6 +6,8 @@ import { providerAccounts, providers } from "../../persistence/schema";
 import { providerDisplayName } from "../../providers/provider-metadata";
 import { invalidateCredentialCache } from "../../providers/operations/provider-credential-service";
 import { requireTenantScope } from "../shared/errors";
+import { BUDDY_PROVIDER_IDS } from "../../providers/provider-metadata";
+import { readBuddyUsageSnapshots } from "../../providers/integrations/buddy/buddy-usage-store";
 import { GatewayError } from "../../protocol/gateway-error";
 import {
   GLOBAL_QUOTA_LENS,
@@ -58,6 +60,44 @@ import {
 /** Daily check-in only exists on the buddy billing facade; everything else 400s with intent. */
 function supportsAccountCheckin(providerId: string): boolean {
   return (DAILY_CHECKIN_PROVIDER_IDS as readonly string[]).includes(providerId);
+}
+
+/** Providers whose billing meter reports real per-day credit deductions. */
+function isBuddyProvider(providerId: string): boolean {
+  return BUDDY_PROVIDER_IDS.has(providerId);
+}
+
+/**
+ * One account's stored usage, as the console renders it.
+ *
+ * `null` when nothing has been synced yet. Deliberately not an empty list: an
+ * account with no snapshot has *no data*, while an account that spent nothing
+ * has a snapshot saying zero — the page has to tell those apart.
+ */
+function toBuddyUsageView(
+  rows: readonly { readonly day: string; readonly model: string; readonly credit: number }[] | undefined,
+): {
+  readonly totalCredits: number;
+  readonly days: readonly { readonly day: string; readonly credit: number }[];
+  readonly models: readonly { readonly model: string; readonly credit: number }[];
+} | null {
+  if (rows === undefined || rows.length === 0) return null;
+  const byDay = new Map<string, number>();
+  const byModel = new Map<string, number>();
+  let totalCredits = 0;
+  for (const row of rows) {
+    byDay.set(row.day, (byDay.get(row.day) ?? 0) + row.credit);
+    byModel.set(row.model, (byModel.get(row.model) ?? 0) + row.credit);
+    totalCredits += row.credit;
+  }
+  return {
+    totalCredits: Math.round(totalCredits * 100) / 100,
+    days: [...byDay.entries()].map(([day, credit]) => ({ day, credit })),
+    models: [...byModel.entries()]
+      .map(([model, credit]) => ({ model, credit }))
+      // Highest spend first: the operator is looking for what costs the most.
+      .sort((left, right) => right.credit - left.credit),
+  };
 }
 
 /** One account's check-in through the buddy billing facade. */
@@ -310,6 +350,14 @@ export function registerAccountQuotaTenantRoutes(
           checkinAttempted.set(row.id, await todayCheckinAttempted(db, redis, row.id));
         }),
       );
+      // Real credit deductions, read from the stored snapshots rather than from
+      // the upstream: the page renders every account at once, and re-hitting the
+      // billing endpoint per account would make opening it scale with the
+      // account count. One batch read for every buddy row.
+      const usageByAccount = await readBuddyUsageSnapshots(
+        db,
+        rows.filter((row) => isBuddyProvider(row.providerId)).map((row) => row.id),
+      );
       const accounts = rows.map((row) => {
         const entry =
           row.tenantId === null ? globalCache.get(row.id) : ownedCache.get(row.id);
@@ -353,6 +401,12 @@ export function registerAccountQuotaTenantRoutes(
           // trigger result to render claimed / already / due / unknown.
           ...(supportsAccountCheckin(row.providerId)
             ? { checkin: { attemptedToday: checkinAttempted.get(row.id) ?? false } }
+            : {}),
+          // Real usage: what the billing meter says this account actually spent,
+          // per day and per model. Absent when nothing has been synced yet,
+          // which is a "no data" state rather than a zero.
+          ...(isBuddyProvider(row.providerId)
+            ? { usage: toBuddyUsageView(usageByAccount.get(row.id)) }
             : {}),
         };
       });

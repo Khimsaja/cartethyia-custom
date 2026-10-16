@@ -78,6 +78,68 @@ const GROK_QUOTA_COOLDOWN_MS = 24 * 60 * 60 * 1000;
  * without an operator clearing it by hand.
  */
 const MODEL_UNREACHABLE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+/**
+ * Backoff for a model the upstream does not serve at all (buddy family
+ * business code `11102` — `service info not found` — or a `model ... not
+ * found/supported` message). Mirrors the reference gateways'
+ * `MODEL_SITE_BLOCK_S` → `MODEL_SITE_BLOCK_MAX_S`.
+ *
+ * Escalating rather than flat: the pair is re-dialled after the first window
+ * and answers the same thing, so a flat 6h let a permanently unsupported model
+ * consume a request every six hours forever. The ladder tops out at a day,
+ * which is long enough to stop the redial and short enough that a backend that
+ * starts serving the model is picked up without an operator clearing it.
+ *
+ * This is the one place the references' *strict* behaviour is adopted as a
+ * backoff rather than as a 400: nothing currently succeeds through it, so no
+ * client is broken by it.
+ */
+const UNSUPPORTED_MODEL_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+const UNSUPPORTED_MODEL_COOLDOWN_MAX_MS = 24 * 60 * 60 * 1000;
+/** How many doublings an unsupported-model cooldown may take before the cap. */
+const UNSUPPORTED_MODEL_MAX_LEVEL = 8;
+
+/**
+ * The cooldown for the *nth* consecutive unsupported-model report (`hits` is
+ * the new total, so the first report is `hits === 1`).
+ *
+ * Exported because the writer, not the classifier, is the only place that
+ * reads the authoritative hit count — the classifier sees only the count the
+ * caller supplied, which is absent on the first report of a pair.
+ */
+export function unsupportedModelCooldownMs(hits: number): number {
+  const level = Math.min(Math.max(0, Math.round(hits) - 1), UNSUPPORTED_MODEL_MAX_LEVEL);
+  return Math.min(
+    UNSUPPORTED_MODEL_COOLDOWN_MS * 2 ** level,
+    UNSUPPORTED_MODEL_COOLDOWN_MAX_MS,
+  );
+}
+
+/**
+ * The wording an upstream uses for "we do not serve this model at all", as
+ * opposed to "this account cannot reach it" (403 entitlement, above) or "this
+ * route does not exist" (404 `upstream_not_found`).
+ */
+const UNSUPPORTED_MODEL_MESSAGE =
+  /service info not found|model\s.{0,80}?\bnot\s+(?:found|supported)\b/;
+
+/**
+ * True when the evidence says the upstream does not serve the model.
+ *
+ * Narrow on purpose, and narrower than `model_unreachable`: only a 400/404
+ * carrying the buddy family's `11102` or one of the two phrasings above. A
+ * 4xx that merely *mentions* a model is far more often a payload the caller
+ * got wrong, and cooling a pair for six hours over that takes a working model
+ * out of rotation for a request bug.
+ */
+function isUnsupportedModelEvidence(
+  statusCode: number | null,
+  providerCode: string,
+  lower: string,
+): boolean {
+  if (statusCode !== 400 && statusCode !== 404) return false;
+  return providerCode === "11102" || UNSUPPORTED_MODEL_MESSAGE.test(lower);
+}
 
 // ===== health/account-recorder.ts =====
 export interface AccountHealthEventRecord {
@@ -136,6 +198,13 @@ export interface AccountFailureEvidence {
    * content-policy block), never to broaden what disables an account.
    */
   readonly providerId?: string;
+  /**
+   * How many times this (account, model) pair has already been reported
+   * unsupported, when the caller has read them. Best-effort: the classifier
+   * states the base window without it, and the writer recomputes against the
+   * count it reads itself.
+   */
+  readonly modelBlockHits?: number;
 }
 
 export interface AccountErrorClassification {
@@ -155,6 +224,15 @@ export interface AccountErrorClassification {
    * reads it: a provider-stated window is the truth and is never multiplied.
    */
   readonly providerStated?: boolean;
+  /**
+   * True when the upstream reported the model as one it does not serve (the
+   * buddy family's `11102`), rather than one this account merely cannot reach.
+   *
+   * A property of the classification, because both verdicts land in the same
+   * `model_unreachable` category and the writer cannot otherwise tell them
+   * apart — it needs to know whether to count the hit and escalate the window.
+   */
+  readonly modelUnsupported?: boolean;
 }
 
 /**
@@ -304,6 +382,7 @@ export function classifyAccountError(
     retryAt: Date | null,
     explanation: string,
     mutatesAccount = canMutate,
+    modelUnsupported = false,
   ): AccountErrorClassification => ({
     category,
     status,
@@ -312,6 +391,7 @@ export function classifyAccountError(
     retryAt,
     mutatesAccount,
     providerStated,
+    modelUnsupported,
   });
 
   // A price refusal is a verdict on the *request*, not on the account. inferhub
@@ -644,6 +724,32 @@ export function classifyAccountError(
     );
   }
 
+  // A model the upstream does not serve at all, detected before
+  // `model_unreachable`: the buddy family answers `400 {"code":"11102","msg":
+  // "service info not found"}` for an id its backend has never heard of, and
+  // the reference gateways treat that as a durable verdict on the (account,
+  // model) pair rather than as a request bug. Same category as
+  // `model_unreachable`, so the writer already does the right thing — a
+  // model-scoped cooldown that leaves the account's status alone — and what
+  // differs is the duration, which escalates per hit.
+  //
+  // The hit count the caller supplies is best-effort (absent on a pair's first
+  // report), so the classifier states the base window and the writer recomputes
+  // it from the authoritative count it reads.
+  if (isUnsupportedModelEvidence(statusCode, providerCode, folded)) {
+    const hits = Math.max(1, Math.floor(options?.modelBlockHits ?? 1));
+    const cooldownMs = unsupportedModelCooldownMs(hits);
+    return result(
+      "model_unreachable",
+      "cooldown",
+      cooldownMs,
+      new Date(Date.now() + cooldownMs),
+      reason("Model not supported by this upstream"),
+      origin === "upstream" && options?.modelId !== undefined,
+      true,
+    );
+  }
+
   // A model the upstream says does not exist for this account is a verdict on
   // the (account, model) pair, not on the credential. Cursor answers Connect
   // `not_found` for a model the plan does not reach (`claude-opus-5` on a plan
@@ -738,6 +844,9 @@ export async function recordAccountFailure(
         staticToken: providerAccounts.staticToken,
         consecutiveFailures: providerAccounts.consecutiveFailures,
         modelCooldowns: providerAccounts.modelCooldowns,
+        // Read only for the unsupported-model ladder; NULL means "never
+        // counted", which is the common case and must stay cheap.
+        modelBlockHits: providerAccounts.modelBlockHits,
         cooldownUntil: providerAccounts.cooldownUntil,
       })
       .from(providerAccounts)
@@ -778,6 +887,23 @@ export async function recordAccountFailure(
       streak,
     );
 
+    // The unsupported-model ladder, computed before the branch: the classifier
+    // could only state the base window because the authoritative hit count
+    // lives on the row, and it is read here. `hits` is the new total for this
+    // pair, so the first report is 1 and gets the base window.
+    const blockHits = (account.modelBlockHits as Record<string, number> | null) ?? {};
+    const unsupportedHits =
+      effective.modelUnsupported === true && modelId !== undefined
+        ? Math.max(1, (blockHits[modelId] ?? 0) + 1)
+        : undefined;
+    // An unsupported-model window is stated by *us*, not by the provider, so it
+    // would otherwise be multiplied a second time by `escalateFallbackCooldown`
+    // (which reads `consecutiveFailures`, an account-wide counter). The two
+    // ladders are different things: one counts how many times this pair was
+    // reported unsupported, the other how many failures this account produced.
+    const unsupportedCooldownMs =
+      unsupportedHits === undefined ? undefined : unsupportedModelCooldownMs(unsupportedHits);
+
     if (shouldModelCooldown) {
       const existing = (account.modelCooldowns as Record<string, string> | null) ?? {};
       // Monotonic: never move an in-force window earlier (see `latestDeadlineMs`).
@@ -786,7 +912,7 @@ export async function recordAccountFailure(
       const nextUntil = new Date(
         latestDeadlineMs(
           effective.retryAt?.getTime(),
-          Date.now() + escalatedCooldownMs,
+          Date.now() + (unsupportedCooldownMs ?? escalatedCooldownMs),
           existing[modelId] ? Date.parse(existing[modelId]!) : undefined,
         ),
       ).toISOString();
@@ -818,6 +944,13 @@ export async function recordAccountFailure(
         .update(providerAccounts)
         .set({
           modelCooldowns: { ...existing, [modelId]: nextUntil },
+          // Counted only for the unsupported-model ladder, and only when this
+          // failure is that verdict — so a rate limit or a capacity refusal
+          // never advances it. `model_cooldowns`' own shape is untouched, so
+          // routing and the console keep parsing it exactly as before.
+          ...(unsupportedHits === undefined
+            ? {}
+            : { modelBlockHits: { ...blockHits, [modelId]: unsupportedHits } }),
           consecutiveFailures: sql`${providerAccounts.consecutiveFailures} + 1`,
           lastError: effective.reason,
           lastErrorCategory: effective.category,
@@ -912,6 +1045,9 @@ export async function recordAccountSuccess(
       .select({
         status: providerAccounts.status,
         consecutiveFailures: providerAccounts.consecutiveFailures,
+        // Read only to decide whether there is anything to clear: the common
+        // case (no unsupported-model hit ever recorded) must not write.
+        modelBlockHits: providerAccounts.modelBlockHits,
       })
       .from(providerAccounts)
       .where(eq(providerAccounts.id, accountId))
@@ -921,6 +1057,14 @@ export async function recordAccountSuccess(
     const fromStatus = account.status;
     const hadFailures = (account.consecutiveFailures ?? 0) > 0 || account.status !== "active";
     const now = new Date();
+    // The unsupported-model escalation restarts after a success: a model that
+    // just served is not "not supported", so the next report of it must start
+    // from the base window again rather than from wherever the ladder had
+    // reached. `modelCooldowns` is deliberately NOT cleared — an in-force
+    // window the provider stated survives, which is the existing behavior and
+    // the reference gateways' too.
+    const blockHits = account.modelBlockHits as Record<string, number> | null;
+    const hasBlockHits = blockHits !== null && Object.keys(blockHits).length > 0;
     await client
       .update(providerAccounts)
       .set({
@@ -929,6 +1073,7 @@ export async function recordAccountSuccess(
         cooldownUntil: null,
         lastSuccessAt: now,
         ...(hadFailures ? { lastRecoveredAt: now } : {}),
+        ...(hasBlockHits ? { modelBlockHits: {} } : {}),
       })
       .where(eq(providerAccounts.id, accountId));
     if (hadFailures && typeof client.insert === "function") {

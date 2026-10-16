@@ -14,6 +14,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 - Usage now includes average routing/preparation delay and period-bound P50,
   P95, and P99 request latency in its summary cards.
+- Buddy accounts now report **real** credit usage: per-day and per-model
+  deductions read from the billing meter's usage-detail endpoint and stored, so
+  the Quota page shows what the upstream actually deducted instead of only the
+  synthetic activity events the gateway reports itself.
+- Six optional Buddy growth tasks — streak makeup, milestone redeem, streak
+  lottery, cat travel, first-buddy adoption, and the trial/gift/compensation
+  claims — one per upstream capability. Each is switchable individually with
+  `CARTETHYIA_DISABLED_TASKS`, claimed at most once per account per day, and
+  never allowed to mark an account unhealthy.
 
 ### Changed
 
@@ -53,6 +62,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 - The Usage page no longer reports an unreceived in-flight snapshot as zero.
 - Proxy imports work on Lite databases by restoring network-pool health and
   accounting columns omitted by the SQLite transport migration.
+- CodeBuddy CN requests are clamped against the CN effort ladder instead of the
+  international one. The realm was never threaded through, so a level the CN
+  backend serves (`max` on DeepSeek V4.1 Flash, `medium` on GLM 5.1) was
+  silently downgraded to what the international backend accepts. CN-only model
+  ids also get an output limit now, so a raised effort no longer answers inside
+  a budget sized for the lower one.
+- A model the upstream does not serve stops being redialed: Buddy business code
+  `11102` (and the `service info not found` / `model ... not supported` wordings)
+  now cools just that (account, model) pair, escalating 6h → 24h per repeated
+  report and resetting after a success. The account stays routable for every
+  other model.
+- `auto` and `default-model` resolve to one upstream model instead of being two
+  independent rows, so two clients naming the same backend model no longer get
+  separate routing and cooldown keys.
+- Database suites no longer fail on a machine with no test database, and
+  `CARTETHYIA_DB_MODE` is restored rather than deleted by the dialect tests —
+  the deletion leaked into other files sharing the worker and made them fail
+  with "CARTETHYIA_DB_MODE is required".
 
 ## 2.2 Zhezhi
 

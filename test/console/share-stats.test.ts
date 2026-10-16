@@ -29,7 +29,7 @@ import { createShareStatsPort, clientTypeFromUserAgent } from "../../src/console
 import { TELEMETRY_EVENT_DIR } from "../../src/observability/event-log";
 import { getDb } from "../../src/persistence/boot";
 import { telemetryEvents } from "../../src/persistence/schema";
-import { createRunId, getTestPool, requireDatabase } from "../helpers/database";
+import { createRunId, dbDescribe, getTestPool, requireDatabase } from "../helpers/database";
 import { createTenant } from "../helpers/fixtures";
 
 requireDatabase();
@@ -159,7 +159,7 @@ describe("clientTypeFromUserAgent", () => {
   });
 });
 
-describe("createShareStatsPort — an empty family", () => {
+dbDescribe("createShareStatsPort — an empty family", () => {
   test("no key ids short-circuits to empty totals without querying", async () => {
     // A share with no issued keys has no traffic to read; the short-circuit is
     // what keeps a freshly created link from issuing four aggregate queries.
@@ -209,7 +209,7 @@ describe("createShareStatsPort — an empty family", () => {
   });
 });
 
-describe("createShareStatsPort — family scoping", () => {
+dbDescribe("createShareStatsPort — family scoping", () => {
   test("only the named keys of the named tenant are counted", async () => {
     // The scope is the whole point of the port: a share link's figures must not
     // include another key of the same tenant, nor any key of another tenant.
@@ -289,7 +289,7 @@ describe("createShareStatsPort — family scoping", () => {
   });
 });
 
-describe("createShareStatsPort — error counting", () => {
+dbDescribe("createShareStatsPort — error counting", () => {
   test("only gateway errors count, matching every read-side error count", async () => {
     // The definition has to agree with the console's own counts, or the
     // recipient and the tenant see different error rates for the same traffic.
@@ -342,7 +342,7 @@ describe("createShareStatsPort — error counting", () => {
   });
 });
 
-describe("createShareStatsPort — time windows", () => {
+dbDescribe("createShareStatsPort — time windows", () => {
   test("today and month tokens are bucketed on UTC boundaries", async () => {
     // The daily and monthly limits are compared against these figures, so an
     // off-by-one on a boundary would let a recipient exceed the limit the
@@ -487,7 +487,7 @@ describe("createShareStatsPort — time windows", () => {
   });
 });
 
-describe("createShareStatsPort — top models", () => {
+dbDescribe("createShareStatsPort — top models", () => {
   test("ranks by request count and sums tokens per model", async () => {
     const scope = await familyScope("share-models");
     try {
@@ -586,7 +586,7 @@ describe("createShareStatsPort — top models", () => {
   });
 });
 
-describe("createShareStatsPort — model allowlist filtering", () => {
+dbDescribe("createShareStatsPort — model allowlist filtering", () => {
   test("an unrestricted link ranks every model", async () => {
     // `undefined` means the link grants anything, which is the common case; the
     // filter must be absent, not empty.
@@ -748,7 +748,7 @@ describe("createShareStatsPort — model allowlist filtering", () => {
   });
 });
 
-describe("createShareStatsPort — client addresses are always masked", () => {
+dbDescribe("createShareStatsPort — client addresses are always masked", () => {
   test("a public IPv4 is masked before it reaches the recipient", async () => {
     // The recipient is outside the tenant, so an IP leaves masked regardless of
     // the tenant's console privacy preference. This is the port's stated
@@ -871,7 +871,7 @@ describe("createShareStatsPort — client addresses are always masked", () => {
   });
 });
 
-describe("createShareStatsPort — payload bounds", () => {
+dbDescribe("createShareStatsPort — payload bounds", () => {
   test("the ranked tables are capped even when the family has many entries", async () => {
     // The cap is a payload bound, not a display one: a link with thousands of
     // client addresses must not return an unbounded response.
@@ -904,7 +904,7 @@ describe("createShareStatsPort — payload bounds", () => {
   });
 });
 
-describe("createShareStatsPort — many keys stay one family", () => {
+dbDescribe("createShareStatsPort — many keys stay one family", () => {
   test("five keys and two models are all represented in one response", async () => {
     // The port promises "one pass per shape": a regression to a per-key or
     // per-model query would turn a public, unauthenticated page into a
@@ -933,7 +933,7 @@ describe("createShareStatsPort — many keys stay one family", () => {
   });
 });
 
-describe("createShareStatsPort — a share whose keys were deleted", () => {
+dbDescribe("createShareStatsPort — a share whose keys were deleted", () => {
   test("telemetry rows for a removed key stop being counted", async () => {
     // A revoked recipient's traffic must leave the recipient's own view: the
     // scope is the key ids the link still issues, so a deleted key drops out
@@ -959,7 +959,7 @@ describe("createShareStatsPort — a share whose keys were deleted", () => {
   });
 });
 
-describe("createShareStatsPort — numeric coercion", () => {
+dbDescribe("createShareStatsPort — numeric coercion", () => {
   test("every figure is a JS number, not a string from the driver", async () => {
     // `pg` returns bigint aggregates as strings. A page that renders the raw
     // value would show "150" correctly and "1500n" or a string in an arithmetic
@@ -1006,7 +1006,7 @@ describe("createShareStatsPort — numeric coercion", () => {
   });
 });
 
-describe("createShareStatsPort — concurrent reads", () => {
+dbDescribe("createShareStatsPort — concurrent reads", () => {
   test("two concurrent calls for different families do not interfere", async () => {
     // The port holds no mutable state, but the four concurrent queries inside
     // one call share a pool; a leaked `where` clause would show up here.
@@ -1033,7 +1033,7 @@ describe("createShareStatsPort — concurrent reads", () => {
   });
 });
 
-describe("createShareStatsPort — recipient counts pass through untouched", () => {
+dbDescribe("createShareStatsPort — recipient counts pass through untouched", () => {
   test("the counts come from the caller, not from telemetry", async () => {
     // The recipients figures are derived from the key rows by the caller; the
     // port must not recompute or drop them, or the share page's "N of M active"
@@ -1055,7 +1055,7 @@ describe("createShareStatsPort — recipient counts pass through untouched", () 
   });
 });
 
-describe("createShareStatsPort — hourly window alignment", () => {
+dbDescribe("createShareStatsPort — hourly window alignment", () => {
   test("the window starts at the top of an hour 23 hours back", async () => {
     // The chart's x-axis is drawn from the first bucket, so a window starting
     // mid-hour would shift every label by that fraction.
@@ -1084,7 +1084,7 @@ describe("createShareStatsPort — hourly window alignment", () => {
   });
 });
 
-describe("createShareStatsPort — SQL injection safety", () => {
+dbDescribe("createShareStatsPort — SQL injection safety", () => {
   test("a model name that looks like SQL is treated as data", async () => {
     // The model name reaches the query through a parameterised `sql` template,
     // but an allowlist entry also reaches a LIKE pattern; a value that breaks

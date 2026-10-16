@@ -3,6 +3,7 @@ import { providerBaseUrl } from "../../../provider-metadata";
 import { buildCodeBuddyUserAgent } from "../../../operations/client-versions";
 import { codebuddyDomain } from "./shared";
 import { fetchTencentBillingQuota } from "../buddy-quota-shared";
+import { fetchBuddyRequestUsage, type BuddyUsageResult } from "../buddy-usage-shared";
 
 /**
  * CodeBuddy Tencent billing quota — exact provider mapping.
@@ -23,6 +24,10 @@ export const CODEBUDDY_CN_USAGE_URL =
   `${providerBaseUrl("cbcn")}/billing/meter/get-user-resource`;
 export const CODEBUDDY_INTL_USAGE_URL =
   `${providerBaseUrl("cb")}/billing/meter/get-user-resource`;
+export const CODEBUDDY_CN_REQUEST_USAGE_URL =
+  `${providerBaseUrl("cbcn")}/billing/meter/get-user-request-usage`;
+export const CODEBUDDY_INTL_REQUEST_USAGE_URL =
+  `${providerBaseUrl("cb")}/billing/meter/get-user-request-usage`;
 
 type CodeBuddyProviderId = "cb" | "cbcn";
 
@@ -118,3 +123,43 @@ export const fetchCodeBuddyIntlQuota = (
   credential: string,
   fetcher: FetchLike,
 ): Promise<ProviderQuotaResult> => fetchCodeBuddyQuota(credential, fetcher, "cb");
+
+/**
+ * Real credit deductions for one CodeBuddy account.
+ *
+ * Separate from {@link fetchCodeBuddyQuota} on purpose: that one reads the
+ * *entitlement* (what the account has left), this one reads what it already
+ * spent, per day and per model. Same billing host and the same identity
+ * headers, so the wiring mirrors the quota path exactly — only the endpoint
+ * and the default window differ.
+ */
+export async function fetchCodeBuddyRequestUsage(
+  credential: string,
+  fetcher: FetchLike,
+  providerId: string = "cbcn",
+  days: number = 30,
+  enterpriseId?: string,
+): Promise<BuddyUsageResult> {
+  const source = parseProviderId(providerId);
+  const cfg = await providerConfig(source, enterpriseId);
+  return fetchBuddyRequestUsage({
+    url:
+      source === "cb" ? CODEBUDDY_INTL_REQUEST_USAGE_URL : CODEBUDDY_CN_REQUEST_USAGE_URL,
+    headers: cfg.headers,
+    credential,
+    fetcher,
+    days,
+  });
+}
+
+export const fetchCodeBuddyCnRequestUsage = (
+  credential: string,
+  fetcher: FetchLike,
+  days: number = 30,
+): Promise<BuddyUsageResult> => fetchCodeBuddyRequestUsage(credential, fetcher, "cbcn", days);
+
+export const fetchCodeBuddyIntlRequestUsage = (
+  credential: string,
+  fetcher: FetchLike,
+  days: number = 30,
+): Promise<BuddyUsageResult> => fetchCodeBuddyRequestUsage(credential, fetcher, "cb", days);

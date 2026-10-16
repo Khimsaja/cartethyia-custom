@@ -1,13 +1,21 @@
 import { describe, expect, test } from "bun:test";
 import { buddyPrePayloadCommon } from "../../src/providers/integrations/buddy/buddy-chat-shared";
+import { codeBuddyCnPrePayload } from "../../src/providers/integrations/buddy/codebuddy/cn-provider";
 import { readBuddyDeviceToken, workbuddyHeaders } from "../../src/providers/integrations/buddy/workbuddy/shared";
 import { fetchTencentBillingQuota } from "../../src/providers/integrations/buddy/buddy-quota-shared";
 import { fetchWorkBuddyCnQuota } from "../../src/providers/integrations/buddy/workbuddy/quota";
 import { parseDsmlToolCalls } from "../../src/protocol/response/dsml";
 import { parseChatResponseToEvents } from "../../src/protocol/response/chat";
 import type { CanonicalRequest } from "../../src/protocol/canonical-model";
-import type { ProviderDispatchContext } from "../../src/providers/provider-contracts";
+import type { ProviderDispatchContext, ProviderDispatchTarget } from "../../src/providers/provider-contracts";
 
+const candidate = {
+  provider_id: "cbcn",
+  model_id: "glm-5.2",
+  wire_family: "openai-chat",
+  endpoint_path: "/chat/completions",
+  capabilities: {},
+} as unknown as ProviderDispatchTarget;
 const request = { model: "glm-5.2", messages: [] } as unknown as CanonicalRequest;
 const context = {
   credential: { account_id: "abcdef123456", auth_state: { deviceToken: "desktop-token" } },
@@ -115,6 +123,73 @@ describe("Buddy upstream protocol alignment", () => {
     };
     buddyPrePayloadCommon(payload, request, "cn");
     expect(payload["reasoning_effort"]).toBe("max");
+  });
+
+  test("CodeBuddy CN keeps an effort the international ladder would clamp away", () => {
+    // The CN realm was never threaded: every call site passed two arguments, so
+    // `realm` defaulted to "intl" and BUDDY_CN_EFFORTS was dead code. The same
+    // model id served at `max` by the CN backend was silently downgraded to
+    // `high`, which is what the international backend accepts.
+    const payload: Record<string, unknown> = {
+      model: "deepseek-v4.1-flash",
+      messages: [],
+      reasoning_effort: "max",
+    };
+    codeBuddyCnPrePayload(payload, request, candidate);
+    expect(payload["reasoning_effort"]).toBe("max");
+  });
+
+  test("CodeBuddy CN keeps a mid-ladder effort that is unsupported everywhere else", () => {
+    // `medium` is the only level CN's glm-5.1 serves. No other ladder lists it,
+    // so before the realm was threaded this request was rewritten to `high`.
+    const payload: Record<string, unknown> = {
+      model: "glm-5.1",
+      messages: [],
+      reasoning_effort: "medium",
+    };
+    codeBuddyCnPrePayload(payload, request, candidate);
+    expect(payload["reasoning_effort"]).toBe("medium");
+  });
+
+  test("a CN-only model id gets an output limit when the ladder raises its effort", () => {
+    // deepseek-v4-pro is CN-only: it has no row in the shared roster, so
+    // `buddyModelOutputLimit` returned undefined and the raised `xhigh` kept a
+    // budget sized for `max`. The CN table's 384k ceiling gives a 192k floor.
+    const payload: Record<string, unknown> = {
+      model: "deepseek-v4-pro",
+      messages: [{ role: "user", content: "hi" }],
+      reasoning_effort: "max",
+      max_tokens: 2048,
+    };
+    codeBuddyCnPrePayload(payload, request, candidate);
+    expect(payload["reasoning_effort"]).toBe("xhigh");
+    expect(payload["max_tokens"]).toBe(192_000);
+  });
+
+  test("`auto` and `default-model` resolve to one upstream model", () => {
+    // Two names for the same backend-selected model used to be two independent
+    // catalog rows, so a client sending `auto` and a client sending
+    // `default-model` were routed — and cooled — as different models.
+    const viaAuto: Record<string, unknown> = { model: "auto", messages: [] };
+    const viaDefault: Record<string, unknown> = { model: "default-model", messages: [] };
+    buddyPrePayloadCommon(viaAuto, request, "intl");
+    buddyPrePayloadCommon(viaDefault, request, "intl");
+    expect(viaAuto["model"]).toBe(viaDefault["model"]);
+    expect(viaAuto["model"]).toBe("default-model");
+  });
+
+  test("CN `auto` resolves to the CN backend-selected id, not the intl one", () => {
+    const payload: Record<string, unknown> = { model: "auto", messages: [] };
+    codeBuddyCnPrePayload(payload, request, candidate);
+    expect(payload["model"]).toBe("default");
+  });
+
+  test("a qualified model name that merely contains `auto` is left alone", () => {
+    // `auto` is a real model name on other providers, and a prefix or suffix
+    // makes a different request — only the bare id is the alias.
+    const payload: Record<string, unknown> = { model: "auto-turbo", messages: [] };
+    buddyPrePayloadCommon(payload, request, "intl");
+    expect(payload["model"]).toBe("auto-turbo");
   });
 
   test("sends the desktop device token only when the account has one", async () => {

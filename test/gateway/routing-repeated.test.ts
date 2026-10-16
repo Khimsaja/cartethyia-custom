@@ -18,13 +18,14 @@
  * adapter actually reached, so a test cannot pass by succeeding for the wrong
  * reason: it has to succeed *at the same account* every time.
  */
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createTestGateway, type TestGateway } from "../helpers/gateway";
 import { createWorld, type GatewayWorld } from "../helpers/fixtures";
+import { dbDescribe } from "../helpers/database";
 
 const CHAT_BODY = { model: "placeholder", messages: [{ role: "user", content: "hi" }], stream: false };
 
-describe("repeated requests with flagged accounts", () => {
+dbDescribe("repeated requests with flagged accounts", () => {
   let gateway: TestGateway;
   let world: GatewayWorld;
 

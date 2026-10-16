@@ -12,6 +12,7 @@
 import { describe, expect, test } from "bun:test";
 import { compareVersions, isNewerRelease, parseVersion } from "../../src/console/updates/version-compare";
 import { createTestGateway, type TestGateway } from "../helpers/gateway";
+import { dbDescribe } from "../helpers/database";
 
 describe("parseVersion", () => {
   test("reads a bare semver triple", () => {
@@ -93,7 +94,7 @@ describe("compareVersions", () => {
   });
 });
 
-describe("/console/api/updates/release", () => {
+dbDescribe("/console/api/updates/release", () => {
   let gateway: TestGateway;
 
   test("answers without a session, and shapes a known release", async () => {

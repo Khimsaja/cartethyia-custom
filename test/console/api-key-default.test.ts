@@ -18,7 +18,7 @@
  * Current keys are identified by a column. The canonical label is used only to
  * recover legacy rows that predate the flag, which are promoted when updated.
  */
-import { describe, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/node-postgres";
 import * as fullSchema from "../../src/persistence/schema";
 import { DrizzleApiKeyStore } from "../../src/persistence/stores/api-key-store";
@@ -28,7 +28,7 @@ import {
   DEFAULT_API_KEY_PREFIX,
 } from "../../src/console/api-keys/contracts";
 import { TENANT_KEY_SCOPES } from "../../src/security/access-control";
-import { createRunId, requireDatabase, withRollback } from "../helpers/database";
+import { createRunId, dbDescribe, requireDatabase, withRollback } from "../helpers/database";
 import { createApiKey, createTenant } from "../helpers/fixtures";
 
 requireDatabase();
@@ -43,7 +43,7 @@ function owner(tenantId: string) {
   } as never;
 }
 
-describe("default gateway API key", () => {
+dbDescribe("default gateway API key", () => {
   test("is flagged in the list response", async () => {
     await withRollback(async (client) => {
       const tenant = await createTenant(client, RUN_ID);
