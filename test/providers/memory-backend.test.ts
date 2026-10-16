@@ -6,6 +6,7 @@ import {
   getCachedQuotaEntry,
   invalidateQuotaCache,
   setCachedQuota,
+  debitCachedQuota,
 } from "../../src/console/quota/cache";
 import {
   InMemoryOAuthFlowStore,
@@ -162,6 +163,63 @@ describe("quota cache without Redis", () => {
       const expired = await getCachedQuotaEntry("tenant:t1", "acc-3", undefined);
       expect(expired?.quota).toEqual(failedQuota);
       expect(expired?.fetchedAt).toBeNull();
+    } finally {
+      clearQuotaCacheForTests();
+    }
+  });
+
+  test("a debit spends pooled windows in order and keeps the original fetch time", async () => {
+    clearQuotaCacheForTests();
+    const fetchedAt = new Date("2026-10-16T00:00:00.000Z");
+    const quota: ProviderQuotaResult = {
+      source: "cb",
+      plan: null,
+      error: null,
+      windows: [
+        { kind: "cycle", label: "Cycle", accounting: "pooled", usedPercent: 70, remainingPercent: 30, resetsAt: null, limit: 100, used: 70, remaining: 30 },
+        { kind: "bonus", label: "Bonus", accounting: "pooled", usedPercent: 0, remainingPercent: 100, resetsAt: null, limit: 50, used: 0, remaining: 50 },
+      ],
+    };
+    try {
+      await setCachedQuota("global", "acc", quota, undefined, fetchedAt);
+      await debitCachedQuota("global", "acc", 40, undefined);
+      const after = await getCachedQuotaEntry("global", "acc", undefined);
+      const windows = after?.quota.windows ?? [];
+      expect(windows[0]?.remaining).toBe(0);
+      expect(windows[0]?.used).toBe(100);
+      expect(windows[1]?.remaining).toBe(40);
+      expect(windows[1]?.used).toBe(10);
+      expect(after?.fetchedAt).toBe(fetchedAt.toISOString());
+    } finally {
+      clearQuotaCacheForTests();
+    }
+  });
+
+  test("a debit with no cached entry writes nothing", async () => {
+    clearQuotaCacheForTests();
+    try {
+      await debitCachedQuota("global", "missing", 5, undefined);
+      expect(await getCachedQuotaEntry("global", "missing", undefined)).toBeNull();
+    } finally {
+      clearQuotaCacheForTests();
+    }
+  });
+
+  test("a zero debit does not touch the entry", async () => {
+    clearQuotaCacheForTests();
+    const quota: ProviderQuotaResult = {
+      source: "cb",
+      plan: null,
+      error: null,
+      windows: [
+        { kind: "cycle", label: "Cycle", accounting: "pooled", usedPercent: 0, remainingPercent: 100, resetsAt: null, limit: 100, used: 0, remaining: 100 },
+      ],
+    };
+    try {
+      await setCachedQuota("global", "acc", quota, undefined);
+      await debitCachedQuota("global", "acc", 0, undefined);
+      const after = await getCachedQuotaEntry("global", "acc", undefined);
+      expect(after?.quota.windows[0]?.remaining).toBe(100);
     } finally {
       clearQuotaCacheForTests();
     }

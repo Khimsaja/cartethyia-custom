@@ -14,6 +14,8 @@ import type { TelemetryPayloadDepth, TelemetryPayloadMode } from "../../console/
 import type { ProxyRequestOutcome, ProxyRequestState } from "../request/state";
 import type { PayloadCaptureState } from "../../observability/payload-capture";
 import { finalizeRequestTelemetry } from "../guards/error-lifecycle";
+import { debitCachedQuota, quotaLens } from "../../console/quota/cache";
+import { BUDDY_PROVIDER_IDS } from "../../providers/provider-metadata";
 import { log } from "../../observability/logger";
 import {
   disablePoolForProxyHttpStatus,
@@ -583,6 +585,33 @@ export function resolveProxyDisableDecision(completion: AttemptCompletion): {
   return { disableProxy, responseHttpStatus };
 }
 
+/**
+ * Reduces the account's cached pooled balance by the credits this request
+ * reported, so the next plan sees the spend instead of the balance the sweep
+ * last fetched.
+ *
+ * Scoped to the buddy family: `credit_used` there is buddy-meter credit, the
+ * same unit the cached windows store. Other providers report the field in
+ * their own unit, and debiting them would subtract the wrong thing. A missing
+ * cache entry, a failed last fetch, or a cache write that throws is left
+ * alone — the request already succeeded, and the floor keeps its previous
+ * reading until the sweep.
+ */
+async function debitBuddySpend(completion: AttemptCompletion): Promise<void> {
+  if (completion.status !== "completed") return;
+  const accountId = completion.accountId;
+  const providerId = completion.providerId;
+  const credits = completion.usage?.credit_used;
+  if (accountId === undefined || providerId === undefined) return;
+  if (!BUDDY_PROVIDER_IDS.has(providerId.toLowerCase())) return;
+  if (typeof credits !== "number" || !Number.isFinite(credits) || credits <= 0) return;
+  try {
+    await debitCachedQuota(quotaLens(completion.tenantId), accountId, credits, undefined);
+  } catch {
+    // Swallowed: the balance update is advisory. The sweep corrects it.
+  }
+}
+
 export async function completeAttempt(
   state: ProxyRequestState,
   completion: AttemptCompletion,
@@ -637,6 +666,7 @@ export async function completeAttempt(
       // Swallowed: usage reconciliation is non-critical bookkeeping.
     }
   }
+  await debitBuddySpend(completion);
   const { disableProxy, responseHttpStatus } = resolveProxyDisableDecision(completion);
   // Cancelled attempts write no health (client gone; outcome unknown) —
   // matches the historical `!cancelled` guards at every site. Health is

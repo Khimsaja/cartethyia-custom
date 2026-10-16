@@ -144,3 +144,31 @@ describe("gpt-6-luna on the buddy roster", () => {
     }
   });
 });
+
+describe("measured context windows", () => {
+  test("hy3 is published at the measured 192k window on both international sites", () => {
+    for (const rows of [CODEBUDDY_MODELS, WORKBUDDY_MODELS]) {
+      const row = rows.find((model) => model.modelId === "hy3");
+      expect(row?.contextLimit).toBe(192_000);
+      expect(row?.outputLimit).toBe(64_000);
+    }
+  });
+
+  test("kimi-k2.8-preview is published at the measured 1,048,576 context", () => {
+    for (const rows of [CODEBUDDY_MODELS, WORKBUDDY_MODELS, CODEBUDDY_CN_MODELS]) {
+      const row = rows.find((model) => model.modelId === "kimi-k2.8-preview");
+      expect(row?.contextLimit).toBe(1_048_576);
+      expect(row?.outputLimit).toBe(65_536);
+    }
+  });
+
+  test("hy3-preview and deep-model are published", () => {
+    for (const rows of [CODEBUDDY_MODELS, WORKBUDDY_MODELS]) {
+      const preview = rows.find((model) => model.modelId === "hy3-preview");
+      expect(preview?.contextLimit).toBe(262_144);
+      expect(preview?.outputLimit).toBe(64_000);
+      expect(preview?.reasoningEfforts).toEqual(["low", "high"]);
+      expect(rows.some((model) => model.modelId === "deep-model")).toBe(true);
+    }
+  });
+});

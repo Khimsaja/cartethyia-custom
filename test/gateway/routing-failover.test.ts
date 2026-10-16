@@ -21,7 +21,7 @@ import { dbDescribe } from "../helpers/database";
 import { EligibilityEvaluator, RoutingEngine } from "../../src/transport/routing/router";
 import { GatewayError } from "../../src/protocol/gateway-error";
 import type { RouteCandidate, RouteSnapshot } from "../../src/transport/routing/route-model";
-import { setCachedQuota, clearQuotaCacheForTests } from "../../src/console/quota/cache";
+import { setCachedQuota, clearQuotaCacheForTests, debitCachedQuota } from "../../src/console/quota/cache";
 const CHAT_BODY = { model: "placeholder", messages: [{ role: "user", content: "hi" }], stream: false };
 
 /** A minimal candidate; only the fields the evaluator reads are meaningful. */
@@ -179,6 +179,42 @@ describe("RoutingEngine.plan cooldown classes", () => {
     }, undefined);
     try {
       const plan = await engine.plan(qualified, snapshot([spent, funded]));
+      expect(plan.candidates.map((entry) => entry.provider_account_id)).toEqual(["funded"]);
+    } finally {
+      clearQuotaCacheForTests();
+    }
+  });
+
+  test("a debit that crosses the floor excludes the account on the next plan", async () => {
+    // Remaining 12 against a floor of 10 is still eligible. The request spends
+    // 3, and nothing but the debit tells the cache — the sweep is minutes
+    // away. The next plan must see 9 and move on.
+    const draining = candidate({ provider_account_id: "draining" });
+    const funded = candidate({ provider_account_id: "funded" });
+    const window = {
+      kind: "credit",
+      label: "credit",
+      accounting: "pooled" as const,
+      usedPercent: 0,
+      remainingPercent: 100,
+      resetsAt: null,
+      limit: 100,
+      remaining: 12,
+    };
+    await setCachedQuota("global", "draining", { source: "cb", plan: null, error: null, windows: [window] }, undefined);
+    await setCachedQuota("global", "funded", {
+      source: "cb",
+      plan: null,
+      error: null,
+      windows: [{ ...window, remaining: 90, usedPercent: 10, remainingPercent: 90 }],
+    }, undefined);
+    const withFloor = {
+      ...snapshot([draining, funded]),
+      providerRouting: { __global__: { p: { strategy: "fallback" as const, usageFloor: 10, usageFloorUnit: "credit" as const, enabled: false, rotateCount: 1, maxInflight: null, skipProxy: false } } },
+    };
+    try {
+      await debitCachedQuota("global", "draining", 3, undefined);
+      const plan = await engine.plan(qualified, withFloor);
       expect(plan.candidates.map((entry) => entry.provider_account_id)).toEqual(["funded"]);
     } finally {
       clearQuotaCacheForTests();

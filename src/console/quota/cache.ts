@@ -236,6 +236,71 @@ export async function setCachedQuota(
   }
 }
 
+/**
+ * Subtracts credits a completed request reported from the account's cached
+ * pooled balance.
+ *
+ * The quota sweep is the only thing that writes this cache, and it runs at
+ * most every four minutes. Between sweeps the floor keeps selecting an account
+ * whose balance has already crossed the threshold, because nothing told the
+ * cache the request spent anything. The chat response carries the credits that
+ * request consumed, not a new balance, so this debits the last known one.
+ *
+ * It is not a fresh reading: `fetchedAt` is preserved, so the sweep still
+ * refreshes an account on its own schedule instead of treating the debit as a
+ * just-completed fetch and skipping it. No cached entry, or one whose last
+ * fetch failed, is left alone — a debit must not invent a balance the floor
+ * would then treat as measured.
+ */
+export async function debitCachedQuota(
+  lens: string,
+  accountId: string,
+  credits: number,
+  redis: RedisClient | undefined,
+): Promise<void> {
+  if (!Number.isFinite(credits) || credits <= 0) return;
+  const entry = await getCachedQuotaEntry(lens, accountId, redis);
+  if (entry === null || entry.quota.error !== null) return;
+  let remaining = credits;
+  const windows = entry.quota.windows.map((window) => {
+    if (remaining <= 0) return window;
+    if (window.accounting !== "pooled") return window;
+    const limit = window.limit;
+    if (typeof limit !== "number" || !Number.isFinite(limit) || limit <= 0) return window;
+    const balance =
+      typeof window.remaining === "number" && Number.isFinite(window.remaining)
+        ? window.remaining
+        : typeof window.used === "number" && Number.isFinite(window.used)
+          ? limit - window.used
+          : null;
+    if (balance === null) return window;
+    const spent = Math.min(remaining, Math.max(0, balance));
+    remaining -= spent;
+    const next = Math.max(0, balance - spent);
+    const used = limit - next;
+    const usedPercent = Math.min(100, Math.max(0, (used / limit) * 100));
+    return {
+      ...window,
+      remaining: next,
+      used,
+      usedPercent,
+      remainingPercent: Math.max(0, 100 - usedPercent),
+    };
+  });
+  if (remaining === credits) return;
+  const fetchedAt =
+    entry.fetchedAt !== null && Number.isFinite(Date.parse(entry.fetchedAt))
+      ? new Date(entry.fetchedAt)
+      : new Date();
+  await setCachedQuota(
+    lens,
+    accountId,
+    { ...entry.quota, windows },
+    redis,
+    fetchedAt,
+  );
+}
+
 /** Drops one account from one lens (credential rotation, status change, delete). */
 export async function invalidateQuotaCache(
   lens: string,

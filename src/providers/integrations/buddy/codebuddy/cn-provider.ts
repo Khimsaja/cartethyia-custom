@@ -106,7 +106,7 @@ export const CODEBUDDY_CN_RAW: readonly BuddyRawEntry[] = [
   ["glm-5.3-flash", "GLM 5.3 Flash", true, true, 1_000_000, 131_072],
   ["glm-5v-turbo", "GLM 5v Turbo", true, true, 200_000, 131_072],
   ["minimax-m3", "MiniMax M3", true, true, 512_000, 512_000],
-  ["kimi-k2.8-preview", "Kimi K2.8 Preview", true, true, 256_000, 65_536],
+  ["kimi-k2.8-preview", "Kimi K2.8 Preview", true, true, 1_048_576, 65_536],
   ["kimi-k2.7", "Kimi K2.7", true, true, 256_000, 65_536],
   ["kimi-k2.6", "Kimi K2.6", true, true, 256_000, 262_144],
   ["kimi-k2.5", "Kimi K2.5", true, true, 164_000, 262_144],
