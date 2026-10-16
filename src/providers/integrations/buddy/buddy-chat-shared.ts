@@ -19,10 +19,9 @@
  */
 import { createHash } from "node:crypto";
 import { completeRequiredSchema } from "../../../protocol/codecs";
-import { GatewayError } from "../../../protocol/gateway-error";
 import type { CanonicalRequest } from "../../../protocol/canonical-model";
 import { isRecord } from "../../../protocol/codecs";
-import { applyDeepSeekReasoning, applyOpenAIReasoning, backfillDeepSeekReasoningContent } from "../../provider-reasoning";
+import { applyDeepSeekReasoning, applyOpenAIReasoning, backfillDeepSeekReasoningContent, clampedEffortOutputFloor } from "../../provider-reasoning";
 import { BUDDY_CN_EFFORTS, BUDDY_INTL_EFFORTS, BUDDY_SHARED_RAW } from "./buddy-catalog-shared";
 // Imported for the CN roster only: a CN-only id has no row in the shared
 // table, and without one `raiseOutputForRaisedEffort` silently no-ops, so a
@@ -361,7 +360,7 @@ export function buddyPrePayloadCommon(
     delete payload["reasoning_summary"];
   }
   backfillDeepSeekReasoningContent(payload);
-  enforceBuddyRequestLimits(payload, realm);
+  clampBuddyReasoningEffort(payload, realm);
   const messages = payload["messages"];
   if (Array.isArray(messages)) {
     const arr = messages as Array<Record<string, unknown>>;
@@ -549,23 +548,32 @@ function cleanupBuddyOrphanToolPairs(messages: Array<Record<string, unknown>>): 
 
 
 
+const BUDDY_EFFORT_RANK: Readonly<Record<string, number>> = {
+  off: 0,
+  none: 0,
+  minimal: 1,
+  low: 2,
+  medium: 3,
+  high: 4,
+  xhigh: 5,
+  max: 6,
+};
+
 /**
- * Rejects an effort the model's ladder does not serve, and a `max_tokens`
- * above the catalog output limit.
+ * Clamps an effort the model's ladder does not serve to the nearest served
+ * level, and clamps a `max_tokens` above the catalog output limit down to it.
  *
- * Both used to be repaired silently: an unsupported effort was substituted
- * with the nearest served level, and `max_tokens` was raised to match. That
- * made a request succeed as a different request — asking `max` on a model
- * that serves only `high` answered at `high`, and the caller had no way to
- * tell. The reference gateways return 400 for both, and that is what a client
- * that named a level or a budget actually asked for: a refusal it can act on,
- * not a quieter answer.
+ * Both are repaired here rather than refused. A client that asked for `max`
+ * on a model that serves only `high` wants an answer, and the gateway is the
+ * place that knows the ladder — refusing with 400 makes the client retry a
+ * request the gateway could have served. The output budget is lifted when the
+ * effort was raised, because a higher level spends part of the same budget on
+ * reasoning and a limit sized for the lower one truncates the answer.
  *
- * A model with no ladder is not rejected. Absence means "we have not measured
- * this model's levels", and refusing it would 400 a request the upstream
- * would have served.
+ * A model with no ladder is left alone. Absence means the levels have not
+ * been measured, and clamping it would invent a constraint.
  */
-function enforceBuddyRequestLimits(payload: Record<string, unknown>, realm: "intl" | "cn"): void {
+function clampBuddyReasoningEffort(payload: Record<string, unknown>, realm: "intl" | "cn"): void {
   const model = typeof payload["model"] === "string" ? payload["model"].trim().toLowerCase() : "";
   const table = realm === "cn" ? BUDDY_CN_EFFORTS : BUDDY_INTL_EFFORTS;
   const supported = model.length > 0 ? table[model] : undefined;
@@ -579,16 +587,21 @@ function enforceBuddyRequestLimits(payload: Record<string, unknown>, realm: "int
     const requested = payload[key];
     if (typeof requested === "string") {
       const normalized = requested.trim().toLowerCase();
-      if (normalized.length > 0 && normalized !== "none" && normalized !== "off") {
-        const served = supported.some((effort) => effort.toLowerCase() === normalized);
-        if (!served) {
-          throw new GatewayError(
-            "invalid_request",
-            400,
-            `unsupported_reasoning_effort: ${model} serves ${supported.join(", ")}, not ${normalized}`,
-            { model, gateway_hint: "unsupported_reasoning_effort" },
-          );
-        }
+      const requestedRank = BUDDY_EFFORT_RANK[normalized];
+      if (
+        requestedRank !== undefined &&
+        !supported.some((effort) => effort.toLowerCase() === normalized)
+      ) {
+        const ranked = supported
+          .map((effort) => ({ effort, rank: BUDDY_EFFORT_RANK[effort.toLowerCase()] }))
+          .filter((entry): entry is { effort: string; rank: number } => entry.rank !== undefined);
+        const below = ranked.filter((entry) => entry.rank <= requestedRank);
+        const chosen =
+          below.length > 0
+            ? below.reduce((best, entry) => (entry.rank > best.rank ? entry : best))
+            : ranked.reduce((best, entry) => (entry.rank < best.rank ? entry : best));
+        payload[key] = chosen.effort;
+        raiseOutputForRaisedEffort(payload, normalized, chosen.effort.trim().toLowerCase());
       }
     }
   }
@@ -600,13 +613,30 @@ function enforceBuddyRequestLimits(payload: Record<string, unknown>, realm: "int
     Number.isFinite(maxTokens) &&
     maxTokens > limit
   ) {
-    throw new GatewayError(
-      "invalid_request",
-      400,
-      `max_tokens ${maxTokens} exceeds ${model}'s output limit of ${limit}`,
-      { model, gateway_hint: "output_limit_exceeded" },
-    );
+    payload["max_tokens"] = limit;
   }
+}
+
+/**
+ * Lifts `max_tokens` when the ladder raised the caller's effort.
+ *
+ * A higher level spends part of the same output budget on reasoning, so a
+ * limit sized for the lower one can no longer hold the answer. The floor is
+ * half the model's catalog output limit, and a budget already above it is
+ * left alone.
+ */
+function raiseOutputForRaisedEffort(
+  payload: Record<string, unknown>,
+  requested: string,
+  applied: string,
+): void {
+  const model = typeof payload["model"] === "string" ? payload["model"].trim().toLowerCase() : "";
+  if (model.length === 0) return;
+  const floor = clampedEffortOutputFloor(requested, applied, buddyModelOutputLimit(model));
+  if (floor === undefined) return;
+  const current = payload["max_tokens"];
+  if (typeof current === "number" && Number.isFinite(current) && current >= floor) return;
+  payload["max_tokens"] = floor;
 }
 
 /**

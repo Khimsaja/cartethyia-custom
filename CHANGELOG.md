@@ -81,12 +81,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   provider key prefixes, and inline base64 images before they are written.
   Captured request bodies are unchanged — those stay verbatim so a failure can
   still be read.
-- A Buddy request that names an effort the model's ladder does not serve, or a
-  `max_tokens` above the catalog output limit, is now refused with 400 instead
-  of being quietly rewritten. Asking `max` on a model that serves only `high`
-  used to answer at `high` with a raised budget, and the caller had no way to
-  tell the request had been changed. A model with no measured ladder is still
-  passed through — absence is "unmeasured", not "unsupported".
+- A Buddy `max_tokens` above the model's catalog output limit is clamped down
+  to that limit, the same way an unsupported effort is clamped to the nearest
+  level the ladder serves. Both are repaired at the gateway rather than
+  refused: the client asked for an answer, and the gateway is the side that
+  knows the limit. A model with no measured ladder is left alone.
+
 - A Buddy account with no device token in its auth state falls back to the
   file the desktop client writes (`CARTETHYIA_DEVICE_TOKEN_FILE`, default
   `/app/data/device_token`). The read is cached for five minutes and a file

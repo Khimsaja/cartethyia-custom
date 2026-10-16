@@ -37,25 +37,28 @@ describe("Buddy upstream protocol alignment", () => {
     expect(payload["prompt_cache_key"]).toBe(buildBuddyPromptCacheKey("", ""));
   });
 
-  test("rejects an effort the international ladder does not serve", () => {
+  test("clamps an unsupported international effort to the nearest served level", () => {
     const payload: Record<string, unknown> = {
       model: "deepseek-v4.1-flash",
       messages: [],
       reasoning_effort: "max",
       prompt_cache_key: "client-key",
     };
-    expect(() => buddyPrePayloadCommon(payload, request, "intl")).toThrow(/unsupported_reasoning_effort/);
+    buddyPrePayloadCommon(payload, request, "intl");
+    expect(payload["reasoning_effort"]).toBe("high");
     expect(payload["prompt_cache_key"]).toBe("client-key");
   });
 
-  test("rejects an effort below the ladder the same way", () => {
+  test("raising the effort also lifts a max_tokens sized for the lower one", () => {
     const payload: Record<string, unknown> = {
       model: "hy4-preview-f",
       messages: [{ role: "user", content: "hi" }],
       reasoning_effort: "low",
       max_tokens: 2048,
     };
-    expect(() => buddyPrePayloadCommon(payload, request, "intl")).toThrow(/unsupported_reasoning_effort/);
+    buddyPrePayloadCommon(payload, request, "intl");
+    expect(payload["reasoning_effort"]).toBe("high");
+    expect(payload["max_tokens"]).toBe(32_000);
   });
 
   test("a supported effort leaves the caller's max_tokens alone", () => {
@@ -72,13 +75,14 @@ describe("Buddy upstream protocol alignment", () => {
     expect(payload["max_tokens"]).toBe(2048);
   });
 
-  test("rejects max_tokens above the catalog output limit", () => {
+  test("clamps a max_tokens above the catalog output limit down to it", () => {
     const payload: Record<string, unknown> = {
       model: "glm-5.2",
       messages: [{ role: "user", content: "hi" }],
       max_tokens: 200_000,
     };
-    expect(() => buddyPrePayloadCommon(payload, request, "intl")).toThrow(/output limit/);
+    buddyPrePayloadCommon(payload, request, "intl");
+    expect(payload["max_tokens"]).toBe(131_072);
   });
 
   test("an effort the ladder serves as asked leaves max_tokens alone", () => {
@@ -139,17 +143,16 @@ describe("Buddy upstream protocol alignment", () => {
     expect(payload["reasoning_effort"]).toBe("medium");
   });
 
-  test("a CN effort the ladder does not serve is refused, not rewritten", () => {
-    // deepseek-v4-pro serves low/high/xhigh. `max` used to be rewritten to
-    // `xhigh` and the budget raised to match; the caller now hears that the
-    // level is not served.
+  test("a CN effort the ladder does not serve is clamped, and the budget is lifted", () => {
     const payload: Record<string, unknown> = {
       model: "deepseek-v4-pro",
       messages: [{ role: "user", content: "hi" }],
       reasoning_effort: "max",
       max_tokens: 2048,
     };
-    expect(() => codeBuddyCnPrePayload(payload, request, candidate)).toThrow(/unsupported_reasoning_effort/);
+    codeBuddyCnPrePayload(payload, request, candidate);
+    expect(payload["reasoning_effort"]).toBe("xhigh");
+    expect(payload["max_tokens"]).toBe(192_000);
   });
 
   test("`auto` and `default-model` resolve to one upstream model", () => {
