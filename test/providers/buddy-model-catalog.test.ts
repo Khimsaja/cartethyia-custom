@@ -34,9 +34,6 @@ describe("live Buddy CLI models on the shared roster", () => {
 
   test("publishes upstream CLI ids with their captured metadata on both sites", () => {
     const capturedRows = [
-      ["balanced-model", 256_000, 32_000, true],
-      ["default-model", 176_000, 24_000, false],
-      ["fast-model", 200_000, 32_000, true],
       ["gemini-3.8-flash", 1_000_000, 65_536, true],
       ["gpt-6-sol", 1_000_000, 128_000, true],
       ["step-5-preview", 1_000_000, 64_000, true],
@@ -51,6 +48,17 @@ describe("live Buddy CLI models on the shared roster", () => {
         expect(row?.reasoning).toBe(reasoning);
         expect(row?.toolCall).toBe(true);
         expect(row?.modalities.input).toContain("image");
+      }
+    }
+  });
+
+  test("omits the backend-selected aliases and kimi-k3.1", () => {
+    // These ids are not models a client should be offered: the four aliases
+    // resolve server-side, and kimi-k3.1 is not served. `auto` stays, and is
+    // no longer rewritten onto `default-model`.
+    for (const id of ["balanced-model", "default-model", "fast-model", "primary-model", "kimi-k3.1"]) {
+      for (const rows of [CODEBUDDY_MODELS, WORKBUDDY_MODELS]) {
+        expect(rows.some((model) => model.modelId === id)).toBe(false);
       }
     }
   });

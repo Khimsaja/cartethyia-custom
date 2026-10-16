@@ -170,7 +170,7 @@ export function normalizeBuddyToolNames(payload: Record<string, unknown>): void 
  * `default-model`.
  */
 const BUDDY_AUTO_TARGET: Readonly<Record<"intl" | "cn", string>> = {
-  intl: "default-model",
+  intl: "auto",
   cn: "default",
 };
 

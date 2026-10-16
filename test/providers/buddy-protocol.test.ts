@@ -155,16 +155,12 @@ describe("Buddy upstream protocol alignment", () => {
     expect(payload["max_tokens"]).toBe(192_000);
   });
 
-  test("`auto` and `default-model` resolve to one upstream model", () => {
-    // Two names for the same backend-selected model used to be two independent
-    // catalog rows, so a client sending `auto` and a client sending
-    // `default-model` were routed — and cooled — as different models.
+  test("`auto` stays `auto` on the international roster", () => {
+    // `default-model` was removed from the catalog, so rewriting `auto` onto
+    // it would send clients to an id that is no longer served.
     const viaAuto: Record<string, unknown> = { model: "auto", messages: [] };
-    const viaDefault: Record<string, unknown> = { model: "default-model", messages: [] };
     buddyPrePayloadCommon(viaAuto, request, "intl");
-    buddyPrePayloadCommon(viaDefault, request, "intl");
-    expect(viaAuto["model"]).toBe(viaDefault["model"]);
-    expect(viaAuto["model"]).toBe("default-model");
+    expect(viaAuto["model"]).toBe("auto");
   });
 
   test("CN `auto` resolves to the CN backend-selected id, not the intl one", () => {

@@ -142,7 +142,7 @@ export function buildActivityReportEvent(args: {
     conversationId: args.conversationId,
     requestId,
     inputLength: 0,
-    requestModelId: "default-model",
+    requestModelId: "auto",
     requestModelName: "Auto",
     isPlan: false,
     isAutoExecuteTerminal: false,

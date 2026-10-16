@@ -214,10 +214,6 @@ export function makeBuddyModel(
  */
 export const BUDDY_SHARED_RAW: readonly BuddyRawEntry[] = [
   ["auto", "Auto", true, true, 168_000, null],
-  ["balanced-model", "Balanced", true, true, 256_000, 32_000, true],
-  ["default-model", "Auto", false, true, 176_000, 24_000, true],
-  ["fast-model", "Fast", true, true, 200_000, 32_000, true],
-  ["primary-model", "Primary", true, true, 272_000, 72_000],
   ["claude-opus-4.6", "Claude Opus 4.6", true, true, 200_000, 64_000],
   ["claude-opus-4.7-1m", "Claude Opus 4.7 1M", true, true, 1_000_000, 64_000],
   ["claude-sonnet-4.6", "Claude Sonnet 4.6", true, true, 200_000, 32_000],
@@ -257,7 +253,6 @@ export const BUDDY_SHARED_RAW: readonly BuddyRawEntry[] = [
   ["kimi-k2.7", "Kimi K2.7", true, false, 256_000, 65_536],
   ["kimi-k2.8-preview", "Kimi K2.8 Preview", true, false, 1_048_576, 65_536],
   ["kimi-k3", "Kimi K3", true, false, 1_048_576, 131_072],
-  ["kimi-k3.1", "Kimi K3.1", true, false, 1_000_000, 131_072],
   ["minimax-m3", "MiniMax-M3", true, false, 512_000, 512_000],
   ["step-5-preview", "Step-5-Preview", true, true, 1_000_000, 64_000, true],
 ];
