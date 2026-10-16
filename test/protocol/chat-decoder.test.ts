@@ -480,7 +480,11 @@ describe("decodeChatSseStream — truncation and failure", () => {
       sseStream(frame({ choices: [{ delta: { content: "half an ans" } }] })),
     );
     expect(terminal(events).state).toBe("failed");
-    expect(terminal(events).stop_reason).toBeUndefined();
+    // The chat wire falls back to `stop` when a terminal carries no stop
+    // reason, so a cut stream reached the client as a clean completion while
+    // telemetry recorded the 502. The failure now travels in the reason as
+    // well, which is what an OpenAI-shaped client reads.
+    expect(terminal(events).stop_reason).toBe("error");
   });
 
   test("an explicit finish_reason of error or failed is a failed terminal", async () => {
