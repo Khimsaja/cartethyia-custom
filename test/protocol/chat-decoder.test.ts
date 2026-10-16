@@ -809,6 +809,25 @@ describe("decodeChatSseStream — tool-call fragment joining", () => {
     expect(typeof calls[0]?.call_id).toBe("string");
   });
 
+  test("Copilot splits one call id across indexed chunks and they stay one call", async () => {
+    // Measured from a live Copilot session: the first chunk carries the name
+    // and the start of the id, and every later chunk carries the next slice of
+    // the id plus the next slice of the arguments at a fresh index. Reading
+    // each index as its own call produced 65 nameless calls.
+    const events = await collect(
+      sseStream(
+        frame({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_xh", function: { name: "write", arguments: '{"path":' } }] } }] }) +
+          frame({ choices: [{ delta: { tool_calls: [{ index: 1, id: "E9yH", function: { arguments: '"a.ts"}' } }] } }] }) +
+          frame({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }) +
+          frame("[DONE]"),
+      ),
+    );
+    const calls = events.flatMap((event) => (event.type === "tool_call_delta" ? [event] : []));
+    expect(new Set(calls.map((call) => call.call_id)).size).toBe(1);
+    expect(calls[0]?.name).toBe("write");
+    expect(calls.map((call) => call.arguments_delta).join("")).toBe('{"path":"a.ts"}');
+  });
+
   test("a tool call with no arguments emits an empty delta", async () => {
     const events = await collect(
       sseStream(
