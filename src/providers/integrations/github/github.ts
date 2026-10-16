@@ -55,6 +55,27 @@ export const GITHUB_RESPONSES_ENDPOINT_PATH = "/responses" as const;
  */
 export const GITHUB_CONTEXT_TIER = "long_context" as const;
 
+/**
+ * The highest reasoning effort Copilot serves. A caller asking for `max` or
+ * `xhigh` is answered at `high` rather than refused: the model has no level
+ * above it, and the request is otherwise valid.
+ */
+const GITHUB_REASONING_EFFORT_CAP = "high";
+const GITHUB_CAPPED_EFFORTS = new Set(["max", "xhigh"]);
+
+/** Rewrites an effort above Copilot's ceiling to `high`, on either wire. */
+function clampGithubReasoningEffort(payload: Record<string, unknown>): void {
+  const effort = payload["reasoning_effort"];
+  if (typeof effort === "string" && GITHUB_CAPPED_EFFORTS.has(effort)) {
+    payload["reasoning_effort"] = GITHUB_REASONING_EFFORT_CAP;
+  }
+  const reasoning = payload["reasoning"];
+  if (!isRecord(reasoning)) return;
+  const nested = reasoning["effort"];
+  if (typeof nested === "string" && GITHUB_CAPPED_EFFORTS.has(nested)) {
+    payload["reasoning"] = { ...reasoning, effort: GITHUB_REASONING_EFFORT_CAP };
+  }
+}
 /** Context window at or above which the account is served from the long tier. */
 export const GITHUB_LONG_CONTEXT_THRESHOLD = 500_000;
 
@@ -327,6 +348,7 @@ class GithubAdapter extends OpenAICompatibleAdapter {
         // threshold. `contextTier` is applied after wire translation so it
         // rides on the serialized body the upstream actually reads.
         prePayload: (payload, request, candidate, context) => {
+          clampGithubReasoningEffort(payload);
           if (
             this.#autoSessionTokens.has(request) &&
             candidate.wire_family === "responses"

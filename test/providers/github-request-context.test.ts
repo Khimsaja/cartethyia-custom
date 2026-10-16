@@ -130,4 +130,19 @@ describe("GitHub Copilot request context", () => {
     expect(firstAccount.body.contextTier).toBe("long_context");
     expect(secondAccount.body.contextTier).toBeUndefined();
   });
+
+  test("caps a reasoning effort above high at high", async () => {
+    for (const effort of ["max", "xhigh"]) {
+      const captured = await capture({
+        ...baseRequest,
+        reasoning: { effort },
+      } as unknown as CanonicalRequest);
+      expect(captured.body.reasoning_effort).toBe("high");
+    }
+    const kept = await capture({
+      ...baseRequest,
+      reasoning: { effort: "medium" },
+    } as unknown as CanonicalRequest);
+    expect(kept.body.reasoning_effort).toBe("medium");
+  });
 });
