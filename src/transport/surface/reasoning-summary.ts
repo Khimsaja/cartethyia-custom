@@ -43,7 +43,16 @@ export function reasoningSummaryHasBoundary(
   );
 }
 
-/** Separates distinct summary parts without splitting token fragments. */
+/**
+ * Separates distinct summary parts without splitting a word.
+ *
+ * A boundary between two source items is not a boundary between two
+ * sentences. Copilot streams one thought as many items, and the token that
+ * ends one item is the first half of a word the next item finishes. Inserting
+ * a break there painted `Gil` in the thinking pane and `iran` in the answer.
+ * A break is earned only when the previous part already ended a sentence and
+ * the next one starts a new one.
+ */
 export function reasoningSummarySeparator(
   previous: ReasoningSummaryIdentity | undefined,
   current: ReasoningSummaryIdentity | undefined,
@@ -52,10 +61,6 @@ export function reasoningSummarySeparator(
 ): string {
   if (!reasoningSummaryHasBoundary(previous, current)) return "";
   if (/\s$/.test(previousText ?? "") || /^\s/.test(currentText)) return "";
-  if (/^(?:#{1,6}\s|\*\*|__)/.test(currentText)) return "\n\n";
-  if (/\*\*$|__$/.test(previousText ?? "")) return "\n\n";
-  if (/[.!?][)"'\]]*$/.test(previousText ?? "")) {
-    return /^[A-ZÀ-ÖØ-Þ]/.test(currentText) ? "\n\n" : " ";
-  }
+  if (/[.!?][)"'\]]*$/.test(previousText ?? "") && /^[A-ZÀ-ÖØ-Þ]/.test(currentText)) return "\n\n";
   return "";
 }
