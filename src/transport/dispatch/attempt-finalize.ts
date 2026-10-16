@@ -706,10 +706,17 @@ export async function completeAttempt(
           completion.snapshotService,
         );
       } else {
+        const errorOrigin =
+          completion.errorOrigin ??
+          (completion.error instanceof ProxyConnectRefusalError ? "network" : undefined);
         await recordPoolDispatchOutcome(completion.db, completion.networkPoolId, {
           succeeded: completion.status === "completed",
           ...(completion.error === undefined ? {} : { error: completion.error }),
-          ...(completion.errorOrigin === undefined ? {} : { errorOrigin: completion.errorOrigin }),
+          // A CONNECT refusal is the proxy's own answer, given before any
+          // upstream was dialed, so it is a network fault even though the
+          // error carries no origin of its own. Without one the pool stays in
+          // rotation and the next probe dials the same front door.
+          ...(errorOrigin === undefined ? {} : { errorOrigin }),
           ...(completion.snapshotService === undefined
             ? {}
             : { snapshotInvalidator: completion.snapshotService }),
