@@ -1038,6 +1038,14 @@ export const telemetryEvents = pgTable(
     // and keeps the columns JSON-safe like the token-budget bigints above.
     firstContentDeltaAtMs: bigint("first_content_delta_at_ms", { mode: "number" }),
     lastEventAtMs: bigint("last_event_at_ms", { mode: "number" }),
+    /**
+     * Why this request's drawer payloads were not captured, or `captured` when
+     * they were. Remote-diagnosis column: the drawer reads empty for reasons
+     * that are invisible from the client — the tenant's capture mode, a missing
+     * tenant, a non-terminal attempt — and without this an operator could not
+     * tell "not configured" from "broken".
+     */
+    payloadCaptureState: text("payload_capture_state"),
   },
   (table) => [
     index("telemetry_events_created_at_idx").on(table.createdAt),

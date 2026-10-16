@@ -11,7 +11,7 @@
  * reached, so the frame carries what the case has: the ingress body and the
  * error envelope the client received.
  */
-
+import type { PayloadCaptureState } from "../../observability/payload-capture";
 /** The capture surface this helper needs; matches the real capture's method. */
 export interface EarlyRejectionCaptureSink {
   capture(input: EarlyRejectionCapture): Promise<unknown>;
@@ -34,6 +34,11 @@ export interface EarlyRejectionState {
   readonly ingressBody?: unknown;
   readonly clientResponseText?: string;
   readonly payloadCapture?: EarlyRejectionCaptureSink;
+  /**
+   * Written by this helper so telemetry can record whether the rejection's body
+   * was captured. Mutable because the reason is an outcome, not an input.
+   */
+  payloadCaptureState?: PayloadCaptureState;
 }
 
 /**
@@ -61,7 +66,9 @@ export async function captureEarlyRejectionPayload(
       tenantOptIn: true,
       requestId: state.requestId,
     });
+    state.payloadCaptureState = "captured";
   } catch {
     // A capture failure is not a request failure; the telemetry row stands.
+    state.payloadCaptureState = "failed_write";
   }
 }

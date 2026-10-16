@@ -4,6 +4,31 @@ import { prunePayloadFrames, writePayloadFrame } from "./payload-store";
 import { resolveTelemetryPayloadMaxBytes } from "../config/telemetry";
 export type CaptureScope = "tenant" | "debug_session" | "operator_flag";
 
+/**
+ * Why one request's drawer payloads are empty.
+ *
+ * Every reason the drawer can read empty is named here, because from the
+ * client the four panels look identical in all of them: an operator who turned
+ * capture off and an operator whose capture is broken both see four blank
+ * panels. Recording the reason is what makes remote diagnosis possible without
+ * access to the server's logs.
+ */
+export type PayloadCaptureState =
+  /** Bodies were captured for this request. */
+  | "captured"
+  /** Only the Proxy→Provider request line was kept (mode `metadata`). */
+  | "captured_metadata"
+  /** The tenant has capture switched off; request metadata is still retained. */
+  | "skipped_mode_none"
+  /** The request had no tenant, so no capture preference could be read. */
+  | "skipped_no_tenant"
+  /** The attempt was not the terminal one; the terminal attempt captures. */
+  | "skipped_not_terminal"
+  /** The preference read failed, and capture fails closed. */
+  | "skipped_preference_read_failed"
+  /** The storage write failed after the decision to capture. */
+  | "failed_write";
+
 export interface PayloadCaptureInput {
   tenantId: string;
   requestBody: unknown;

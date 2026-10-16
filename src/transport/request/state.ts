@@ -3,7 +3,7 @@ import type { CanonicalRequest, UsageRecord } from "../../protocol/canonical-mod
 import type { ClientIdentity } from "../../security/abuse";
 import type { ResolvedApiKey } from "../../security/api-key-auth";
 import type { PreparedProxyRequest } from "./preparer";
-import type { TelemetryPayloadCapture } from "../../observability/payload-capture";
+import type { PayloadCaptureState, TelemetryPayloadCapture } from "../../observability/payload-capture";
 import { createInFlightRegistry, type InFlightSnapshot } from "./inflight";
 import { log } from "../../observability/logger";
 import { fastPathname } from "../pathname";
@@ -72,6 +72,17 @@ export interface ProxyRequestState {
    * paths end up with the same four panels populated.
    */
   clientResponseText?: string;
+  /**
+   * Why this request's drawer payloads were not captured, or `captured` when
+   * they were. Written by the capture path and read by telemetry finalization.
+   *
+   * Remote-diagnosis field: the drawer reads empty for reasons invisible from
+   * the client — the tenant's capture mode, a missing tenant, a non-terminal
+   * attempt — and without the reason an operator cannot tell "not configured"
+   * from "broken". The four panels are the only surface that could previously
+   * hint at it, and they look identical in both cases.
+   */
+  payloadCaptureState?: PayloadCaptureState;
   /**
    * Set by the dispatch handler synchronously before returning a streaming
    * response. `afterResponse` lifecycle hooks read it to skip finalization

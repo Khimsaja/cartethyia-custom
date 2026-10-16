@@ -12,6 +12,7 @@ import type { TelemetryBatchBuffer } from "../../observability/telemetry-buffer"
 import { preferencesReaderFor } from "../../persistence/tenant-preferences";
 import type { TelemetryPayloadDepth, TelemetryPayloadMode } from "../../console/settings/contracts";
 import type { ProxyRequestOutcome, ProxyRequestState } from "../request/state";
+import type { PayloadCaptureState } from "../../observability/payload-capture";
 import { finalizeRequestTelemetry } from "../guards/error-lifecycle";
 import { log } from "../../observability/logger";
 import {
@@ -29,13 +30,17 @@ import { ProxyConnectRefusalError } from "../../network/pool/agent";
 async function resolvePayloadCapture(
   db: CartethyiaDatabase,
   tenantId: string | null,
-): Promise<{ mode: TelemetryPayloadMode; depth: TelemetryPayloadDepth }> {
-  if (!tenantId) return { mode: "none", depth: "minimum" };
+): Promise<
+  | { readonly ok: true; readonly mode: TelemetryPayloadMode; readonly depth: TelemetryPayloadDepth }
+  | { readonly ok: false }
+> {
+  if (!tenantId) return { ok: false };
   try {
     const prefs = await preferencesReaderFor(db).readPreferences(tenantId);
     const mode = prefs?.telemetryPayloads;
     const depth = prefs?.telemetryPayloadDepth;
     return {
+      ok: true,
       mode: mode === "full" || mode === "metadata" || mode === "none" ? mode : "none",
       depth:
         depth === "minimum" || depth === "moderate" || depth === "maximum"
@@ -50,7 +55,10 @@ async function resolvePayloadCapture(
     };
   } catch {
     // A preference read that fails must not invent capture. Off keeps nothing.
-    return { mode: "none", depth: "minimum" };
+    // Reported as its own state rather than silently as `none`: an operator
+    // whose capture is off by choice and one whose preference read is failing
+    // need different fixes, and both used to look like "not configured".
+    return { ok: false };
   }
 }
 
@@ -63,8 +71,8 @@ export async function shouldCaptureProviderBody(
   db: CartethyiaDatabase,
   tenantId: string | null,
 ): Promise<boolean> {
-  const { mode } = await resolvePayloadCapture(db, tenantId);
-  return mode === "full";
+  const resolved = await resolvePayloadCapture(db, tenantId);
+  return resolved.ok && resolved.mode === "full";
 }
 
 /**
@@ -288,6 +296,7 @@ async function resolvedProviderResponse(
  * request-detail endpoint cannot race the payload row and report a false miss.
  */
 async function captureTerminalPayload(
+  state: ProxyRequestState,
   db: CartethyiaDatabase,
   tenantId: string | null,
   requestId: string,
@@ -296,13 +305,34 @@ async function captureTerminalPayload(
   clientResponseBody?: string,
   providerCapture?: ProviderExchangeCapture,
 ): Promise<void> {
-  if (!tenantId) return;
+  // Every exit below records *why*. The drawer reads empty for all of them
+  // alike, so without this an operator debugging remotely — with no access to
+  // the server's logs — cannot distinguish "capture is off" from "capture is
+  // broken", and the four blank panels look like a bug either way.
+  const note = (reason: PayloadCaptureState): void => {
+    state.payloadCaptureState = reason;
+  };
+  if (!tenantId) {
+    note("skipped_no_tenant");
+    return;
+  }
   try {
-    const { mode, depth } = await resolvePayloadCapture(db, tenantId);
-    if (mode === "none") return;
+    const resolved = await resolvePayloadCapture(db, tenantId);
+    if (!resolved.ok) {
+      note("skipped_preference_read_failed");
+      return;
+    }
+    const { mode, depth } = resolved;
+    if (mode === "none") {
+      note("skipped_mode_none");
+      return;
+    }
     if (mode === "metadata") {
       const providerRequest = providerRequestMetadataOnly(providerCapture?.request ?? null);
-      if (providerRequest === null) return;
+      if (providerRequest === null) {
+        note("captured_metadata");
+        return;
+      }
       await new TelemetryPayloadCapture(db).capture({
         tenantId,
         requestId,
@@ -312,6 +342,7 @@ async function captureTerminalPayload(
         scope: "tenant",
         tenantOptIn: true,
       });
+      note("captured_metadata");
       return;
     }
     const maxBytes = captureDepthMaxBytes(depth);
@@ -329,7 +360,9 @@ async function captureTerminalPayload(
       scope: "tenant",
       tenantOptIn: true,
     });
+    note("captured");
   } catch (error) {
+    note("failed_write");
     reportCaptureFailure(error);
   }
 }
@@ -656,8 +689,18 @@ export async function completeAttempt(
       // Pool health is advisory; never fail or retry a completed request for it.
     }
   }
-  if (!completion.terminal) return;
+  if (!completion.terminal) {
+    // An intermediate failover attempt: the terminal attempt is the one that
+    // captures. Named rather than left blank so a request that never reached a
+    // terminal attempt is distinguishable from one that did and captured
+    // nothing.
+    if (state.payloadCaptureState === undefined) {
+      state.payloadCaptureState = "skipped_not_terminal";
+    }
+    return;
+  }
   await captureTerminalPayload(
+    state,
     completion.db,
     completion.tenantId,
     state.requestId,

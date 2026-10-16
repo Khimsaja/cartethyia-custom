@@ -166,6 +166,9 @@ function mapUsageRequestItem(
     ...(event.resolveMs !== null && event.resolveMs !== undefined
       ? { resolveMs: event.resolveMs }
       : {}),
+    // Why the drawer is empty for this request — see the contract field. This is
+    // what makes the blank panels diagnosable without server logs.
+    ...(event.payloadCaptureState ? { payloadCaptureState: event.payloadCaptureState } : {}),
   };
 }
 async function resolveProxyLabel(

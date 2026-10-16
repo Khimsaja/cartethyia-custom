@@ -53,6 +53,12 @@ export interface TelemetryEventInput {
   readonly resolveMs?: number;
   readonly firstContentDeltaAtMs?: number;
   readonly lastEventAtMs?: number;
+  /**
+   * Why this request's drawer payloads are empty, or `captured`. Carried onto
+   * the telemetry row so a remote operator can read the reason from the request
+   * list instead of needing the server's logs.
+   */
+  readonly payloadCaptureState?: string;
 }
 
 function tokenCountToInt(value: number | "unavailable" | undefined): number | undefined {
@@ -133,6 +139,7 @@ function telemetryEventRow(event: TelemetryEventInput) {
     tokensPerSec: event.tokensPerSec != null ? String(event.tokensPerSec) : null,
     firstContentDeltaAtMs: event.firstContentDeltaAtMs ?? null,
     lastEventAtMs: event.lastEventAtMs ?? null,
+    payloadCaptureState: event.payloadCaptureState ?? null,
   };
 }
 

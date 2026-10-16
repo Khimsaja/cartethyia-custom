@@ -41,6 +41,8 @@ export interface TelemetryEventRecord {
   readonly tokensPerSec: number | null;
   readonly firstContentDeltaAtMs: number | null;
   readonly lastEventAtMs: number | null;
+  /** Why the drawer payloads are empty, or `captured`; absent when unrecorded. */
+  readonly payloadCaptureState?: string | null;
 }
 
 function asString(value: unknown): string | null {

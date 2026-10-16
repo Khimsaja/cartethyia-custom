@@ -350,6 +350,12 @@ function requestTelemetryEvent(
     ...(state.outcome?.lastEventAtMs !== undefined
       ? { lastEventAtMs: state.outcome.lastEventAtMs }
       : {}),
+    // Why the drawer has no bodies for this request. Carried onto the row so a
+    // remote operator reads the reason from the request list instead of needing
+    // the server's logs — the four panels are blank either way.
+    ...(state.payloadCaptureState === undefined
+      ? {}
+      : { payloadCaptureState: state.payloadCaptureState }),
   };
 }
 

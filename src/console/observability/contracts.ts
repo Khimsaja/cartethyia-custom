@@ -203,6 +203,14 @@ export interface UsageRequestItem {
   tokensPerSec?: number;
   firstContentDeltaAtMs?: number;
   lastEventAtMs?: number;
+  /**
+   * Why this request's drawer payloads are empty, or `captured` when they are
+   * not. Remote-diagnosis field: the four panels read blank for every reason
+   * alike, so without this an operator cannot tell "capture is off" from
+   * "capture is broken" without access to the server's logs. Absent on rows
+   * written before the column existed.
+   */
+  payloadCaptureState?: string;
 }
 export interface UsageRequestsResponse {
   items: UsageRequestItem[];

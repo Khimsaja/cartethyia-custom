@@ -90,6 +90,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   actually served from. It was rewritten to the gateway's default port, so any
   deployment listening on another port or behind a TLS-terminating proxy
   advertised an endpoint that did not answer.
+- A request now records **why** its telemetry drawer is empty. The four payload
+  panels read blank whether capture is switched off, the tenant is missing, the
+  attempt was not the terminal one, the capture-preference read failed, or the
+  storage write failed — so an operator debugging remotely, without access to the
+  server's logs, could not tell "capture is off" from "capture is broken". The
+  reason is in `payloadCaptureState` on the request row and in the request-list
+  and request-detail responses.
 
 ## 2.2 Zhezhi
 
