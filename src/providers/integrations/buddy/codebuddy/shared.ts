@@ -2,6 +2,7 @@ import { withBearerAuthentication, type OpenAICompatibleAdapterConfig } from "..
 import type { CanonicalRequest } from "../../../../protocol/canonical-model";
 import type { ProviderDispatchContext, ProviderDispatchTarget, ProviderId } from "../../../provider-contracts";
 import { resolveInboundSessionId } from "../../../operations/session-resolution";
+import { buddyConversationHeaders } from "../buddy-conversation-headers";
 import { buildCodeBuddyUserAgent } from "../../../operations/client-versions";
 import { readBuddyDeviceToken } from "../workbuddy/shared";
 
@@ -26,6 +27,7 @@ export async function codebuddyHeaders(
   const identity = variant === "IDE" ? "IDE" : "CLI";
   const ua = buildCodeBuddyUserAgent(identity);
   const deviceToken = readBuddyDeviceToken(context);
+  const conversationId = resolveInboundSessionId(context, request);
   return {
     accept: "text/event-stream",
     "User-Agent": ua,
@@ -35,8 +37,12 @@ export async function codebuddyHeaders(
     "X-Domain": codebuddyDomain(variant),
     "x-requested-with": "XMLHttpRequest",
     "x-codebuddy-request": "1",
-    "x-conversation-id": resolveInboundSessionId(context, request) ?? crypto.randomUUID(),
-    "x-request-id": crypto.randomUUID().replaceAll("-", ""),
+    // Same family WorkBuddy sends: the upstream's channel check reads the
+    // turn-level aggregation key, and a chat request without it is refused with
+    // `400 · 11128 "conversation id missing"`.
+    ...buddyConversationHeaders({
+      ...(conversationId === undefined ? {} : { conversationId }),
+    }),
     ...(deviceToken === undefined ? {} : { "X-Device-Token": deviceToken }),
   };
 }

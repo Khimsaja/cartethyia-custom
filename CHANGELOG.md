@@ -80,6 +80,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   `CARTETHYIA_DB_MODE` is restored rather than deleted by the dialect tests —
   the deletion leaked into other files sharing the worker and made them fail
   with "CARTETHYIA_DB_MODE is required".
+- Buddy chat requests now send the conversation and tracing header family the
+  upstream's channel check reads: `X-Conversation-Request-ID` (the turn-level
+  aggregation key the reference marks mandatory), `X-Conversation-Message-ID`,
+  `X-Root-Request-ID`, `X-Trace-ID`, and the B3 trace headers. Without them the
+  upstream answered `400 · 11128 "conversation id missing"` and refused the call
+  as not sent from an official client.
+- The gateway endpoint on the Overview page uses the origin the dashboard is
+  actually served from. It was rewritten to the gateway's default port, so any
+  deployment listening on another port or behind a TLS-terminating proxy
+  advertised an endpoint that did not answer.
 
 ## 2.2 Zhezhi
 

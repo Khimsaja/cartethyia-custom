@@ -1,10 +1,11 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 
 import type { OpenAICompatibleAdapterConfig } from "../../../adapters/compatible-adapter";
 import { withBearerAuthentication } from "../../../adapters/compatible-adapter";
 import type { CanonicalRequest } from "../../../../protocol/canonical-model";
 import type { ProviderDispatchContext, ProviderDispatchTarget, ProviderId } from "../../../provider-contracts";
 import { resolveInboundSessionId } from "../../../operations/session-resolution";
+import { buddyConversationHeaders } from "../buddy-conversation-headers";
 import {
   buildWorkBuddyUserAgent,
   getWorkBuddyClientVersion,
@@ -77,9 +78,19 @@ export async function workbuddyHeaders(
     // explicitly so upstream risk control does not treat the omission as
     // suspicious.
     "x-no-enterprise-id": "1",
-    "x-conversation-id": resolveInboundSessionId(context, request) ?? randomUUID(),
-    "x-request-id": randomUUID().replaceAll("-", ""),
   };
+  // The conversation/tracing family the upstream's channel check looks for. A
+  // live request answered `400 · 11128 "conversation id missing"` while carrying
+  // only `x-session-id`; the aggregation key below is the one the reference
+  // marks mandatory.
+  Object.assign(
+    headers,
+    buddyConversationHeaders({
+      ...(resolveInboundSessionId(context, request) === undefined
+        ? {}
+        : { conversationId: resolveInboundSessionId(context, request) }),
+    }),
+  );
   const accountId = context?.credential.account_id;
   if (accountId) {
     headers["x-user-id"] = accountId;
