@@ -81,6 +81,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   provider key prefixes, and inline base64 images before they are written.
   Captured request bodies are unchanged — those stay verbatim so a failure can
   still be read.
+- A Buddy request that names an effort the model's ladder does not serve, or a
+  `max_tokens` above the catalog output limit, is now refused with 400 instead
+  of being quietly rewritten. Asking `max` on a model that serves only `high`
+  used to answer at `high` with a raised budget, and the caller had no way to
+  tell the request had been changed. A model with no measured ladder is still
+  passed through — absence is "unmeasured", not "unsupported".
+- A Buddy account with no device token in its auth state falls back to the
+  file the desktop client writes (`CARTETHYIA_DEVICE_TOKEN_FILE`, default
+  `/app/data/device_token`). The read is cached for five minutes and a file
+  larger than 1 KB is ignored. A missing file is the normal case and sends no
+  header.
+
 
 - Streaming tool calls now retain the upstream completion event, so completed
   tool-call turns end with `tool_calls` instead of a synthetic stream error.

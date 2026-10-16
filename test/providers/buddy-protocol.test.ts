@@ -37,32 +37,25 @@ describe("Buddy upstream protocol alignment", () => {
     expect(payload["prompt_cache_key"]).toBe(buildBuddyPromptCacheKey("", ""));
   });
 
-  test("clamps an unsupported international effort without touching a supported one", () => {
+  test("rejects an effort the international ladder does not serve", () => {
     const payload: Record<string, unknown> = {
       model: "deepseek-v4.1-flash",
       messages: [],
       reasoning_effort: "max",
       prompt_cache_key: "client-key",
     };
-    buddyPrePayloadCommon(payload, request, "intl");
-    expect(payload["reasoning_effort"]).toBe("high");
+    expect(() => buddyPrePayloadCommon(payload, request, "intl")).toThrow(/unsupported_reasoning_effort/);
     expect(payload["prompt_cache_key"]).toBe("client-key");
   });
 
-  test("raising the effort also lifts a max_tokens sized for the lower one", () => {
-    // `hy4-preview-f` serves only `high`. A caller who asked for `low` sized
-    // its answer for `low`, but the raised level spends part of the same
-    // budget on reasoning — so the answer truncates and an agent retries from
-    // the top, which reads as a loop rather than as a short limit.
+  test("rejects an effort below the ladder the same way", () => {
     const payload: Record<string, unknown> = {
       model: "hy4-preview-f",
       messages: [{ role: "user", content: "hi" }],
       reasoning_effort: "low",
       max_tokens: 2048,
     };
-    buddyPrePayloadCommon(payload, request, "intl");
-    expect(payload["reasoning_effort"]).toBe("high");
-    expect(payload["max_tokens"]).toBe(32_000);
+    expect(() => buddyPrePayloadCommon(payload, request, "intl")).toThrow(/unsupported_reasoning_effort/);
   });
 
   test("a supported effort leaves the caller's max_tokens alone", () => {
@@ -79,19 +72,13 @@ describe("Buddy upstream protocol alignment", () => {
     expect(payload["max_tokens"]).toBe(2048);
   });
 
-  test("clamping an effort downward also lifts the output budget", () => {
-    // International DeepSeek Flash serves only `high`, so a `max` request is
-    // clamped down to it. The applied level still reasons out of the caller's
-    // budget, so the same floor applies in this direction.
+  test("rejects max_tokens above the catalog output limit", () => {
     const payload: Record<string, unknown> = {
-      model: "deepseek-v4.1-flash",
+      model: "glm-5.2",
       messages: [{ role: "user", content: "hi" }],
-      reasoning_effort: "max",
-      max_tokens: 2048,
+      max_tokens: 200_000,
     };
-    buddyPrePayloadCommon(payload, request, "intl");
-    expect(payload["reasoning_effort"]).toBe("high");
-    expect(payload["max_tokens"]).toBe(192_000);
+    expect(() => buddyPrePayloadCommon(payload, request, "intl")).toThrow(/output limit/);
   });
 
   test("an effort the ladder serves as asked leaves max_tokens alone", () => {
@@ -106,15 +93,14 @@ describe("Buddy upstream protocol alignment", () => {
     expect(payload["max_tokens"]).toBe(2048);
   });
 
-  test("a max_tokens already above the floor is not overwritten", () => {
+  test("a model with no ladder is not refused for its effort", () => {
     const payload: Record<string, unknown> = {
-      model: "hy4-preview-f",
-      messages: [{ role: "user", content: "hi" }],
-      reasoning_effort: "low",
-      max_tokens: 60_000,
+      model: "claude-opus-4.6",
+      messages: [],
+      reasoning_effort: "max",
     };
     buddyPrePayloadCommon(payload, request, "intl");
-    expect(payload["max_tokens"]).toBe(60_000);
+    expect(payload["reasoning_effort"]).toBe("max");
   });
 
   test("uses the CN effort ladder for the same model", () => {
@@ -153,19 +139,17 @@ describe("Buddy upstream protocol alignment", () => {
     expect(payload["reasoning_effort"]).toBe("medium");
   });
 
-  test("a CN-only model id gets an output limit when the ladder raises its effort", () => {
-    // deepseek-v4-pro is CN-only: it has no row in the shared roster, so
-    // `buddyModelOutputLimit` returned undefined and the raised `xhigh` kept a
-    // budget sized for `max`. The CN table's 384k ceiling gives a 192k floor.
+  test("a CN effort the ladder does not serve is refused, not rewritten", () => {
+    // deepseek-v4-pro serves low/high/xhigh. `max` used to be rewritten to
+    // `xhigh` and the budget raised to match; the caller now hears that the
+    // level is not served.
     const payload: Record<string, unknown> = {
       model: "deepseek-v4-pro",
       messages: [{ role: "user", content: "hi" }],
       reasoning_effort: "max",
       max_tokens: 2048,
     };
-    codeBuddyCnPrePayload(payload, request, candidate);
-    expect(payload["reasoning_effort"]).toBe("xhigh");
-    expect(payload["max_tokens"]).toBe(192_000);
+    expect(() => codeBuddyCnPrePayload(payload, request, candidate)).toThrow(/unsupported_reasoning_effort/);
   });
 
   test("`auto` and `default-model` resolve to one upstream model", () => {
