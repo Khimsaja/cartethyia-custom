@@ -266,6 +266,13 @@ export type ContentPart =
        */
       item_id?: string;
       /**
+       * The tool server a call belongs to. VS Code Copilot sends this on a
+       * Responses `function_call` when two servers publish the same tool name,
+       * and the next turn addresses the call by it. Absent means the tool is
+       * not namespaced.
+       */
+      namespace?: string;
+      /**
        * Wire tool-call family for providers that distinguish plain function
        * calls from custom-grammar or computer-use calls (e.g. Codex
        * Responses `function_call` | `custom_tool_call` | `computer_call`).

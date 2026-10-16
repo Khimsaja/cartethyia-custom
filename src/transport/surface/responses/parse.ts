@@ -345,6 +345,7 @@ function parseInputItem(item: ResponsesInputItem): {
       throw new Error("Responses function_call requires call_id and name");
     const args = item["arguments"];
     if (args === undefined) throw new Error("Responses function_call requires arguments");
+    const namespace = readString(item, "namespace");
     return {
       message: {
         role: "assistant",
@@ -355,6 +356,7 @@ function parseInputItem(item: ResponsesInputItem): {
             name,
             arguments: args,
             ...(id === undefined ? {} : { item_id: id }),
+            ...(namespace === undefined ? {} : { namespace }),
           },
         ],
       },

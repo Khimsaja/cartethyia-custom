@@ -119,6 +119,7 @@ export function parseBlock(value: unknown): ContentPart {
       name: value.name,
       arguments: value.input ?? {},
       ...(finiteNumber(value.index) ? { index: value.index } : {}),
+      ...(stringValue(value.namespace) ? { namespace: value.namespace } : {}),
     };
   }
   if (type === "tool_result") {

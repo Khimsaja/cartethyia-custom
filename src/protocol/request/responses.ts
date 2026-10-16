@@ -16,6 +16,7 @@ import { resolvePromptCacheKey } from "../../providers/operations/session-resolu
 import { reasoningEffortFromIntent } from "../../providers/provider-reasoning";
 import { isWebSearchTool } from "../../transport/translation/search";
 import { parseResponsesResponseToEvents, decodeResponsesSseStream } from "../response/responses";
+import { repairToolArguments } from "../../transport/surface/chat/encode";
 
 const RESPONSES_CACHEABLE_BLOCK_TYPES: ReadonlySet<string> = new Set([
   "input_text",
@@ -128,8 +129,10 @@ export function canonicalToResponsesPayload(
             ...(p.item_id === undefined ? {} : { id: p.item_id }),
             call_id: callId,
             name: p.name,
-            arguments:
+            arguments: repairToolArguments(
               typeof p.arguments === "string" ? p.arguments : JSON.stringify(p.arguments),
+            ),
+            ...(p.namespace === undefined ? {} : { namespace: p.namespace }),
           });
         }
       } else if (p.kind === "toolResult") {

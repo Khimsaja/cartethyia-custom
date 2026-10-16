@@ -210,6 +210,7 @@ export function canonicalToChatPayload(
             name: tc.name,
             arguments:
               typeof tc.arguments === "string" ? tc.arguments : JSON.stringify(tc.arguments),
+            ...(tc.namespace === undefined ? {} : { namespace: tc.namespace }),
           },
         }));
       const textParts = m.content.filter(

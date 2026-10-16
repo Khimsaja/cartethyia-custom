@@ -333,6 +333,7 @@ function partToClaudeBlock(
         id: normalized,
         name: prefixClaudeToolName(part.name, ctx?.isOAuth ?? false),
         input: toWellFormedDeep(parseArguments(part.arguments)),
+        ...(part.namespace === undefined ? {} : { namespace: part.namespace }),
       };
     }
     case "toolResult": {

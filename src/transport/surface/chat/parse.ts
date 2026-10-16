@@ -36,6 +36,7 @@ export interface ParsedToolCall {
   name: string;
   arguments: string;
   index: number;
+  namespace?: string;
 }
 
 // Tool-call index pinning + arguments accumulation live in the shared
@@ -191,11 +192,13 @@ export function parseToolCall(value: unknown, index: number): ParsedToolCall | u
   // too — the Messages wire requires `input` to be an object, and a raw ""
   // is not valid JSON for the Chat/Responses history either.
   const args = readString(functionValue, "arguments");
+  const namespace = readString(functionValue, "namespace");
   return {
     id,
     name,
     arguments: args === undefined || args.trim().length === 0 ? "{}" : args,
     index,
+    ...(namespace === undefined ? {} : { namespace }),
   };
 }
 
@@ -242,6 +245,7 @@ export function parseMessage(value: unknown): CanonicalMessage {
           name: parsed.name,
           arguments: parsed.arguments,
           index: parsed.index,
+          ...(parsed.namespace === undefined ? {} : { namespace: parsed.namespace }),
         },
       ];
     });
