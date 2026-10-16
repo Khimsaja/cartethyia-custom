@@ -12,7 +12,7 @@
  *     backend returns 403 for lesser scopes.
  */
 import { RefreshCw, ScrollText, Search, ShieldCheck, Trash2 } from "lucide-react";
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Badge } from "../../components/ui/badge";
 import { formatDuration } from "../../lib/format/numbers";
 import { Button } from "../../components/ui/button";
@@ -193,7 +193,7 @@ const LogRow = memo(function LogRow({
   const tone = line.level;
   return (
     <div
-      className={`flex flex-wrap items-baseline gap-4 px-8 py-1.5 min-h-10.5 font-mono text-caption leading-normal max-medium:gap-3 max-medium:px-5 max-medium:text-badge${tone === "warn" ? " bg-orange-soft" : tone === "error" ? " bg-red-soft" : ""}${isNew ? " bg-surface-muted" : ""} hover:bg-surface-hover`}
+      className={`flex flex-wrap items-baseline gap-4 px-8 py-1.5 font-mono text-caption leading-normal max-medium:gap-3 max-medium:px-5 max-medium:text-badge${tone === "warn" ? " bg-orange-soft" : tone === "error" ? " bg-red-soft" : ""}${isNew ? " bg-surface-muted" : ""} hover:bg-surface-hover`}
       data-log-tone={tone}
     >
       <span className="max-medium:flex-none flex-none tabular-nums text-text-tertiary">{formatClock(line.ts)}</span>
@@ -214,45 +214,87 @@ const LogRow = memo(function LogRow({
  * flex line; request fields are inline chips inside one wrapping span so a
  * wrapped message does not push a `>` or `{` onto the next timestamp.
  */
+/**
+ * One request, read left to right across the full width.
+ *
+ * The line fills the row and wraps onto the next one on its own when it runs
+ * out of room. Nothing is truncated, and a request that has not finished yet
+ * carries `[REQUEST]` instead of a row of dots standing in for a status.
+ */
 function RequestFields({ line }: { readonly line: ConsoleLogEntry }): ReactNode {
-  const isStart = line.event === "request_start";
   const route = eventRoute(line);
   const tokens = readTokenUsage(line);
+  const badge = requestBadge(line);
   return (
-    <span className="contents whitespace-pre-wrap wrap-anywhere">
-      <span className="max-medium:hidden flex-none min-w-19 text-text-tertiary text-badge font-semibold">{line.method ?? "POST"}</span>
-      <span className="flex-none text-text-primary">{line.endpoint ?? ""}</span>
+    <span className="min-w-0 flex-1 whitespace-pre-wrap wrap-anywhere">
+      <span className={`font-bold tracking-label ${badge.tone}`} data-log-field="badge">[{badge.label}]</span>
+      {"  "}
+      <span className="text-text-tertiary">{line.method ?? "POST"}</span>
+      {"  "}
+      <span className="text-text-primary">{line.endpoint ?? ""}</span>
       {line.status !== undefined ? (
-        <span className={`flex-none min-w-15 tabular-nums${statusTone(line.status) === "ok" ? " text-text-tertiary" : statusTone(line.status) === "warn" ? " text-orange font-semibold" : " text-red font-semibold"}`}>
-          {line.status}
-        </span>
-      ) : (
-        <span className="flex-none min-w-15 tabular-nums tracking-label text-text-tertiary">···</span>
-      )}
-      {route ? <span className="flex-auto min-w-0 overflow-hidden text-ellipsis text-status-info" data-log-field="route">{route}</span> : null}
-      {line.accountLabel ? (
-        <span className="max-medium:hidden flex-none max-w-80 overflow-hidden text-ellipsis text-purple" data-log-field="account" title={line.accountId ?? undefined}>
-          {line.accountLabel}
-        </span>
-      ) : null}
-      {line.clientIp ? <span className="flex-none tabular-nums text-text-secondary" data-log-field="ip">{line.clientIp}</span> : null}
-      {line.durationMs !== undefined ? (
-        <span className="max-medium:hidden flex-none tabular-nums text-text-secondary">{formatDuration(line.durationMs)}</span>
-      ) : null}
-      {tokens ? <span className="max-medium:hidden flex-none tabular-nums text-orange" data-log-field="tokens">{tokens}</span> : null}
-      {line.errorCode ? (
         <>
-          <span className="text-red" title={line.msg}>
-            {line.msg}
-          </span>
-          <span title={line.msg}>
-            {line.errorCode}
+          {"  "}
+          <span className={`tabular-nums ${statusTone(line.status) === "ok" ? "text-text-tertiary" : statusTone(line.status) === "warn" ? "text-orange font-semibold" : "text-red font-semibold"}`}>
+            {line.status}
           </span>
         </>
       ) : null}
-      {isStart ? null : <span className="flex-none ml-auto text-micro text-text-tertiary" data-log-field="id">{line.requestId?.slice(0, 8) ?? ""}</span>}
+      {line.durationMs !== undefined ? (
+        <>
+          {"  "}
+          <span className="tabular-nums text-text-secondary">{formatDuration(line.durationMs)}</span>
+        </>
+      ) : null}
+      {route ? (
+        <>
+          {"  "}
+          <span className="text-status-info" data-log-field="route">{route}</span>
+        </>
+      ) : null}
+      {line.accountLabel ? (
+        <>
+          {"  "}
+          <span className="text-purple" data-log-field="account" title={line.accountId ?? undefined}>{line.accountLabel}</span>
+        </>
+      ) : null}
+      {line.clientIp ? (
+        <>
+          {"  "}
+          <span className="tabular-nums text-text-secondary" data-log-field="ip">{line.clientIp}</span>
+        </>
+      ) : null}
+      {tokens ? (
+        <>
+          {"  "}
+          <span className="tabular-nums text-orange" data-log-field="tokens">{tokens}</span>
+        </>
+      ) : null}
+      {line.errorCode ? (
+        <>
+          {"  "}
+          <span className="text-red" title={line.msg}>{line.msg} ({line.errorCode})</span>
+        </>
+      ) : null}
+      {line.requestId ? (
+        <>
+          {"  "}
+          <span className="text-micro text-text-tertiary" data-log-field="id">{line.requestId.slice(0, 8)}</span>
+        </>
+      ) : null}
     </span>
   );
+}
+
+/** The badge a request row leads with. A start has no status yet. */
+function requestBadge(line: ConsoleLogEntry): { readonly label: string; readonly tone: string } {
+  if (line.event === "request_start" || line.status === undefined) {
+    return { label: "REQUEST", tone: "text-text-tertiary" };
+  }
+  if (line.event === "request_error" || line.status >= 400) {
+    return { label: "FAILED", tone: "text-red" };
+  }
+  return { label: "SUCCESS", tone: "text-status-info" };
 }
 
 
@@ -262,32 +304,17 @@ function LiveLogsPanel({ tabAction }: { tabAction: ReactNode }): ReactNode {
   const [search, setSearch] = useState("");
   const [clearOpen, setClearOpen] = useState(false);
   const [clearError, setClearError] = useState<string | null>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const stickRef = useRef(true);
 
   const normalizedQuery = search.trim().toLowerCase();
   const visible = useMemo(
-    () => filterLogLines(lines, level, normalizedQuery),
+    () => filterLogLines(lines, level, normalizedQuery).slice().reverse(),
     [lines, level, normalizedQuery],
   );
-  // Counts per level: one pass instead of one `filter` per filter button on
-  // every append.
   const levelCounts = useMemo(() => {
     const counts = new Map<string, number>([["all", lines.length]]);
     for (const line of lines) counts.set(line.level, (counts.get(line.level) ?? 0) + 1);
     return counts;
   }, [lines]);
-  useEffect(() => {
-    if (!stickRef.current) return;
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [visible.length, level, normalizedQuery]);
-
-  const onScroll = () => {
-    const el = scrollRef.current;
-    if (!el) return;
-    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
-  };
 
   const onClear = async () => {
     setClearError(null);
@@ -343,7 +370,7 @@ function LiveLogsPanel({ tabAction }: { tabAction: ReactNode }): ReactNode {
         </div>
       </CardBody>
       <CardBody className="p-0 flex-1 min-h-0 flex flex-col">
-        <div ref={scrollRef} onScroll={onScroll} className="flex-1 min-h-0 flex flex-col overflow-y-auto p-0 bg-code-surface text-text-primary">
+        <div className="scroll-region flex-1 min-h-0 flex flex-col p-0 bg-code-surface text-text-primary">
           {visible.length === 0 ? (
             <EmptyState
               title={
