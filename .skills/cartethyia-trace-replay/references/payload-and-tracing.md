@@ -31,6 +31,19 @@ Upstream correct + client wrong points to parsing/encoding. Upstream wrong point
 to request translation, routing, or provider preparation. Missing payload is not
 proof that the field was absent.
 
+A capture keeps the Buddy conversation and tracing headers
+(`x-conversation-id`, `x-conversation-request-id`, `x-conversation-message-id`,
+`x-root-request-id`, `x-request-id`, `x-trace-id`, and the `x-b3-*` family)
+alongside `x-session-id`. A `conversation id missing` refusal whose capture
+lacks that family was sent without it. Authorization is still dropped.
+
+Chat tool arguments are repaired before the client parses them
+(`repairToolArguments` in `src/transport/surface/chat/encode.ts`): a raw
+control character inside a string is escaped and a trailing comma is dropped.
+A value that still does not parse is forwarded unchanged. A client reporting
+`Tool <name> not found` with a JSON parser message is this path, not a missing
+tool.
+
 ## Streaming replay
 
 Preserve `data:` frames and blank-line boundaries when replaying an SSE response.

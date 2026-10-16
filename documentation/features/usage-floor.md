@@ -42,6 +42,13 @@ write a cooldown.
 
 ## Quota freshness and recovery
 
+A completed request debits the credits it reported from the account's cached
+pooled balance. The sweep is the only thing that fetches a fresh reading, and
+it runs at most every four minutes; without the debit the floor keeps
+selecting an account whose balance already crossed the threshold. The debit
+preserves `fetchedAt`, so the sweep still refreshes on its own schedule, and
+it never invents a balance for an account whose last fetch failed.
+
 Quota reads use a bounded in-process cache and, when configured, Redis. The
 cache uses a 15-minute TTL and distinguishes the most recent attempt from the
 most recent successful reading. A failed refresh does not immediately discard

@@ -49,7 +49,7 @@ loop.
 | `/combos` | `CombosPage` | Aliases and combos |
 | `/quota` | `QuotaPage` | Provider quota windows |
 | `/proxy` | `ProxyPage` | Network pools and egress |
-| `/console-log` | `ConsoleLogPage` | Process log ring |
+| `/console-log` | `ConsoleLogPage` | Process log ring. A request row reads left to right across the full width and wraps on its own; it leads with `[REQUEST]`, `[SUCCESS]`, or `[FAILED]`. Nothing is truncated. Newest lines stay at the top, so the view does not stick to the bottom. |
 | `/model-lab` | `StudioPage` | Studio sessions against the gateway |
 | `/cli-tools` | `CliToolsPage` | CLI tool list |
 | `/cli-tools/:toolId` | `CliToolDetailPage` | Per-key slot mappings |

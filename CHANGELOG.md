@@ -3,8 +3,8 @@
 All notable changes to Cartethyia are recorded here. Entries are written for the
 operator who reads them, not for the contributor who wrote the diff: what
 changed, and what it means for an install. Migration numbers refer to files
-that shipped at the time of the change; both backend directories now retain
-only the current baseline.
+that shipped at the time of the change. A fresh database builds from the
+current baseline; an existing one applies the numbered files that followed it.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
@@ -36,10 +36,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 ### Changed
 
 - Newly issued personal API keys use `carte_` followed by 12 random characters;
-- PostgreSQL and SQLite now ship only a complete baseline. Existing databases
-  with retired migration history must be recreated and recovered through
-  backup/restore; startup rejects in-place upgrades. Restore maps retired
-  routing and pool fields/values into the current schema.
+- A fresh database builds from the current baseline. An existing database
+  applies the numbered files that followed it, recorded in
+  `cartethyia_schema_migrations`. A ledger that names a retired file is
+  rejected: recreate the database and recover through backup/restore, which
+  maps retired routing and pool fields into the current schema.
 - A chat turn is dispatched once, to the route its model selects. The gateway
   no longer executes a model-emitted `web_search` call against a configured
   search provider: a hosted search declaration is forwarded to the upstream
@@ -47,6 +48,29 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   way to run a search.
 
 ### Fixed
+
+- An existing database now receives the unique index the bundled model seed
+  upserts on. A database created before that index existed died at boot with
+  `ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint`
+  and never listened. Migration `0008` adds it; a fresh baseline already has
+  it, so the statement is a no-op there.
+- A second GitHub Copilot account now adds a row. The device dialog polled
+  faster than GitHub allows, so the approval never produced a token, and the
+  login lookup sent Copilot headers to `api.github.com/user`, which answers
+  400. Without a login every account shared one label and the next login
+  replaced the row it should have added.
+- An OpenCode dispatch carrying more than 128 tool definitions is clamped
+  before it is sent. Definitions the conversation already called are kept;
+  the rest fill the remaining slots. Upstream refuses the unclamped list.
+- A payload capture now keeps the Buddy conversation and tracing headers the
+  channel check reads, so a `conversation id missing` refusal can be told
+  apart from a header that was never sent.
+- Tool arguments that are not strict JSON are repaired before the client
+  parses them. Copilot streams a raw control character or a trailing comma;
+  the client used to report the failed parse as a missing tool.
+- The console log reads a request across the full width, leads with a status
+  badge, and keeps the newest line at the top. Nothing is truncated, and a
+  request that has not finished yet no longer prints a row of dots.
 
 - `POST /v1/messages/count_tokens` now answers for any routed model. A route
   with no Anthropic Messages row (a combo of chat-family providers, for

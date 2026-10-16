@@ -128,11 +128,13 @@ returns a user only when exactly one row matches the username.
 ## Persistence
 
 `src/persistence/schema.ts` is the Drizzle source. The baselines define the
-foundational schema; SQLite's is generated from PostgreSQL, and released
-baseline hashes are recorded in deployed databases, so do not rewrite them.
-Databases with retired migration history are recreated from the baseline and
-recovered through backup/restore, which maps legacy names (`bypass_proxy`,
-`bridge`, `fusion`) before inserting rows.
+foundational schema; SQLite's is generated from PostgreSQL, and a released
+baseline is not rewritten. A change an existing database must receive ships
+as the next numbered file in both migration directories, applied by the boot
+ledger (`src/persistence/migrate.ts`). A database whose ledger names a retired
+file is recreated from the baseline and recovered through backup/restore,
+which maps legacy names (`bypass_proxy`, `bridge`, `fusion`) before inserting
+rows.
 
 `tenant-scope.ts` holds `globalOrOwnedBy`: a `NULL` tenant id is a shared row.
 Replacing it with `eq(tenantId)` hides shared catalog rows. Quota and OAuth
@@ -194,4 +196,4 @@ benchmarks. Client version refresh is deferred until after startup.
 | New provider | a spec in `configured-provider.ts` (standard OpenAI shape) or a family under `integrations/`, then the registry and discovery catalog |
 | Routing rule | `router.ts` and `route-model.ts`, then the snapshot builder |
 | Console resource | the domain under `src/console/`, then the dashboard hook that calls it |
-| Schema | `schema.ts`, `migrations/full-postgres/0000_baseline.sql`, then regenerate SQLite with `scripts/generate/sqlite-ddl.ts` |
+| Schema | `schema.ts`, then a numbered file in both `migrations/` directories for an existing database, and `migrations/full-postgres/0000_baseline.sql` for a fresh one. Regenerate SQLite with `scripts/generate/sqlite-ddl.ts` |

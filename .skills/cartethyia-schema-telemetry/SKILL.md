@@ -9,22 +9,31 @@ Use for a schema change, a baseline update, or a new usage/telemetry field.
 
 ## Schema changes
 
-The repository ships one baseline per backend; do not add numbered forward
-migrations. Databases with retired migration history are rebuilt and restored
-from backup, not upgraded in place.
+The repository ships one baseline per backend plus the numbered files that
+have not yet been folded into it. A fresh database builds from
+`0000_baseline.sql`. An existing database applies every later numbered file
+whose id is absent from `cartethyia_schema_migrations`, in order, on both
+backends (`src/persistence/db-sqlite.ts`, `src/persistence/db-pg.ts`). A
+database whose ledger names a file that no longer exists is rejected: recreate
+it and restore from backup. Do not rewrite a released baseline.
 
 1. Update `src/persistence/schema.ts`.
-2. Update `migrations/full-postgres/0000_baseline.sql` to describe the complete
-   current schema.
-3. Regenerate the SQLite baseline: `bun scripts/generate/sqlite-ddl.ts`. It
-   derives `migrations/lite-sqlite3/0000_baseline.sql` from the PostgreSQL
-   baseline, and `test/persistence/sqlite-baseline.test.ts` fails when the two
-   disagree. Do not edit the SQLite baseline by hand.
+2. For a change an existing database must receive, add the next numbered file
+   to **both** `migrations/full-postgres/` and `migrations/lite-sqlite3/`. The
+   statement must be a no-op on a database the current baseline already
+   created, because a fresh install runs the baseline and then every later
+   file. `0008_add_models_route_unique_index.sql` is the shape: the bundled
+   model seed upserts on an index a pre-baseline database does not have, and
+   boot dies without it.
+3. Fold the change into `migrations/full-postgres/0000_baseline.sql` as well,
+   so a fresh database is born with it. Regenerate the SQLite baseline with
+   `bun scripts/generate/sqlite-ddl.ts`; `test/persistence/sqlite-baseline.test.ts`
+   fails when the two disagree. Do not edit the SQLite baseline by hand.
 4. Update backup validation and restore mapping for old column names, enum
    values, defaults, or required data that must survive recreation.
-5. Keep both migrations directories limited to `0000_baseline.sql`, and test
-   the fresh schema plus legacy backup restoration. Never test against a live
-   development or production database.
+5. Test the fresh schema, the numbered file against a database created before
+   it, and legacy backup restoration. Never test against a live development
+   or production database.
 
 Drizzle numeric columns may require string persistence. Use bigint number mode
 for absolute epoch milliseconds. Manual migrations are not applied by the boot
