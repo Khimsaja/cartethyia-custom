@@ -49,6 +49,7 @@ test("each backend has matching baseline and incremental migrations", () => {
     "0005_add_buddy_usage_snapshots.sql",
     "0006_add_buddy_task_ledger.sql",
     "0007_add_telemetry_payload_capture_state.sql",
+    "0008_add_models_route_unique_index.sql",
   ];
   expect(postgres).toEqual(expected);
   expect(sqlite).toEqual(expected);
