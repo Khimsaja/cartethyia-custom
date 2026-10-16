@@ -7,6 +7,11 @@ import {
   queryTelemetryEvents,
   type TelemetryEventRecord,
 } from "../../observability/event-log";
+import {
+  effectiveHttpStatus,
+  usageChartCounters,
+  usageCounters,
+} from "./period-buckets";
 import { isGatewayError } from "../../observability/telemetry-status";
 import { decodeDatedCursor, encodeCursor } from "../shared/cursor";
 import { CARTETHYIA_VERSION } from "../../version";
@@ -55,15 +60,6 @@ function mapTelemetryEventRow(event: TelemetryEventRecord): TelemetryEventView {
     ...(event.lastEventAtMs !== null ? { lastEventAtMs: event.lastEventAtMs } : {}),
   };
 }
-/** The HTTP status a row renders as when the wire status was never recorded. */
-function effectiveHttpStatus(event: TelemetryEventRecord): number {
-  if (event.httpStatus !== null) return event.httpStatus;
-  if (event.status === "completed") return 200;
-  if (event.status === "cancelled") return 499;
-  if (event.status === "truncated") return 502;
-  return 500;
-}
-
 /**
  * Opaque, monotonic (createdAt, id) cursor. `createdAt` alone is not unique
  * — two telemetry events in the same millisecond would silently skip one
@@ -398,33 +394,22 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
   }
 
   private async computeUsage(tenantId: string, period: string): Promise<UsageResponse> {
-    const events = await this.periodEvents(tenantId, period);
-    let requestsTotal = 0;
-    let requestsSucceeded = 0;
-    let requestsFailed = 0;
-    let tokensUsed = 0;
-    let estimatedCost = 0;
-    const models = new Map<string, number>();
-    const providers = new Map<string, number>();
-    for (const event of events) {
-      requestsTotal += 1;
-      if (event.status === "completed") requestsSucceeded += 1;
-      if (isGatewayError(event.status, event.httpStatus)) requestsFailed += 1;
-      tokensUsed += (event.inputTokens ?? 0) + (event.outputTokens ?? 0);
-      estimatedCost += event.estimatedCostUsd ?? 0;
-      if (event.requestedModel) models.set(event.requestedModel, (models.get(event.requestedModel) ?? 0) + 1);
-      if (event.providerId) providers.set(event.providerId, (providers.get(event.providerId) ?? 0) + 1);
-    }
+    // Summed from the minute buckets, not re-folded from the window: the
+    // dashboard polls this, and the window can hold millions of events.
+    const counts = await usageCounters(tenantId, periodStartDate(period));
     return {
       tenantId,
       period,
-      requestsTotal,
-      requestsSucceeded,
-      requestsFailed,
-      tokensUsed,
-      estimatedCost,
-      topModels: topCounts(models, TOP_N).map(([modelId, count]) => ({ modelId, count })),
-      topProviders: topCounts(providers, TOP_N).map(([providerId, count]) => ({ providerId, count })),
+      requestsTotal: counts.requests,
+      requestsSucceeded: counts.completed,
+      requestsFailed: counts.errors,
+      tokensUsed: counts.inputTokens + counts.outputTokens,
+      estimatedCost: counts.estimatedCostUsd,
+      topModels: topCounts(counts.models, TOP_N).map(([modelId, count]) => ({ modelId, count })),
+      topProviders: topCounts(counts.providers, TOP_N).map(([providerId, count]) => ({
+        providerId,
+        count,
+      })),
     };
   }
 
@@ -445,55 +430,32 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
   }
 
   async usageSummary(tenantId: string, period: string): Promise<UsageSummaryResponse> {
-    const events = await this.periodEvents(tenantId, period);
+    // Counters come from the minute buckets. The latency percentiles cannot be
+    // folded, so they still read the window — which no longer touches disk.
+    const [counts, events] = await Promise.all([
+      usageCounters(tenantId, periodStartDate(period)),
+      this.periodEvents(tenantId, period),
+    ]);
     const performance = summarizeUsagePerformance(events);
-    let requests = 0;
-    let inputTokens = 0;
-    let cachedTokens = 0;
-    let outputTokens = 0;
-    let errors = 0;
-    let cancelled = 0;
-    let truncated = 0;
-    let estimatedCostUsd = 0;
-    let unpriced = 0;
-    let tokensPerSecSum = 0;
-    let tokensPerSecCount = 0;
-    const statuses = new Map<number, number>();
-    for (const event of events) {
-      requests += 1;
-      inputTokens += event.inputTokens ?? 0;
-      outputTokens += event.outputTokens ?? 0;
-      if (event.cachedInputTokens !== null && event.cachedInputTokens > 0) {
-        cachedTokens += event.inputTokens ?? 0;
-      }
-      if (isGatewayError(event.status, event.httpStatus)) errors += 1;
-      if (event.status === "cancelled") cancelled += 1;
-      if (event.status === "truncated") truncated += 1;
-      if (event.estimatedCostUsd !== null) estimatedCostUsd += event.estimatedCostUsd;
-      else if (event.status === "completed") unpriced += 1;
-      if (event.tokensPerSec !== null) {
-        tokensPerSecSum += event.tokensPerSec;
-        tokensPerSecCount += 1;
-      }
-      const status = effectiveHttpStatus(event);
-      statuses.set(status, (statuses.get(status) ?? 0) + 1);
-    }
     return {
       period,
       totals: {
-        statusCounts: [...statuses].sort(([a], [b]) => a - b).map(([status, count]) => ({ status, count })),
-        requests,
-        inputTokens,
-        cachedTokens,
-        outputTokens,
-        errors,
-        cancelled,
-        truncated,
+        statusCounts: [...counts.statusCounts]
+          .sort(([a], [b]) => a - b)
+          .map(([status, count]) => ({ status, count })),
+        requests: counts.requests,
+        inputTokens: counts.inputTokens,
+        cachedTokens: counts.cachedTokens,
+        outputTokens: counts.outputTokens,
+        errors: counts.errors,
+        cancelled: counts.cancelled,
+        truncated: counts.truncated,
         ...performance,
-        estimatedCostUsd,
-        partial: unpriced > 0,
-        cacheHitRate: inputTokens > 0 ? (cachedTokens / inputTokens) * 100 : 0,
-        avgTokensPerSec: tokensPerSecCount > 0 ? tokensPerSecSum / tokensPerSecCount : 0,
+        estimatedCostUsd: counts.estimatedCostUsd,
+        partial: counts.unpriced > 0,
+        cacheHitRate: counts.inputTokens > 0 ? (counts.cachedTokens / counts.inputTokens) * 100 : 0,
+        avgTokensPerSec:
+          counts.tokensPerSecCount > 0 ? counts.tokensPerSecSum / counts.tokensPerSecCount : 0,
       },
     };
   }
@@ -502,28 +464,26 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
     const since = periodStartDate(period);
     const bucketSeconds = chartBucketSeconds(period);
     const stepMs = bucketSeconds * 1000;
-    const events = await this.periodEvents(tenantId, period);
-    const byTime = new Map<number, UsageChartBucket>();
-    for (const event of events) {
-      const at = new Date(event.createdAt).getTime();
-      if (!Number.isFinite(at)) continue;
-      const start = Math.floor(at / stepMs) * stepMs;
-      const bucket = byTime.get(start) ?? { t: new Date(start).toISOString(), requests: 0, input: 0, cached: 0, output: 0 };
-      bucket.requests += 1;
-      bucket.input += event.inputTokens ?? 0;
-      bucket.cached += event.cachedInputTokens !== null && event.cachedInputTokens > 0 ? (event.inputTokens ?? 0) : 0;
-      bucket.output += event.outputTokens ?? 0;
-      byTime.set(start, bucket);
-    }
+    // Minutes summed into chart buckets by the bucket store, not re-walked here.
+    const byTime = await usageChartCounters(tenantId, since, stepMs);
     const rows = [...byTime.keys()];
-    const first = rows.length > 0 ? Math.min(...byTime.keys()) : undefined;
+    const first = rows.length > 0 ? Math.min(...rows) : undefined;
     const startMs = since ? since.getTime() : first;
     if (startMs === undefined) return { buckets: [] };
     const aligned = Math.floor(startMs / stepMs) * stepMs;
     const buckets: UsageChartBucket[] = [];
     for (let at = aligned; at <= Date.now(); at += stepMs) {
+      const counts = byTime.get(at);
       buckets.push(
-        byTime.get(at) ?? { t: new Date(at).toISOString(), requests: 0, input: 0, cached: 0, output: 0 },
+        counts === undefined
+          ? { t: new Date(at).toISOString(), requests: 0, input: 0, cached: 0, output: 0 }
+          : {
+              t: new Date(at).toISOString(),
+              requests: counts.requests,
+              input: counts.input,
+              cached: counts.cached,
+              output: counts.output,
+            },
       );
     }
     return { buckets };
@@ -632,24 +592,14 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
   }
 
   async usageCache(tenantId: string, period: string): Promise<UsageCacheResponse> {
-    const events = await this.periodEvents(tenantId, period);
-    let inputTokens = 0;
-    let cachedTokens = 0;
-    let outputTokens = 0;
-    for (const event of events) {
-      inputTokens += event.inputTokens ?? 0;
-      outputTokens += event.outputTokens ?? 0;
-      if (event.cachedInputTokens !== null && event.cachedInputTokens > 0) {
-        cachedTokens += event.inputTokens ?? 0;
-      }
-    }
-    const tokenTotal = inputTokens + outputTokens;
+    const counts = await usageCounters(tenantId, periodStartDate(period));
+    const tokenTotal = counts.inputTokens + counts.outputTokens;
     return {
       period,
-      inputTokens,
-      cachedTokens,
+      inputTokens: counts.inputTokens,
+      cachedTokens: counts.cachedTokens,
       cacheWriteTokens: 0,
-      hitRate: tokenTotal > 0 ? (cachedTokens / tokenTotal) * 100 : 0,
+      hitRate: tokenTotal > 0 ? (counts.cachedTokens / tokenTotal) * 100 : 0,
     };
   }
 

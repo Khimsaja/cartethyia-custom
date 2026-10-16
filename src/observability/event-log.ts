@@ -1,4 +1,4 @@
-import { readdir, readFile } from "node:fs/promises";
+import { open, readdir } from "node:fs/promises";
 import { join } from "node:path";
 
 /**
@@ -105,27 +105,168 @@ function hourStamp(date: Date): string {
   return date.toISOString().slice(0, 13).replaceAll(":", "-");
 }
 
-async function* readEventFiles(files: readonly string[]): AsyncGenerator<TelemetryEventRecord> {
-  for (const file of files) {
-    const text = await readFile(join(TELEMETRY_EVENT_DIR, file), "utf8").catch(() => "");
-    if (!text) continue;
-    for (const line of text.split(String.fromCharCode(10))) {
-      if (!line) continue;
-      try {
-        const event = normalize(JSON.parse(line) as Record<string, unknown>);
-        if (event) yield event;
-      } catch {
-        // A torn tail from a crash is skipped, not fatal. The next line stands alone.
-      }
+/**
+ * Incremental parse index over the hourly event files.
+ *
+ * The console polls its usage endpoints every few seconds over a window that
+ * can hold millions of retained events. Re-reading and re-parsing that whole
+ * window per poll spent the dashboard's cost on the same event loop that
+ * serves the requests, so a busy gateway slowed its own console. A poll only
+ * needs the bytes appended since the last one: this index keeps the parsed
+ * records per file and reads each file's tail from the byte offset it last
+ * consumed.
+ */
+interface EventFileIndex {
+  /** Bytes consumed; always ends on a newline so a torn tail is re-read. */
+  bytes: number;
+  /** Records in file order, oldest first. */
+  events: TelemetryEventRecord[];
+}
+
+const eventIndex = new Map<string, EventFileIndex>();
+let indexRefreshedAt = 0;
+let indexRefresh: Promise<void> | undefined;
+let indexedEventCount = 0;
+let indexedBytesRead = 0;
+let indexRefreshes = 0;
+
+/** How long a refresh is reused before another poll re-tails the files. */
+const INDEX_REFRESH_TTL_MS = 250;
+
+/**
+ * Ceiling on retained records. Retention bounds the window in time, not in
+ * memory, so the oldest file leaves the index first and is read directly if a
+ * query still asks for it.
+ */
+const INDEX_MAX_EVENTS = 250_000;
+
+export interface TelemetryIndexStats {
+  readonly files: number;
+  readonly events: number;
+  readonly bytesRead: number;
+  readonly refreshes: number;
+}
+
+/** Counters the tests read to prove a poll stops re-parsing the window. */
+export function telemetryIndexStats(): TelemetryIndexStats {
+  return {
+    files: eventIndex.size,
+    events: indexedEventCount,
+    bytesRead: indexedBytesRead,
+    refreshes: indexRefreshes,
+  };
+}
+
+/** Drops the index. Used by tests; nothing on the request path calls it. */
+export function resetTelemetryIndex(): void {
+  eventIndex.clear();
+  indexedEventCount = 0;
+  indexedBytesRead = 0;
+  indexRefreshes = 0;
+  indexRefreshedAt = 0;
+  indexRefresh = undefined;
+}
+
+/**
+ * Parses the complete lines of `text` and reports the bytes they occupy. A
+ * trailing partial line is left for the next refresh: advancing past it would
+ * skip bytes the writer is still appending.
+ */
+function parseCompleteLines(text: string): { events: TelemetryEventRecord[]; consumed: number } {
+  const lastNewline = text.lastIndexOf("\n");
+  if (lastNewline < 0) return { events: [], consumed: 0 };
+  const events: TelemetryEventRecord[] = [];
+  for (const line of text.slice(0, lastNewline).split("\n")) {
+    if (!line) continue;
+    try {
+      const event = normalize(JSON.parse(line) as Record<string, unknown>);
+      if (event) events.push(event);
+    } catch {
+      // A torn tail from a crash is skipped, not fatal. The next line stands alone.
     }
   }
+  return { events, consumed: lastNewline + 1 };
+}
+
+/** Reads the bytes after `from` and parses their complete lines. */
+async function readAppended(
+  file: string,
+  from: number,
+): Promise<{ events: TelemetryEventRecord[]; consumed: number }> {
+  const handle = await open(join(TELEMETRY_EVENT_DIR, file), "r").catch(() => undefined);
+  if (handle === undefined) return { events: [], consumed: 0 };
+  try {
+    const size = (await handle.stat()).size;
+    if (size <= from) return { events: [], consumed: 0 };
+    const length = size - from;
+    const buffer = Buffer.allocUnsafe(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, from);
+    indexedBytesRead += bytesRead;
+    return parseCompleteLines(buffer.toString("utf8", 0, bytesRead));
+  } finally {
+    await handle.close();
+  }
+}
+
+async function eventFiles(): Promise<string[]> {
+  return (await readdir(TELEMETRY_EVENT_DIR).catch(() => [] as string[]))
+    .filter((file) => file.endsWith(".jsonl"))
+    .sort();
+}
+
+async function refreshEventIndex(): Promise<void> {
+  const files = await eventFiles();
+  const present = new Set(files);
+  for (const [file, entry] of eventIndex) {
+    if (present.has(file)) continue;
+    indexedEventCount -= entry.events.length;
+    eventIndex.delete(file);
+  }
+  for (const file of files) {
+    const entry = eventIndex.get(file);
+    const { events, consumed } = await readAppended(file, entry?.bytes ?? 0);
+    if (consumed === 0) continue;
+    if (entry === undefined) eventIndex.set(file, { bytes: consumed, events });
+    else {
+      entry.events.push(...events);
+      entry.bytes += consumed;
+    }
+    indexedEventCount += events.length;
+  }
+  while (indexedEventCount > INDEX_MAX_EVENTS && eventIndex.size > 1) {
+    const oldest = [...eventIndex.keys()].sort()[0];
+    if (oldest === undefined) break;
+    indexedEventCount -= eventIndex.get(oldest)?.events.length ?? 0;
+    eventIndex.delete(oldest);
+  }
+  indexRefreshedAt = Date.now();
+  indexRefreshes += 1;
+}
+
+/** Brings the index up to date, sharing one tail read across concurrent polls. */
+async function ensureEventIndex(): Promise<void> {
+  if (indexRefreshedAt !== 0 && Date.now() - indexRefreshedAt < INDEX_REFRESH_TTL_MS) return;
+  if (indexRefresh !== undefined) return indexRefresh;
+  indexRefresh = refreshEventIndex().finally(() => {
+    indexRefresh = undefined;
+  });
+  return indexRefresh;
+}
+
+/** Every record of one file, oldest first, preferring the index. */
+async function fileEvents(file: string): Promise<readonly TelemetryEventRecord[]> {
+  const entry = eventIndex.get(file);
+  if (entry !== undefined) return entry.events;
+  // Evicted by the memory ceiling, or not yet indexed: read it directly rather
+  // than report a shorter window than the log actually holds.
+  return (await readAppended(file, 0)).events;
 }
 
 /** Reads every retained event, newest first. A missing directory is an empty log. */
 export async function readTelemetryEvents(): Promise<TelemetryEventRecord[]> {
-  const files = await readdir(TELEMETRY_EVENT_DIR).catch(() => [] as string[]);
+  await ensureEventIndex();
   const events: TelemetryEventRecord[] = [];
-  for await (const event of readEventFiles(files.filter((file) => file.endsWith(".jsonl")))) events.push(event);
+  for (const file of await eventFiles()) events.push(...(await fileEvents(file)));
   events.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
   return events;
 }
@@ -152,27 +293,63 @@ function matches(event: TelemetryEventRecord, query: EventQuery, since: number |
 
 /** The events matching a query, already newest first. */
 export async function queryTelemetryEvents(query: EventQuery): Promise<TelemetryEventRecord[]> {
-  const files = (await readdir(TELEMETRY_EVENT_DIR).catch(() => [] as string[]))
-    .filter((file) => file.endsWith(".jsonl") && (query.since === undefined || eventFileHour(file) >= hourStamp(query.since)))
-    .sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
+  await ensureEventIndex();
+  const files = (await eventFiles())
+    .filter((file) => query.since === undefined || eventFileHour(file) >= hourStamp(query.since))
+    .reverse();
   const since = query.since?.getTime();
   const keys = query.apiKeyIds ? new Set(query.apiKeyIds) : undefined;
   const accounts = query.accountIds ? new Set(query.accountIds) : undefined;
   const events: TelemetryEventRecord[] = [];
   for (const file of files) {
+    const inFile = await fileEvents(file);
     const matched: TelemetryEventRecord[] = [];
-    for await (const event of readEventFiles([file])) {
+    // Newest first inside the file, so the caller's order is preserved without
+    // a per-file sort.
+    for (let index = inFile.length - 1; index >= 0; index -= 1) {
+      const event = inFile[index]!;
       if (!matches(event, query, since, keys, accounts)) continue;
       matched.push(event);
       // A requestId lookup needs one row: stop at the first (newest) match
-      // instead of parsing the whole retention window.
+      // instead of walking the whole retention window.
       if (query.requestId !== undefined) return matched;
     }
-    matched.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
     events.push(...matched);
     if (query.limit !== undefined && events.length >= query.limit) return events.slice(0, query.limit);
   }
   return events;
+}
+
+/**
+ * Indexed records at or after `from`, newest first, stopping at the first
+ * record older than `from`.
+ *
+ * This is for the aggregate fold, which only ever needs the events it has not
+ * folded yet, so the scan starts at the newest file's tail instead of walking
+ * the window. The early stop assumes append order is time order: the writer
+ * appends each event as its request completes and `createdAt` is stamped at
+ * that moment. An ordered read the console renders goes through
+ * `queryTelemetryEvents`, which sorts instead of assuming.
+ */
+export async function indexedEventsSince(
+  from: Date | undefined,
+  tenantId?: string,
+): Promise<TelemetryEventRecord[]> {
+  await ensureEventIndex();
+  const since = from?.getTime();
+  const out: TelemetryEventRecord[] = [];
+  for (const file of (await eventFiles()).reverse()) {
+    const inFile = await fileEvents(file);
+    for (let index = inFile.length - 1; index >= 0; index -= 1) {
+      const event = inFile[index]!;
+      const at = new Date(event.createdAt).getTime();
+      if (!Number.isFinite(at)) continue;
+      if (since !== undefined && at < since) return out;
+      if (tenantId !== undefined && event.tenantId !== tenantId) continue;
+      out.push(event);
+    }
+  }
+  return out;
 }
 
 export interface EventTotals {
