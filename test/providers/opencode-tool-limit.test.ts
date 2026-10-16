@@ -65,4 +65,29 @@ describe("OpenCode tool limit", () => {
 
     expect(names(payload)).toEqual(["tool-0", "tool-1", "tool-2"]);
   });
+
+  test("keeps the free-tier fingerprint tools when a large client catalog fills the wire", async () => {
+    // Reproduced 2026-10-16 from a 128-tool Claude Code session routed to a
+    // free model: every tool was unreferenced by the conversation, so a clamp
+    // that keeps only called tools dropped all 11 fingerprint tools and the
+    // gate refused the dispatch with 403 FreeTierError. The clamp must treat
+    // the fingerprint set as protected.
+    const fingerprints = [
+      "edit", "glob", "grep", "read", "shell", "skill", "subagent",
+      "webfetch", "websearch", "write", "execute",
+    ];
+    const foreign = Array.from({ length: 128 }, (_, index) => tool(`cc-tool-${index}`));
+    const source: CanonicalRequest = {
+      ...request(0, []),
+      tools: [...fingerprints.map(tool), ...foreign],
+    };
+    const payload = await encodeWireRequest("chat", source);
+    OPENCODE_FREE_SPEC.prePayload?.(payload, source, CANDIDATE);
+
+    const kept = names(payload);
+    expect(kept).toHaveLength(128);
+    for (const fingerprint of fingerprints) {
+      expect(kept).toContain(fingerprint);
+    }
+  });
 });
