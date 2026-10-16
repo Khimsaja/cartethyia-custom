@@ -197,10 +197,21 @@ const CAPTURED_REQUEST_HEADERS = [
   "x-parent-session-id",
   "traceparent",
   "b3",
+  // The buddy channel check reads this family. A capture that kept only
+  // `x-session-id` could not show whether a `11-128 conversation id missing`
+  // refusal was a missing header or something else.
+  "x-conversation-id",
+  "x-conversation-request-id",
+  "x-conversation-message-id",
+  "x-root-request-id",
+  "x-request-id",
+  "x-trace-id",
+  "x-b3-traceid",
+  "x-b3-spanid",
+  "x-b3-sampled",
   "x-claude-code-session-id",
   "user-agent",
 ] as const;
-
 /** Copies only the allowlisted, non-empty headers from an outbound request. */
 function selectCapturedHeaders(init?: RequestInit): Record<string, string> | undefined {
   if (init?.headers === undefined) return undefined;

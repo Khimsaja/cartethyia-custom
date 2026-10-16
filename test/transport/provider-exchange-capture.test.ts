@@ -48,4 +48,44 @@ describe("provider exchange capture", () => {
     });
     expect(JSON.stringify(capture.request)).not.toContain("******");
   });
+
+  test("captures the buddy conversation headers the channel check reads", async () => {
+    const capture = { request: null, response: Promise.resolve(null) };
+    const fetcher = captureProviderExchange(
+      async () => new Response("{}", { headers: { "content-type": "application/json" } }),
+      capture,
+    );
+
+    await fetcher("https://www.workbuddy.ai/v2/chat/completions", {
+      method: "POST",
+      headers: {
+        authorization: "******",
+        "x-session-id": "session-1",
+        "x-conversation-id": "conv-1",
+        "x-conversation-request-id": "turn-1",
+        "x-conversation-message-id": "msg-1",
+        "x-root-request-id": "turn-1",
+        "x-request-id": "msg-1",
+        "x-trace-id": "trace-1",
+        "x-b3-traceid": "trace-1",
+        "x-b3-spanid": "span-1",
+        "x-b3-sampled": "1",
+        "user-agent": "WorkBuddy/5.7.6",
+      },
+      body: "{}",
+    });
+
+    expect(capture.request).toMatchObject({
+      headers: {
+        "x-conversation-id": "conv-1",
+        "x-conversation-request-id": "turn-1",
+        "x-conversation-message-id": "msg-1",
+        "x-root-request-id": "turn-1",
+        "x-request-id": "msg-1",
+        "x-b3-traceid": "trace-1",
+        "x-b3-spanid": "span-1",
+      },
+    });
+    expect(JSON.stringify(capture.request)).not.toContain("******");
+  });
 });
