@@ -206,6 +206,58 @@ function completeOpenCodeToolSchemas(payload: Record<string, unknown>): void {
   });
 }
 
+/**
+ * The most tool definitions one OpenCode dispatch accepts.
+ *
+ * A live dispatch carrying a whole agent catalog was refused with
+ * `400 invalid_request_error`: `Invalid value for 'tools': maximum number of
+ * items is 128`. The refusal names the array length, so the clamp counts
+ * entries, not names.
+ */
+const OPENCODE_MAX_TOOLS = 128;
+
+/** The function name a serialized tool declares, on either wire shape. */
+function wireToolName(tool: unknown): string | undefined {
+  if (!isRecord(tool)) return undefined;
+  // Responses puts the name on the tool itself; chat nests it under function.
+  if (typeof tool["name"] === "string") return tool["name"];
+  const fn = tool["function"];
+  if (isRecord(fn) && typeof fn["name"] === "string") return fn["name"];
+  const custom = tool["custom"];
+  if (isRecord(custom) && typeof custom["name"] === "string") return custom["name"];
+  return undefined;
+}
+
+/**
+ * Drops tool definitions past the upstream's limit.
+ *
+ * A definition the conversation already called is kept first: dropping it
+ * leaves a tool result in the history with no matching definition, which the
+ * upstream rejects on its own. Everything else keeps its original order and
+ * fills whatever slots remain. A conversation that already called more than
+ * the limit cannot be saved by dropping anything, so it is left untouched and
+ * fails upstream with the real reason instead of a silently broken history.
+ */
+function clampOpenCodeTools(payload: Record<string, unknown>, request: CanonicalRequest): void {
+  const tools = payload["tools"];
+  if (!Array.isArray(tools) || tools.length <= OPENCODE_MAX_TOOLS) return;
+  const called = new Set<string>();
+  for (const message of request.messages) {
+    for (const part of message.content) {
+      if (part.kind === "toolCall") called.add(part.name);
+    }
+  }
+  const kept: unknown[] = [];
+  const rest: unknown[] = [];
+  for (const tool of tools) {
+    const name = wireToolName(tool);
+    if (name !== undefined && called.has(name)) kept.push(tool);
+    else rest.push(tool);
+  }
+  if (kept.length > OPENCODE_MAX_TOOLS) return;
+  payload["tools"] = [...kept, ...rest.slice(0, OPENCODE_MAX_TOOLS - kept.length)];
+}
+
 function opencodeSpec(providerId: "opencodeft" | "opencodezen" | "opencodego"): ApiKeyProviderSpec {
   // Free-tier gate facts (verified live 2026-10-14 against opencode.ai/zen/v1):
   // a request for a free model with stream:false is ALWAYS refused with 403
@@ -227,6 +279,7 @@ function opencodeSpec(providerId: "opencodeft" | "opencodezen" | "opencodego"): 
     buildExtraHeaders: opencodeDesktopHeaders,
     prePayload: (payload, request, candidate) => {
       completeOpenCodeToolSchemas(payload);
+      clampOpenCodeTools(payload, request);
       if (candidate.wire_family === "responses") {
         payload.store = false;
       }
