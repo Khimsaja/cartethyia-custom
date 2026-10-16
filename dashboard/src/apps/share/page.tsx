@@ -220,6 +220,7 @@ export function SharePage(): ReactElement {
   // Full-bleed at the top, a floating pill once content passes beneath it —
   // the same reading the landing header uses.
   const [scrolled, setScrolled] = useState(false);
+  const [modelView, setModelView] = useState<"raw" | "grouped">("raw");
   useEffect(() => {
     const onScroll = (): void => setScrolled(window.scrollY > 24);
     onScroll();
