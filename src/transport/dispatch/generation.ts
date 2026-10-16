@@ -266,11 +266,19 @@ export function createGenerationHandler(kind: GenerationKind, deps: GenerationHa
           return jsonResponse(payload, 200, state.requestId);
         };
 
-        // Dispatch context shared by every media path below.
+        const inboundHeaders: Record<string, string> = {};
+        request.headers.forEach((value, name) => {
+          inboundHeaders[name.toLowerCase()] = value;
+        });
+        // Dispatch context shared by every media path below. The inbound
+        // headers ride along so a buddy probe carries the same conversation
+        // family a chat request does — without them the upstream answers
+        // `400 · 11-128 "conversation id missing"`.
         const mediaContext = {
           credential,
           deadline: state.deadlineMs,
           abort_signal: state.abortController.signal,
+          request_headers: inboundHeaders,
           ...(candidate.user_agent === undefined ? {} : { user_agent: candidate.user_agent }),
           ...(deps.networkBindingFactory
             ? {

@@ -26,6 +26,7 @@ import { imageCreatedSeconds, imagePrompt } from "../../../protocol/image-genera
 import { abortGatewayError, createUpstreamDeadlineLifecycle } from "../../operations/upstream-deadline";
 import { mapUpstreamHttpError } from "../../../transport/failure-policy";
 import type { ImageGenerationOutcome, ProviderDispatchContext, ProviderDispatchTarget, ValidatedOutboundFetch } from "../../provider-contracts";
+import type { CanonicalRequest } from "../../../protocol/canonical-model";
 import { codebuddyHeaders, type CodeBuddyVariant } from "./codebuddy/shared";
 import { applyBuddySystemPrompt, buddyPrePayloadCommon } from "./buddy-chat-shared";
 
@@ -35,16 +36,26 @@ export interface BuddyMediaConfig {
   readonly systemPrompt: string;
   readonly baseUrl: string;
   readonly imageGenerationPath?: string;
-  readonly buildHeaders?: (context: ProviderDispatchContext) => Promise<Record<string, string>>;
+  readonly buildHeaders?: (
+    context: ProviderDispatchContext,
+    request?: CanonicalRequest,
+  ) => Promise<Record<string, string>>;
 }
 
 async function mediaIdentityHeaders(
   config: BuddyMediaConfig,
   context: ProviderDispatchContext,
 ): Promise<Record<string, string>> {
+  // A probe has no canonical request, but it does carry the caller's headers.
+  // Those are enough for the conversation family: the header builder reads
+  // the session id from them, and invents the mandatory turn key when none
+  // arrives. Omitting them is what drew `400 · 11-128`.
+  const request = context.request_headers
+    ? ({ model: "", messages: [] } as unknown as CanonicalRequest)
+    : undefined;
   return config.buildHeaders
-    ? config.buildHeaders(context)
-    : codebuddyHeaders(config.variant, context);
+    ? config.buildHeaders(context, request)
+    : codebuddyHeaders(config.variant, context, request);
 }
 
 function outbound(context: ProviderDispatchContext): ValidatedOutboundFetch {

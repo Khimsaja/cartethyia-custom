@@ -198,7 +198,7 @@ export function createWorkBuddyAdapter(fetchImpl?: typeof fetch): ProviderAdapte
       variant: "IDE",
       systemPrompt: WORKBUDDY_SYSTEM_PROMPT,
       baseUrl: WORKBUDDY_BASE_URL,
-      buildHeaders: (context) => workbuddyHeaders(context),
+      buildHeaders: (context, request) => workbuddyHeaders(context, request),
     },
   );
 }
