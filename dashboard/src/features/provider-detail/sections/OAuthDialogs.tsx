@@ -289,14 +289,25 @@ export function DeviceCodeDialog({
   const [copiedCode, setCopiedCode] = useState(false);
   const scheduleCopyReset = useTrackedTimeout();
   useEffect(() => {
+    // StrictMode mounts, unmounts, and remounts this dialog in development, and
+    // this effect starts a device flow on every mount. Both requests reach the
+    // provider. Whichever resolves last used to win `setSession`, so the code on
+    // screen and the code being polled could belong to a flow the operator never
+    // approved — the provider then answers "still pending" forever. The first
+    // start is the one shown and polled; a later one is dropped.
+    let cancelled = false;
     startDevice.mutate(
       {
         providerId,
         ...(parameters === undefined || Object.keys(parameters).length === 0 ? {} : { parameters }),
       },
       {
-        onSuccess: (result) => setSession(result),
+        onSuccess: (result) => {
+          if (cancelled) return;
+          setSession(result);
+        },
         onError: (err) => {
+          if (cancelled) return;
           toast.error(
             "Failed to start device login",
             (err as { message?: string }).message ?? "Unable to start device authorization",
@@ -305,6 +316,9 @@ export function DeviceCodeDialog({
         },
       },
     );
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -329,30 +343,10 @@ export function DeviceCodeDialog({
     };
   }, [session]);
 
-  const checkNow = () => {
-    if (!session || pollDevice.isPending) return;
-    pollDevice.mutate(
-      { providerId, deviceAuthId: session.deviceAuthId },
-      {
-        onSuccess: (result) => {
-          if (result.status === "complete") {
-            const open = verificationPopupRef.current;
-            if (open && !open.closed) open.close();
-            toast.success("OAuth account connected", "Device authorization complete");
-            onClose();
-          } else if (result.status === "failed") {
-            toast.error("Device login failed", result.reason);
-            onClose();
-          } else {
-            toast.success("Still waiting", "The provider has not approved this device yet — approve it in the verification tab, then check again.");
-          }
-        },
-        onError: (err) => {
-          toast.error("Check failed", (err as { message?: string }).message ?? "Unable to poll device authorization");
-        },
-      },
-    );
-  };
+  // No manual poll. GitHub's device flow rejects a poll that arrives inside
+  // its minimum interval with `slow_down`, and then keeps rejecting that
+  // device code. A button that fires a poll beside the scheduled one is
+  // exactly that, so the only poll is the one the loop schedules.
 
   useEffect(() => {
     if (!session) return;
@@ -360,15 +354,24 @@ export function DeviceCodeDialog({
     const expiresInMs = Math.max(1, session.expiresInSeconds) * 1000;
     let pollInFlight = false;
     let intervalMs = Math.max(1, session.intervalSeconds) * 1000;
-    // `clearTimer` covers both phases: before the first poll fires `timer` is
-    // a timeout, after that it is an interval. `clearInterval` alone would
-    // leak the pending first poll when the dialog closes early.
+    // A poll request outlives this effect: closing the dialog, or the session
+    // changing, does not cancel the POST already in flight. Its result belongs
+    // to the session that sent it. Applying it anyway showed "connected" for a
+    // login whose row was never written.
+    let stale = false;
+    // One timer, ever. Rescheduling used to add a fresh interval beside the one
+    // already running, so two polls left per cadence. GitHub's device flow
+    // answers `slow_down` the moment a poll arrives inside its minimum, and
+    // keeps answering it — the code the operator approves then never yields a
+    // token. The next poll is always scheduled from the answer, not piled on.
     let timer = 0;
-    const clearTimer = () => {
-      window.clearTimeout(timer);
-      window.clearInterval(timer);
+    const clearTimer = () => window.clearTimeout(timer);
+    const schedule = (delayMs: number) => {
+      clearTimer();
+      timer = window.setTimeout(poll, delayMs);
     };
     const poll = () => {
+      if (stale) return;
       if (Date.now() - startedAt > expiresInMs) {
         clearTimer();
         toast.error("Device login expired", "Please try again.");
@@ -382,6 +385,7 @@ export function DeviceCodeDialog({
         {
           onSuccess: (result) => {
             pollInFlight = false;
+            if (stale) return;
             if (result.status === "complete") {
               clearTimer();
               const open = verificationPopupRef.current;
@@ -392,28 +396,27 @@ export function DeviceCodeDialog({
               clearTimer();
               toast.error("Device login failed", result.reason);
               onClose();
-            } else if (result.status === "pending" && result.retryAfterSeconds !== undefined) {
-              // The server echoed the provider's requested cadence: adopt it
-              // so the next poll does not fire early and draw a rate limit.
-              intervalMs = Math.max(1, result.retryAfterSeconds) * 1000;
-              clearTimer();
-              timer = window.setInterval(poll, intervalMs);
             } else if (result.status === "slow_down") {
-              // The provider (GitHub especially) enforces its own minimum
-              // cadence: ignoring it makes every later poll answer slow_down
-              // again and the login never completes. Honour the server's
-              // interval, or widen ours when it sends none.
+              // GitHub enforces the widened cadence: polling any sooner draws
+              // another slow_down, and the flow never completes. A second is
+              // added because an answer that arrives on the boundary counts as
+              // early.
               const nextMs =
                 result.retryAfterSeconds !== undefined
                   ? Math.max(1, result.retryAfterSeconds) * 1000
                   : intervalMs + 5000;
-              intervalMs = nextMs;
-              clearTimer();
-              timer = window.setInterval(poll, intervalMs);
+              intervalMs = nextMs + 1000;
+              schedule(intervalMs);
+            } else {
+              if (result.status === "pending" && result.retryAfterSeconds !== undefined) {
+                intervalMs = Math.max(1, result.retryAfterSeconds) * 1000 + 1000;
+              }
+              schedule(intervalMs);
             }
           },
           onError: () => {
             pollInFlight = false;
+            if (!stale) schedule(intervalMs);
           },
         },
       );
@@ -421,14 +424,12 @@ export function DeviceCodeDialog({
     // The first poll fires only after one full interval, never immediately:
     // the user needs those seconds to approve on the provider page, and a
     // poll that lands before any approval is possible only spends a request
-    // toward the provider's rate limit (429s on an impatient first poll).
-    timer = window.setTimeout(() => {
-      // The timeout has served its purpose; from here the cadence is the
-      // interval's. `clearTimer` still covers both handles elsewhere.
-      timer = window.setInterval(poll, intervalMs);
-      poll();
-    }, intervalMs);
-    return () => clearTimer();
+    // toward the provider's rate limit.
+    schedule(intervalMs + 1000);
+    return () => {
+      stale = true;
+      clearTimer();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session]);
 
@@ -443,17 +444,7 @@ export function DeviceCodeDialog({
           <Button variant="secondary" size="sm" onClick={onClose}>
             Cancel
           </Button>
-          {session ? (
-            <Button
-              variant="primary"
-              size="sm"
-              disabled={pollDevice.isPending}
-              onClick={checkNow}
-              title="You already approved on the verification page — poll the provider now instead of waiting for the next interval"
-            >
-              {pollDevice.isPending ? "Checking…" : "Complete"}
-            </Button>
-          ) : null}
+          {null}
         </>
       }
     >

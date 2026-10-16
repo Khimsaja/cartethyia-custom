@@ -30,6 +30,7 @@ import { OAuthDeviceFlow } from "../../authentication/oauth-device-flow";
 import type { FetchLike } from "../../authentication/oauth-client";
 import { resolveGithubEnterpriseDomain } from "../../../config/providers";
 
+
 /** Public GitHub OAuth app id the Copilot clients use; not a secret. */
 export const GITHUB_CLIENT_ID = "Iv1.b507a08c87ecfe98" as const;
 export const GITHUB_ACCESS_TOKEN_URL = "https://github.com/login/oauth/access_token" as const;
@@ -178,7 +179,10 @@ async function fetchGitHubLogin(
       headers: {
         accept: "application/json",
         authorization: `Bearer ${githubAccessToken}`,
-        ...GITHUB_REQUEST_HEADERS,
+        // The Copilot client headers belong on the Copilot API. Sent here they
+        // draw a 400, the login is never read, and every account then shares
+        // the dialog's label — so the second one overwrites the first.
+        "user-agent": GITHUB_REQUEST_HEADERS["user-agent"]!,
       },
       signal,
     });
@@ -329,6 +333,7 @@ export class GithubOAuthClient extends OAuthDeviceFlow {
     };
     return { status: "complete", result };
   }
+
 
   override async refresh(refreshToken: string, signal?: AbortSignal): Promise<OAuthTokenRefreshResult> {
     const minted = await mintGithubToken(
