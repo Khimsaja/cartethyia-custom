@@ -8,6 +8,7 @@ import {
   type TelemetryEventRecord,
 } from "../../observability/event-log";
 import { isGatewayError } from "../../observability/telemetry-status";
+import { cachedUsage } from "./usage-cache";
 import { decodeDatedCursor, encodeCursor } from "../shared/cursor";
 import { CARTETHYIA_VERSION } from "../../version";
 import { CachedPreferencesReader, DrizzlePreferencesReader, type PreferencesReader } from "../../persistence/tenant-preferences";
@@ -399,7 +400,22 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
     };
   }
   async usage(tenantId: string, period: string): Promise<UsageResponse> {
-    return this.computeUsage(tenantId, period);
+    return this.readThrough(this.usageCacheKey(tenantId, period, "usage"), () =>
+      this.computeUsage(tenantId, period),
+    );
+  }
+
+  /**
+   * Cache key for one usage response. Versioned so a shape change can never be
+   * read back from a deployment that still holds the old one.
+   */
+  private usageCacheKey(tenantId: string, period: string, shape: string): string {
+    return `cartethyia:usage:v1:${shape}:${tenantId}:${period}`;
+  }
+
+  /** Reads a usage response through Redis; computes when no cache is configured. */
+  private readThrough<T>(key: string, compute: () => Promise<T>): Promise<T> {
+    return cachedUsage(this.redis, key, compute);
   }
 
   private async computeUsage(tenantId: string, period: string): Promise<UsageResponse> {
@@ -450,6 +466,12 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
   }
 
   async usageSummary(tenantId: string, period: string): Promise<UsageSummaryResponse> {
+    return this.readThrough(this.usageCacheKey(tenantId, period, "summary"), () =>
+      this.computeSummary(tenantId, period),
+    );
+  }
+
+  private async computeSummary(tenantId: string, period: string): Promise<UsageSummaryResponse> {
     const events = await this.periodEvents(tenantId, period);
     const performance = summarizeUsagePerformance(events);
     let requests = 0;
@@ -504,6 +526,12 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
   }
 
   async usageChart(tenantId: string, period: string): Promise<UsageChartResponse> {
+    return this.readThrough(this.usageCacheKey(tenantId, period, "chart"), () =>
+      this.computeChart(tenantId, period),
+    );
+  }
+
+  private async computeChart(tenantId: string, period: string): Promise<UsageChartResponse> {
     const since = periodStartDate(period);
     const bucketSeconds = chartBucketSeconds(period);
     const stepMs = bucketSeconds * 1000;
@@ -535,6 +563,16 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
   }
 
   async usageBy(
+    tenantId: string,
+    dimension: UsageDimension,
+    period: string,
+  ): Promise<UsageByResponse> {
+    return this.readThrough(this.usageCacheKey(tenantId, `${dimension}:${period}`, "by"), () =>
+      this.computeBy(tenantId, dimension, period),
+    );
+  }
+
+  private async computeBy(
     tenantId: string,
     dimension: UsageDimension,
     period: string,
@@ -637,6 +675,12 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
   }
 
   async usageCache(tenantId: string, period: string): Promise<UsageCacheResponse> {
+    return this.readThrough(this.usageCacheKey(tenantId, period, "cache"), () =>
+      this.computeCache(tenantId, period),
+    );
+  }
+
+  private async computeCache(tenantId: string, period: string): Promise<UsageCacheResponse> {
     const events = await this.periodEvents(tenantId, period);
     let inputTokens = 0;
     let cachedTokens = 0;
