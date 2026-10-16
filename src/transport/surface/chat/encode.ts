@@ -449,6 +449,13 @@ export class ChatStreamEncoder extends SurfaceStreamEncoder<CanonicalEvent, Json
     }
     const tool = eventToolCall(event);
     if (tool) {
+      // Copilot streams one call as many events. Every event but the last
+      // carries a slice of the id and a slice of the arguments, and no name.
+      // The last carries the real id, the name, and the whole arguments.
+      // Forwarding the slices made one write into dozens of nameless calls.
+      if (tool.state.name === undefined && !tool.state.id.startsWith("call_")) {
+        return result;
+      }
       const tracked = trackToolCall(this.tracker, {
         id: tool.state.id,
         name: tool.state.name,

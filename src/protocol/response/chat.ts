@@ -12,6 +12,7 @@ import { createToolEmitLedger } from "../tool-identity";
 import { MimoThinkSplitter, stripThinkingTags } from "../../providers/integrations/xiaomi-mimo/think-stream";
 import { parseDsmlToolCalls } from "./dsml";
 
+
 export function mapChatStopReason(
   reason: unknown,
 ): "stop" | "length" | "tool_use" | "content_filter" | undefined {
@@ -315,22 +316,8 @@ export async function* decodeChatSseStream(
           // first call's slot in the index-keyed materializer.
           let emitIndex: number | undefined;
           let establishedNew = false;
-          if (
-            realId !== undefined &&
-            index !== undefined &&
-            indexId === undefined &&
-            fragName === undefined &&
-            lastSeenToolId !== undefined &&
-            inheritable
-          ) {
-            // Copilot splits one call across chunks and puts the next slice of
-            // the id in `id`, at a fresh index, with no name. Its own reader
-            // appends that slice to the call it is still building. Treating the
-            // slice as a new id turned one `write` into 65 nameless calls. The
-            // slice is remembered, but the id emitted stays the one the first
-            // chunk opened the call with, so the client keeps one call.
-            id = lastSeenToolId;
-          } else if (realId !== undefined) {
+
+          if (realId !== undefined) {
             id = realId;
             emitIndex = index;
             establishedNew = true;
