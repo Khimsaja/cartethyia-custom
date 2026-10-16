@@ -23,6 +23,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   claims — one per upstream capability. Each is switchable individually with
   `CARTETHYIA_DISABLED_TASKS`, claimed at most once per account per day, and
   never allowed to mark an account unhealthy.
+- A Buddy request that arrives without a cache key now gets one that is
+  isolated per account (`wb2a-<uid>-<hash>`). The same conversation id on two
+  pooled accounts used to produce the same key, so one account's prefix cache
+  could be reused — and billed — against another's. A key the client supplied
+  is kept.
+- `POST /admin/tasks/{name}/run` triggers one scheduled task immediately. It
+  uses the same loopback-and-token gate as the drain endpoint, answers 202
+  once the run has started, and 409 when that task is already running.
+
 
 ### Changed
 
@@ -46,6 +55,33 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   estimate — characters ÷ 4 with a flat reserve per image, counting `system`,
   tool rounds, and `tools` — the same basis the reference gateways use. A
   Messages route still forwards the count, so the provider's own number wins.
+- A Buddy rejection that is about the request, not the account, no longer cools
+  the account down. `11148` (broken tool sequence), `11135` (unreadable image),
+  `11133` (a parameter the model rejected), `11101` (a body that failed to
+  parse), `12153` (a dead session), and `14017` (trial not yet activated) are
+  deterministic for that body, so parking the credential only burned a healthy
+  account on a request that fails the same way everywhere else.
+- A quoted `11128` in an outbound Buddy message is rewritten to `11-128`. The
+  upstream blocks any request whose body contains that exact digit run — it is
+  the code of the block itself — so a client that pasted the error was refused
+  again for mentioning it.
+- The proactive token refresh now includes accounts that are cooling down.
+  Their token still expires while they are parked, and a refresh that lands
+  during the cooldown is what lets them serve the moment it ends. Disabled
+  accounts stay excluded.
+- Buddy model discovery drops completion, NES, and codewise rows, rows whose
+  declared output is 256 tokens or less, and `text-to-image` rows. Listing them
+  offered a chat route that only answers 400.
+- A Buddy request carrying more than 16 images keeps the first 16 and replaces
+  the rest with a note, instead of sending a body the upstream rejects outright.
+- The gateway refuses a 65th concurrent `/v1` request with 503 and a
+  three-second retry hint. Per-key and per-tenant caps still apply; this is the
+  process-wide ceiling they do not provide.
+- Log lines written on a telemetry failure are scrubbed of bearer tokens, JWTs,
+  provider key prefixes, and inline base64 images before they are written.
+  Captured request bodies are unchanged — those stay verbatim so a failure can
+  still be read.
+
 - Streaming tool calls now retain the upstream completion event, so completed
   tool-call turns end with `tool_calls` instead of a synthetic stream error.
 - PostgreSQL and SQLite baselines now include provider account identity

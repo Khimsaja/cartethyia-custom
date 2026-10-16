@@ -127,3 +127,38 @@ describe("buddy policy/channel block — a base backoff, not a flat day", () => 
     expect(c.retryAt).toBeInstanceOf(Date);
   });
 });
+
+describe("buddy request-scoped codes do not cool the account", () => {
+  // Each of these is a verdict on the body or the session, not the credential.
+  // Falling through to the generic 400 used to burn a cooldown on a healthy
+  // account for a request that fails the same way on every other account.
+  const cases = [
+    ["11148", "tool_call_sequence_broken"],
+    ["11135", "Please start a new conversation, replace the image, and try again."],
+    ["11133", "the request parameters were rejected by the model provider"],
+    ["11101", "Unmarshal chat params failed with error: unexpected EOF"],
+    ["12153", "Offline user session not found"],
+    ["14017", "The trial version is not yet activated"],
+  ] as const;
+
+  for (const [code, message] of cases) {
+    test(`${code} does not mutate the account`, () => {
+      const c = classify(message, code, "cb");
+      expect(c.mutatesAccount).toBe(false);
+      expect(c.cooldownMs).toBe(0);
+      expect(c.retryAt).toBeNull();
+    });
+  }
+
+  test("the same code on a non-buddy provider is left to the generic path", () => {
+    // The codes are a buddy-family contract. Applying the exemption everywhere
+    // would hide a real account fault on a provider that happens to reuse a number.
+    const c = classify("tool_call_sequence_broken", "11148", "anthropic");
+    expect(c.category).not.toBe("policy_blocked");
+  });
+
+  test("a message match is enough when the code is absent", () => {
+    const c = classify("Unmarshal chat params failed with error: unexpected EOF", "", "workbuddy");
+    expect(c.mutatesAccount).toBe(false);
+  });
+});

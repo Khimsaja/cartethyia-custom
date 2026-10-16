@@ -516,6 +516,46 @@ export function classifyAccountError(
       origin === "upstream",
     );
   }
+  // These codes are a verdict on the request, not the account. Cooling the
+  // account for them burns a healthy credential on a body that will fail the
+  // same way on every other account:
+  //
+  // - `11148` tool-call/result mismatch — the transcript is broken; the
+  //   pre-payload repair is supposed to prevent it, and a slip is still the
+  //   body's fault.
+  // - `11135` the image cannot be processed, `11133` the model rejected a
+  //   parameter, `11101` the body failed to parse — deterministic for that
+  //   payload.
+  // - `12153` the session is dead — a refresh problem, not a reason to park
+  //   the account on the first observation.
+  // - `14017` trial not activated — the account may recover once registration
+  //   finishes, so a hard cooldown would keep it out after it becomes usable.
+  //
+  // Recognised before the auth and quota branches: several of these arrive as
+  // 401/403/429, which those branches would otherwise treat as account evidence.
+  const requestScoped =
+    providerCode === "11148" ||
+    providerCode === "11135" ||
+    providerCode === "11133" ||
+    providerCode === "11101" ||
+    providerCode === "12153" ||
+    providerCode === "14017" ||
+    lower.includes("tool_call_sequence_broken") ||
+    lower.includes("unmarshal chat params failed") ||
+    lower.includes("invalid image_url content") ||
+    lower.includes("offline user session not found") ||
+    lower.includes("trial not activated") ||
+    lower.includes("trial version is not yet activated");
+  if (requestScoped && BUDDY_PROVIDER_IDS.has(options?.providerId?.toLowerCase() ?? "")) {
+    return result(
+      "unknown",
+      "cooldown",
+      0,
+      null,
+      reason("Request-scoped upstream rejection"),
+      false,
+    );
+  }
   // A channel rejection (`11128`) is the same shape: the upstream is refusing
   // the caller for this account, not this particular prompt, and it keeps
   // refusing on every invocation. It used to fall through to `unknown` with

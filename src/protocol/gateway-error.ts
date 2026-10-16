@@ -144,6 +144,7 @@ const PUBLIC_ERROR_DETAIL_KEYS = new Set([
   "capacity",
   "configuredPools",
   "cooldownReason",
+  "gateway_hint",
   "currentInflight",
   "credentialEvidence",
   "model",

@@ -29,6 +29,33 @@ export type BuddyRawEntry = readonly [
   boolean?,
 ];
 
+/**
+ * Realm-specific effort ladders.
+ *
+ * International DeepSeek Flash accepts only `high`; sending CN's `low`/`max`
+ * is a 400. A model absent from its realm's table is not clamped. Lives here,
+ * next to the catalog rows, so a row can carry its ladder as
+ * `reasoningEfforts` without the catalog importing the chat hook.
+ */
+export const BUDDY_INTL_EFFORTS: Readonly<Record<string, readonly string[]>> = {
+  "deepseek-v4.1-flash": ["high"],
+  "glm-5.2": ["high", "xhigh"],
+  "glm-5.3": ["low", "high", "max"],
+  hy3: ["low", "high"],
+  "hy4-preview-f": ["high"],
+};
+export const BUDDY_CN_EFFORTS: Readonly<Record<string, readonly string[]>> = {
+  "deepseek-v4-flash": ["low", "high", "max"],
+  "deepseek-v4-pro": ["low", "high", "xhigh"],
+  "deepseek-v4.1-flash": ["low", "high", "max"],
+  "glm-5.1": ["medium"],
+  "glm-5.2": ["high", "xhigh"],
+  "glm-5.3": ["low", "high", "max"],
+  "glm-5.3-flash": ["low", "high", "max"],
+  hy3: ["low", "high"],
+  "hy4-preview": ["high"],
+};
+
 /** The image-generation ids the international buddy providers serve. */
 const BUDDY_IMAGE_MODEL_IDS: readonly { id: string; endpoint: string; ctx: number; out: number }[] = [
   { id: "gemini-2.5-flash-image", endpoint: "/chat/completions", ctx: 1_000_000, out: 64_000 },
@@ -150,15 +177,18 @@ export function makeBuddyModel(
   entry: BuddyRawEntry,
   providerId: string,
   endpoint?: string,
+  realm: "intl" | "cn" = "intl",
 ): ModelDefinition {
   if (!entry[0]) throw new GatewayError("invalid_request", 400, "invalid model");
   const image = BUDDY_IMAGE_MODEL_ID_SET.has(entry[0]);
+  const efforts = (realm === "cn" ? BUDDY_CN_EFFORTS : BUDDY_INTL_EFFORTS)[entry[0].toLowerCase()];
   return defineModel({
     id: entry[0],
     providerId,
     ...(image ? { serviceKind: "imageGeneration" as const, output: ["image"] as const } : {}),
     ...(endpoint === undefined ? {} : { endpoint }),
     reasoning: entry[2],
+    ...(efforts === undefined ? {} : { reasoningEfforts: efforts }),
     vision: entry[3],
     ctx: entry[4],
     out: entry[5],

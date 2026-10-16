@@ -21,7 +21,7 @@
  * losing process's write touches zero rows in either table.
  */
 import { randomUUID } from "node:crypto";
-import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import { providerAccounts, providerOauthStates } from "../../persistence/schema";
 import { decryptCredentialToString, encryptCredential } from "../../security/crypto";
@@ -446,7 +446,12 @@ export async function loadDueOAuthAccounts(
     .where(
       and(
         eq(providerAccounts.credentialKind, "oauth"),
-        eq(providerAccounts.status, "active"),
+        // `cooldown` is included: a cooling account's token still expires, and
+        // a refresh that lands while it is parked is what lets it serve the
+        // moment the cooldown ends. `disabled` stays out — that is an
+        // operator decision, and refreshing it would spend a grant on an
+        // account that must not return to rotation on its own.
+        inArray(providerAccounts.status, ["active", "cooldown"]),
       ),
     )
     // The due test is applied in JS, so this limit bounds the scan, not the

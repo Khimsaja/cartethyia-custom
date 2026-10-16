@@ -310,7 +310,7 @@ export function accountsUnavailableError(
     "accounts_unavailable",
     503,
     `No account in the pool can serve '${requested}' right now (${explainEligibilityReasons(distinct)}). Add an account, or wait for an operator to re-enable one.`,
-    { model: requested, reasons: distinct, candidate_count: reasons.length },
+    { model: requested, reasons: distinct, candidate_count: reasons.length, gateway_hint: "no_healthy_account" },
   );
 }
 

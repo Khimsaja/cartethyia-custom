@@ -79,11 +79,11 @@ export function codeBuddyCnPrePayload(
   payload: Record<string, unknown>,
   request: CanonicalRequest,
   candidate: ProviderDispatchTarget,
-  _context?: ProviderDispatchContext,
+  context?: ProviderDispatchContext,
 ): void {
   // CN ladder: the CN backend serves `low`/`max` levels the international one
   // rejects, so the realm must be named rather than left to default to intl.
-  buddyPrePayloadCommon(payload, request, "cn");
+  buddyPrePayloadCommon(payload, request, "cn", context);
   if (Array.isArray(payload["messages"])) {
     const messages = payload["messages"] as Array<Record<string, unknown>>;
     neutralizeCnMessages(messages);
@@ -147,7 +147,7 @@ export const CODEBUDDY_CN_RAW: readonly BuddyRawEntry[] = [
   // unverified — confirm first.
   ["default", "Default", true, true, 200_000, 32_000],
 ];
-export const CODEBUDDY_CN_MODELS: readonly ModelDefinition[] = CODEBUDDY_CN_RAW.map((entry) => makeBuddyModel(entry, "cbcn"));
+export const CODEBUDDY_CN_MODELS: readonly ModelDefinition[] = CODEBUDDY_CN_RAW.map((entry) => makeBuddyModel(entry, "cbcn", undefined, "cn"));
 
 /** Reads the CodeBuddy CN console directory (same envelope as the intl site). */
 export async function discoverCodeBuddyCnModels(

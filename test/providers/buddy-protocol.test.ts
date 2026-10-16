@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buddyPrePayloadCommon } from "../../src/providers/integrations/buddy/buddy-chat-shared";
+import { buddyPrePayloadCommon, buildBuddyPromptCacheKey } from "../../src/providers/integrations/buddy/buddy-chat-shared";
 import { codeBuddyCnPrePayload } from "../../src/providers/integrations/buddy/codebuddy/cn-provider";
 import { readBuddyDeviceToken, workbuddyHeaders } from "../../src/providers/integrations/buddy/workbuddy/shared";
 import { fetchTencentBillingQuota } from "../../src/providers/integrations/buddy/buddy-quota-shared";
@@ -22,7 +22,7 @@ const context = {
 } as unknown as ProviderDispatchContext;
 
 describe("Buddy upstream protocol alignment", () => {
-  test("keeps tools when tool_choice is none without inventing a cache key", () => {
+  test("injects an account-isolated cache key when the client sent none", () => {
     const payload: Record<string, unknown> = {
       model: "glm-5.2",
       messages: [{ role: "user", content: "hi" }],
@@ -32,7 +32,9 @@ describe("Buddy upstream protocol alignment", () => {
     buddyPrePayloadCommon(payload, request);
     expect(payload["tool_choice"]).toBe("none");
     expect(payload["tools"]).toHaveLength(1);
-    expect(payload["prompt_cache_key"]).toBeUndefined();
+    // No credential and no conversation: the anonymous segment, still injected
+    // so two such requests do not silently share a client-less key shape.
+    expect(payload["prompt_cache_key"]).toBe(buildBuddyPromptCacheKey("", ""));
   });
 
   test("clamps an unsupported international effort without touching a supported one", () => {
@@ -190,6 +192,113 @@ describe("Buddy upstream protocol alignment", () => {
     const payload: Record<string, unknown> = { model: "auto-turbo", messages: [] };
     buddyPrePayloadCommon(payload, request, "intl");
     expect(payload["model"]).toBe("auto-turbo");
+  });
+
+  test("two accounts with the same conversation get different cache keys", () => {
+    const token = (uid: string) =>
+      `h.${Buffer.from(JSON.stringify({ sub: uid })).toString("base64url")}.s`;
+    const forAccount = (uid: string): string => {
+      const payload: Record<string, unknown> = {
+        model: "glm-5.2",
+        messages: [],
+        conversation_id: "conv-shared",
+      };
+      const account = {
+        credential: { secret: new TextEncoder().encode(token(uid)) },
+        request_headers: { "x-conversation-id": "conv-shared" },
+      } as unknown as ProviderDispatchContext;
+      buddyPrePayloadCommon(payload, request, "intl", account);
+      return payload["prompt_cache_key"] as string;
+    };
+    const first = forAccount("account-one-uid");
+    const second = forAccount("account-two-uid");
+    expect(first).not.toBe(second);
+    expect(first.startsWith("wb2a-account-")).toBe(true);
+    expect(second.startsWith("wb2a-account-")).toBe(true);
+    // Same account and conversation is stable across calls.
+    expect(forAccount("account-one-uid")).toBe(first);
+  });
+
+  test("a client-supplied cache key is never overwritten", () => {
+    const payload: Record<string, unknown> = {
+      model: "glm-5.2",
+      messages: [],
+      prompt_cache_key: "caller-knows-best",
+      conversation_id: "conv-1",
+    };
+    const account = {
+      credential: { secret: new TextEncoder().encode("h.e30.s") },
+    } as unknown as ProviderDispatchContext;
+    buddyPrePayloadCommon(payload, request, "intl", account);
+    expect(payload["prompt_cache_key"]).toBe("caller-knows-best");
+  });
+
+  test("the body conversation id wins over the inbound header", () => {
+    const payload: Record<string, unknown> = {
+      model: "glm-5.2",
+      messages: [],
+      conversation_id: "from-body",
+    };
+    const account = {
+      request_headers: { "x-conversation-id": "from-header" },
+    } as unknown as ProviderDispatchContext;
+    buddyPrePayloadCommon(payload, request, "intl", account);
+    const fromHeaderOnly: Record<string, unknown> = { model: "glm-5.2", messages: [] };
+    buddyPrePayloadCommon(fromHeaderOnly, request, "intl", account);
+    expect(payload["prompt_cache_key"]).not.toBe(fromHeaderOnly["prompt_cache_key"]);
+    expect(payload["prompt_cache_key"]).toBe(buildBuddyPromptCacheKey("", "from-body"));
+  });
+
+  test("rewrites a quoted 11128 so the upstream does not block the request for mentioning it", () => {
+    const payload: Record<string, unknown> = {
+      model: "glm-5.2",
+      messages: [
+        { role: "user", content: "the last call failed with code 11128" },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "saw 11128" }],
+          reasoning_content: "code 11128 again",
+          tool_calls: [{ id: "c1", function: { name: "note", arguments: "{\"code\":11128}" } }],
+        },
+      ],
+    };
+    buddyPrePayloadCommon(payload, request);
+    const messages = payload["messages"] as Array<Record<string, unknown>>;
+    const user = messages.find((m) => m["role"] === "user");
+    const text = JSON.stringify(user?.["content"]);
+    expect(text).toContain("11-128");
+    expect(text).not.toContain("11128");
+    const assistant = messages.find((m) => m["role"] === "assistant");
+    expect(JSON.stringify(assistant)).not.toContain("11128");
+    expect(JSON.stringify(assistant)).toContain("11-128");
+  });
+
+  test("leaves neighbouring codes untouched", () => {
+    const payload: Record<string, unknown> = {
+      model: "glm-5.2",
+      messages: [{ role: "user", content: "11148 and 11101 are different codes" }],
+    };
+    buddyPrePayloadCommon(payload, request);
+    const messages = payload["messages"] as Array<Record<string, unknown>>;
+    expect(JSON.stringify(messages)).toContain("11148");
+    expect(JSON.stringify(messages)).toContain("11101");
+  });
+
+  test("keeps the first 16 images and replaces the rest with a note", () => {
+    const images = Array.from({ length: 18 }, (_, i) => ({
+      type: "image_url",
+      image_url: { url: `https://example.test/${i}.png` },
+    }));
+    const payload: Record<string, unknown> = {
+      model: "glm-5.2",
+      messages: [{ role: "user", content: images }],
+    };
+    buddyPrePayloadCommon(payload, request);
+    const messages = payload["messages"] as Array<Record<string, unknown>>;
+    const content = JSON.stringify(messages);
+    const kept = content.match(/example\.test/g)?.length ?? 0;
+    expect(kept).toBe(16);
+    expect(content).toContain("[Image omitted by request image limit.]");
   });
 
   test("sends the desktop device token only when the account has one", async () => {

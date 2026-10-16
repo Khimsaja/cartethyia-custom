@@ -5,6 +5,7 @@ import { metrics } from "./metrics";
 import { DEFAULT_BOUNDS } from "../config/network";
 import { type SourceSurface, type UsageRecord } from "../protocol/canonical-model";
 import { log } from "./logger";
+import { scrubSecrets } from "./redaction";
 
 /**
  * Buffered durable telemetry writer. Coalesces per-request telemetry into
@@ -370,9 +371,11 @@ export class TelemetryBatchBuffer {
     this.lastDrainOutageAt = now;
     this.suppressedDrainOutages = 0;
     log.error(
-      `[telemetry] failed to record batched events${suppressed > 0 ? ` (${suppressed} similar suppressed)` : ""}`,
-      retryError as Error,
-      firstError,
+      scrubSecrets(
+        `[telemetry] failed to record batched events${suppressed > 0 ? ` (${suppressed} similar suppressed)` : ""}`,
+      ),
+      retryError instanceof Error ? new Error(scrubSecrets(retryError.message)) : undefined,
+      typeof firstError === "string" ? scrubSecrets(firstError) : undefined,
     );
   }
 }

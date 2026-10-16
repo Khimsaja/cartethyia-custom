@@ -120,14 +120,14 @@ export function workbuddyPrePayload(
   payload: Record<string, unknown>,
   request: CanonicalRequest,
   candidate: ProviderDispatchTarget,
-  _context?: ProviderDispatchContext,
+  context?: ProviderDispatchContext,
 ): void {
   // International ladder. This hook is shared by `workbuddy` and `workbuddycn`
   // (see workbuddy/cn-provider.ts): the CN effort ladders in the reference
   // gateways are a CodeBuddy-CN concern, so `workbuddycn` deliberately stays on
   // the intl table. Switch to `"cn"` only if a live CN WorkBuddy account proves
   // it serves levels the intl table clamps.
-  buddyPrePayloadCommon(payload, request, "intl");
+  buddyPrePayloadCommon(payload, request, "intl", context);
   const rawModel = payload["model"];
   const source =
     typeof rawModel === "string" && rawModel.length > 0 ? rawModel : candidate.model_id;

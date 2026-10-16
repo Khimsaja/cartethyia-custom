@@ -38,7 +38,7 @@ import { createImageGenerationHandler, createVideoGenerationHandler } from "../t
 import { createTokenCountHandler } from "../transport/dispatch/token-count";
 
 import { createTransportPipeline } from "../transport/guards/pipeline";
-import { createDrainHandler } from "../transport/drain-endpoint";
+import { createDrainHandler, isLoopbackPeer, tokenMatches } from "../transport/drain-endpoint";
 import { PublicModelCatalogStore, type AllowedModelEntry } from "../console/providers/catalog/public-model-store";
 import type { IpAbuseProtectionService } from "../security/abuse";
 import type { ReadinessCheckResult } from "../persistence/readiness";
@@ -546,6 +546,32 @@ export function createGatewayApp(deps: GatewayAppDeps) {
         resolvePeerAddress: (request) => peerAddresses.get(request) ?? null,
       });
       app.post("/admin/drain", drainHandler);
+    }
+
+    // Manual task trigger. Same gate as drain: loopback plus the drain token,
+    // so a leaked token still cannot reach it from outside the host. 202 once
+    // the run has started; 409 when that task is already mid-run, because the
+    // scheduler refuses to overlap a task with itself and a second trigger
+    // would otherwise look like it ran.
+    if (deps.drainToken && deps.scheduledTasks) {
+      const tasks = deps.scheduledTasks;
+      const token = deps.drainToken;
+      app.post("/admin/tasks/:name/run", async ({ request, params }) => {
+        if (!isLoopbackPeer(peerAddresses.get(request) ?? null))
+          throw new GatewayError("invalid_request", 403, "task trigger is only available from loopback");
+        if (!tokenMatches(request.headers.get("x-drain-token"), token))
+          throw new GatewayError("invalid_request", 401, "invalid drain token");
+        const name = params.name;
+        if (!tasks.names().includes(name))
+          throw new GatewayError("invalid_request", 404, `no such task: ${name}`);
+        if (tasks.isRunning(name))
+          throw new GatewayError("invalid_request", 409, `${name} is already running`);
+        void tasks.runNow(name);
+        return new Response(JSON.stringify({ task: name, status: "started" }), {
+          status: 202,
+          headers: { "content-type": "application/json" },
+        });
+      });
     }
 
     // `peerAddresses` is populated by the root `beforeHandle` above from

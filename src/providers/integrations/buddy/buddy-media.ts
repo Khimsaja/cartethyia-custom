@@ -159,7 +159,7 @@ export async function buddyGenerateImage(
   };
   // The exact chat shaping: role normalization, stream, reasoning, then the
   // leading system turn and typed content.
-  buddyPrePayloadCommon(payload, undefined, "intl");
+  buddyPrePayloadCommon(payload, undefined, "intl", context);
   const messages = payload["messages"];
   if (Array.isArray(messages)) {
     applyBuddySystemPrompt(messages as Array<Record<string, unknown>>, config.systemPrompt);

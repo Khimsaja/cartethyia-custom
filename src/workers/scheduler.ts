@@ -109,10 +109,22 @@ export class ScheduledTaskRegistry {
     }
   }
 
+  /** Names of the tasks this process will actually run. */
+  names(): readonly string[] {
+    return this.tasks.map((task) => task.name);
+  }
+
+  /** Whether a task is mid-run. A manual trigger uses this to answer 409. */
+  isRunning(name: string): boolean {
+    return this.running.has(name);
+  }
+
   /** Runs one named task immediately, bypassing its interval — for tests and manual triggers. */
-  async runNow(name: string): Promise<void> {
+  async runNow(name: string): Promise<boolean> {
     const task = this.tasks.find((t) => t.name === name);
-    if (task) await this.runOnce(task);
+    if (!task) return false;
+    await this.runOnce(task);
+    return true;
   }
 
   /** Starts one task's interval timer: unref'd, so it never holds the process open. */

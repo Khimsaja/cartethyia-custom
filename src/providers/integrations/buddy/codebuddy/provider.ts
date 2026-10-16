@@ -70,10 +70,10 @@ function codeBuddyIntlPrePayload(
   payload: Record<string, unknown>,
   request: CanonicalRequest,
   candidate: ProviderDispatchTarget,
-  _context?: ProviderDispatchContext,
+  context?: ProviderDispatchContext,
 ): void {
   // International ladder: DeepSeek Flash and friends serve only `high`.
-  buddyPrePayloadCommon(payload, request, "intl");
+  buddyPrePayloadCommon(payload, request, "intl", context);
   const rawModel = payload["model"];
   const source =
     typeof rawModel === "string" && rawModel.length > 0
