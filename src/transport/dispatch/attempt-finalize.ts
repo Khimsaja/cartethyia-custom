@@ -9,8 +9,7 @@ import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import { TelemetryPayloadCapture } from "../../observability/payload-capture";
 import { payloadDirectory } from "../../observability/payload-store";
 import type { TelemetryBatchBuffer } from "../../observability/telemetry-buffer";
-import { preferencesReaderFor } from "../../persistence/tenant-preferences";
-import type { TelemetryPayloadDepth, TelemetryPayloadMode } from "../../console/settings/contracts";
+import type { TelemetryPayloadDepth } from "../../console/settings/contracts";
 import type { ProxyRequestOutcome, ProxyRequestState } from "../request/state";
 import type { PayloadCaptureState } from "../../observability/payload-capture";
 import { finalizeRequestTelemetry } from "../guards/error-lifecycle";
@@ -22,47 +21,10 @@ import {
   recordPoolDispatchOutcome,
 } from "../../network/pool-health-machine";
 import { ProxyConnectRefusalError } from "../../network/pool/agent";
-
-/**
- * Settings-gated payload capture. Request-event metadata is always retained;
- * tenants opt into drawer capture through Settings → Privacy: `metadata`
- * keeps only the Proxy→Provider request line, `full` keeps redacted bodies
- * at the tenant's chosen depth. Fail-closed on error.
- */
-async function resolvePayloadCapture(
-  db: CartethyiaDatabase,
-  tenantId: string | null,
-): Promise<
-  | { readonly ok: true; readonly mode: TelemetryPayloadMode; readonly depth: TelemetryPayloadDepth }
-  | { readonly ok: false }
-> {
-  if (!tenantId) return { ok: false };
-  try {
-    const prefs = await preferencesReaderFor(db).readPreferences(tenantId);
-    const mode = prefs?.telemetryPayloads;
-    const depth = prefs?.telemetryPayloadDepth;
-    return {
-      ok: true,
-      mode: mode === "full" || mode === "metadata" || mode === "none" ? mode : "none",
-      depth:
-        depth === "minimum" || depth === "moderate" || depth === "maximum"
-          ? depth
-          : depth === "medium"
-            ? "minimum"
-            : depth === "high"
-              ? "moderate"
-              : depth === "full"
-                ? "maximum"
-                : "minimum",
-    };
-  } catch {
-    // A preference read that fails must not invent capture. Off keeps nothing.
-    // Reported as its own state rather than silently as `none`: an operator
-    // whose capture is off by choice and one whose preference read is failing
-    // need different fixes, and both used to look like "not configured".
-    return { ok: false };
-  }
-}
+import {
+  payloadCaptureKeepsBodies,
+  resolvePayloadCapture,
+} from "../../observability/payload-capture";
 
 /**
  * True when the tenant keeps response bodies (mode `full`). The dispatch
@@ -73,8 +35,7 @@ export async function shouldCaptureProviderBody(
   db: CartethyiaDatabase,
   tenantId: string | null,
 ): Promise<boolean> {
-  const resolved = await resolvePayloadCapture(db, tenantId);
-  return resolved.ok && resolved.mode === "full";
+  return payloadCaptureKeepsBodies(db, tenantId);
 }
 
 /**

@@ -241,6 +241,16 @@ function wireToolName(tool: unknown): string | undefined {
 function clampOpenCodeTools(payload: Record<string, unknown>, request: CanonicalRequest): void {
   const tools = payload["tools"];
   if (!Array.isArray(tools) || tools.length <= OPENCODE_MAX_TOOLS) return;
+  // Two sets must never be trimmed away, for different reasons:
+  // - a tool the conversation already called, or its result stays in the
+  //   history with no definition;
+  // - the free-tier fingerprint tool set, which the gate reads on its own. A
+  //   conversation that arrives carrying its own (larger) agent catalog fills
+  //   the wire first, so a clamp that keeps only called tools drops the
+  //   fingerprint tools and the dispatch is refused with 403 FreeTierError —
+  //   reproduced live on 2026-10-16 from a 128-tool Claude Code session routed
+  //   to a free model.
+  const protectedNames = new Set<string>(FREE_AGENT_TOOL_NAMES);
   const called = new Set<string>();
   for (const message of request.messages) {
     for (const part of message.content) {
@@ -251,13 +261,12 @@ function clampOpenCodeTools(payload: Record<string, unknown>, request: Canonical
   const rest: unknown[] = [];
   for (const tool of tools) {
     const name = wireToolName(tool);
-    if (name !== undefined && called.has(name)) kept.push(tool);
+    if (name !== undefined && (called.has(name) || protectedNames.has(name))) kept.push(tool);
     else rest.push(tool);
   }
   if (kept.length > OPENCODE_MAX_TOOLS) return;
   payload["tools"] = [...kept, ...rest.slice(0, OPENCODE_MAX_TOOLS - kept.length)];
 }
-
 function opencodeSpec(providerId: "opencodeft" | "opencodezen" | "opencodego"): ApiKeyProviderSpec {
   // Free-tier gate facts (verified live 2026-10-14 against opencode.ai/zen/v1):
   // a request for a free model with stream:false is ALWAYS refused with 403

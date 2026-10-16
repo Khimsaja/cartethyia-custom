@@ -24,6 +24,7 @@ import { OpenAICompatibleAdapter, withBearerAuthentication } from "../../adapter
 import { postUpstreamJson } from "../../../protocol/upstream/post-json";
 import { providerBaseUrl } from "../../provider-metadata";
 import { getOrCreateInstallId } from "../shared/install-id";
+import { resolveRedisClient } from "../../../persistence/redis";
 import { applyParamQuirks } from "../../../transport/translation/quirks";
 import { resolveInboundSessionId } from "../../operations/session-resolution";
 import {
@@ -43,17 +44,7 @@ export const GITHUB_ENDPOINT_PATH = "/chat/completions" as const;
  */
 export const GITHUB_RESPONSES_ENDPOINT_PATH = "/responses" as const;
 
-/**
- * Long-context tier marker.
- *
- * A request for a SKU whose window is at or above the long-context threshold
- * carries this field so Copilot serves it from the long-context pool. It is a
- * Copilot-specific extension, not an OpenAI field, and the native Anthropic
- * surface rejects it as an unknown top-level key — so it is injected only on
- * the chat and responses wires, and only when the account's own catalog reports
- * a qualifying window.
- */
-export const GITHUB_CONTEXT_TIER = "long_context" as const;
+
 
 /**
  * The highest reasoning effort Copilot serves. A caller asking for `max` or
@@ -76,8 +67,7 @@ function clampGithubReasoningEffort(payload: Record<string, unknown>): void {
     payload["reasoning"] = { ...reasoning, effort: GITHUB_REASONING_EFFORT_CAP };
   }
 }
-/** Context window at or above which the account is served from the long tier. */
-export const GITHUB_LONG_CONTEXT_THRESHOLD = 500_000;
+
 
 /** Supported virtual Copilot Auto catalog ids and their router tiers. */
 export const GITHUB_AUTO_MODEL_TIERS: ReadonlyMap<string, "efficiency" | "balance" | "intelligence"> = new Map([
@@ -106,18 +96,77 @@ export const GITHUB_EXCLUDED_MODEL_IDS: ReadonlySet<string> = new Set([
   "mai-code-1.1-flash",
 ]);
 
-/**
- * Long-context models reported by each account's own model directory.
- */
-const longContextModelIdsByCredential = new Map<string, ReadonlySet<string>>();
 const modelRoutesByCredential = new Map<string, ReadonlyMap<string, GithubModelRoute>>();
-const GITHUB_AUTO_SESSION_CACHE_MAX_ENTRIES = 50;
-const GITHUB_AUTO_SESSION_EXPIRY_SKEW_MS = 5 * 60 * 1_000;
+
+/**
+ * Shared route-map window. Discovery is per account and infrequent, so a short
+ * shared entry lets a peer instance route a credential without re-running
+ * discovery. Keyed by the credential hash already computed below, so no
+ * credential material reaches the cache value.
+ */
+const GITHUB_ROUTE_TTL_SECONDS = 300;
+const GITHUB_ROUTE_KEY_PREFIX = "github:routes:v1:";
+
+function serializeRouteMap(routes: ReadonlyMap<string, GithubModelRoute>): string {
+  return JSON.stringify([...routes]);
+}
+
+function parseRouteMap(raw: string): Map<string, GithubModelRoute> | undefined {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return undefined;
+    const map = new Map<string, GithubModelRoute>();
+    for (const entry of parsed) {
+      if (!Array.isArray(entry) || entry.length !== 2) continue;
+      const [modelId, route] = entry as [unknown, unknown];
+      if (typeof modelId !== "string" || route === null || typeof route !== "object") continue;
+      const wireFamily = (route as { wireFamily?: unknown }).wireFamily;
+      const endpointPath = (route as { endpointPath?: unknown }).endpointPath;
+      if ((wireFamily === "chat" || wireFamily === "responses") && typeof endpointPath === "string") {
+        map.set(modelId, { wireFamily, endpointPath });
+      }
+    }
+    return map.size > 0 ? map : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function readSharedModelRoutes(key: string): Promise<Map<string, GithubModelRoute> | undefined> {
+  const redis = resolveRedisClient();
+  if (!redis) return undefined;
+  try {
+    const hit = await redis.get(`${GITHUB_ROUTE_KEY_PREFIX}${key}`);
+    return hit === null ? undefined : parseRouteMap(hit);
+  } catch {
+    return undefined;
+  }
+}
+
+async function writeSharedModelRoutes(
+  key: string,
+  routes: ReadonlyMap<string, GithubModelRoute>,
+): Promise<void> {
+  const redis = resolveRedisClient();
+  if (!redis) return;
+  try {
+    await redis.set(
+      `${GITHUB_ROUTE_KEY_PREFIX}${key}`,
+      serializeRouteMap(routes),
+      "EX",
+      GITHUB_ROUTE_TTL_SECONDS,
+    );
+  } catch {
+    // Shared visibility only; the local map stays authoritative.
+  }
+}
 
 export interface GithubModelRoute {
   readonly wireFamily: "chat" | "responses";
   readonly endpointPath: string;
 }
+const GITHUB_AUTO_SESSION_CACHE_MAX_ENTRIES = 50;
+const GITHUB_AUTO_SESSION_EXPIRY_SKEW_MS = 5 * 60 * 1_000;
 
 function githubCredentialKey(value: string): string | undefined {
   try {
@@ -129,35 +178,6 @@ function githubCredentialKey(value: string): string | undefined {
     return undefined;
   }
 }
-
-/** Whether this account's catalog reported `modelId` at the long-context tier. */
-export function githubModelUsesLongContext(modelId: string, credential: string): boolean {
-  const key = githubCredentialKey(credential);
-  if (key === undefined) return false;
-  return longContextModelIdsByCredential.get(key)?.has(modelId.toLowerCase()) === true;
-}
-
-/** Replaces the account's long-context roster with the latest discovery result. */
-export function recordGithubLongContextModels(
-  credential: string,
-  models: readonly ModelDefinition[],
-): void {
-  const key = githubCredentialKey(credential);
-  if (key === undefined) return;
-  longContextModelIdsByCredential.set(
-    key,
-    new Set(
-      models
-        .filter(
-          (model) =>
-            model.contextLimit !== null &&
-            model.contextLimit >= GITHUB_LONG_CONTEXT_THRESHOLD,
-        )
-        .map((model) => model.modelId.toLowerCase()),
-    ),
-  );
-}
-
 /** Replaces this account's discovered model-to-endpoint routing map. */
 export function recordGithubModelRoutes(
   credential: string,
@@ -174,17 +194,25 @@ export function recordGithubModelRoutes(
       model.modelId.toLowerCase(),
       { wireFamily: model.wireFamily, endpointPath: model.endpointPath },
     ] as const);
-  modelRoutesByCredential.set(key, new Map(routes));
+  const routeMap = new Map(routes);
+  modelRoutesByCredential.set(key, routeMap);
+  // Publish for peer instances without blocking discovery on the write.
+  void writeSharedModelRoutes(key, routeMap);
 }
 
 /** Looks up an inference surface reported by this account's model directory. */
-export function githubModelRoute(
+export async function githubModelRoute(
   modelId: string,
   credential: string,
-): GithubModelRoute | undefined {
+): Promise<GithubModelRoute | undefined> {
   const key = githubCredentialKey(credential);
   if (key === undefined) return undefined;
-  return modelRoutesByCredential.get(key)?.get(modelId.toLowerCase());
+  const local = modelRoutesByCredential.get(key);
+  if (local !== undefined) return local.get(modelId.toLowerCase());
+  const shared = await readSharedModelRoutes(key);
+  if (shared === undefined) return undefined;
+  modelRoutesByCredential.set(key, shared);
+  return shared.get(modelId.toLowerCase());
 }
 
 function isAgentInitiated(request: CanonicalRequest): boolean {
@@ -343,37 +371,8 @@ class GithubAdapter extends OpenAICompatibleAdapter {
           chat: GITHUB_ENDPOINT_PATH,
           responses: GITHUB_RESPONSES_ENDPOINT_PATH,
         },
-        // The long-context tier is a Copilot request extension, injected only
-        // for a model the account's own catalog reported at or above the
-        // threshold. `contextTier` is applied after wire translation so it
-        // rides on the serialized body the upstream actually reads.
-        prePayload: (payload, request, candidate, context) => {
+        prePayload: (payload) => {
           clampGithubReasoningEffort(payload);
-          if (
-            this.#autoSessionTokens.has(request) &&
-            candidate.wire_family === "responses"
-          ) {
-            const reasoning = payload["reasoning"];
-            if (!isRecord(reasoning)) {
-              payload["reasoning"] = { summary: "detailed" };
-            } else if (
-              reasoning["summary"] === undefined ||
-              reasoning["summary"] === "auto"
-            ) {
-              payload["reasoning"] = { ...reasoning, summary: "detailed" };
-            }
-          }
-          const secret = context.credential.secret;
-          if (
-            secret === undefined ||
-            !githubModelUsesLongContext(request.model, new TextDecoder().decode(secret))
-          ) return;
-          // Only the OpenAI-shaped surfaces accept the extension; the native
-          // Anthropic surface validates against its own schema and rejects an
-          // unknown top-level key. The candidate's wire family decides.
-          if (candidate.wire_family !== "chat" && candidate.wire_family !== "responses") return;
-          if (payload.contextTier !== undefined) return;
-          payload.contextTier = GITHUB_CONTEXT_TIER;
         },
         ...(fetchImpl ? { fetchImpl } : {}),
       }),
@@ -421,7 +420,7 @@ class GithubAdapter extends OpenAICompatibleAdapter {
       if (cacheKey !== undefined) this.#cacheAutoDecision(cacheKey, autoDecision);
     }
     const selectedModelId = autoDecision.modelId;
-    let route = githubModelRoute(selectedModelId, credential);
+    let route = await githubModelRoute(selectedModelId, credential);
     if (route === undefined) {
       const { discoverGithubModels } = await import("./github-discovery");
       const outboundFetch = context.outbound_fetch;
@@ -437,7 +436,7 @@ class GithubAdapter extends OpenAICompatibleAdapter {
         signal: context.abort_signal,
       });
       if (context.abort_signal.aborted) throw context.abort_signal.reason;
-      route = githubModelRoute(selectedModelId, credential);
+      route = await githubModelRoute(selectedModelId, credential);
     }
     if (route === undefined) {
       throw new GatewayError(
@@ -612,7 +611,7 @@ class GithubAdapter extends OpenAICompatibleAdapter {
     Object.assign(headers, GITHUB_REQUEST_HEADERS);
     const autoSessionToken = this.#autoSessionTokens.get(request);
     if (autoSessionToken !== undefined) {
-      headers["copilot-session-token"] = autoSessionToken;
+      headers["Copilot-Session-Token"] = autoSessionToken;
     }
     const requestId = context.request_id ?? randomUUID();
     Object.assign(headers, {

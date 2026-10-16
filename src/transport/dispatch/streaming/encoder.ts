@@ -10,6 +10,7 @@
  * client-visible tracking → encode + enqueue) is preserved exactly.
  */
 import type { CanonicalEvent, SourceSurface, UsageRecord } from "../../../protocol/canonical-model";
+import { MimoThinkSplitter } from "../../../providers/integrations/xiaomi-mimo/think-stream";
 import { createDispatchStreamEncoder, type DispatchStreamEncoder } from "../stream-bridge";
 
 /** The terminal event shape every stream settles (or fails to settle) on. */
@@ -74,6 +75,11 @@ export class StreamEventPipeline {
   // on every upstream event for the telemetry transcript copy.
   private readonly clientResponseDecoder = new TextDecoder();
   private readonly streamEncoder: DispatchStreamEncoder;
+  // One splitter per stream: a thinking tag can straddle two provider chunks,
+  // and the text/idle bookkeeping below must see the split result, not the raw
+  // tagged chunk.
+  private readonly thinkSplitter = new MimoThinkSplitter();
+  private lastSequenceNumber = -1;
 
   constructor(
     surface: SourceSurface,
@@ -203,7 +209,68 @@ export class StreamEventPipeline {
     event: CanonicalEvent,
     controller: ReadableStreamDefaultController<Uint8Array>,
   ): boolean {
-    const timestampedEvent = { ...event, timestamp: Date.now() };
+    // The one place every surface shares. A provider that writes its reasoning
+    // into the answer as `<think>…</think>` had that text forwarded verbatim:
+    // the chat wire happened to split it in its own decoder, so chat looked
+    // right while messages and responses — and any other provider wire whose
+    // text carries the tags — showed the raw reasoning as the answer.
+    if (event.type === "content_delta" && event.content.kind === "text") {
+      const split = this.thinkSplitter.push(event.content.text);
+      let enqueued = false;
+      if (split.reasoning.length > 0) {
+        enqueued =
+          this.enqueueOne(
+            { ...event, content: { kind: "reasoning", payload: null, summary: split.reasoning } },
+            controller,
+          ) || enqueued;
+      }
+      if (split.text.length > 0) {
+        enqueued =
+          this.enqueueOne({ ...event, content: { kind: "text", text: split.text } }, controller) ||
+          enqueued;
+      }
+      return enqueued;
+    }
+    // Text held back for a tag that never completed must be released *before*
+    // the terminal: a content event after it is rejected by the surface
+    // encoders, and the tail of the answer would be lost instead.
+    if (event.type === "terminal") {
+      const rest = this.thinkSplitter.flush();
+      if (rest.reasoning.length > 0) {
+        this.enqueueOne(
+          {
+            type: "content_delta",
+            sequence_number: event.sequence_number,
+            content: { kind: "reasoning", payload: null, summary: rest.reasoning },
+          },
+          controller,
+        );
+      }
+      if (rest.text.length > 0) {
+        this.enqueueOne(
+          {
+            type: "content_delta",
+            sequence_number: event.sequence_number,
+            content: { kind: "text", text: rest.text },
+          },
+          controller,
+        );
+      }
+    }
+    return this.enqueueOne(event, controller);
+  }
+
+  private enqueueOne(
+    event: CanonicalEvent,
+    controller: ReadableStreamDefaultController<Uint8Array>,
+  ): boolean {
+    // A split emits two events from one chunk, so the second repeats the source
+    // sequence number. The Responses encoder requires strictly increasing
+    // numbers, so bump only on a repeat: an already-increasing stream keeps the
+    // decoder's own numbers untouched.
+    const sequenceNumber = Math.max(event.sequence_number, this.lastSequenceNumber + 1);
+    this.lastSequenceNumber = sequenceNumber;
+    const timestampedEvent = { ...event, sequence_number: sequenceNumber, timestamp: Date.now() };
     this.recordTelemetryEvent(timestampedEvent);
     this.lastEventAtMs = timestampedEvent.timestamp;
 

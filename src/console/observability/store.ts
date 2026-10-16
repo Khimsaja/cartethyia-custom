@@ -8,6 +8,7 @@ import {
   type TelemetryEventRecord,
 } from "../../observability/event-log";
 import { isGatewayError } from "../../observability/telemetry-status";
+import { cachedRead } from "../shared/read-through-cache";
 import { decodeDatedCursor, encodeCursor } from "../shared/cursor";
 import { CARTETHYIA_VERSION } from "../../version";
 import { CachedPreferencesReader, DrizzlePreferencesReader, type PreferencesReader } from "../../persistence/tenant-preferences";
@@ -188,8 +189,13 @@ async function resolveProxyLabel(
 }
 const HEALTH_WINDOW_MS = 24 * 3_600_000;
 const TOP_N = 50;
-/** How long one dashboard poll burst shares a parsed period event set. */
-const PERIOD_MEMO_TTL_MS = 1_500;
+/**
+ * How long a parsed window is shared. A dashboard poll fires ~8 usage
+ * endpoints at once, and a slow parse used to outlive a 1.5 s window — so the
+ * endpoints that missed it each re-read and re-parsed the same files, which is
+ * how one page load became several full parses of the retention window.
+ */
+const PERIOD_MEMO_TTL_MS = 5_000;
 
 /** Nearest-rank percentile over a sorted array, matching `percentile_cont` closely enough for a health gauge. */
 function percentile(sorted: readonly number[], fraction: number): number {
@@ -394,7 +400,22 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
     };
   }
   async usage(tenantId: string, period: string): Promise<UsageResponse> {
-    return this.computeUsage(tenantId, period);
+    return this.readThrough(this.usageCacheKey(tenantId, period, "usage"), () =>
+      this.computeUsage(tenantId, period),
+    );
+  }
+
+  /**
+   * Cache key for one usage response. Versioned so a shape change can never be
+   * read back from a deployment that still holds the old one.
+   */
+  private usageCacheKey(tenantId: string, period: string, shape: string): string {
+    return `cartethyia:usage:v1:${shape}:${tenantId}:${period}`;
+  }
+
+  /** Reads a usage response through Redis; computes when no cache is configured. */
+  private readThrough<T>(key: string, compute: () => Promise<T>): Promise<T> {
+    return cachedRead(this.redis, key, compute);
   }
 
   private async computeUsage(tenantId: string, period: string): Promise<UsageResponse> {
@@ -445,6 +466,12 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
   }
 
   async usageSummary(tenantId: string, period: string): Promise<UsageSummaryResponse> {
+    return this.readThrough(this.usageCacheKey(tenantId, period, "summary"), () =>
+      this.computeSummary(tenantId, period),
+    );
+  }
+
+  private async computeSummary(tenantId: string, period: string): Promise<UsageSummaryResponse> {
     const events = await this.periodEvents(tenantId, period);
     const performance = summarizeUsagePerformance(events);
     let requests = 0;
@@ -499,6 +526,12 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
   }
 
   async usageChart(tenantId: string, period: string): Promise<UsageChartResponse> {
+    return this.readThrough(this.usageCacheKey(tenantId, period, "chart"), () =>
+      this.computeChart(tenantId, period),
+    );
+  }
+
+  private async computeChart(tenantId: string, period: string): Promise<UsageChartResponse> {
     const since = periodStartDate(period);
     const bucketSeconds = chartBucketSeconds(period);
     const stepMs = bucketSeconds * 1000;
@@ -530,6 +563,16 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
   }
 
   async usageBy(
+    tenantId: string,
+    dimension: UsageDimension,
+    period: string,
+  ): Promise<UsageByResponse> {
+    return this.readThrough(this.usageCacheKey(tenantId, `${dimension}:${period}`, "by"), () =>
+      this.computeBy(tenantId, dimension, period),
+    );
+  }
+
+  private async computeBy(
     tenantId: string,
     dimension: UsageDimension,
     period: string,
@@ -632,6 +675,12 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
   }
 
   async usageCache(tenantId: string, period: string): Promise<UsageCacheResponse> {
+    return this.readThrough(this.usageCacheKey(tenantId, period, "cache"), () =>
+      this.computeCache(tenantId, period),
+    );
+  }
+
+  private async computeCache(tenantId: string, period: string): Promise<UsageCacheResponse> {
     const events = await this.periodEvents(tenantId, period);
     let inputTokens = 0;
     let cachedTokens = 0;
@@ -659,11 +708,18 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
     limit: number,
     httpStatus?: number,
   ): Promise<UsageRequestsResponse> {
-    const events = await this.periodEvents(tenantId, period);
-    const rows = (httpStatus === undefined
-      ? events
-      : events.filter((event) => effectiveHttpStatus(event) === httpStatus)
-    ).slice(0, limit);
+    // Ask the reader for `limit` rows instead of folding the whole window and
+    // slicing it. It stops at the newest file that fills the page, so the
+    // console's most-polled endpoint no longer parses the retention window just
+    // to show 50 rows.
+    const since = periodStartDate(period);
+    const events = await queryTelemetryEvents({
+      tenantId,
+      limit,
+      ...(httpStatus === undefined ? {} : { httpStatus }),
+      ...(since === undefined ? {} : { since }),
+    });
+    const rows = events.slice(0, limit);
     const hideClientIp = await shouldMaskClientIp(this.preferences, tenantId);
     const keyIds = [...new Set(rows.map((row) => row.apiKeyId).filter((id): id is string => id !== null))];
     const labels = await this.apiKeyLabels(tenantId, keyIds);

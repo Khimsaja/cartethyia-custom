@@ -149,6 +149,12 @@ an operator who turned proxying back on keeps it on.
 ## Model catalog
 
 - OpenCode Zen is id-oriented; models.dev carries rich metadata.
+- OpenCode's **free tier** (`opencodeft`) is gated on an agent-tool fingerprint
+  set present in the wire `tools` array, so any change that trims, dedupes, or
+  rewrites that array can turn a working dispatch into a 403 `FreeTierError`.
+  The names, the trap, and the replay evidence are in
+  [`cartethyia-trace-replay`](../cartethyia-trace-replay/references/opencode-free-tier.md).
+  Free ids are chat-only (`responses` → 400 `ModelProtocolUnsupported`).
 - `src/providers/discovery/base-models.json` is the single offline catalog
   authority, with compact rows and generated indexes in the same file. Do not
   add a duplicate raw or compact snapshot.

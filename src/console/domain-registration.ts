@@ -210,7 +210,7 @@ export function registerConsoleDomains(
   const apiKeyStore = new DrizzleApiKeyStore(ctx.db);
   const modelTemplateStore = new DrizzleModelTemplateStore(ctx.db);
   const shareStore = new DrizzleShareLinkStore(ctx.db);
-  const shareActivity = createShareUsagePort(ctx.db);
+  const shareActivity = createShareUsagePort({ db: ctx.db, redis: ctx.redis });
 
 
   console.use(createObservabilityRoutes({ store: observabilityStore, accessResolver: ctx.accessResolver }));

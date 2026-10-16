@@ -355,6 +355,30 @@ describe("readIngressBody — size limits", () => {
     expect(failure.message).toContain("1048576");
   });
 
+  test("the configured ceiling is enforced without a content-length", async () => {
+    // What the ingress middleware actually passes: the operator-configured
+    // ceiling. A body past it is refused whether or not the client declared its
+    // size — a chunked request has no content-length, so the read-time counter
+    // is the only bound that holds.
+    const { resolveMaxBodyBytes } = await import("../../src/config/runtime");
+    const limit = resolveMaxBodyBytes();
+    const oversized = JSON.stringify({ t: "x".repeat(limit + 1) });
+    const streamed = new Request("https://gateway.test/v1/chat/completions", {
+      method: "POST",
+      body: oversized,
+      headers: { "content-type": "application/json" },
+    });
+    // The Request constructor sets content-length; strip it to model a chunked
+    // client, so only the read-time check can refuse the body.
+    streamed.headers.delete("content-length");
+    await expect(readIngressBody(streamed, { maxBodyBytes: limit })).rejects.toBeInstanceOf(GatewayError);
+
+    const declared = request("/v1/chat/completions", "{}", {
+      headers: { "content-length": String(limit + 1) },
+    });
+    await expect(readIngressBody(declared, { maxBodyBytes: limit })).rejects.toBeInstanceOf(GatewayError);
+  });
+
   test("the default limit is one mebibyte", () => {
     // The documented default. A body just under it is accepted with no options.
     const under = JSON.stringify({ t: "x".repeat(1_048_000) });

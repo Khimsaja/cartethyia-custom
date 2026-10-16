@@ -298,7 +298,7 @@ export interface UpstreamFailurePolicy {
   readonly credentialEvidence?: boolean;
   readonly retryAfterMs?: number;
   readonly statusCode?: number;
-  /** Provider that produced the failure, for the buddy `11140` policy block. */
+  /** Provider that produced the failure, for the buddy policy blocks (`11140`, and `11-128` channel verification). */
   readonly providerId?: string;
 }
 
@@ -310,7 +310,24 @@ export function classifyUpstreamFailure(error: unknown): UpstreamFailurePolicy {
   const providerCode = typeof error.details.providerCode === "string" ? error.details.providerCode : undefined;
   const providerId = typeof error.details.providerId === "string" ? error.details.providerId : undefined;
   const credentialEvidence = error.details.credentialEvidence === true || error.details.accountScope === true;
-  const policyAccountEvidence = providerCode === "11140";
+  // The buddy family reuses `11-128` for two unrelated rejections, so the code
+  // alone is not evidence:
+  //
+  // - "conversation id missing" — a malformed outbound request. The fault is
+  //   this gateway's, so cooling the account would burn a healthy credential
+  //   on a body that fails identically everywhere.
+  // - "request illegal" / "failed channel verification … not sent from an
+  //   official client" — a verdict on the account's channel. Proven account-
+  //   scoped: two live share-page requests carrying byte-identical bodies and
+  //   headers to the same model differed only in the pooled account, and the
+  //   blocked one 400'd while the other 200'd (2026-10-16).
+  //
+  // Only the second may mutate account health, hence the message test.
+  const message = error.message.toLowerCase();
+  const channelBlockEvidence =
+    providerCode === "11-128" &&
+    (message.includes("request illegal") || message.includes("channel verification"));
+  const policyAccountEvidence = providerCode === "11140" || channelBlockEvidence;
   let scope: "network" | "account" | "provider";
   if (error.origin === "network") scope = "network";
   else if (credentialEvidence || policyAccountEvidence) scope = "account";
@@ -337,8 +354,13 @@ export function classifyUpstreamFailure(error: unknown): UpstreamFailurePolicy {
     (statusCode >= 500 && statusCode <= 599);
   const mutatesAccount = error.origin === "upstream" && scope === "account";
   const retryable =
-    mutatesAccount || // account-scoped failure: try a sibling regardless of status
-    error.code === "capability_unsupported" ||
+    // Gateway-wide overload: no sibling candidate can help, because the whole
+    // process is short of memory. The correct move is the client retrying after
+    // the hint, not another attempt here.
+    error.code === "overloaded"
+      ? false
+      : mutatesAccount || // account-scoped failure: try a sibling regardless of status
+        error.code === "capability_unsupported" ||
     error.code === "model_not_found" ||
     error.code === "admission_unavailable" ||
     error.code === "capacity_exhausted" ||

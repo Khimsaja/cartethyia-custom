@@ -34,6 +34,34 @@ both of which looked like better suspects.
 4. **Attribute** the field to its owner in this repo (below), and fix there.
 5. **Prove the flip** against a real instance, and prove the test locks it.
 
+## When the cause is absent, not present
+
+Bisect-by-removal finds a field that is *wrong*. It cannot find a field that is
+**missing**, and worse, removal can flip a status for the wrong reason — strip
+`tools` to shrink a body and a gate that reads `tools` membership changes its
+answer, which reads like "size" or like a tool-shape bug.
+
+Two tells that the arm is a membership test rather than a field value:
+
+- **Adding** the suspected thing fixes it (not removing it).
+- The gate accepts the required set **alongside** unrelated entries — it is
+  "contains", not "equals". If 11 required names plus 128 foreign ones still
+  pass, nothing needs to be dropped.
+
+So when removal has not isolated the cause within a few arms, run the mirror
+experiment: take the minimal known-good set, then add one thing at a time to the
+failing body. The thing that turns 200 is the gap.
+
+Then check the **pipeline that produces the payload**, not just its final shape.
+A backfill that adds a required field and a later clamp/trim/dedupe that removes
+it compose into a payload with neither — both sites look correct in isolation.
+Reproduce by emulating each stage in order over the captured body and printing
+what survives each one.
+
+Gates known to work this way: OpenCode's free tier reads an agent-tool
+fingerprint set out of `tools` — see
+[`references/opencode-free-tier.md`](references/opencode-free-tier.md).
+
 ## Read the decisive test
 
 Same failing body, only that field varies:
@@ -66,6 +94,8 @@ suspect size. Before concluding that, add a tiny explicit limit: 3.16M chars +
 | Responses body | `canonicalToResponsesPayload` in `src/protocol/request/responses.ts` |
 | Provider-specific hooks | `buddyPrePayloadCommon` in `src/providers/integrations/buddy/buddy-chat-shared.ts`, and each adapter's `prePayload` |
 | Error mapping/classification | `mapUpstreamHttpError` in `src/transport/failure-policy.ts` |
+| `tools` array membership / trim | `clampOpenCodeTools` and `ensureFreeAgentRequest` in `src/providers/integrations/opencode/provider.ts` |
+| Free-tier refusal (403 `FreeTierError`) | the adapter's fingerprint set, not auth — see [`references/opencode-free-tier.md`](references/opencode-free-tier.md) |
 
 A call site that consults the bound table **only when the caller sent a value**
 forwards an omitted field as absent. Look for `if (typeof x === "number")`
@@ -160,6 +190,11 @@ it, see it pass. A test that passes both ways proves nothing.
   a `401` proves the host answered and only the key was missing, while `000`
   with no response means DNS, TLS, or egress. Do not report a host as
   unreachable on a single `000`.
+- **`curl -o <file>` is unreliable on Windows here**: it intermittently returns
+  exit 43 / HTTP 000 even against a host that answers (schannel renegotiation),
+  which is indistinguishable from the unreachable case above. For a replay that
+  needs the response body, prefer `bun -e` with `fetch` — same request, no
+  schannel path. If `curl` must be used, confirm with `curl -v` first.
 - Work in a scratch directory outside the repo; delete it when done. Leave no
   replay scripts or captured payloads in the tree.
 - Send the same `user-agent` as the failing client so the gateway takes the same

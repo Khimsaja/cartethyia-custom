@@ -47,9 +47,9 @@ export const GITHUB_DEFAULT_API_HOST = "api.individual.githubcopilot.com" as con
  * which is what the upstream expects for this client id.
  */
 export const GITHUB_REQUEST_HEADERS: Readonly<Record<string, string>> = Object.freeze({
-  "user-agent": "GitHubCopilotChat/0.69.0",
-  "editor-version": "vscode/1.141.0",
-  "editor-plugin-version": "copilot-chat/0.69.0",
+  "user-agent": "GitHubCopilotChat/0.70.0",
+  "editor-version": "vscode/1.142.0",
+  "editor-plugin-version": "copilot-chat/0.70.0",
   "copilot-integration-id": "vscode-chat",
   "x-github-api-version": "2026-08-01",
 });

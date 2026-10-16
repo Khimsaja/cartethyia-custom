@@ -60,6 +60,51 @@ describe("thinking.display degradation", () => {
   });
 });
 
+describe("thinking budget derived from effort", () => {
+  test("an enabled block without a budget is sized from the caller effort", () => {
+    // The reported failure: an OpenAI-shaped caller sent `thinking.enabled`
+    // with `reasoning_effort: max` and no `budget_tokens`, and parse refused
+    // before the payload builder could derive one.
+    const parsed = parseThinking({ type: "enabled" }, MODEL, {}, 128000, "max");
+    expect(parsed?.thinking_type).toBe("enabled");
+    expect(parsed?.budget_tokens).toBe(128000);
+  });
+
+  test("a minimal effort is raised to the upstream floor", () => {
+    // LEVEL_TO_BUDGET.minimal is 512 and the upstream floors a thinking budget
+    // at 1024, so the derived value must be raised rather than left to 400.
+    const parsed = parseThinking({ type: "enabled" }, MODEL, {}, 128000, "minimal");
+    expect(parsed?.budget_tokens).toBe(1024);
+  });
+
+  test("without an effort a missing budget is still refused", () => {
+    // Nothing to size it from: keep the local error rather than forward a
+    // request the upstream answers with `budget_tokens: Field required`.
+    expect(() => parseThinking({ type: "enabled" }, MODEL, {}, 128000)).toThrow(
+      /requires integer budget_tokens/,
+    );
+  });
+
+  test("an explicit budget still wins over the effort", () => {
+    const parsed = parseThinking(
+      { type: "enabled", budget_tokens: 4096 },
+      MODEL,
+      {},
+      128000,
+      "max",
+    );
+    expect(parsed?.budget_tokens).toBe(4096);
+  });
+
+  test("an explicit budget above max_tokens is still refused", () => {
+    // Only a budget this gateway derived is resized by the payload builder; a
+    // caller's own number keeps the `budget < max_tokens` contract.
+    expect(() =>
+      parseThinking({ type: "enabled", budget_tokens: 128000 }, MODEL, {}, 128000),
+    ).toThrow(/less than max_tokens/);
+  });
+});
+
 describe("thinking.display rejection", () => {
   test("an unknown value is still refused", () => {
     // Degrading a typo would hide the caller's mistake.

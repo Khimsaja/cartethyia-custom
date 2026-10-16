@@ -10,9 +10,12 @@
 // Everything here is read-only and payload-free: token counts, model slugs,
 // masked addresses. No request or response bodies cross this boundary.
 
+import { createHash } from "node:crypto";
 import { maskClientIp } from "../../observability/redaction";
 import { queryTelemetryEvents, type TelemetryEventRecord } from "../../observability/event-log";
 import { isGatewayError } from "../../observability/telemetry-status";
+import type { RedisClient } from "../../persistence/redis";
+import { cachedRead } from "../shared/read-through-cache";
 import { utcDayStart, utcMonthStart } from "../shared/day";
 
 /** Totals for the whole share family, all-time plus the windows the UI draws. */
@@ -223,73 +226,116 @@ const TOP_MODELS_LIMIT = 50;
 const TOP_IPS_LIMIT = 50;
 const HOURS_WINDOW = 24;
 
-export function createShareStatsPort(): ShareStatsPort {
+/**
+ * Cache lifetime for one family's rollup. Equal to the share page's 2 s SSE
+ * tick: a viewer cannot observe staleness longer than the refresh it already
+ * accepts, while every viewer of one link shares a single computation. Declared
+ * here rather than imported from the router so this port does not depend on it.
+ */
+export const SHARE_STATS_CACHE_TTL_SECONDS = 2;
+
+/**
+ * Cache key for one family's rollup. Both inputs change the payload — `keyIds`
+ * selects the family and `allowedModels` filters the model table — so both are
+ * hashed in; the key ids are sorted so key order cannot split one family across
+ * two entries.
+ */
+function shareFamilyStatsKey(
+  tenantId: string,
+  keyIds: readonly string[],
+  allowedModels: readonly string[] | undefined,
+): string {
+  const models = allowedModels === undefined ? "*" : [...allowedModels].sort().join(",");
+  const hash = createHash("sha256")
+    .update([...keyIds].sort().join(",") + "|" + models)
+    .digest("hex");
+  return `share:v1:stats:${tenantId}:${hash}`;
+}
+
+interface ShareStatsPortDeps {
+  readonly redis?: RedisClient | undefined;
+}
+
+export function createShareStatsPort(deps: ShareStatsPortDeps = {}): ShareStatsPort {
   return {
     async getFamilyStats(tenantId, keyIds, recipients, allowedModels) {
       if (keyIds.length === 0) return emptyStats(recipients);
-      // A share that grants a fixed set ranks only that set. Telemetry keeps the
-      // requested name even when the request was refused for naming a model the
-      // key may not use, so an unfiltered table would list exactly the invalid
-      // names an abuser probed. `null` means the link is unrestricted.
-      const allowedSet =
-        allowedModels === undefined ? null : new Set(allowedModels);
-
-      const now = new Date();
-      const dayStart = utcDayStart(now);
-      const monthStart = utcMonthStart(now);
-      const hourStart = utcHourStart(now);
-      const lastHourStart = new Date(now.getTime() - HOUR_MS);
-      const windowStart = new Date(hourStart.getTime() - (HOURS_WINDOW - 1) * HOUR_MS);
-
-      // Rank only names the grant actually authorizes. Telemetry keeps the
-      // requested name even when the request was refused, so an unfiltered table
-      // would list exactly the invalid names an abuser probed. Filtering before
-      // the top-50 cut means refused names cannot hide a model the recipient may
-      // use.
-      const events = await queryTelemetryEvents({ tenantId, apiKeyIds: [...keyIds] });
-      const rollup = rollupFamily(events, {
-        dayStart: dayStart.getTime(),
-        monthStart: monthStart.getTime(),
-        lastHourStart: lastHourStart.getTime(),
-        windowStart: windowStart.getTime(),
-        allowed: allowedSet,
-      });
-
-      // Fill the 24 buckets in JS: only hours that saw traffic are present, and
-      // a chart drawn from sparse rows would silently compress the axis.
-      const byHour = rollup.byHour;
-      const hourly: ShareHourlyBucket[] = [];
-      for (let index = 0; index < HOURS_WINDOW; index += 1) {
-        const hour = new Date(windowStart.getTime() + index * HOUR_MS).toISOString();
-        const bucket = byHour.get(hour);
-        hourly.push({ hour, requests: bucket?.requests ?? 0, tokens: bucket?.tokens ?? 0 });
-      }
-
-      return {
-        totals: rollup.totals,
-        recipients,
-        hourly,
-        models: [...rollup.models.values()]
-          .sort((a, b) => b.requests - a.requests)
-          .slice(0, TOP_MODELS_LIMIT)
-          .map((row) => ({
-            modelId: row.modelId,
-            requests: row.requests,
-            tokens: row.tokens,
-            avgTokensPerSec: row.rateCount > 0 ? row.rateSum / row.rateCount : null,
-            avgTtfbMs: row.ttfbCount > 0 ? Math.round(row.ttfbSum / row.ttfbCount) : null,
-          })),
-        clientIps: [...rollup.ips.values()]
-          .sort((a, b) => b.requests - a.requests)
-          .slice(0, TOP_IPS_LIMIT)
-          .map((row) => ({
-            ip: maskClientIp(row.ip),
-            requests: row.requests,
-            tokens: row.tokens,
-            lastSeenAt: row.lastSeenAt,
-            clientType: clientTypeFromUserAgent(row.userAgent),
-          })),
-      };
+      const cached = await cachedRead<Omit<ShareFamilyStats, "recipients">>(
+        deps.redis,
+        shareFamilyStatsKey(tenantId, keyIds, allowedModels),
+        () => computeFamilyStatsBody(tenantId, keyIds, allowedModels),
+        SHARE_STATS_CACHE_TTL_SECONDS,
+      );
+      return { ...cached, recipients };
     },
+  };
+}
+
+/** The telemetry-derived remainder of a family rollup; `recipients` is Postgres-derived. */
+async function computeFamilyStatsBody(
+  tenantId: string,
+  keyIds: readonly string[],
+  allowedModels: readonly string[] | undefined,
+): Promise<Omit<ShareFamilyStats, "recipients">> {
+  // A share that grants a fixed set ranks only that set. Telemetry keeps the
+  // requested name even when the request was refused for naming a model the
+  // key may not use, so an unfiltered table would list exactly the invalid
+  // names an abuser probed. `null` means the link is unrestricted.
+  const allowedSet = allowedModels === undefined ? null : new Set(allowedModels);
+
+  const now = new Date();
+  const dayStart = utcDayStart(now);
+  const monthStart = utcMonthStart(now);
+  const hourStart = utcHourStart(now);
+  const lastHourStart = new Date(now.getTime() - HOUR_MS);
+  const windowStart = new Date(hourStart.getTime() - (HOURS_WINDOW - 1) * HOUR_MS);
+
+  // Rank only names the grant actually authorizes. Telemetry keeps the
+  // requested name even when the request was refused, so an unfiltered table
+  // would list exactly the invalid names an abuser probed. Filtering before
+  // the top-50 cut means refused names cannot hide a model the recipient may
+  // use.
+  const events = await queryTelemetryEvents({ tenantId, apiKeyIds: [...keyIds] });
+  const rollup = rollupFamily(events, {
+    dayStart: dayStart.getTime(),
+    monthStart: monthStart.getTime(),
+    lastHourStart: lastHourStart.getTime(),
+    windowStart: windowStart.getTime(),
+    allowed: allowedSet,
+  });
+
+  // Fill the 24 buckets in JS: only hours that saw traffic are present, and
+  // a chart drawn from sparse rows would silently compress the axis.
+  const byHour = rollup.byHour;
+  const hourly: ShareHourlyBucket[] = [];
+  for (let index = 0; index < HOURS_WINDOW; index += 1) {
+    const hour = new Date(windowStart.getTime() + index * HOUR_MS).toISOString();
+    const bucket = byHour.get(hour);
+    hourly.push({ hour, requests: bucket?.requests ?? 0, tokens: bucket?.tokens ?? 0 });
+  }
+
+  return {
+    totals: rollup.totals,
+    hourly,
+    models: [...rollup.models.values()]
+      .sort((a, b) => b.requests - a.requests)
+      .slice(0, TOP_MODELS_LIMIT)
+      .map((row) => ({
+        modelId: row.modelId,
+        requests: row.requests,
+        tokens: row.tokens,
+        avgTokensPerSec: row.rateCount > 0 ? row.rateSum / row.rateCount : null,
+        avgTtfbMs: row.ttfbCount > 0 ? Math.round(row.ttfbSum / row.ttfbCount) : null,
+      })),
+    clientIps: [...rollup.ips.values()]
+      .sort((a, b) => b.requests - a.requests)
+      .slice(0, TOP_IPS_LIMIT)
+      .map((row) => ({
+        ip: maskClientIp(row.ip),
+        requests: row.requests,
+        tokens: row.tokens,
+        lastSeenAt: row.lastSeenAt,
+        clientType: clientTypeFromUserAgent(row.userAgent),
+      })),
   };
 }

@@ -174,7 +174,7 @@ describe("GitHub Copilot Auto routing", () => {
     expect(requests[0]?.headers.get("x-github-api-version")).toBe("2026-08-01");
     expect(requests[2]?.body.model).toBe("routed-model");
     expect(requests[2]?.body.temperature).toBeUndefined();
-    expect(requests[2]?.body.reasoning).toEqual({ summary: "detailed" });
+    expect(requests[2]?.body.reasoning).toBeUndefined();
     expect(requests[0]?.body.multi_turn).toBeUndefined();
     expect(requests[0]?.headers.get("copilot-session-token")).toBeNull();
     expect(requests[2]?.headers.get("copilot-session-token")).toBe("auto-session-token");

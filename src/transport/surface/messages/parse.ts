@@ -6,6 +6,7 @@ import { parseToolDefinition } from "../dialects";
 import { canContainToolResult } from "../../../protocol/canonical-model";
 import { MessagesLedgerError } from "./errors";
 import { finiteNumber, stringValue } from "../../../protocol/codecs";
+import { LEVEL_TO_BUDGET } from "../../translation/thinking";
 
 export interface MessagesParseOptions {
   /** Explicit Claude model generation (for example `4.6` or `4.7`). */
@@ -236,6 +237,7 @@ export function parseThinking(
   model: string,
   options: MessagesParseOptions,
   maxTokens: number,
+  effort?: ReasoningIntent["effort"],
 ): ReasoningIntent | undefined {
   if (value == null) return undefined;
   const thinking = requiredObject(value, "thinking");
@@ -283,17 +285,28 @@ export function parseThinking(
       .map((part) => part.trim())
       .includes("interleaved-thinking-2025-05-14") ?? false;
   if (type === "enabled") {
-    if (!finiteNumber(budget) || !Number.isInteger(budget))
+    // A caller may enable thinking without sizing it: on this wire the depth
+    // rides in the OpenAI-shaped `reasoning_effort` (or `output_config.effort`).
+    // Derive the budget from that level so a budget-era model is served instead
+    // of answered with `budget_tokens: Field required`.
+    const effectiveBudget =
+      budget ??
+      (effort !== undefined && effort !== "none" ? Math.max(1024, LEVEL_TO_BUDGET[effort]) : undefined);
+    if (!finiteNumber(effectiveBudget) || !Number.isInteger(effectiveBudget))
       throw new Error("Manual Messages thinking requires integer budget_tokens");
     if (generation !== undefined && generation >= 4.7)
       throw new Error("Manual Messages thinking is rejected for model generation 4.7+");
-    if (budget < 1024 || (!beta && budget >= maxTokens))
+    // Only a caller-supplied budget is held to `budget < max_tokens`. A budget
+    // derived above is sized against `max_tokens` by the payload builder
+    // (`ensureMaxTokensForThinking`), so checking it here would refuse a request
+    // the builder would have served.
+    if (effectiveBudget < 1024 || (budget !== undefined && !beta && effectiveBudget >= maxTokens))
       throw new Error(
         "Messages thinking budget_tokens must be at least 1024 and less than max_tokens",
       );
     return {
       thinking_type: "enabled",
-      budget_tokens: budget,
+      budget_tokens: effectiveBudget,
       ...(displayValue === undefined ? {} : { display: displayValue }),
       ...(prefixMismatch === undefined ? {} : { prefix_mismatch_behavior: prefixMismatch }),
     };

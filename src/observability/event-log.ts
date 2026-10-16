@@ -1,4 +1,4 @@
-import { readdir, readFile } from "node:fs/promises";
+import { open, readdir } from "node:fs/promises";
 import { join } from "node:path";
 
 /**
@@ -105,18 +105,58 @@ function hourStamp(date: Date): string {
   return date.toISOString().slice(0, 13).replaceAll(":", "-");
 }
 
-async function* readEventFiles(files: readonly string[]): AsyncGenerator<TelemetryEventRecord> {
+/** Chunk size for the streaming scan: one line can be long, a file cannot. */
+const READ_CHUNK_BYTES = 256 * 1024;
+
+async function* readEventFiles(
+  files: readonly string[],
+  allow?: (line: string) => boolean,
+): AsyncGenerator<TelemetryEventRecord> {
   for (const file of files) {
-    const text = await readFile(join(TELEMETRY_EVENT_DIR, file), "utf8").catch(() => "");
-    if (!text) continue;
-    for (const line of text.split(String.fromCharCode(10))) {
-      if (!line) continue;
-      try {
-        const event = normalize(JSON.parse(line) as Record<string, unknown>);
-        if (event) yield event;
-      } catch {
-        // A torn tail from a crash is skipped, not fatal. The next line stands alone.
+    const handle = await open(join(TELEMETRY_EVENT_DIR, file), "r").catch(() => undefined);
+    if (handle === undefined) continue;
+    // Chunked, because `readFile` + `split` held the whole file as a string plus
+    // an array of one string per line — several times the file's size, per
+    // concurrent read, on the same process that serves every request. Peak
+    // memory is now one chunk and one line.
+    const decoder = new TextDecoder();
+    const buffer = Buffer.allocUnsafe(READ_CHUNK_BYTES);
+    let carry = "";
+    try {
+      for (;;) {
+        const { bytesRead } = await handle.read(buffer, 0, READ_CHUNK_BYTES);
+        if (bytesRead === 0) break;
+        const text = carry + decoder.decode(buffer.subarray(0, bytesRead), { stream: true });
+        const lines = text.split(String.fromCharCode(10));
+        // The tail is a partial line unless the chunk ended exactly on a newline.
+        carry = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line) continue;
+          // A line that cannot match is skipped before `JSON.parse`. The log is
+          // shared by every tenant, so most of its bytes belong to someone else —
+          // parsing them was the entire cost of a console read.
+          if (allow !== undefined && !allow(line)) continue;
+          try {
+            const event = normalize(JSON.parse(line) as Record<string, unknown>);
+            if (event) yield event;
+          } catch {
+            // A torn tail from a crash is skipped, not fatal. The next line stands alone.
+          }
+        }
       }
+      if (carry.length > 0) {
+        const line = carry + decoder.decode();
+        if (allow === undefined || allow(line)) {
+          try {
+            const event = normalize(JSON.parse(line) as Record<string, unknown>);
+            if (event) yield event;
+          } catch {
+            // A torn tail from a crash is skipped, not fatal.
+          }
+        }
+      }
+    } finally {
+      await handle.close();
     }
   }
 }
@@ -159,9 +199,19 @@ export async function queryTelemetryEvents(query: EventQuery): Promise<Telemetry
   const keys = query.apiKeyIds ? new Set(query.apiKeyIds) : undefined;
   const accounts = query.accountIds ? new Set(query.accountIds) : undefined;
   const events: TelemetryEventRecord[] = [];
+  // The tenant and request ids are plain substrings of the stored line, so they
+  // are checked on the raw text: a UUID appearing anywhere in the row is that
+  // field, and a false negative is not possible while a false positive costs
+  // only the parse it would have paid anyway.
+  const allow =
+    query.tenantId === undefined && query.requestId === undefined
+      ? undefined
+      : (line: string): boolean =>
+          (query.tenantId === undefined || line.includes(query.tenantId)) &&
+          (query.requestId === undefined || line.includes(query.requestId));
   for (const file of files) {
     const matched: TelemetryEventRecord[] = [];
-    for await (const event of readEventFiles([file])) {
+    for await (const event of readEventFiles([file], allow)) {
       if (!matches(event, query, since, keys, accounts)) continue;
       matched.push(event);
       // A requestId lookup needs one row: stop at the first (newest) match

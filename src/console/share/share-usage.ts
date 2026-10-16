@@ -5,6 +5,9 @@ import { CachedPreferencesReader, DrizzlePreferencesReader } from "../../persist
 import { maskClientIp } from "../../observability/redaction";
 import { queryTelemetryEvents, type TelemetryEventRecord } from "../../observability/event-log";
 import { isGatewayError } from "../../observability/telemetry-status";
+import type { RedisClient } from "../../persistence/redis";
+import { cachedRead } from "../shared/read-through-cache";
+import { SHARE_STATS_CACHE_TTL_SECONDS } from "./share-stats";
 import { telemetryUsageTotals } from "../../persistence/schema";
 import { shouldMaskClientIp } from "../shared/ip-privacy";
 import { utcDayStart } from "../shared/day";
@@ -99,7 +102,25 @@ function tokenUsage(row: {
   };
 }
 
-export function createShareUsagePort(db: CartethyiaDatabase): ShareActivityPort {
+/**
+ * Cache key for one child key's activity detail.
+ *
+ * The masked/unmasked choice is part of the key: caching a payload computed
+ * while the tenant's privacy switch was off, then serving it after the switch
+ * turned on, would leak a raw client address for the TTL. Splitting the key by
+ * that flag keeps a privacy change effective on the next read.
+ */
+function shareKeyDetailCacheKey(tenantId: string, childKeyId: string, hideClientIp: boolean): string {
+  return `share:v1:detail:${tenantId}:${childKeyId}:${hideClientIp ? "m" : "r"}`;
+}
+
+interface ShareUsagePortDeps {
+  readonly db: CartethyiaDatabase;
+  readonly redis?: RedisClient | undefined;
+}
+
+export function createShareUsagePort(deps: ShareUsagePortDeps): ShareActivityPort {
+  const { db, redis } = deps;
   const preferences = new CachedPreferencesReader(new DrizzlePreferencesReader(db));
   return {
     async getSharedKeySummaries(tenantId, children) {
@@ -159,71 +180,87 @@ export function createShareUsagePort(db: CartethyiaDatabase): ShareActivityPort 
     },
 
     async getSharedKeyDetail(tenantId, childKeyId) {
-      const todayStart = utcDayStart(new Date()).getTime();
-      const [events, hideClientIp] = await Promise.all([
-        queryTelemetryEvents({ tenantId, apiKeyIds: [childKeyId] }),
-        shouldMaskClientIp(preferences, tenantId),
-      ]);
-      const models = new Map<string, {
-        providerId: string | null;
-        modelId: string;
-        retainedRequests: number;
-        retainedErrors: number;
-        retainedTokens: number;
-        todayRequests: number;
-        todayErrors: number;
-        todayTokens: number;
-      }>();
-      for (const event of events) {
-        if (event.requestedModel === null) continue;
-        const key = `${event.providerId ?? ""}\u0000${event.requestedModel}`;
-        const bucket = models.get(key) ?? {
-          providerId: event.providerId,
-          modelId: event.requestedModel,
-          retainedRequests: 0,
-          retainedErrors: 0,
-          retainedTokens: 0,
-          todayRequests: 0,
-          todayErrors: 0,
-          todayTokens: 0,
-        };
-        const tokens = (event.inputTokens ?? 0) + (event.outputTokens ?? 0);
-        const error = isGatewayError(event.status, event.httpStatus);
-        bucket.retainedRequests += 1;
-        if (error) bucket.retainedErrors += 1;
-        bucket.retainedTokens += tokens;
-        if (new Date(event.createdAt).getTime() >= todayStart) {
-          bucket.todayRequests += 1;
-          if (error) bucket.todayErrors += 1;
-          bucket.todayTokens += tokens;
-        }
-        models.set(key, bucket);
-      }
-      return {
-        models: [...models.values()]
-          .sort((a, b) => b.retainedRequests - a.retainedRequests)
-          .slice(0, 10),
-        requests: events.slice(0, 20).map((event) => {
-          const inputTokens = event.inputTokens ?? 0;
-          const outputTokens = event.outputTokens ?? 0;
-          return {
-            requestId: event.requestId,
-            startedAt: event.createdAt,
-            ...(event.providerId ? { providerId: event.providerId } : {}),
-            ...(event.requestedModel ? { modelId: event.requestedModel } : {}),
-            status: event.status ?? "unknown",
-            ...(event.httpStatus === null ? {} : { httpStatus: event.httpStatus }),
-            ...(event.errorCategory ? { errorCategory: event.errorCategory } : {}),
-            ...(event.errorOrigin ? { errorOrigin: event.errorOrigin } : {}),
-            ...(event.clientIp
-              ? { clientIp: hideClientIp ? maskClientIp(event.clientIp) : event.clientIp }
-              : {}),
-            inputTokens,
-            outputTokens,
-            totalTokens: inputTokens + outputTokens,
-          };
-        }),
-      };
+      const hideClientIp = await shouldMaskClientIp(preferences, tenantId);
+      return cachedRead<SharedKeyActivityDetail>(
+        redis,
+        shareKeyDetailCacheKey(tenantId, childKeyId, hideClientIp),
+        () => computeSharedKeyDetail(tenantId, childKeyId, hideClientIp),
+        SHARE_STATS_CACHE_TTL_SECONDS,
+      );
     },
+  };
+}
+
+/**
+ * Telemetry-derived detail for one child key: its model table and its most
+ * recent requests. `hideClientIp` decides whether an address is masked; it is
+ * resolved by the caller so the cache key can separate the two variants.
+ */
+async function computeSharedKeyDetail(
+  tenantId: string,
+  childKeyId: string,
+  hideClientIp: boolean,
+): Promise<SharedKeyActivityDetail> {
+  const todayStart = utcDayStart(new Date()).getTime();
+  const events = await queryTelemetryEvents({ tenantId, apiKeyIds: [childKeyId] });
+  const models = new Map<string, {
+    providerId: string | null;
+    modelId: string;
+    retainedRequests: number;
+    retainedErrors: number;
+    retainedTokens: number;
+    todayRequests: number;
+    todayErrors: number;
+    todayTokens: number;
+  }>();
+  for (const event of events) {
+    if (event.requestedModel === null) continue;
+    const key = `${event.providerId ?? ""}\u0000${event.requestedModel}`;
+    const bucket = models.get(key) ?? {
+      providerId: event.providerId,
+      modelId: event.requestedModel,
+      retainedRequests: 0,
+      retainedErrors: 0,
+      retainedTokens: 0,
+      todayRequests: 0,
+      todayErrors: 0,
+      todayTokens: 0,
+    };
+    const tokens = (event.inputTokens ?? 0) + (event.outputTokens ?? 0);
+    const error = isGatewayError(event.status, event.httpStatus);
+    bucket.retainedRequests += 1;
+    if (error) bucket.retainedErrors += 1;
+    bucket.retainedTokens += tokens;
+    if (new Date(event.createdAt).getTime() >= todayStart) {
+      bucket.todayRequests += 1;
+      if (error) bucket.todayErrors += 1;
+      bucket.todayTokens += tokens;
+    }
+    models.set(key, bucket);
+  }
+  return {
+    models: [...models.values()]
+      .sort((a, b) => b.retainedRequests - a.retainedRequests)
+      .slice(0, 10),
+    requests: events.slice(0, 20).map((event) => {
+      const inputTokens = event.inputTokens ?? 0;
+      const outputTokens = event.outputTokens ?? 0;
+      return {
+        requestId: event.requestId,
+        startedAt: event.createdAt,
+        ...(event.providerId ? { providerId: event.providerId } : {}),
+        ...(event.requestedModel ? { modelId: event.requestedModel } : {}),
+        status: event.status ?? "unknown",
+        ...(event.httpStatus === null ? {} : { httpStatus: event.httpStatus }),
+        ...(event.errorCategory ? { errorCategory: event.errorCategory } : {}),
+        ...(event.errorOrigin ? { errorOrigin: event.errorOrigin } : {}),
+        ...(event.clientIp
+          ? { clientIp: hideClientIp ? maskClientIp(event.clientIp) : event.clientIp }
+          : {}),
+        inputTokens,
+        outputTokens,
+        totalTokens: inputTokens + outputTokens,
+      };
+    }),
   };
 }

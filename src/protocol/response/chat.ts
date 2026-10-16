@@ -419,7 +419,11 @@ export async function* decodeChatSseStream(
       : finishReason === "error" || finishReason === "failed" || truncated
         ? "failed"
         : "complete",
-    stopReason: chatStopReason,
+    // An upstream that ends without a verdict must not render as a clean
+    // `stop`. `chatFinishReason(undefined)` falls back to `stop`, so the client
+    // saw a completed turn while telemetry recorded a 502 upstream transport
+    // failure — the failure this terminal already carries was invisible to it.
+    stopReason: truncated && signal?.aborted !== true ? "error" : chatStopReason,
     providerStopReason: chatProviderStopReason,
     usage: usageFromProvider(rawUsage),
   });

@@ -2,11 +2,9 @@ import { describe, expect, test } from "bun:test";
 import {
   GITHUB_EXCLUDED_MODEL_IDS,
   GITHUB_MODELS,
-  githubModelUsesLongContext,
   githubModelRoute,
-  recordGithubLongContextModels,
 } from "../../src/providers/integrations/github/github";
-import { defineModel } from "../../src/providers/provider-model-definition";
+
 import { discoverGithubModels } from "../../src/providers/integrations/github/github-discovery";
 
 describe("GitHub Copilot fallback model catalog", () => {
@@ -63,38 +61,15 @@ describe("GitHub Copilot fallback model catalog", () => {
     expect(modelIds.has("gpt-4.1")).toBe(true);
     expect(modelIds.has("gpt-6-luna")).toBe(false);
     expect(modelIds.has("gpt-6-luna-low")).toBe(true);
-    expect(githubModelRoute("gpt-6-luna", credential)).toEqual({
+    expect(await githubModelRoute("gpt-6-luna", credential)).toEqual({
       wireFamily: "responses",
       endpointPath: "/responses",
     });
   });
 
-  test("scopes the long-context roster to each credential and replaces it on rediscovery", () => {
-    const firstCredential = JSON.stringify({
-      access: "access-a",
-      apiHost: "copilot.example",
-      github: "refresh-a",
-    });
-    const secondCredential = JSON.stringify({
-      access: "access-b",
-      apiHost: "copilot.example",
-      github: "refresh-b",
-    });
-    const longContextModel = defineModel({
-      id: "long-model",
-      providerId: "github",
-      ctx: 600_000,
-    });
 
-    recordGithubLongContextModels(firstCredential, [longContextModel]);
-    expect(githubModelUsesLongContext("LONG-MODEL", firstCredential)).toBe(true);
-    expect(githubModelUsesLongContext("long-model", secondCredential)).toBe(false);
 
-    recordGithubLongContextModels(firstCredential, []);
-    expect(githubModelUsesLongContext("long-model", firstCredential)).toBe(false);
-  });
-
-  test("records long-context models from the credential's latest discovered catalog", async () => {
+  test("does not overwrite a discovered catalog row with the static virtual limits", async () => {
     const credential = JSON.stringify({
       access: "catalog-access",
       apiHost: "copilot.example",
@@ -105,17 +80,22 @@ describe("GitHub Copilot fallback model catalog", () => {
       fetcher: Object.assign(
         async () => new Response(JSON.stringify({
           data: [{
-            id: "long-model",
-            supported_endpoints: ["/chat/completions"],
-            capabilities: { limits: { max_context_window_tokens: 600_000 } },
+            id: "gpt-6-luna-high",
+            supported_endpoints: ["/responses"],
+            capabilities: {
+              limits: {
+                max_context_window_tokens: 1_000_000,
+                max_output_tokens: 128_000,
+                max_prompt_tokens: 872_000,
+              },
+            },
           }],
         })),
         { preconnect: fetch.preconnect.bind(fetch) },
       ),
     });
-
-    expect(models?.some((model) => model.modelId === "long-model")).toBe(true);
-    expect(models?.some((model) => model.modelId === "gpt-6-luna-low")).toBe(true);
-    expect(githubModelUsesLongContext("long-model", credential)).toBe(true);
+    const row = models?.find((model) => model.modelId === "gpt-6-luna-high");
+    expect(row?.contextLimit).toBe(1_000_000);
+    expect(row?.outputLimit).toBe(128_000);
   });
 });

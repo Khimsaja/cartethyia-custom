@@ -365,6 +365,7 @@ export function createGatewayApp(deps: GatewayAppDeps) {
       shutdownCoordinator: deps.shutdownCoordinator,
       telemetry: deps.telemetryBuffer,
       ...(deps.modelStrikes ? { modelStrikes: deps.modelStrikes } : {}),
+      ...(deps.consoleApi?.redis ? { redis: deps.consoleApi.redis } : {}),
     });
     transportPipeline.mountRoot(app);
     const proxyDeps: ProviderProxyHandlerDeps = {
@@ -596,7 +597,7 @@ export function createGatewayApp(deps: GatewayAppDeps) {
       createShareRouter({
         db: deps.db,
         shareStore: new DrizzleShareLinkStore(deps.db),
-        stats: createShareStatsPort(),
+        stats: createShareStatsPort({ redis: deps.consoleApi?.redis }),
         resolveClientIp: (request) => {
           const peer = peerAddresses.get(request);
           return peer
