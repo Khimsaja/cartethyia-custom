@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
-import { Bot, Brain, CheckCircle2, Eye, FlaskConical, Globe, Home, Moon, Sun, Wrench, X } from "lucide-react";
+import { Bot, Brain, CheckCircle2, Clock, Eye, FlaskConical, Globe, Heart, Home, KeyRound, Link2, Moon, StickyNote, Sun, Wrench, X } from "lucide-react";
 import { useModalFocus } from "../../hooks/use-modal-focus";
 import { Button } from "../../components/ui/button";
 import { Card, CardBody } from "../../components/ui/card";
@@ -217,10 +217,15 @@ export function SharePage(): ReactElement {
   // Dark is the default reading of the share HUD; the toggle beside Home flips
   // the same `console-theme` preference the console uses.
   const [theme, setTheme] = useState<ConsoleThemeChoice>(() => readConsoleTheme("dark"));
-  // The allowed-model list has two readings: the flat allowlist as written
-  // ("raw") and the same set bucketed by provider ("grouped"). Raw is the
-  // default because the exact id is what a client has to send.
-  const [modelView, setModelView] = useState<"raw" | "grouped">("raw");
+  // Full-bleed at the top, a floating pill once content passes beneath it —
+  // the same reading the landing header uses.
+  const [scrolled, setScrolled] = useState(false);
+  useEffect(() => {
+    const onScroll = (): void => setScrolled(window.scrollY > 24);
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
   useEffect(() => {
     document.title = "Cartethyia — Shared access";
     // The public share surface owns no theme of its own: it applies the console
@@ -391,8 +396,8 @@ export function SharePage(): ReactElement {
   return (
     <ShareStatsProvider path={`${path}/stats/stream`}>
       <div className="min-h-screen text-text-primary font-sans">
-      <header className="backdrop-blur-md backdrop-saturate-150 border-b border-glass-border-2 bg-glass-bg">
-        <div className="mx-auto flex min-h-33 w-full max-w-480 items-center justify-between gap-8 px-12 py-6 max-narrow:min-h-29 max-narrow:gap-5 max-narrow:px-7 max-narrow:py-5">
+      <header className="share-header" data-scrolled={scrolled}>
+        <div className="share-header-inner" data-scrolled={scrolled}>
           <a className="inline-flex items-center gap-5 font-head text-lead tracking-[-0.03em] text-text-primary no-underline" href="/">
             <span className="grid size-17 place-items-center overflow-hidden rounded-control border border-inner-border bg-accent-soft text-accent" aria-hidden="true">
               <img
@@ -427,7 +432,7 @@ export function SharePage(): ReactElement {
           </div>
         </div>
       </header>
-      <main className="mx-auto flex w-full max-w-480 flex-col gap-8 px-12 pb-24 pt-14 max-narrow:gap-6 max-narrow:px-6 max-narrow:pb-16 max-narrow:pt-9">
+      <main className="mx-auto flex w-full max-w-480 flex-col gap-8 px-12 pb-24 pt-40 max-narrow:gap-6 max-narrow:px-6 max-narrow:pb-16 max-narrow:pt-36">
         {state.loading ? (
           <Card surface="muted" className="min-w-0 border-glass-border-2 bg-glass-bg backdrop-blur-md backdrop-saturate-150 p-5">
             <CardBody>
@@ -447,7 +452,8 @@ export function SharePage(): ReactElement {
         ) : data ? (
           <>
             <Card surface="muted" className="min-w-0 border-glass-border-2 bg-glass-bg backdrop-blur-md backdrop-saturate-150 p-7 max-sm:p-5">
-              <p className="text-text-secondary font-mono text-micro font-bold tracking-label leading-normal">
+              <p className="inline-flex items-center gap-3 text-text-secondary font-mono text-micro font-bold tracking-label leading-normal">
+                {data.kind === "handoff" ? <KeyRound size={13} aria-hidden="true" /> : <Link2 size={13} aria-hidden="true" />}
                 {data.kind === "handoff" ? "SHARED ACCESS / KEY" : "SHARED ACCESS / ENROLLMENT"}
               </p>
               <h1>{data.name || "Shared API access"}</h1>
@@ -460,6 +466,7 @@ export function SharePage(): ReactElement {
               <div className="mt-5 flex flex-wrap items-center gap-2">
                 {data.expiresAt ? (
                   <span className="inline-flex min-h-7 items-center gap-1.5 rounded-chip border border-inner-border bg-surface-2 px-2.5 py-1 text-text-secondary font-mono text-micro leading-[1.3]">
+                    <Clock size={12} aria-hidden="true" />
                     Link expires {new Date(data.expiresAt).toLocaleString()}
                   </span>
                 ) : null}
@@ -469,7 +476,7 @@ export function SharePage(): ReactElement {
 
             <div className="grid grid-cols-2 gap-8 max-md:grid-cols-1">
               <Card surface="muted" className="flex min-w-0 flex-col items-start gap-6 border-glass-border-2 bg-glass-bg backdrop-blur-md backdrop-saturate-150 p-5">
-                <h2 className="text-text-secondary font-mono text-micro font-bold tracking-label leading-normal">BASE URL</h2>
+                <h2 className="inline-flex items-center gap-3 text-text-secondary font-mono text-micro font-bold tracking-label leading-normal"><Globe size={13} aria-hidden="true" /> BASE URL</h2>
                 <div className="flex w-full min-w-0 items-center gap-4 [&>code]:block [&>code]:min-w-0 [&>code]:flex-1 [&>code]:overflow-hidden [&>code]:text-ellipsis [&>code]:whitespace-nowrap [&>code]:rounded-inset [&>code]:border [&>code]:border-inner-border [&>code]:bg-code-surface [&>code]:p-5 [&>code]:text-text-primary [&>code]:font-mono [&>code]:text-caption [&>code]:leading-normal [&>button]:shrink-0">
                   <code>{baseUrl}/v1</code>
                   <ClipboardButton
@@ -490,7 +497,7 @@ export function SharePage(): ReactElement {
                     aria-haspopup="dialog"
                     aria-label="Open popup"
                   >
-                    <span className="grid size-19 flex-none place-items-center rounded-control bg-orange-soft text-title text-orange" aria-hidden="true">♡</span>
+                    <span className="grid size-19 flex-none place-items-center rounded-control bg-orange-soft text-orange" aria-hidden="true"><Heart size={16} /></span>
                     <span className="grid min-w-0 gap-1.5">
                       <strong className="text-caption">{data.sharePopup.title || "More information"}</strong>
                     </span>
@@ -500,7 +507,7 @@ export function SharePage(): ReactElement {
               </Card>
               <div ref={apiKeyPanelRef} tabIndex={-1}>
               <Card surface="muted" className="flex min-w-0 flex-col items-start gap-6 border-glass-border-2 bg-glass-bg backdrop-blur-md backdrop-saturate-150 p-5">
-                <h2 className="text-text-secondary font-mono text-micro font-bold tracking-label leading-normal">YOUR API KEY</h2>
+                <h2 className="inline-flex items-center gap-3 text-text-secondary font-mono text-micro font-bold tracking-label leading-normal"><KeyRound size={13} aria-hidden="true" /> YOUR API KEY</h2>
                 {data.kind === "handoff" ? (
                   handoffKey ? (
                     <div className="flex w-full min-w-0 flex-col gap-5" role="status">
@@ -668,7 +675,7 @@ export function SharePage(): ReactElement {
             ) : null}
             {data.notes.title || data.notes.subtitle || data.notes.body ? (
               <Card surface="muted" className="min-w-0 border-glass-border-2 bg-glass-bg backdrop-blur-md backdrop-saturate-150 p-5">
-                <h2 className="text-text-secondary font-mono text-micro font-bold tracking-label leading-normal">NOTES</h2>
+                <h2 className="inline-flex items-center gap-3 text-text-secondary font-mono text-micro font-bold tracking-label leading-normal"><StickyNote size={13} aria-hidden="true" /> NOTES</h2>
                 {data.notes.title ? <h3 className="mt-5 font-head text-title font-semibold">{data.notes.title}</h3> : null}
                 {data.notes.subtitle ? <p className="mt-3 text-caption font-semibold text-text-secondary">{data.notes.subtitle}</p> : null}
                 {data.notes.body ? <p className="mt-5 text-body leading-loose whitespace-pre-wrap text-text-secondary">{data.notes.body}</p> : null}
@@ -680,7 +687,7 @@ export function SharePage(): ReactElement {
             <Card surface="muted" className="min-w-0 border-glass-border-2 bg-glass-bg backdrop-blur-md backdrop-saturate-150 p-5">
               <div className="flex items-center justify-between gap-6">
                 <div>
-                  <p className="text-text-secondary font-mono text-micro font-bold tracking-label leading-normal">MODEL ACCESS</p>
+                  <p className="inline-flex items-center gap-3 text-text-secondary font-mono text-micro font-bold tracking-label leading-normal"><Bot size={13} aria-hidden="true" /> MODEL ACCESS</p>
                   <h2 className="mt-3 font-head text-lead font-semibold tracking-tight">Allowed models</h2>
                 </div>
                 <div className="inline-flex items-center gap-4">

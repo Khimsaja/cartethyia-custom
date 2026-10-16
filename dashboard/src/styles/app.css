@@ -676,6 +676,17 @@ html[data-app="share"] #root {
 
 html[data-app="share"] body {
   --share-backdrop-veil: 0.8;
+  background: var(--page-bg);
+}
+
+/* The backdrop is its own fixed layer, not a body background. Mobile browsers
+   treat `background-attachment: fixed` on the body as scroll, so the image
+   moved with the content. A fixed element stays put and only the page scrolls. */
+html[data-app="share"] body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
   background-image:
     linear-gradient(
       color-mix(in srgb, var(--page-bg) calc(var(--share-backdrop-veil) * 100%), transparent),
@@ -685,7 +696,47 @@ html[data-app="share"] body {
   background-position: center, center 28%;
   background-repeat: no-repeat, no-repeat;
   background-size: cover, cover;
-  background-attachment: fixed, fixed;
+  pointer-events: none;
+}
+
+/* Full-bleed at the top of the page, a floating pill once content scrolls
+   under it. Same shape as the landing header, in the share tokens. */
+html[data-app="share"] .share-header {
+  position: fixed;
+  z-index: var(--z-index-header);
+  inset: 0 0 auto;
+  display: flex;
+  justify-content: center;
+  padding: 0 24px;
+  background-color: var(--page-bg);
+  transition: padding 260ms ease, background-color 260ms ease;
+}
+
+html[data-app="share"] .share-header[data-scrolled="true"] {
+  padding: 8px 16px;
+  background-color: transparent;
+}
+
+html[data-app="share"] .share-header-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: min(100%, 960px);
+  min-height: 66px;
+  margin-inline: auto;
+  transition: width 260ms ease, min-height 260ms ease, border-radius 260ms ease, background-color 260ms ease, box-shadow 260ms ease;
+}
+
+html[data-app="share"] .share-header-inner[data-scrolled="true"] {
+  width: min(720px, calc(100vw - 32px));
+  min-height: 56px;
+  padding-inline: 12px;
+  border: 1px solid var(--glass-border-2);
+  border-radius: var(--radius-pill);
+  background-color: var(--glass-bg);
+  backdrop-filter: blur(12px) saturate(1.5);
+  box-shadow: 0 12px 32px -12px rgb(0 0 0 / 0.6);
 }
 
 html[data-app="share"][data-theme="dark"] body {

@@ -1,4 +1,4 @@
-import { ChevronRight, Scaling } from "lucide-react";
+import { BarChart3, ChevronRight, Globe, Scaling } from "lucide-react";
 import { Card } from "../../components/ui/card";
 import {
   createContext,
@@ -459,7 +459,7 @@ export function ShareStatsSection({
 
               <section aria-label="Top models">
                 <div className="flex items-center justify-between gap-6">
-                  <h3 className="text-text-secondary font-mono text-badge font-bold tracking-label transition-colors duration-150">TOP MODELS</h3>
+                  <h3 className="inline-flex items-center gap-3 text-text-secondary font-mono text-badge font-bold tracking-label transition-colors duration-150"><BarChart3 size={13} aria-hidden="true" /> TOP MODELS</h3>
                 </div>
                 {models.length === 0 ? (
                   <p className="py-9 text-center text-text-tertiary text-caption">No model traffic yet.</p>
@@ -511,7 +511,7 @@ export function ShareStatsSection({
 
               <section aria-label="Client IPs">
                 <div className="flex items-center justify-between gap-6">
-                  <h3 className="text-text-secondary font-mono text-badge font-bold tracking-label transition-colors duration-150">CLIENT IPS</h3>
+                  <h3 className="inline-flex items-center gap-3 text-text-secondary font-mono text-badge font-bold tracking-label transition-colors duration-150"><Globe size={13} aria-hidden="true" /> CLIENT IPS</h3>
                 </div>
                 {ips.length === 0 ? (
                   <p className="py-9 text-center text-text-tertiary text-caption">No client addresses recorded yet.</p>
