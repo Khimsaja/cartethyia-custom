@@ -676,19 +676,19 @@ html[data-app="share"] #root {
 
 html[data-app="share"] body {
   --share-backdrop-veil: 0.8;
-  background: var(--page-bg);
+  /* The image lives on the document element behind this. An opaque body
+     background covers it on desktop and leaves the page dark. */
+  background: transparent;
 }
 
-/* The backdrop is its own fixed layer, not a body background. Mobile browsers
-   treat `background-attachment: fixed` on the body as scroll, so the image
-   moved with the content. A fixed element stays put and only the page scrolls.
-   `html` is the containing block: a `fixed` layer on `body` is clipped or
-   dropped on mobile once `body` itself scrolls, which left the page blank. */
-html[data-app="share"]::before {
-  content: "";
+/* A fixed element inside the page, not a background on the document. The
+   document and the body both paint an opaque color, so a background image on
+   either of them never shows. This layer sits behind the content and does not
+   scroll with it. */
+html[data-app="share"] .share-backdrop {
   position: fixed;
   inset: 0;
-  z-index: -1;
+  z-index: 0;
   background-image:
     linear-gradient(
       color-mix(in srgb, var(--page-bg) calc(var(--share-backdrop-veil) * 100%), transparent),

@@ -397,6 +397,7 @@ export function SharePage(): ReactElement {
   return (
     <ShareStatsProvider path={`${path}/stats/stream`}>
       <div className="min-h-screen text-text-primary font-sans">
+        <div className="share-backdrop" aria-hidden="true" />
       <header className="share-header" data-scrolled={scrolled}>
         <div className="share-header-inner" data-scrolled={scrolled}>
           <a className="inline-flex items-center gap-5 font-head text-lead tracking-[-0.03em] text-text-primary no-underline" href="/">
@@ -433,7 +434,7 @@ export function SharePage(): ReactElement {
           </div>
         </div>
       </header>
-      <main className="mx-auto flex w-full max-w-480 flex-col gap-8 px-12 pb-24 pt-40 max-narrow:gap-6 max-narrow:px-6 max-narrow:pb-16 max-narrow:pt-36">
+      <main className="relative z-1 mx-auto flex w-full max-w-480 flex-col gap-8 px-12 pb-24 pt-40 max-narrow:gap-6 max-narrow:px-6 max-narrow:pb-16 max-narrow:pt-36">
         {state.loading ? (
           <Card surface="muted" className="min-w-0 border-glass-border-2 bg-glass-bg backdrop-blur-md backdrop-saturate-150 p-5">
             <CardBody>
