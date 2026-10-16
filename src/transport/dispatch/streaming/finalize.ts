@@ -147,15 +147,20 @@ export class StreamFinalizer {
    *
    * Once the upstream has produced anything — even surface-invisible
    * reasoning deltas — it is alive: the stall bound governs and the tighter
-   * first-chunk bound no longer applies. The hard ceiling (state deadline)
-   * still caps total duration.
+   * first-chunk bound no longer applies.
+   *
+   * The request deadline is a fixed ceiling measured from ingress, and a
+   * stream that keeps sending past it is not stalled. A live WorkBuddy stream
+   * was aborted at 480s with `deadline_exceeded` while its first byte had
+   * arrived at 2.8s and bytes were still arriving. Each read therefore moves
+   * the ceiling forward by the stall budget, so only real silence ends the
+   * stream. A stream that goes quiet still dies at the stall bound.
    */
   armStallWatchdog(sawUpstreamActivity: boolean): void {
     clearTimeout(this.stallTimer);
-    const timeoutMs =
-      this.pipeline.firstByteAt === undefined && !sawUpstreamActivity
-        ? this.streamFirstChunkTimeoutMs
-        : this.streamStallTimeoutMs;
+    const alive = this.pipeline.firstByteAt !== undefined || sawUpstreamActivity;
+    const timeoutMs = alive ? this.streamStallTimeoutMs : this.streamFirstChunkTimeoutMs;
+    if (alive) this.input.state.extendDeadline(timeoutMs);
     this.stallTimer = setTimeout(() => {
       // The bound that expired is silence *from the upstream*, so the
       // origin is the upstream's: labelling it `cartethyia` reported a
