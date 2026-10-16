@@ -10,6 +10,7 @@ Entry point for repo work. Most tasks belong to a focused skill — pick it firs
 | Work | Use |
 |---|---|
 | A failing request to attribute to a field; payload/wire bytes; remote debugging | `cartethyia-trace-replay` |
+| A 403 `FreeTierError` / gate that reads `tools` membership | `cartethyia-trace-replay` → `references/opencode-free-tier.md` |
 | Schema change, migration, new usage/telemetry field | `cartethyia-schema-telemetry` |
 | Add/remove/authenticate a provider; catalog, `/v1/models`, capabilities | `cartethyia-provider-catalog` |
 | Image generation wires, catalog rows, and account entitlement | `cartethyia-provider-catalog` |
