@@ -13,6 +13,57 @@ import { TEXT_ENCODER } from "../../../protocol/sse-frame";
 import { SurfaceStreamEncoder } from "../stream-frame";
 import type { ChatEncodeOptions, ChunkBase, JsonObject } from "./parse";
 
+/**
+ * Tool arguments the client can parse.
+ *
+ * Copilot (and other chat bridges) stream arguments that are not strict JSON:
+ * a raw control character inside a string, a trailing comma, an unquoted key.
+ * The client parses the assembled string with `JSON.parse` and, on failure,
+ * reports the call as `Tool <name> not found` with the parser's message
+ * (`Unexpected trailing characters`, `Invalid number`). The repair is the same
+ * one oh-my-pi applies before a tool runs: escape what strict JSON forbids,
+ * then drop a trailing comma. A value that still does not parse is returned
+ * unchanged — a half-repaired call is worse than the original error.
+ */
+export function repairToolArguments(raw: string): string {
+  if (raw.length === 0) return "{}";
+  const repaired = repairToolArgumentText(raw);
+  try {
+    JSON.parse(repaired);
+    return repaired;
+  } catch {
+    return raw;
+  }
+}
+
+function repairToolArgumentText(json: string): string {
+  const parts: string[] = [];
+  let last = 0;
+  let inString = false;
+  for (let i = 0; i < json.length; i++) {
+    const code = json.charCodeAt(i);
+    if (!inString) {
+      if (code === 0x22) inString = true;
+      continue;
+    }
+    if (code === 0x22) {
+      inString = false;
+      continue;
+    }
+    if (code === 0x5c) {
+      i++;
+      continue;
+    }
+    if (code < 0x20) {
+      const escape =
+        code === 0x0a ? "\\n" : code === 0x0d ? "\\r" : code === 0x09 ? "\\t" : `\\u${code.toString(16).padStart(4, "0")}`;
+      parts.push(json.slice(last, i), escape);
+      last = i + 1;
+    }
+  }
+  const escaped = parts.length === 0 ? json : parts.join("") + json.slice(last);
+  return escaped.replace(/,(\s*[}\]])/g, "$1");
+}
 export function bytesToString(value: string | Uint8Array): string {
   return typeof value === "string" ? value : new TextDecoder().decode(value);
 }
@@ -210,7 +261,7 @@ export function jsonCompletion(
         type: "function",
         // Zero-argument calls assemble as "{}": an empty string is not
         // valid JSON for the client's parser.
-        function: { name: tool.name!, arguments: tool.arguments.length > 0 ? tool.arguments : "{}" },
+        function: { name: tool.name!, arguments: repairToolArguments(tool.arguments) },
       }));
   }
   const audio = events.map(eventAudio).findLast((value) => value !== undefined);
