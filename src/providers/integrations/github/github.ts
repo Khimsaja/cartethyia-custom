@@ -43,17 +43,7 @@ export const GITHUB_ENDPOINT_PATH = "/chat/completions" as const;
  */
 export const GITHUB_RESPONSES_ENDPOINT_PATH = "/responses" as const;
 
-/**
- * Long-context tier marker.
- *
- * A request for a SKU whose window is at or above the long-context threshold
- * carries this field so Copilot serves it from the long-context pool. It is a
- * Copilot-specific extension, not an OpenAI field, and the native Anthropic
- * surface rejects it as an unknown top-level key — so it is injected only on
- * the chat and responses wires, and only when the account's own catalog reports
- * a qualifying window.
- */
-export const GITHUB_CONTEXT_TIER = "long_context" as const;
+
 
 /**
  * The highest reasoning effort Copilot serves. A caller asking for `max` or
@@ -76,8 +66,7 @@ function clampGithubReasoningEffort(payload: Record<string, unknown>): void {
     payload["reasoning"] = { ...reasoning, effort: GITHUB_REASONING_EFFORT_CAP };
   }
 }
-/** Context window at or above which the account is served from the long tier. */
-export const GITHUB_LONG_CONTEXT_THRESHOLD = 500_000;
+
 
 /** Supported virtual Copilot Auto catalog ids and their router tiers. */
 export const GITHUB_AUTO_MODEL_TIERS: ReadonlyMap<string, "efficiency" | "balance" | "intelligence"> = new Map([
@@ -106,18 +95,14 @@ export const GITHUB_EXCLUDED_MODEL_IDS: ReadonlySet<string> = new Set([
   "mai-code-1.1-flash",
 ]);
 
-/**
- * Long-context models reported by each account's own model directory.
- */
-const longContextModelIdsByCredential = new Map<string, ReadonlySet<string>>();
 const modelRoutesByCredential = new Map<string, ReadonlyMap<string, GithubModelRoute>>();
-const GITHUB_AUTO_SESSION_CACHE_MAX_ENTRIES = 50;
-const GITHUB_AUTO_SESSION_EXPIRY_SKEW_MS = 5 * 60 * 1_000;
 
 export interface GithubModelRoute {
   readonly wireFamily: "chat" | "responses";
   readonly endpointPath: string;
 }
+const GITHUB_AUTO_SESSION_CACHE_MAX_ENTRIES = 50;
+const GITHUB_AUTO_SESSION_EXPIRY_SKEW_MS = 5 * 60 * 1_000;
 
 function githubCredentialKey(value: string): string | undefined {
   try {
@@ -129,35 +114,6 @@ function githubCredentialKey(value: string): string | undefined {
     return undefined;
   }
 }
-
-/** Whether this account's catalog reported `modelId` at the long-context tier. */
-export function githubModelUsesLongContext(modelId: string, credential: string): boolean {
-  const key = githubCredentialKey(credential);
-  if (key === undefined) return false;
-  return longContextModelIdsByCredential.get(key)?.has(modelId.toLowerCase()) === true;
-}
-
-/** Replaces the account's long-context roster with the latest discovery result. */
-export function recordGithubLongContextModels(
-  credential: string,
-  models: readonly ModelDefinition[],
-): void {
-  const key = githubCredentialKey(credential);
-  if (key === undefined) return;
-  longContextModelIdsByCredential.set(
-    key,
-    new Set(
-      models
-        .filter(
-          (model) =>
-            model.contextLimit !== null &&
-            model.contextLimit >= GITHUB_LONG_CONTEXT_THRESHOLD,
-        )
-        .map((model) => model.modelId.toLowerCase()),
-    ),
-  );
-}
-
 /** Replaces this account's discovered model-to-endpoint routing map. */
 export function recordGithubModelRoutes(
   credential: string,
@@ -343,37 +299,8 @@ class GithubAdapter extends OpenAICompatibleAdapter {
           chat: GITHUB_ENDPOINT_PATH,
           responses: GITHUB_RESPONSES_ENDPOINT_PATH,
         },
-        // The long-context tier is a Copilot request extension, injected only
-        // for a model the account's own catalog reported at or above the
-        // threshold. `contextTier` is applied after wire translation so it
-        // rides on the serialized body the upstream actually reads.
-        prePayload: (payload, request, candidate, context) => {
+        prePayload: (payload) => {
           clampGithubReasoningEffort(payload);
-          if (
-            this.#autoSessionTokens.has(request) &&
-            candidate.wire_family === "responses"
-          ) {
-            const reasoning = payload["reasoning"];
-            if (!isRecord(reasoning)) {
-              payload["reasoning"] = { summary: "detailed" };
-            } else if (
-              reasoning["summary"] === undefined ||
-              reasoning["summary"] === "auto"
-            ) {
-              payload["reasoning"] = { ...reasoning, summary: "detailed" };
-            }
-          }
-          const secret = context.credential.secret;
-          if (
-            secret === undefined ||
-            !githubModelUsesLongContext(request.model, new TextDecoder().decode(secret))
-          ) return;
-          // Only the OpenAI-shaped surfaces accept the extension; the native
-          // Anthropic surface validates against its own schema and rejects an
-          // unknown top-level key. The candidate's wire family decides.
-          if (candidate.wire_family !== "chat" && candidate.wire_family !== "responses") return;
-          if (payload.contextTier !== undefined) return;
-          payload.contextTier = GITHUB_CONTEXT_TIER;
         },
         ...(fetchImpl ? { fetchImpl } : {}),
       }),
@@ -612,7 +539,7 @@ class GithubAdapter extends OpenAICompatibleAdapter {
     Object.assign(headers, GITHUB_REQUEST_HEADERS);
     const autoSessionToken = this.#autoSessionTokens.get(request);
     if (autoSessionToken !== undefined) {
-      headers["copilot-session-token"] = autoSessionToken;
+      headers["Copilot-Session-Token"] = autoSessionToken;
     }
     const requestId = context.request_id ?? randomUUID();
     Object.assign(headers, {
