@@ -4,7 +4,7 @@ import type {
   ProviderDispatchTarget,
 } from "../../src/providers/provider-contracts";
 import { githubAdapter } from "../../src/providers/integrations/github/github";
-import { defineModel } from "../../src/providers/provider-model-definition";
+
 import type { CanonicalRequest } from "../../src/protocol/canonical-model";
 
 const candidate = {
@@ -66,8 +66,8 @@ describe("GitHub Copilot request context", () => {
   test("adds initiator, image, and stable correlation headers only to inference requests", async () => {
     const userRequest = await capture(baseRequest);
     expect(userRequest.headers.get("x-github-api-version")).toBe("2026-08-01");
-    expect(userRequest.headers.get("editor-version")).toBe("vscode/1.141.0");
-    expect(userRequest.headers.get("editor-plugin-version")).toBe("copilot-chat/0.69.0");
+    expect(userRequest.headers.get("editor-version")).toBe("vscode/1.142.0");
+    expect(userRequest.headers.get("editor-plugin-version")).toBe("copilot-chat/0.70.0");
     expect(userRequest.headers.get("editor-device-id")).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
     );
@@ -111,24 +111,9 @@ describe("GitHub Copilot request context", () => {
     );
   });
 
-  test("adds long-context tier only for the account whose catalog discovered it", async () => {
-    const { recordGithubLongContextModels } = await import(
-      "../../src/providers/integrations/github/github"
-    );
-    const longModel = defineModel({
-      id: "gpt-4.1",
-      providerId: "github",
-      ctx: 600_000,
-    });
-    recordGithubLongContextModels(
-      JSON.stringify({ access: "a", apiHost: "copilot.example", github: "account-a" }),
-      [longModel],
-    );
-
-    const firstAccount = await capture(baseRequest, "account-a");
-    const secondAccount = await capture(baseRequest, "account-b");
-    expect(firstAccount.body.contextTier).toBe("long_context");
-    expect(secondAccount.body.contextTier).toBeUndefined();
+  test("does not invent a context tier on the chat body", async () => {
+    const captured = await capture(baseRequest);
+    expect(captured.body.contextTier).toBeUndefined();
   });
 
   test("caps a reasoning effort above high at high", async () => {
