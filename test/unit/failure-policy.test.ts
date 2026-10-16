@@ -984,6 +984,39 @@ describe("classifyUpstreamFailure", () => {
     expect(policy.mutatesAccount).toBe(false);
   });
 
+  test("scopes the buddy 11-128 channel block to the account", () => {
+    // Two live share-page requests to the same model carried byte-identical
+    // bodies and headers and differed only in the pooled account: one answered
+    // 200, the other 400 `11-128` "request illegal … failed channel
+    // verification". The rejection is a verdict on the account's channel, so
+    // the account must be parked and a sibling tried — otherwise the router
+    // keeps re-picking it and the caller sees the same 400 forever.
+    for (const message of [
+      "request illegal",
+      "This call failed channel verification, possibly because it was not sent from an official client.",
+    ]) {
+      const policy = classifyUpstreamFailure(
+        new GatewayError("invalid_request", 400, message, { providerCode: "11-128", providerId: "cb" }, "upstream"),
+      );
+      expect(policy.scope).toBe("account");
+      expect(policy.mutatesAccount).toBe(true);
+      expect(policy.retryable).toBe(true);
+      expect(policy.providerCode).toBe("11-128");
+    }
+  });
+
+  test("does not cool an account for the 11-128 missing-conversation variant", () => {
+    // The same code also means "conversation id missing" — a malformed
+    // outbound request, which is this gateway's fault, not the credential's.
+    // Cooling the account there burns a healthy credential on a body that
+    // fails identically on every sibling.
+    const policy = classifyUpstreamFailure(
+      new GatewayError("invalid_request", 400, "conversation id missing", { providerCode: "11-128", providerId: "cb" }, "upstream"),
+    );
+    expect(policy.scope).toBe("provider");
+    expect(policy.mutatesAccount).toBe(false);
+  });
+
   test("scopes a network-origin failure to the network and never mutates the account", () => {
     // A network origin outranks every account signal: a proxy failure says
     // nothing about the credential.
