@@ -97,6 +97,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   server's logs, could not tell "capture is off" from "capture is broken". The
   reason is in `payloadCaptureState` on the request row and in the request-list
   and request-detail responses.
+- The Quota page no longer refreshes accounts by itself. It loads once and then
+  only on an explicit refresh: the page used to poll (every 2s while accounts
+  were warming, every 60s otherwise) and to enqueue a refresh for every account
+  whose cached value had aged out, so a single page open hit every provider's
+  quota endpoint at once. The periodic sweep already keeps quota warm; the page
+  is a viewer, not a second scheduler.
+- "Test all" now runs three accounts at a time instead of all of them at once.
+  Firing every account simultaneously is a burst the provider's own quota
+  endpoint rate-limits, which failed accounts that pass individually.
 
 ## 2.2 Zhezhi
 

@@ -1,7 +1,6 @@
 import { consoleRequest } from "../data/api";
 import type { ApiErrorShape } from "../data/api";
 import { queryKeys } from "../data/query-keys";
-import { POLL } from "../data/query-policy";
 import { querySignal } from "../data/assert";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -88,27 +87,26 @@ export async function fetchQuotaOverview(signal?: AbortSignal): Promise<QuotaOve
 /**
  * Loads the tenant's providers/accounts joined with quota + health.
  *
- * `staleTime: 0` is deliberate: the overview is cheap (one batch cache read
- * server-side) and the gateway fills cold accounts in the background, so the
- * page must re-read to observe that fill. Polling is adaptive — while the
- * server reports accounts still being refreshed it polls at `refreshingMs`,
- * otherwise it drops to `idleMs` — so a warming page converges in seconds and
- * a settled page stops hammering the API without any manual reload.
+ * Loads once and then only on an explicit refresh. The page used to poll
+ * adaptively — every 2s while accounts were warming, every 60s otherwise — and
+ * every one of those reads re-entered the server's quota path, which is what
+ * made opening the page update every account at once. A periodic worker already
+ * keeps quota warm server-side; the page is a viewer, not a second scheduler.
+ *
+ * `placeholderData` keeps the previous accounts on screen while a manual
+ * refresh is in flight, so the list does not flash empty.
  */
-export function useQuotaOverview(options?: {
-  readonly refreshingMs?: number;
-  readonly idleMs?: number;
-}) {
-  const refreshingMs = options?.refreshingMs ?? POLL.warming;
-  const idleMs = options?.idleMs ?? POLL.catalog;
+export function useQuotaOverview() {
   return useQuery<QuotaOverview>({
     queryKey: queryKeys.quota.all,
     queryFn: (context) => fetchQuotaOverview(querySignal(context)),
-    staleTime: 0,
-    refetchInterval: (query) => ((query.state.data?.refreshing ?? 0) > 0 ? refreshingMs : idleMs),
+    // No `refetchInterval`, no `refetchOnWindowFocus`, no `refetchOnMount`:
+    // each of those re-reads the quota surface, and the worker owns freshness.
+    staleTime: Infinity,
+    refetchInterval: false,
     refetchIntervalInBackground: false,
-    refetchOnMount: true,
-    refetchOnWindowFocus: true,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
     placeholderData: (previous) => previous,
   });
 }

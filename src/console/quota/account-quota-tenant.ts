@@ -11,7 +11,6 @@ import { readBuddyUsageSnapshots } from "../../providers/integrations/buddy/budd
 import { GatewayError } from "../../protocol/gateway-error";
 import {
   GLOBAL_QUOTA_LENS,
-  cachedQuotaAgeMs,
   getCachedQuotaEntries,
   getCachedQuotaEntry,
   invalidateQuotaCache,
@@ -46,7 +45,6 @@ import {
   listAccountResetCredits,
 } from "../../providers/operations/account-reset-service";
 import {
-  enqueueBackgroundQuotaRefresh,
   pendingQuotaRefreshes,
   toQuotaAccountHealth,
   toQuotaView,
@@ -258,13 +256,6 @@ const QUOTA_REFRESH_CONCURRENCY = 5;
 const QUOTA_REFRESH_MAX_IDS = 100;
 
 /**
- * How long since the most recent attempt before the overview retries the
- * account. Cache retention is longer, so a failed refresh can keep displaying
- * the last successful balance while a later attempt is scheduled.
- */
-const QUOTA_STALE_AFTER_MS = 240_000;
-
-/**
  * Registers the tenant-scoped account/quota routes onto `app`. Every route here
  * authorises through `requireTenantScope`, so the caller only ever touches its
  * own tenant's accounts.
@@ -323,7 +314,6 @@ export function registerAccountQuotaTenantRoutes(
         getCachedQuotaEntries(GLOBAL_QUOTA_LENS, globalIds, redis),
       ]);
 
-      const now = Date.now();
       const pending = pendingQuotaRefreshes();
       const providerIds = [...new Set(rows.map((row) => row.providerId))];
       // The dropdown is a quota-page control, not a provider directory: only
@@ -361,21 +351,16 @@ export function registerAccountQuotaTenantRoutes(
       const accounts = rows.map((row) => {
         const entry =
           row.tenantId === null ? globalCache.get(row.id) : ownedCache.get(row.id);
-        const ageMs = cachedQuotaAgeMs(entry, now);
-        // Providers with no quota collector (custom BYOK endpoints, key-only
-        // providers) intentionally never refresh: there is no upstream quota
-        // endpoint to ask, so enqueueing would only manufacture the
-        // "not available" error the page would then have to explain away.
+        // No background refresh is enqueued here. Opening the page used to
+        // enqueue one for every account whose cached value had aged out, so a
+        // single page open hit every provider's quota endpoint at once — and
+        // because the page also polled, the operator saw that fan-out as "the
+        // page refreshes everything when I open it". The periodic sweep owns
+        // freshness; this route renders what is cached.
+        //
+        // `refreshing` still counts accounts with no cached value, so the client
+        // can show them as pending while the sweep fills them.
         const canRefresh = providerRegistry.hasQuotaCollector(row.providerId);
-        const wantsRefresh = canRefresh && ageMs >= QUOTA_STALE_AFTER_MS;
-        if (wantsRefresh) {
-          enqueueBackgroundQuotaRefresh(refreshDeps, {
-            accountId: row.id,
-            providerId: row.providerId,
-            tenantId: row.tenantId,
-            credentialKind: row.credentialKind,
-          });
-        }
         const isRefreshing = canRefresh && (pending.has(row.id) || entry === undefined);
         if (isRefreshing) refreshing += 1;
         return {

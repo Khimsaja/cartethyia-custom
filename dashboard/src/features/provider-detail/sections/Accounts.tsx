@@ -16,6 +16,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { consoleRequest } from "../../../data/api";
 import { accountErrorLabel, authInvalidatedLabel } from "../../../lib/format/labels";
+import { mapWithConcurrency } from "../../../lib/concurrency";
 import { useMysteriousAccounts } from "../../../lib/privacy-mode";
 import { Badge } from "../../../components/ui/badge";
 import { Button, buttonClass } from "../../../components/ui/button";
@@ -778,6 +779,15 @@ export function AccountsList({
       recover.mutateAsync({ providerId, accountId: account.id }),
     );
 
+/**
+ * Accounts tested at once by "Test all".
+ *
+ * One at a time is slow across a large provider; all at once is a burst the
+ * provider's own quota endpoint rate-limits, which failed accounts that pass
+ * individually.
+ */
+const TEST_ALL_CONCURRENCY = 3;
+
   /**
    * Tests every account, independent of the current selection or filter.
    * Unlike the other bulk actions a failed test is a 200 with `ok: false`,
@@ -786,12 +796,10 @@ export function AccountsList({
   const testAllAccounts = async () => {
     if (accounts.length === 0) return;
     setBulkBusy(true);
-    const results = await Promise.allSettled(
-      accounts.map((account) =>
-        consoleRequest<AccountTestResult>(
-          `/accounts/${encodeURIComponent(account.id)}/quota/refresh`,
-          { method: "POST" },
-        ),
+    const results = await mapWithConcurrency(accounts, TEST_ALL_CONCURRENCY, (account) =>
+      consoleRequest<AccountTestResult>(
+        `/accounts/${encodeURIComponent(account.id)}/quota/refresh`,
+        { method: "POST" },
       ),
     );
     let passed = 0;
