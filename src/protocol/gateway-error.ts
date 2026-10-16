@@ -44,6 +44,7 @@ export type GatewayErrorCode =
   | "deadline_exceeded"
   | "transport_closed"
   | "max_connections_exceeded"
+  | "overloaded"
   | "proxy_unreachable"
   | "tool_call_loop_detected"
   | "client_router_denied"

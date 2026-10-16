@@ -164,6 +164,14 @@ export function createCanonicalRequestMiddleware(deps: {
   readonly stateStore: ProxyRequestStateStore;
   readonly surfaceRegistry: SurfaceAdapterRegistry;
   readonly adapters: ReadonlyMap<string, CanonicalAdapter>;
+  /**
+   * Whether this tenant's payload-capture mode keeps request bodies
+   * (`full`). `none`/`metadata` never read the request body at finalize, so
+   * the parsed ingress body can be released as soon as the canonical request
+   * exists instead of being held — across the whole upstream stream. Injected
+   * so this stage does not import the capture policy or the database.
+   */
+  readonly keepsIngressBody: (tenantId: string | null) => Promise<boolean>;
 }): Elysia {
   return new Elysia()
     .beforeHandle(async ({ request }) => {
@@ -225,6 +233,14 @@ export function createCanonicalRequestMiddleware(deps: {
       const userAgent = headers["user-agent"];
       if (userAgent) ingress.clientUserAgent = userAgent.slice(0, 512);
       ingress.canonicalRequest = adapter.parse({ body, headers, path });
+      // The parsed body is the largest per-request value, and once the
+      // canonical request exists the only later reader is payload capture — and
+      // only in `full` mode (see `captureTerminalPayload`). For `none`/`metadata`
+      // drop the reference now: held until cleanup, it would otherwise stay
+      // resident for the entire upstream stream.
+      if (!(await deps.keepsIngressBody(ingress.authorization?.tenantId ?? null))) {
+        ingress.releaseIngressBody();
+      }
     })
     .as("plugin");
 }

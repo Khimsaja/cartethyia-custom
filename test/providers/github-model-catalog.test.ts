@@ -61,7 +61,7 @@ describe("GitHub Copilot fallback model catalog", () => {
     expect(modelIds.has("gpt-4.1")).toBe(true);
     expect(modelIds.has("gpt-6-luna")).toBe(false);
     expect(modelIds.has("gpt-6-luna-low")).toBe(true);
-    expect(githubModelRoute("gpt-6-luna", credential)).toEqual({
+    expect(await githubModelRoute("gpt-6-luna", credential)).toEqual({
       wireFamily: "responses",
       endpointPath: "/responses",
     });

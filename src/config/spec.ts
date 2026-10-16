@@ -89,7 +89,12 @@ export const CONFIG_SPEC = {
   CARTETHYIA_API_KEY: { kind: "optional-text" },
   CARTETHYIA_SERVER_MAX_BODY_BYTES: {
     kind: "int",
-    default: 8 * 1024 * 1024,
+    // A 500K-token context is roughly 2 MB of text, so 4 MB admits every real
+    // request while halving the worst-case hold. Worst-case retained bytes
+    // across the process is `PROCESS_CONCURRENCY_CAP × this`, so on a 1 GB box
+    // the product should stay within about 40% of the limit; an operator with
+    // larger payloads raises this.
+    default: 4 * 1024 * 1024,
     min: 1024,
     max: Number.MAX_SAFE_INTEGER,
   },

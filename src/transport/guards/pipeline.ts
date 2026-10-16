@@ -11,6 +11,7 @@ import { createApiKeyAuthenticationMiddleware } from "./auth-guard";
 import { createDependencyReadinessMiddleware } from "./readiness-guard";
 import { createIpAbuseProtectionMiddleware } from "./abuse-guard";
 import { createProcessConcurrencyMiddleware } from "./concurrency-guard";
+import { createHeadroomGuard } from "./headroom-guard";
 import {
   createErrorNormalizationMiddleware,
   registerRequestCleanup,
@@ -24,9 +25,10 @@ import { ProxyRequestStateStore } from "../request/state";
 import type { SurfaceAdapterRegistry } from "../surface/adapters";
 import type { TrustedProxyBoundary } from "../../config/network";
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
+import type { RedisClient } from "../../persistence/redis";
 import type { TelemetryBatchBuffer } from "../../observability/telemetry-buffer";
 import type { ModelStrikeService } from "../../security/model-abuse";
-import { TelemetryPayloadCapture } from "../../observability/payload-capture";
+import { TelemetryPayloadCapture, payloadCaptureKeepsBodies } from "../../observability/payload-capture";
 
 /** Shared state/context carried by every ordered transport stage. */
 export interface TransportPipelineContext {
@@ -46,6 +48,11 @@ export interface TransportPipelineContext {
   readonly modelStrikes?: ModelStrikeService;
   readonly shutdownCoordinator?: ShutdownDrainSource;
   readonly telemetry?: TelemetryBatchBuffer;
+  /**
+   * Shared client for the headroom guard's shed marker. Optional: the shed
+   * decision is local, and Redis is only written for fleet visibility.
+   */
+  readonly redis?: RedisClient | undefined;
 }
 
 /**
@@ -70,6 +77,10 @@ export interface TransportPipeline {
 export function createTransportPipeline(context: TransportPipelineContext): TransportPipeline {
   const stages: Elysia[] = [
     createProcessConcurrencyMiddleware(),
+    createHeadroomGuard({
+      store: context.stateStore,
+      ...(context.redis === undefined ? {} : { redis: context.redis }),
+    }),
     createDependencyReadinessMiddleware({
       readiness: context.readiness,
       ...(context.shutdownCoordinator ? { shutdownCoordinator: context.shutdownCoordinator } : {}),
@@ -92,6 +103,7 @@ export function createTransportPipeline(context: TransportPipelineContext): Tran
       stateStore: context.stateStore,
       surfaceRegistry: context.surfaceRegistry,
       adapters: context.adapters,
+      keepsIngressBody: (tenantId) => payloadCaptureKeepsBodies(context.db, tenantId),
     }),
     createProxyRoutePreparationMiddleware({
       stateStore: context.stateStore,

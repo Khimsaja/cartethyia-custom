@@ -6,7 +6,8 @@ import type { ProxyRequestStateStore } from "../request/state";
 import { fastPathname } from "../pathname";
 import { NATIVE_SERVICE_PATHS, TOKEN_COUNT_PATH } from "../contracts";
 
-function isProxyRequest(request: Request): boolean {
+/** Whether this request is a gateway (`/v1/*`) request. */
+export function isProxyRequest(request: Request): boolean {
   return fastPathname(request.url).startsWith("/v1/");
 }
 

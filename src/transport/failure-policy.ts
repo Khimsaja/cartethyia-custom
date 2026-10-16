@@ -337,8 +337,13 @@ export function classifyUpstreamFailure(error: unknown): UpstreamFailurePolicy {
     (statusCode >= 500 && statusCode <= 599);
   const mutatesAccount = error.origin === "upstream" && scope === "account";
   const retryable =
-    mutatesAccount || // account-scoped failure: try a sibling regardless of status
-    error.code === "capability_unsupported" ||
+    // Gateway-wide overload: no sibling candidate can help, because the whole
+    // process is short of memory. The correct move is the client retrying after
+    // the hint, not another attempt here.
+    error.code === "overloaded"
+      ? false
+      : mutatesAccount || // account-scoped failure: try a sibling regardless of status
+        error.code === "capability_unsupported" ||
     error.code === "model_not_found" ||
     error.code === "admission_unavailable" ||
     error.code === "capacity_exhausted" ||

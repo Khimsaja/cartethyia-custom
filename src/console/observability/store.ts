@@ -8,7 +8,7 @@ import {
   type TelemetryEventRecord,
 } from "../../observability/event-log";
 import { isGatewayError } from "../../observability/telemetry-status";
-import { cachedUsage } from "./usage-cache";
+import { cachedRead } from "../shared/read-through-cache";
 import { decodeDatedCursor, encodeCursor } from "../shared/cursor";
 import { CARTETHYIA_VERSION } from "../../version";
 import { CachedPreferencesReader, DrizzlePreferencesReader, type PreferencesReader } from "../../persistence/tenant-preferences";
@@ -415,7 +415,7 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
 
   /** Reads a usage response through Redis; computes when no cache is configured. */
   private readThrough<T>(key: string, compute: () => Promise<T>): Promise<T> {
-    return cachedUsage(this.redis, key, compute);
+    return cachedRead(this.redis, key, compute);
   }
 
   private async computeUsage(tenantId: string, period: string): Promise<UsageResponse> {

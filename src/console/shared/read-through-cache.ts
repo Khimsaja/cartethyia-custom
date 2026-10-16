@@ -1,11 +1,11 @@
 /**
- * Read-through cache for the usage endpoints.
+ * Shared read-through cache for console responses.
  *
- * Answering one of these parses the retained telemetry window, which is the
- * console's dominant cost and runs on the event loop that serves the gateway.
- * Redis is configured on every deployment and this store only ever pinged it,
- * so the same window was re-parsed per instance, per poll, per endpoint. A
- * short TTL makes that once per window across the whole fleet.
+ * Answering several console endpoints parses the retained telemetry window,
+ * which is the console's dominant cost and runs on the event loop that serves
+ * the gateway. Redis is configured on every deployment and this store only ever
+ * pinged it, so the same window was re-parsed per instance, per poll, per
+ * endpoint. A short TTL makes that once per window across the whole fleet.
  *
  * A Redis that is slow or down must never fail a request: every cache step
  * falls through to computing the answer, which is exactly what the request
@@ -13,25 +13,24 @@
  */
 
 /** The slice of Redis this cache needs, so it can be tested without a server. */
-export interface UsageCacheClient {
+export interface ReadThroughCacheClient {
   get(key: string): Promise<string | null>;
   set(key: string, value: string, mode: "EX", ttlSeconds: number): Promise<unknown>;
 }
 
 /**
- * How long a usage response is served from cache. The dashboard polls every few
- * seconds and the telemetry log is append-only, so a short window is invisible
- * to a reader while collapsing a poll burst — and every other instance's — into
- * one computation.
+ * Default lifetime of a cached response. Callers whose underlying data changes
+ * more often pass a shorter TTL; this value suits the dashboard's polling
+ * cadence and the append-only telemetry log.
  */
-export const USAGE_CACHE_TTL_SECONDS = 10;
+export const READ_THROUGH_DEFAULT_TTL_SECONDS = 10;
 
 /** `undefined` when the row was never cached, so a computed `null` is cacheable. */
-export async function cachedUsage<T>(
-  client: UsageCacheClient | undefined,
+export async function cachedRead<T>(
+  client: ReadThroughCacheClient | undefined,
   key: string,
   compute: () => Promise<T>,
-  ttlSeconds: number = USAGE_CACHE_TTL_SECONDS,
+  ttlSeconds: number = READ_THROUGH_DEFAULT_TTL_SECONDS,
 ): Promise<T> {
   if (client === undefined) return compute();
   try {

@@ -2,7 +2,65 @@ import type { CartethyiaDatabase } from "../persistence/db-handle";
 import { DrizzleTelemetryStore } from "../persistence/stores/telemetry-store";
 import { prunePayloadFrames, writePayloadFrame } from "./payload-store";
 import { resolveTelemetryPayloadMaxBytes } from "../config/telemetry";
+import { preferencesReaderFor } from "../persistence/tenant-preferences";
+import type { TelemetryPayloadDepth, TelemetryPayloadMode } from "../console/settings/contracts";
 export type CaptureScope = "tenant" | "debug_session" | "operator_flag";
+
+/**
+ * Settings-gated payload capture. Request-event metadata is always retained;
+ * tenants opt into drawer capture through Settings → Privacy: `metadata`
+ * keeps only the Proxy→Provider request line, `full` keeps redacted bodies
+ * at the tenant's chosen depth. Fail-closed on error.
+ */
+export async function resolvePayloadCapture(
+  db: CartethyiaDatabase,
+  tenantId: string | null,
+): Promise<
+  | { readonly ok: true; readonly mode: TelemetryPayloadMode; readonly depth: TelemetryPayloadDepth }
+  | { readonly ok: false }
+> {
+  if (!tenantId) return { ok: false };
+  try {
+    const prefs = await preferencesReaderFor(db).readPreferences(tenantId);
+    const mode = prefs?.telemetryPayloads;
+    const depth = prefs?.telemetryPayloadDepth;
+    return {
+      ok: true,
+      mode: mode === "full" || mode === "metadata" || mode === "none" ? mode : "none",
+      depth:
+        depth === "minimum" || depth === "moderate" || depth === "maximum"
+          ? depth
+          : depth === "medium"
+            ? "minimum"
+            : depth === "high"
+              ? "moderate"
+              : depth === "full"
+                ? "maximum"
+                : "minimum",
+    };
+  } catch {
+    // A preference read that fails must not invent capture. Off keeps nothing.
+    // Reported as its own state rather than silently as `none`: an operator
+    // whose capture is off by choice and one whose preference read is failing
+    // need different fixes, and both used to look like "not configured".
+    return { ok: false };
+  }
+}
+
+/**
+ * Whether the tenant's capture mode keeps bodies (`full`). Both the
+ * provider-response tee and the ingress-body release key off this: `none` and
+ * `metadata` store no client request body, so the parsed ingress body can be
+ * dropped once the canonical request exists instead of being held until
+ * finalize — which, for a streaming response, is the whole stream.
+ */
+export async function payloadCaptureKeepsBodies(
+  db: CartethyiaDatabase,
+  tenantId: string | null,
+): Promise<boolean> {
+  const resolved = await resolvePayloadCapture(db, tenantId);
+  return resolved.ok && resolved.mode === "full";
+}
 
 /**
  * Why one request's drawer payloads are empty.

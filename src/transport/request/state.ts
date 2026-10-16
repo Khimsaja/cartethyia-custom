@@ -48,6 +48,17 @@ export interface ProxyRequestState {
   readonly abortController: AbortController;
   /** Body decoded by the single ingress reader, when this is a proxy request. */
   ingressBody?: unknown;
+  /**
+   * Drops the parsed ingress body once it can no longer be needed.
+   *
+   * The parsed body is the largest per-request value and, for a canonical
+   * request, only payload capture reads it after the canonical request exists.
+   * Capture reads it at finalize — after the whole upstream stream — so the
+   * dispatch path calls this before dispatch when the tenant's capture mode
+   * does not keep request bodies. The object then becomes unreachable and is
+   * reclaimed, instead of being held for the request's lifetime.
+   */
+  releaseIngressBody(): void;
   /** Inbound method/path are retained for structured Console Log events. */
   ingressMethod?: string;
   ingressPath?: string;
@@ -279,6 +290,9 @@ export class ProxyRequestStateStore {
         if (cleaned || providerFlightStarted) return;
         providerFlightStarted = true;
         this.inFlight.track(requestId, state.clientIdentity?.address ?? "unknown", state.deadlineMs);
+      },
+      releaseIngressBody: () => {
+        state.ingressBody = undefined;
       },
       ingressMethod: request.method,
       ingressPath: fastPathname(request.url),
