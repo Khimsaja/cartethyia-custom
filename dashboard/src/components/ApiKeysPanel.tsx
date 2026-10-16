@@ -1,5 +1,6 @@
 import {
   Copy,
+  Eye,
   KeyRound,
   Pencil,
   Plus,
@@ -89,6 +90,15 @@ export function ApiKeysPanel(): ReactNode {
       } else {
         toast.error("Clipboard unavailable on this origin");
       }
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Could not reveal API key."));
+    }
+  };
+
+  const viewApiKey = async (key: ApiKeyResponse) => {
+    try {
+      const { secret } = await revealKey.mutateAsync({ keyId: key.id });
+      setRevealedSecret(secret);
     } catch (error) {
       toast.error(getErrorMessage(error, "Could not reveal API key."));
     }
@@ -293,6 +303,17 @@ export function ApiKeysPanel(): ReactNode {
                   >
                     Edit
                   </Button>
+                  {!key.revokedAt && key.keyMode !== "share" ? (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      icon={<Eye size={13} />}
+                      onClick={() => void viewApiKey(key)}
+                      disabled={revealKey.isPending}
+                    >
+                      Reveal
+                    </Button>
+                  ) : null}
                   {!key.revokedAt && key.keyMode !== "share" ? (
                     <Button
                       variant="secondary"
