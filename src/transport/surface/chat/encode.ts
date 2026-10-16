@@ -453,7 +453,14 @@ export class ChatStreamEncoder extends SurfaceStreamEncoder<CanonicalEvent, Json
       // carries a slice of the id and a slice of the arguments, and no name.
       // The last carries the real id, the name, and the whole arguments.
       // Forwarding the slices made one write into dozens of nameless calls.
-      if (tool.state.name === undefined && !tool.state.id.startsWith("call_")) {
+      //
+      // The discriminator is the tracker, not the id shape. Keying on a `call_`
+      // prefix dropped the argument continuations of every provider whose ids
+      // are shaped differently — Anthropic's `toolu_…`, the synthesized
+      // `call-N-frag` — so those calls reached the client with no arguments at
+      // all. A nameless delta is a slice only when its id is not already an
+      // established call; a continuation reuses the id the tracker holds.
+      if (tool.state.name === undefined && !this.tracker.states.has(tool.state.id)) {
         return result;
       }
       const tracked = trackToolCall(this.tracker, {
