@@ -681,8 +681,10 @@ html[data-app="share"] body {
 
 /* The backdrop is its own fixed layer, not a body background. Mobile browsers
    treat `background-attachment: fixed` on the body as scroll, so the image
-   moved with the content. A fixed element stays put and only the page scrolls. */
-html[data-app="share"] body::before {
+   moved with the content. A fixed element stays put and only the page scrolls.
+   `html` is the containing block: a `fixed` layer on `body` is clipped or
+   dropped on mobile once `body` itself scrolls, which left the page blank. */
+html[data-app="share"]::before {
   content: "";
   position: fixed;
   inset: 0;
