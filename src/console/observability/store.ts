@@ -188,8 +188,13 @@ async function resolveProxyLabel(
 }
 const HEALTH_WINDOW_MS = 24 * 3_600_000;
 const TOP_N = 50;
-/** How long one dashboard poll burst shares a parsed period event set. */
-const PERIOD_MEMO_TTL_MS = 1_500;
+/**
+ * How long a parsed window is shared. A dashboard poll fires ~8 usage
+ * endpoints at once, and a slow parse used to outlive a 1.5 s window — so the
+ * endpoints that missed it each re-read and re-parsed the same files, which is
+ * how one page load became several full parses of the retention window.
+ */
+const PERIOD_MEMO_TTL_MS = 5_000;
 
 /** Nearest-rank percentile over a sorted array, matching `percentile_cont` closely enough for a health gauge. */
 function percentile(sorted: readonly number[], fraction: number): number {
@@ -659,11 +664,18 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
     limit: number,
     httpStatus?: number,
   ): Promise<UsageRequestsResponse> {
-    const events = await this.periodEvents(tenantId, period);
-    const rows = (httpStatus === undefined
-      ? events
-      : events.filter((event) => effectiveHttpStatus(event) === httpStatus)
-    ).slice(0, limit);
+    // Ask the reader for `limit` rows instead of folding the whole window and
+    // slicing it. It stops at the newest file that fills the page, so the
+    // console's most-polled endpoint no longer parses the retention window just
+    // to show 50 rows.
+    const since = periodStartDate(period);
+    const events = await queryTelemetryEvents({
+      tenantId,
+      limit,
+      ...(httpStatus === undefined ? {} : { httpStatus }),
+      ...(since === undefined ? {} : { since }),
+    });
+    const rows = events.slice(0, limit);
     const hideClientIp = await shouldMaskClientIp(this.preferences, tenantId);
     const keyIds = [...new Set(rows.map((row) => row.apiKeyId).filter((id): id is string => id !== null))];
     const labels = await this.apiKeyLabels(tenantId, keyIds);
