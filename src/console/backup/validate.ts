@@ -48,6 +48,26 @@ import {
 const LEGACY_PROVIDER_USER_AGENT = "codex_cli_rs/0.156.1";
 const CURRENT_PROVIDER_USER_AGENT = "claude-cli/2.1.293 (external, cli)";
 
+/**
+ * Provider ids that were renamed, old spelling to current.
+ *
+ * A backup exported before the rename still names the old ids, and a restore
+ * that inserted them verbatim would create rows the registry does not serve —
+ * they would render as unknown providers with no models. Normalizing on import
+ * keeps those backups restorable, which is the same job the other legacy
+ * mappings in this function do.
+ */
+const RENAMED_PROVIDER_IDS: Readonly<Record<string, string>> = {
+  opencodeft: "opencode",
+  opencodezen: "opencode-zen",
+  opencodego: "opencode-go",
+};
+
+function currentProviderId(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  return RENAMED_PROVIDER_IDS[value] ?? value;
+}
+
 function legacyModelList(value: unknown): readonly string[] | undefined {
   if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) return undefined;
   return value;
@@ -67,6 +87,10 @@ function normalizeLegacyApiKeyPolicy(row: Record<string, unknown>): Record<strin
 }
 
 function normalizeLegacyRow(table: Table, row: Record<string, unknown>): Record<string, unknown> {
+  if (row["provider_id"] !== undefined) {
+    const renamed = currentProviderId(row["provider_id"]);
+    if (renamed !== row["provider_id"]) row = { ...row, provider_id: renamed };
+  }
   if (
     table === apiKeys &&
     row["is_default"] === undefined &&

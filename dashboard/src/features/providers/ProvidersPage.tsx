@@ -654,7 +654,7 @@ const FOUNDING_IDS = new Set(["inferhub"]);
 /** Free tiers with a small daily allowance rather than a standing free tier. */
 const FREE_LIMITED_IDS = new Set([
   "grok",
-  "opencodeft",
+  "opencode",
   "cline",
   // Kilo Code resells the OpenRouter catalog — `/api/openrouter`, the same
   // upstream Cline fronts — and serves a `kilo-auto/free` routing alias
@@ -676,8 +676,8 @@ const WELL_KNOWN_API_KEY_IDS = new Set([
   "gemini",
   "alibabacp",
   "ollamacloud",
-  "opencodezen",
-  "opencodego",
+  "opencode-zen",
+  "opencode-go",
   "mistral",
   "meta",
   "deepseek",

@@ -45,14 +45,14 @@ describe("public model metadata resolution", () => {
 
   test("the winning member carries its capabilities too, not just its limits", () => {
     // The defect as reported: `cb` has a 1M/384k window with vision and tools,
-    // `opencodeft` is 200k/64k without them, and the pool advertised the latter
+    // `opencode` is 200k/64k without them, and the pool advertised the latter
     // — dropping vision entirely because one member lacked it.
     const metadata = new Map<string, ModelMetadata>([
       ["cb/deepseek-v4.1-flash", { ...meta(1_000_000, 384_000), toolCall: true }],
-      ["opencodeft/deepseek-v4.1-flash", { ...meta(200_000, 64_000), toolCall: false }],
+      ["opencode/deepseek-v4.1-flash", { ...meta(200_000, 64_000), toolCall: false }],
     ]);
     const result = advertisedMetadata(
-      ["cb/deepseek-v4.1-flash", "opencodeft/deepseek-v4.1-flash"],
+      ["cb/deepseek-v4.1-flash", "opencode/deepseek-v4.1-flash"],
       metadata,
     );
     expect(result.contextLimit).toBe(1_000_000);

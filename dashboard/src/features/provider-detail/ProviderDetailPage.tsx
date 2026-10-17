@@ -157,7 +157,7 @@ export default function ProviderDetail(): ReactNode {
   );
 
   const provider = (providersQuery.data ?? []).find((item) => item.providerId === id);
-  const autoModelSyncProvider = id === "opencodeft" || id === "cline";
+  const autoModelSyncProvider = id === "opencode" || id === "cline";
   const serviceKinds = provider === undefined ? ["llm"] : normalizedServiceKinds(provider);
   const supportedServiceKinds: DashboardServiceKind[] = [];
   for (const kind of serviceKinds) {

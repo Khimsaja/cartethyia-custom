@@ -50,6 +50,7 @@ test("each backend has matching baseline and incremental migrations", () => {
     "0006_add_buddy_task_ledger.sql",
     "0007_add_telemetry_payload_capture_state.sql",
     "0008_add_models_route_unique_index.sql",
+    "0009_rename_opencode_provider_ids.sql",
   ];
   expect(postgres).toEqual(expected);
   expect(sqlite).toEqual(expected);

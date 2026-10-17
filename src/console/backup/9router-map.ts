@@ -32,8 +32,8 @@
  * Verified against the router's own provider registry and the model ids its rows
  * carry: `xai` and `grok-cli` both serve xAI's Grok models, which we file under
  * `grok`; `gemini-cli` serves Google's models, which we file under `gemini`;
- * `opencode`/`opencode-free` serve opencode.ai, which we call `opencodeft`;
- * `opencode-go` is the paid tier we call `opencodego`; `clinepass` is Cline's
+ * `opencode`/`opencode-free` serve opencode.ai's anonymous free tier, which we
+ * call `opencode`; `opencode-go` is the paid tier, `opencode-go`; `clinepass` is Cline's
  * pass product, and we carry Cline as `cline`. `github` and `kiro` are our own
  * ids spelled identically, and were previously listed as unsupported — we carry
  * both families (`src/providers/integrations/github`, `/kiro`), so refusing them
@@ -48,9 +48,11 @@ export const UPSTREAM_PROVIDERS: Readonly<Record<string, string>> = {
   kimi: "kimi",
   cline: "cline",
   clinepass: "cline",
-  opencode: "opencodeft",
-  "opencode-free": "opencodeft",
-  "opencode-go": "opencodego",
+  // The router's `opencode` and `opencode-free` are both the anonymous free
+  // tier, which we now call `opencode`. `opencode-go` is the billed tier.
+  opencode: "opencode",
+  "opencode-free": "opencode",
+  "opencode-go": "opencode-go",
   xai: "grok",
   "grok-cli": "grok",
   "gemini-cli": "gemini",

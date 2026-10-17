@@ -65,10 +65,10 @@ async function withFixture(
     const tenantId = randomUUID();
     await db.insert(tenants).values({ id: tenantId, name: "Operator", status: "active" });
     // The bundled-provider shape: one global row, `tenant_id` left NULL.
-    await db.insert(providers).values({ id: "opencodeft" });
+    await db.insert(providers).values({ id: "opencode" });
     await db.insert(models).values([
       {
-        providerId: "opencodeft",
+        providerId: "opencode",
         modelId: "fetched-model",
         wireFamily: "chat",
         endpointPath: "/zen/v1/chat/completions",
@@ -77,7 +77,7 @@ async function withFixture(
         outputLimit: 64_000,
       },
       {
-        providerId: "opencodeft",
+        providerId: "opencode",
         modelId: "builtin-model",
         wireFamily: "chat",
         endpointPath: "/zen/v1/chat/completions",
@@ -93,7 +93,7 @@ async function withFixture(
 
 test("a fetched model on a global provider is editable", async () => {
   await withFixture(async ({ store, db, tenantId }) => {
-    const ok = await store.updateModelMetadata(tenantId, "opencodeft", {
+    const ok = await store.updateModelMetadata(tenantId, "opencode", {
       modelId: "fetched-model",
       route: "/zen/v1/chat/completions",
       enabled: true,
@@ -104,7 +104,7 @@ test("a fetched model on a global provider is editable", async () => {
     const rows = await db
       .select()
       .from(models)
-      .where(and(eq(models.providerId, "opencodeft"), eq(models.modelId, "fetched-model")));
+      .where(and(eq(models.providerId, "opencode"), eq(models.modelId, "fetched-model")));
     const row = rows[0];
     expect(row?.contextLimit).toBe(131_072);
     expect(row?.outputLimit).toBe(32_768);
@@ -115,7 +115,7 @@ test("a fetched model on a global provider is editable", async () => {
 test("a built-in model on a global provider is still refused", async () => {
   await withFixture(async ({ store, tenantId }) => {
     await expect(
-      store.updateModelMetadata(tenantId, "opencodeft", {
+      store.updateModelMetadata(tenantId, "opencode", {
         modelId: "builtin-model",
         route: "/zen/v1/chat/completions",
         enabled: true,
@@ -127,7 +127,7 @@ test("a built-in model on a global provider is still refused", async () => {
 
 test("an unknown model still answers false", async () => {
   await withFixture(async ({ store, tenantId }) => {
-    const ok = await store.updateModelMetadata(tenantId, "opencodeft", {
+    const ok = await store.updateModelMetadata(tenantId, "opencode", {
       modelId: "never-existed",
       route: "/zen/v1/chat/completions",
       enabled: true,

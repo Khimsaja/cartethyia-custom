@@ -111,9 +111,9 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
     credentialHint: "Sign in with Google or GitHub in the browser, or use the device-code login with an Identity Center organization, then paste a Kiro API key if you prefer. Prompt caching is not reliably working for Kiro: the upstream recomputes the prompt on every turn, so cached-token savings should not be expected.",
   },
   { id: "kimi", displayName: "Kimi Code", baseUrl: "https://api.kimi.com/coding", credentialUrl: "https://platform.moonshot.ai/console/api-keys" },
-  { id: "opencodeft", displayName: "OpenCode Free", baseUrl: "https://opencode.ai", requiresAccount: false, ipScopedRateLimit: true, hasAdapterUserAgent: true },
-  { id: "opencodezen", displayName: "OpenCode Zen", baseUrl: "https://opencode.ai", hasAdapterUserAgent: true, credentialUrl: "https://opencode.ai/auth" },
-  { id: "opencodego", displayName: "OpenCode Go", baseUrl: "https://opencode.ai", credentialUrl: "https://opencode.ai/auth" },
+  { id: "opencode", displayName: "OpenCode Free", baseUrl: "https://opencode.ai", requiresAccount: false, ipScopedRateLimit: true, hasAdapterUserAgent: true },
+  { id: "opencode-zen", displayName: "OpenCode Zen", baseUrl: "https://opencode.ai", hasAdapterUserAgent: true, credentialUrl: "https://opencode.ai/auth" },
+  { id: "opencode-go", displayName: "OpenCode Go", baseUrl: "https://opencode.ai", credentialUrl: "https://opencode.ai/auth" },
   { id: "cerebras", displayName: "Cerebras", baseUrl: "https://api.cerebras.ai/v1", credentialUrl: "https://cloud.cerebras.ai/platform" },
   { id: "openrouter", displayName: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", credentialUrl: "https://openrouter.ai/settings/keys" },
   { id: "mistral", displayName: "Mistral AI", baseUrl: "https://api.mistral.ai/v1", credentialUrl: "https://console.mistral.ai/api-keys" },
@@ -537,21 +537,21 @@ export function providerBaseUrl(providerId: string): string {
 
 /** Wire-path compatibility overrides owned by the canonical provider registry. */
 export const PROVIDER_COMPATIBILITY_PROFILES: Record<string, CompatibilityProfile> = {
-  opencodeft: {
+  opencode: {
     endpoint_paths_by_wire_family: {
       chat: "/inference/v1/chat/completions",
       responses: "/inference/v1/responses",
     },
     model_wire_families: [{ pattern: "^muse-spark", wire_family: "responses" }],
   },
-  opencodezen: {
+  "opencode-zen": {
     endpoint_paths_by_wire_family: {
       chat: "/inference/v1/chat/completions",
       responses: "/inference/v1/responses",
     },
     model_wire_families: [{ pattern: "^muse-spark", wire_family: "responses" }],
   },
-  opencodego: {
+  "opencode-go": {
     endpoint_paths_by_wire_family: {
       chat: "/zen/go/v1/chat/completions",
       responses: "/zen/go/v1/responses",

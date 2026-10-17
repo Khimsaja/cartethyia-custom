@@ -8,7 +8,7 @@ describe("OpenCode request fingerprint", () => {
   test("matches the captured CLI identity and reuses session identity per conversation", async () => {
     const context: ProviderDispatchContext = {
       credential: {
-        provider_id: "opencodeft",
+        provider_id: "opencode",
         credential_kind: "none",
       },
       deadline: Date.now() + 1_000,

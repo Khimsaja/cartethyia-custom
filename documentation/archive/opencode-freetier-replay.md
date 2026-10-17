@@ -21,7 +21,7 @@ that release were required.
 
 ## Question
 
-`opencodeft/big-pickle` fails via the wire with:
+`opencode/big-pickle` fails via the wire with:
 
 ```
 403 FreeTierError — OpenCode's free tier can only be used from within OpenCode.

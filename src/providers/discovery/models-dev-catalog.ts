@@ -36,7 +36,7 @@ export type { ModelsDevModelCost, ModelsDevModelMetadata };
  * Cartethyia provider id → the provider key the catalog files it under.
  *
  * Only ids that genuinely differ belong here, and each entry is backed by the
- * deployment's own upstream: `opencodeft` serves `opencode.ai`, and its model
+ * deployment's own upstream: `opencode` serves `opencode.ai`, and its model
  * ids also appear under the catalog's `opencode`. Without this the exact
  * lookup missed for every one of those models, so each fell through to the bare
  * lookup — which fails closed when providers disagree — and the entry was
@@ -54,9 +54,11 @@ export type { ModelsDevModelCost, ModelsDevModelMetadata };
  * {@link ModelsDevCatalog.costFor}, which falls back to the model's own rate.
  */
 const CATALOG_PROVIDER_IDS: Readonly<Record<string, string>> = {
-  opencodeft: "opencode",
-  opencodezen: "opencode",
-  opencodego: "opencode-go",
+  // `opencode` is both a Cartethyia provider id and a catalog key, so it needs
+  // no entry: `exactMetadata` tries the id directly first. Only the tiers whose
+  // id differs from the catalog key belong here.
+  "opencode-zen": "opencode",
+  "opencode-go": "opencode-go",
   ollamacloud: "ollama-cloud",
   xiaomipg: "xiaomi-token-plan-sgp",
   xiaomitp: "xiaomi-token-plan-cn",

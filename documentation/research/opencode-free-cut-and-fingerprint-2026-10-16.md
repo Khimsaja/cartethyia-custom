@@ -8,7 +8,7 @@ the evidence needed to resume.
 
 | | |
 |---|---|
-| Provider | `opencodeft` (free tier) |
+| Provider | `opencode` (free tier) |
 | Model | `deepseek-v4.1-flash-free` (client asked for `bansos/deepseek-v4.1-flash (max)`) |
 | Client | `codex_cli_rs/0.160.0 (Mac OS 27.0.1; arm64)`, `/v1/chat/completions`, stream |
 | Egress | via the configured proxy pool |
@@ -127,7 +127,7 @@ Two corrections to earlier notes in this repo:
   `Bearer public`.
 
 Deployment consequence: a datacenter egress (Railway and similar) is blocked
-outright, so `opencodeft` cannot be repaired in `provider.ts` — it needs an
+outright, so `opencode` cannot be repaired in `provider.ts` — it needs an
 egress proxy, the same workaround `opencode2api` implements with its proxy pool.
 
 Current contract: [`.skills/cartethyia-trace-replay/references/opencode-free-tier.md`](../../.skills/cartethyia-trace-replay/references/opencode-free-tier.md).

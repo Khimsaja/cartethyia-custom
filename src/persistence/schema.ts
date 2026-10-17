@@ -138,7 +138,7 @@ export const telemetryStatus = pgEnum("telemetry_status", [
 ]);
 
 // The id matches the seven canonical builtin IDs (openai, anthropic, claude,
-// codex, opencodezen, ollamacloud, cerebras) or a custom/BYOK slug
+// codex, opencode-zen, ollamacloud, cerebras) or a custom/BYOK slug
 // rejected at the identity boundary when it collides case-insensitively with
 // a reserved ID — that rejection is application-layer, not a DB constraint
 // here. `capability_profile` is a JSONB routing-capability map with no index:

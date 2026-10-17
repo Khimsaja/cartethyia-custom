@@ -29,12 +29,12 @@ const prepare = OPENCODE_FREE_SPEC.prepareRequest!;
 describe("OpenCode Free request preparation", () => {
   test("builds and forwards the default agent tools when the client sends none", async () => {
     const prepared = prepare({
-      ...request("opencodeft/muse-spark-1.3-contributor-free", undefined),
+      ...request("opencode/muse-spark-1.3-contributor-free", undefined),
       stream: false,
       tools: [],
     });
     const candidate: ProviderDispatchTarget = {
-      provider_id: "opencodeft",
+      provider_id: "opencode",
       model_id: "muse-spark-1.3-contributor-free",
       wire_family: "responses",
       endpoint_path: "/v1/responses",

@@ -202,14 +202,14 @@ describe("unfiled model limits", () => {
     // A brand-new id the catalog has not caught up with must still be
     // routable, so it gets a number — and a marker saying the number is ours,
     // not the model's.
-    const model = defineModel({ id: "totally-unfiled-model-xyz", providerId: "opencodeft" });
+    const model = defineModel({ id: "totally-unfiled-model-xyz", providerId: "opencode" });
     expect(model.contextLimit).toBe(FALLBACK_CONTEXT_LIMIT);
     expect(model.outputLimit).toBe(FALLBACK_OUTPUT_LIMIT);
     expect(model.limitsEstimated).toBe(true);
   });
 
   test("an explicit ctx wins and clears the marker", () => {
-    const model = defineModel({ id: "totally-unfiled-model-xyz", providerId: "opencodeft", ctx: 300_000, out: 64_000 });
+    const model = defineModel({ id: "totally-unfiled-model-xyz", providerId: "opencode", ctx: 300_000, out: 64_000 });
     expect(model.contextLimit).toBe(300_000);
     expect(model.outputLimit).toBe(64_000);
     expect(model.limitsEstimated).toBeUndefined();
@@ -224,7 +224,7 @@ describe("unfiled model limits", () => {
   test("output never exceeds context even on the fallback", () => {
     // The fallback pair is already consistent; this pins the clamp for any
     // future change that raises one half alone.
-    const model = defineModel({ id: "totally-unfiled-model-xyz", providerId: "opencodeft" });
+    const model = defineModel({ id: "totally-unfiled-model-xyz", providerId: "opencode" });
     expect(model.outputLimit).toBeLessThanOrEqual(model.contextLimit as number);
   });
 });

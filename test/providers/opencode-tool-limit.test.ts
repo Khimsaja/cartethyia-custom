@@ -13,7 +13,7 @@ import type { CanonicalRequest, ToolDefinition } from "../../src/protocol/canoni
 import type { ProviderDispatchTarget } from "../../src/providers/provider-contracts";
 
 const CANDIDATE: ProviderDispatchTarget = {
-  provider_id: "opencodeft",
+  provider_id: "opencode",
   model_id: "glm-5.3-flash",
   wire_family: "chat",
   endpoint_path: "/inference/v1/chat/completions",

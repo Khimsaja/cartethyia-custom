@@ -149,7 +149,7 @@ an operator who turned proxying back on keeps it on.
 ## Model catalog
 
 - OpenCode Zen is id-oriented; models.dev carries rich metadata.
-- OpenCode's **free tier** (`opencodeft`) has two independent failure modes,
+- OpenCode's **free tier** (`opencode`) has two independent failure modes,
   and they are not interchangeable:
   - **Egress IP blocked** — a 403 `FreeTierError` that survives every header
     permutation, and that the official client reproduces from the same host.

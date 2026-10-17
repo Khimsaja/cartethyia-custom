@@ -59,7 +59,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   `models.opencode.ai` (e.g. `ling-3.1-flash-free` 262144/32768, `exo-free`
   1048576/131072). Editing an auto-fetched model on a bundled provider also
   works, where it previously answered `Model not found`.
-- An OpenCode free-tier (`opencodeft`) dispatch is refused with 403
+- An OpenCode free-tier (`opencode`) dispatch is refused with 403
   `FreeTierError` when the **egress IP** is blocked, and no request change
   helps: the official 2.0.32 client, its stored OAuth token, and a third-party
   gateway all reproduce the same refusal from an affected host, while the

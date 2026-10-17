@@ -29,7 +29,7 @@ describe("OpenCode free probe — backfilled tools are agent-shaped", () => {
     const request = OPENCODE_FREE_SPEC.prepareRequest?.(probeRequest()) ?? probeRequest();
     const payload = await encodeWireRequest("responses", request);
     const candidate: ProviderDispatchTarget = {
-      provider_id: "opencodeft",
+      provider_id: "opencode",
       model_id: "muse-spark-1.3-contributor-free",
       wire_family: "responses",
       endpoint_path: "/inference/v1/responses",

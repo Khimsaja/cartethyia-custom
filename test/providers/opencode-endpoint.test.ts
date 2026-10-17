@@ -17,7 +17,7 @@ import {
   OPENCODE_ZEN_MODELS,
 } from "../../src/providers/integrations/opencode/provider";
 
-function dispatchUrl(providerId: "opencodeft" | "opencodezen" | "opencodego", endpointPath: string): string {
+function dispatchUrl(providerId: "opencode" | "opencode-zen" | "opencode-go", endpointPath: string): string {
   return providerBaseUrl(providerId).replace(/\/+$/, "") + endpointPath;
 }
 
@@ -30,7 +30,7 @@ describe("OpenCode dispatch base", () => {
 
   test("the free muse model lands on the URL a replay proved returns 200", () => {
     const muse = OPENCODE_FREE_MODELS.find((model) => model.modelId === "muse-spark-1.3-contributor-free");
-    expect(dispatchUrl("opencodeft", muse?.endpointPath ?? "")).toBe(
+    expect(dispatchUrl("opencode", muse?.endpointPath ?? "")).toBe(
       "https://opencode.ai/inference/v1/responses",
     );
   });

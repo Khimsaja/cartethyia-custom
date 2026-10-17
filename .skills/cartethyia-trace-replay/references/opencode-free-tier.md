@@ -1,4 +1,4 @@
-# OpenCode free tier (`opencodeft`)
+# OpenCode free tier (`opencode`)
 
 Two different things refuse a free-tier dispatch, and confusing them costs
 hours. **Read this section before changing any header.**
@@ -17,7 +17,7 @@ Confirmed 2026-10-17: the same byte-identical request returns **403 direct** and
 whole time; only the egress IP differed.
 
 Corollary for deployments: a datacenter IP (Railway and similar) is blocked.
-`opencodeft` cannot be fixed in `provider.ts` — it needs an egress proxy.
+`opencode` cannot be fixed in `provider.ts` — it needs an egress proxy.
 
 ## Wire shape (verified 200)
 

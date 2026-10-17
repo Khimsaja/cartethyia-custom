@@ -10,11 +10,11 @@ import { buildOpenCodeHeaders } from "./fingerprint";
 /**
  * OpenCode's three API-key tiers, all served from `opencode.ai`:
  *
- * - `opencodeft` (OpenCode Free): unauthenticated public route — no
+ * - `opencode` (OpenCode Free): unauthenticated public route — no
  *   `Authorization` header is ever sent, even if a credential were somehow
  *   configured. Serves the free-tier model set.
- * - `opencodezen` (OpenCode Zen): billed API-key route.
- * - `opencodego` (OpenCode Go): billed API-key route on the separate
+ * - `opencode-zen` (OpenCode Zen): billed API-key route.
+ * - `opencode-go` (OpenCode Go): billed API-key route on the separate
  *   `/zen/go/v1` base — a bundled, higher-tier model set.
  *
  * Free and Zen dispatch on `/inference/v1`, NOT `/zen/v1`. The catalog is the
@@ -268,7 +268,7 @@ function clampOpenCodeTools(payload: Record<string, unknown>, request: Canonical
   if (kept.length > OPENCODE_MAX_TOOLS) return;
   payload["tools"] = [...kept, ...rest.slice(0, OPENCODE_MAX_TOOLS - kept.length)];
 }
-function opencodeSpec(providerId: "opencodeft" | "opencodezen" | "opencodego"): ApiKeyProviderSpec {
+function opencodeSpec(providerId: "opencode" | "opencode-zen" | "opencode-go"): ApiKeyProviderSpec {
   // Free-tier gate facts (verified live 2026-10-14 against opencode.ai/zen/v1):
   // a request for a free model with stream:false is ALWAYS refused with 403
   // FreeTierError — regardless of headers, tools, or session shape — while
@@ -309,7 +309,7 @@ function opencodeSpec(providerId: "opencodeft" | "opencodezen" | "opencodego"): 
     },
     // OpenCode Free is a genuinely public, unauthenticated endpoint: no
     // credential is ever forwarded, whatever the account configuration says.
-    ...(providerId === "opencodeft" ? { credential_forwarding: "never" as const } : {}),
+    ...(providerId === "opencode" ? { credential_forwarding: "never" as const } : {}),
     // Free models on any tier need the agent-tool fingerprint and the forced
     // upstream stream (the gate refuses tool-less or stream:false free
     // dispatches with 403 FreeTierError). Billed models dispatch untouched.
@@ -318,11 +318,11 @@ function opencodeSpec(providerId: "opencodeft" | "opencodezen" | "opencodego"): 
   };
 }
 /** OpenCode Free — unauthenticated public route. No credential is ever forwarded. */
-export const OPENCODE_FREE_SPEC: ApiKeyProviderSpec = opencodeSpec("opencodeft");
+export const OPENCODE_FREE_SPEC: ApiKeyProviderSpec = opencodeSpec("opencode");
 /** OpenCode Zen — billed API-key route on `/zen/v1`. */
-export const OPENCODE_ZEN_SPEC: ApiKeyProviderSpec = opencodeSpec("opencodezen");
+export const OPENCODE_ZEN_SPEC: ApiKeyProviderSpec = opencodeSpec("opencode-zen");
 /** OpenCode Go — billed API-key route on the separate `/zen/go/v1` base. */
-export const OPENCODE_GO_SPEC: ApiKeyProviderSpec = opencodeSpec("opencodego");
+export const OPENCODE_GO_SPEC: ApiKeyProviderSpec = opencodeSpec("opencode-go");
 
 /**
  * The free-tier subset of `/zen/v1/models`, as this provider's own discovery.
@@ -345,7 +345,7 @@ export async function discoverOpenCodeFreeModels(options: {
   const { fetchOpenAICompatibleModels } = await import("../../discovery/openai-model-discovery");
   const listed = await fetchOpenAICompatibleModels({
     baseUrl: options.baseUrl,
-    providerId: "opencodeft",
+    providerId: "opencode",
     ...(options.fetcher === undefined ? {} : { fetcher: options.fetcher }),
   });
   if (listed === null) return null;
