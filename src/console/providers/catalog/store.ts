@@ -1,5 +1,5 @@
 // Drizzle-backed provider, account, model, routing, and API-key repositories.
-import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import { ConsoleDomainError } from "../../shared/errors";
 import { parseCustomProviderId, isBundledProviderId } from "../../../providers/provider-contracts";
 import type { ModelDefinition } from "../../../providers/provider-model-definition";
@@ -799,9 +799,18 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
   /**
    * Updates one model's limits and capability flags.
    *
-   * Only rows the tenant owns are writable: a global/built-in model is shared,
-   * so editing it here would change routing for every tenant at once. Those are
-   * rejected as `not_found` rather than silently no-op'd.
+   * Two row kinds are writable. A tenant-owned (BYOK) row is updated directly.
+   * A model belonging to a *global* provider row is also updated directly:
+   * bundled providers are seeded once with `tenant_id IS NULL` and `providers.id`
+   * is the primary key, so a bundled provider can only ever have that one row —
+   * there is no tenant-scoped row to edit instead. Auto-fetched rows
+   * (`discovered` / `auto_free`) live on exactly those providers, which is why
+   * the previous `ownedByOnly` filter answered `not_found` for every model the
+   * operator had just fetched and could not be edited at all.
+   *
+   * A global `builtin` row is rejected: it is re-seeded from the bundle on every
+   * boot, so an edit there would be silently reverted, and `deleteModel` refuses
+   * it for the same reason.
    *
    * Absent override fields leave the stored value untouched — an edit that only
    * sets the context ceiling must not reset the capability flags.
@@ -811,21 +820,35 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
     providerId: string,
     request: UpdateModelMetadataRequest,
   ): Promise<boolean> {
-    const target = await this.db
-      .select({ id: models.id, modalities: models.modalities })
-      .from(models)
-      .innerJoin(providers, eq(models.providerId, providers.id))
-      .where(
-        and(
-          eq(models.providerId, providerId),
-          eq(models.modelId, request.modelId),
-          eq(models.endpointPath, request.route),
-          ownedByOnly(providers.tenantId, tenantId),
-        ),
-      )
-      .limit(1);
-    const row = target[0];
-    if (row === undefined) return false;
+    const findRow = (ownership: SQL) =>
+      this.db
+        .select({ id: models.id, modalities: models.modalities, source: models.source })
+        .from(models)
+        .innerJoin(providers, eq(models.providerId, providers.id))
+        .where(
+          and(
+            eq(models.providerId, providerId),
+            eq(models.modelId, request.modelId),
+            eq(models.endpointPath, request.route),
+            ownership,
+          ),
+        )
+        .limit(1);
+    const owned = await findRow(ownedByOnly(providers.tenantId, tenantId));
+    let row = owned[0];
+    if (row === undefined) {
+      const global = await findRow(isNull(providers.tenantId));
+      const candidate = global[0];
+      if (candidate === undefined) return false;
+      if (candidate.source === "builtin") {
+        throw new ConsoleDomainError(
+          "builtin_model_immutable",
+          403,
+          `Built-in model ${providerId}/${request.modelId} cannot be edited — the bundle re-seeds it on every boot`,
+        );
+      }
+      row = candidate;
+    }
 
     const override = request.metadata;
     const set: Record<string, unknown> = { sourceUpdatedAt: new Date() };
