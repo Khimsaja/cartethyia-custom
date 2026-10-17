@@ -16,6 +16,8 @@ export interface TelemetryEventRecord {
   readonly requestId: string;
   readonly sourceSurface: string | null;
   readonly requestedModel: string | null;
+  /** The model the upstream named in its own response; null when it named none. */
+  readonly reportedModel: string | null;
   readonly requestedEffort: string | null;
   readonly providerId: string | null;
   readonly accountId: string | null;
@@ -69,6 +71,7 @@ function normalize(raw: Record<string, unknown>): TelemetryEventRecord | undefin
     requestId,
     sourceSurface: asString(raw["sourceSurface"]),
     requestedModel: asString(raw["requestedModel"]),
+    reportedModel: asString(raw["reportedModel"]),
     requestedEffort: asString(raw["requestedEffort"]),
     providerId: asString(raw["providerId"]),
     accountId: asString(raw["accountId"]),

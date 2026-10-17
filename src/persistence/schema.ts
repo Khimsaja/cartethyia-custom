@@ -1026,6 +1026,16 @@ export const telemetryEvents = pgTable(
     requestId: uuid("request_id").notNull(),
     sourceSurface: telemetrySourceSurface("source_surface"),
     requestedModel: text("requested_model"),
+    /**
+     * The `model` the upstream put in its own response, verbatim.
+     *
+     * Separate from `requested_model` because they answer different questions:
+     * one is what the client asked for, the other is what the provider said it
+     * ran. A provider that answers `muse-spark` as `deepseek-v4.1-flash` is
+     * telling the operator something, and overwriting one with the other would
+     * erase it. NULL when the response carried no model.
+     */
+    reportedModel: text("reported_model"),
     /** Canonical reasoning effort the client asked for; NULL when it asked for none. */
     requestedEffort: text("requested_effort"),
     providerId: text("provider_id"),

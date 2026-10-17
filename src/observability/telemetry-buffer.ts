@@ -25,6 +25,9 @@ export interface TelemetryEventInput {
   readonly requestId: string;
   readonly sourceSurface: SourceSurface;
   readonly requestedModel: string;
+  /** The model the upstream named in its own response, verbatim; absent when
+   * the response carried none. Never backfilled from `requestedModel`. */
+  readonly reportedModel?: string;
   /** Canonical reasoning effort the client asked for, when it asked for one. */
   readonly requestedEffort?: string;
   readonly endpoint?: string;
@@ -107,6 +110,7 @@ function telemetryEventRow(event: TelemetryEventInput) {
     createdAt: new Date(),
     sourceSurface: event.sourceSurface,
     requestedModel: event.requestedModel,
+    reportedModel: event.reportedModel ?? null,
     requestedEffort: event.requestedEffort ?? null,
     endpoint: event.endpoint ?? null,
     apiKeyId: event.apiKeyId ?? null,

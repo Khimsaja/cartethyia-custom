@@ -129,6 +129,24 @@ export function extractSample(events: readonly CanonicalEvent[]): string | undef
   return trimmed.length > 0 ? trimmed.slice(0, 200) : undefined;
 }
 
+/**
+ * The model id the upstream put in its own response, exactly as it wrote it.
+ *
+ * `response_start` is the one event that carries it, and the wire parsers fill
+ * it from the payload's own `model` field. Read as-is: no prefix stripping, no
+ * comparison against the request, no fallback. A provider that answers a
+ * `muse-spark` probe as `deepseek-v4.1-flash` is telling the operator something,
+ * and normalising either side would erase exactly that.
+ */
+export function extractReportedModel(events: readonly CanonicalEvent[]): string | undefined {
+  for (const event of events) {
+    if (event.type !== "response_start") continue;
+    const model = event.model;
+    if (typeof model === "string" && model.trim().length > 0) return model;
+  }
+  return undefined;
+}
+
 export function hasMeaningfulOutput(events: readonly CanonicalEvent[]): boolean {
   return events.some((event) => {
     if (event.type === "tool_call_delta") return true;

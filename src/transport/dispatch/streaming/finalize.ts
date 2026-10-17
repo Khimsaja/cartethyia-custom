@@ -558,6 +558,9 @@ export class StreamFinalizer {
       ...(lease ? { lease } : {}),
       ...(deps.telemetryBuffer ? { telemetryBuffer: deps.telemetryBuffer } : {}),
       ...(deps.snapshotService ? { snapshotService: deps.snapshotService } : {}),
+      ...(this.pipeline.reportedModel === undefined
+        ? {}
+        : { reportedModel: this.pipeline.reportedModel }),
     });
   }
 }

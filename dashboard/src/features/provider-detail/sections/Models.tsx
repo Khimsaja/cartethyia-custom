@@ -5,6 +5,7 @@ import {
   Brain,
   Check,
   CheckCircle2,
+  Cog,
   Copy,
   Eye,
   FlaskConical,
@@ -719,9 +720,25 @@ function ModelCard({
             return;
           }
           const sample = result.sample?.trim() ?? "";
-          toast.success(
+          const reported = result.reportedModel?.trim() ?? "";
+          toast.successRich(
             `${qualifiedId} · END ${formatProbeDuration(result.latencyMs)}`,
-            sample || "No sample text in the response.",
+            <span className="grid gap-2 min-w-0">
+              {reported ? (
+                // The model the upstream said it ran, verbatim. No prefix
+                // stripping and no comparison: a probe answered by a different
+                // model than it asked for is the finding, and normalising it
+                // would erase the only evidence.
+                <Inline gap="6px" align="center" className="min-w-0">
+                  <Cog size={12} aria-hidden="true" className="shrink-0 text-text-tertiary" />
+                  <span className="truncate font-mono text-badge text-text-secondary" title={reported}>
+                    {reported}
+                  </span>
+                </Inline>
+              ) : null}
+              <span>{sample || "No sample text in the response."}</span>
+            </span>,
+            [reported, sample].filter(Boolean).join("\n") || "No sample text in the response.",
           );
         },
         onError: (err) => {

@@ -18,6 +18,7 @@ function event(inputTokens: number, cachedInputTokens: number | null): Telemetry
     requestId: "r",
     sourceSurface: null,
     requestedModel: null,
+  reportedModel: null,
     requestedEffort: null,
     providerId: null,
     accountId: null,

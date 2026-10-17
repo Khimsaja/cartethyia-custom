@@ -17,6 +17,7 @@ import {
   Download,
   Eye,
   EyeOff,
+  Cog,
   Image as ImageIcon,
   LogIn,
   Maximize2,
@@ -1476,6 +1477,27 @@ export default function Usage(): ReactNode {
       return next;
     });
   };
+  /**
+   * Whether the model the upstream reported is shown beside the one we asked
+   * for. Off by default: it is a diagnostic, and a third line on every row
+   * would bury the two that matter.
+   */
+  const [showReported, setShowReported] = useState(() => {
+    try {
+      return localStorage.getItem("cartethyia:usage:show-reported") === "true";
+    } catch {
+      return false;
+    }
+  });
+  const toggleShowReported = () => {
+    setShowReported((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("cartethyia:usage:show-reported", String(next));
+      } catch {}
+      return next;
+    });
+  };
   const summaryQuery = useUsageSummary(period);
   const providersQuery = useProviders();
   const providerNames = useMemo(
@@ -1772,6 +1794,20 @@ export default function Usage(): ReactNode {
               >
                 {hideProviderName ? "Provider masked" : "Mask provider"}
               </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={<Cog size={13} />}
+                onClick={toggleShowReported}
+                title={
+                  showReported
+                    ? "Hide the model each upstream reported"
+                    : "Show the model each upstream reported"
+                }
+                className={`text-badge h-13 px-4 py-0 ${showReported ? "text-accent" : "text-text-secondary"}`}
+              >
+                Reported
+              </Button>
               <LiveInFlightPill />
             </Inline>
           }
@@ -1856,6 +1892,19 @@ export default function Usage(): ReactNode {
                           ? row.model.slice(row.model.indexOf("/") + 1)
                           : row.model ?? "—"}
                       </div>
+                      {showReported && row.reportedModel ? (
+                        // Verbatim, exactly as the upstream wrote it: no prefix
+                        // stripping, no comparison. A provider answering with a
+                        // different model than the one asked for is the finding,
+                        // and normalising it would erase the only evidence.
+                        <div
+                          className="flex items-center gap-1.5 mt-px min-w-0 text-micro text-text-tertiary"
+                          title={`Reported by upstream: ${row.reportedModel}`}
+                        >
+                          <Cog size={10} aria-hidden="true" className="shrink-0" />
+                          <span className="truncate font-mono">{row.reportedModel}</span>
+                        </div>
+                      ) : null}
                     </td>
                     <td className="max-w-70">
                       <div

@@ -456,6 +456,8 @@ export interface AttemptCompletion extends ProxyRequestOutcome {
   readonly firstContentDeltaAtMs?: number;
   /** Last event timestamp (for generation duration calculation). */
   readonly lastEventAtMs?: number;
+  /** The model the upstream reported in its own response, verbatim. */
+  readonly reportedModel?: string;
 }
 
 /**
@@ -621,6 +623,7 @@ export async function completeAttempt(
     ...(completion.tokensPerSec === undefined ? {} : { tokensPerSec: completion.tokensPerSec }),
     ...(completion.firstContentDeltaAtMs === undefined ? {} : { firstContentDeltaAtMs: completion.firstContentDeltaAtMs }),
     ...(completion.lastEventAtMs === undefined ? {} : { lastEventAtMs: completion.lastEventAtMs }),
+    ...(completion.reportedModel === undefined ? {} : { reportedModel: completion.reportedModel }),
   };
   if (completion.terminal) state.completed = true;
   // Usage reconciliation is bookkeeping, and it is the last thing standing

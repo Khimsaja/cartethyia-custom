@@ -83,6 +83,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- The model an upstream reports in its own response is now recorded separately
+  from the one the request asked for (migration `0012`, `telemetry_events.reported_model`).
+  A provider that answers a `muse-spark` request as `deepseek-v4.1-flash` is
+  telling the operator something the request cannot, and the two values were
+  previously conflated. The probe toast shows it under a cog beside the sample,
+  and Usage shows it on a third line behind a **Reported** toggle that defaults
+  off. Taken verbatim — no prefix stripping, no comparison — and absent when the
+  response named no model.
 - Testing a pool against OpenCode now **enforces** its verdict: a `blocked`
   answer retires that egress for the provider, so the next dispatch skips it,
   and any other answer clears a previous block so a replaced proxy returns to

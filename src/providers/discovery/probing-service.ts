@@ -32,6 +32,7 @@ import {
 import {
   buildProbeCanonicalRequest,
   computeProbeVerdict,
+  extractReportedModel,
   extractSample,
   GROK_407_PROBE_PROMPT,
   grok407ProbeFailure,
@@ -481,6 +482,7 @@ export class ProviderProbingService {
     }
 
     const sample = extractSample(events);
+    const reportedModel = extractReportedModel(events);
     return {
       ...(accountId ? { accountId } : {}),
       ok,
@@ -488,6 +490,7 @@ export class ProviderProbingService {
       ...(ttfbMs !== undefined ? { ttfbMs } : {}),
       ...(upstreamStatusCode === undefined ? {} : { statusCode: upstreamStatusCode }),
       ...(sample ? { sample } : {}),
+      ...(reportedModel ? { reportedModel } : {}),
       ...(searchResults !== undefined && searchResults.length > 0 ? { searchResults } : {}),
       ...(errorMessage ? { error: errorMessage } : {}),
     };
