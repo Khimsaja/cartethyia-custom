@@ -30,10 +30,11 @@ import type { ValidatedFetch } from "../network/outbound-fetch";
 import type { ProviderId } from "../providers/provider-contracts";
 import {
   attemptDailyGrowthPass,
+  checkinDayKey,
   dequeueCheckin,
   pendingCheckinRequests,
   supportsDailyCheckin,
-  type BuddyActivityReportResult,
+  releaseDaySlotsBatch,
   type DailyCheckinResult,
   type PendingCheckinRequest,
 } from "./daily-checkin";
@@ -146,13 +147,9 @@ function quotaPhrase(outcome: QuotaRefreshOutcome): string {
  * skips the rest, and `daily unsupported` on every non-WorkBuddy account was
  * pure noise. The routine "nothing to claim today" states collapse to one
  * short phrase so the line stays scannable; only a real grant or a failure
- * carries detail. The report half appends only when it says something the
- * check-in half did not already say.
+ * carries detail.
  */
-function checkinPhrase(
-  result: DailyCheckinResult | undefined,
-  report: BuddyActivityReportResult | undefined,
-): string | null {
+function checkinPhrase(result: DailyCheckinResult | undefined): string | null {
   if (result === undefined) return null;
   let phrase: string;
   switch (result.state) {
@@ -178,12 +175,6 @@ function checkinPhrase(
       phrase = `daily failed: ${result.error ?? "unknown error"}`;
       break;
   }
-  if (report !== undefined) {
-    if (report.state === "reported") phrase += ", activity reported";
-    else if (report.state === "error" && report.error !== "Skipped (check-in failed).") {
-      phrase += `, activity failed: ${report.error ?? "unknown error"}`;
-    }
-  }
   return phrase;
 }
 
@@ -196,7 +187,6 @@ function logSweepAccounts(
   attempted: readonly QuotaRefreshTarget[],
   quotaOutcomes: ReadonlyMap<string, QuotaRefreshOutcome>,
   checkinOutcomes: ReadonlyMap<string, DailyCheckinResult>,
-  reportOutcomes: ReadonlyMap<string, BuddyActivityReportResult>,
   failed: number,
   claimed: number,
 ): void {
@@ -205,7 +195,7 @@ function logSweepAccounts(
     if (outcome === undefined) continue;
     const result = checkinOutcomes.get(target.accountId);
     const parts = [quotaPhrase(outcome)];
-    const checkin = checkinPhrase(result, reportOutcomes.get(target.accountId));
+    const checkin = checkinPhrase(result);
     if (checkin !== null) parts.push(checkin);
     const line = `${accountName(target)} ${parts.join(", ")}`;
 
@@ -273,9 +263,7 @@ export async function quotaRefreshSweep(deps: QuotaRefreshSweepDeps): Promise<vo
    */
   const quotaOutcomes = new Map<string, QuotaRefreshOutcome>();
   const checkinOutcomes = new Map<string, DailyCheckinResult>();
-  const reportOutcomes = new Map<string, BuddyActivityReportResult>();
   const attemptedTargets: QuotaRefreshTarget[] = [];
-
   const result = await runSweep<{ target: QuotaRefreshTarget; ageMs: number }>({
     name: "quota-refresh",
     list: async () => {
@@ -419,7 +407,6 @@ export async function quotaRefreshSweep(deps: QuotaRefreshSweepDeps): Promise<vo
       // same stale count — the cap then bounded nothing.
       checkins += 1;
       try {
-        // `ValidatedFetch` is call-compatible with `typeof fetch`; the cast
         // is only for the `preconnect` static Bun adds to its own fetch (the
         // same cast the adapters use for `outbound_fetch`).
         const pooled = deps.checkinFetcherFor
@@ -445,7 +432,6 @@ export async function quotaRefreshSweep(deps: QuotaRefreshSweepDeps): Promise<vo
         if (pass !== null) {
           if (pass.checkin.state === "claimed") claimed += 1;
           checkinOutcomes.set(entry.target.accountId, pass.checkin);
-          reportOutcomes.set(entry.target.accountId, pass.report);
         }
       } catch (error) {
         checkinOutcomes.set(entry.target.accountId, {
@@ -475,7 +461,19 @@ export async function quotaRefreshSweep(deps: QuotaRefreshSweepDeps): Promise<vo
     now,
   });
 
-  logSweepAccounts(attemptedTargets, quotaOutcomes, checkinOutcomes, reportOutcomes, failed, claimed);
+  logSweepAccounts(attemptedTargets, quotaOutcomes, checkinOutcomes, failed, claimed);
+
+  // Release the slots for the accounts whose check-in errored, in one
+  // round-trip. The pass used to release inline per account, so a pass that
+  // budgeted out with twenty failures paid twenty Redis round-trips for
+  // bookkeeping that has no bearing on the claim itself.
+  const releasedAccountIds: string[] = [];
+  for (const outcome of checkinOutcomes.values()) {
+    if (outcome.state === "error") releasedAccountIds.push(outcome.accountId);
+  }
+  if (releasedAccountIds.length > 0) {
+    await releaseDaySlotsBatch(deps.db, deps.redis, checkinDayKey(), releasedAccountIds);
+  }
   // A pass that could not even list its targets reports no tick: an all-zero
   // tick would read as "nothing was due" rather than "nothing was reachable".
   if (result.aborted) return;

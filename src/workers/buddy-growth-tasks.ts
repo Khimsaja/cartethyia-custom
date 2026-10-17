@@ -46,6 +46,8 @@ import {
 } from "../providers/integrations/buddy/buddy-growth-shared";
 import { fetchBuddyRequestUsage } from "../providers/integrations/buddy/buddy-usage-shared";
 import { saveBuddyUsageSnapshots } from "../providers/integrations/buddy/buddy-usage-store";
+import { fetchBuddyActivityReport } from "../providers/integrations/buddy/buddy-checkin";
+import { withDirectFallback } from "./daily-checkin";
 import { providerBaseUrl, BUDDY_PROVIDER_IDS } from "../providers/provider-metadata";
 import type { FetchLike } from "../providers/quota/quota-contracts";
 
@@ -57,6 +59,7 @@ export const BUDDY_TASK_NAMES = [
   "buddy-travel",
   "buddy-adopt",
   "buddy-trial",
+  "buddy-activity-report",
 ] as const;
 export type BuddyTaskName = (typeof BUDDY_TASK_NAMES)[number];
 
@@ -174,8 +177,10 @@ async function forAccount(
   const call: BuddyGrowthCall = {
     baseUrl: providerBaseUrl(account.providerId) ?? "",
     headers: { "X-Product": "SaaS", "Content-Type": "application/json", Accept: "application/json" },
+    accountId: account.id,
+    providerId: account.providerId,
     credential,
-    fetcher: deps.fetcher,
+    fetcher: withDirectFallback(deps.fetcher),
     ...(buddyAccountUid(credential) === undefined
       ? {}
       : { uid: buddyAccountUid(credential) }),
@@ -324,6 +329,35 @@ export function buddyTrialTask(deps: BuddyTaskDeps) {
     await claimBuddyGift(call);
     await claimBuddyCompensation(call);
     return trial;
+  });
+}
+/**
+ * Growth-activity report: the `/v2/report` batch that lights the login streak and
+ * scores the daily growth event.
+ *
+ * It used to ride the quota sweep with no ledger of its own, which meant eight
+ * POSTs per account *per sweep* (two rounds of four events) because the sweep
+ * ran every minute. It is its own once-a-day task here, gated by the same
+ * (day, account, task) ledger as every other growth task.
+ *
+ * The report is not a credit claim, so its failure never marks an account
+ * unhealthy — the result is logged and the ledger is stamped either way.
+ */
+export function buddyActivityReportTask(deps: BuddyTaskDeps) {
+  return runTask(deps, "buddy-activity-report", async (call) => {
+    if (call.uid === undefined) {
+      return { state: "skipped", error: "No uid in this credential.", credit: null };
+    }
+    const report = await fetchBuddyActivityReport({
+      providerId: call.providerId,
+      accountId: call.accountId,
+      credential: call.credential,
+      userId: call.uid,
+      fetcher: call.fetcher,
+    });
+    if (report.state === "reported") return { state: "claimed", error: null, credit: null };
+    if (report.state === "unavailable") return { state: "already", error: null, credit: null };
+    return { state: "skipped", error: report.error, credit: null };
   });
 }
 
