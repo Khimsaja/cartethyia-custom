@@ -674,8 +674,6 @@ const FREE_LIMITED_IDS = new Set([
  * registered as `ollamacloud`.
  */
 const WELL_KNOWN_API_KEY_IDS = new Set([
-  "commandcode",
-  "hermes",
   "anthropic",
   "openai",
   "gemini",
