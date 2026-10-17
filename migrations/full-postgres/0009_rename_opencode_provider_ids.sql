@@ -5,40 +5,228 @@
 --   opencodezen -> opencode-zen
 --   opencodego  -> opencode-go
 --
--- `providers.id` is the primary key every other table references, so the row
--- must move before its dependents or the foreign keys fail. `ON UPDATE` is not
--- declared on those constraints (they cascade on delete only), which is why
--- each dependent table is updated explicitly here instead of relying on the
--- reference to follow.
+-- The obvious form — `UPDATE "providers" SET "id" = ...` — cannot work here.
+-- Every dependent table references `providers.id` with `ON DELETE CASCADE` and
+-- no `ON UPDATE`, so moving the parent row violates the constraint before any
+-- child can follow: `update or delete on table "providers" violates foreign key
+-- constraint "models_provider_id_providers_id_fk"`.
 --
--- Order matters: `providers` first, then the tables that reference it. The
--- telemetry tables carry the id as a plain column with no constraint, so they
--- are renamed too — otherwise old rows would name a provider that no longer
--- exists and the dashboard would drop them from per-provider figures.
+-- So the row is copied under its new id, the children are repointed, and the
+-- old row is dropped last. Inside the migration transaction this is atomic:
+-- either the whole rename lands or none of it does.
 --
--- A database that never had these ids is unaffected: every statement matches
--- zero rows.
+-- A database that never had these ids is unaffected — every statement matches
+-- zero rows. If a deployment somehow carries both spellings, the repoint merges
+-- them onto the new id, which is the correct outcome for one provider with two
+-- names.
 
-UPDATE "providers" SET "id" = 'opencode' WHERE "id" = 'opencodeft';
-UPDATE "providers" SET "id" = 'opencode-zen' WHERE "id" = 'opencodezen';
-UPDATE "providers" SET "id" = 'opencode-go' WHERE "id" = 'opencodego';
+-- opencodeft -> opencode
+INSERT INTO "providers" (
+  "id", "tenant_id", "wire_family_default", "capability_profile", "base_url",
+  "compatibility_profile", "enabled", "requires_account"
+)
+SELECT
+  'opencode', "tenant_id", "wire_family_default", "capability_profile", "base_url",
+  "compatibility_profile", "enabled", "requires_account"
+FROM "providers"
+WHERE "id" = 'opencodeft'
+ON CONFLICT ("id") DO NOTHING;
 
-UPDATE "provider_accounts" SET "provider_id" = 'opencode' WHERE "provider_id" = 'opencodeft';
-UPDATE "provider_accounts" SET "provider_id" = 'opencode-zen' WHERE "provider_id" = 'opencodezen';
-UPDATE "provider_accounts" SET "provider_id" = 'opencode-go' WHERE "provider_id" = 'opencodego';
+-- Drop rows the repoint would collide with on a unique index.
+DELETE FROM "models"
+  WHERE "provider_id" = 'opencodeft'
+    AND EXISTS (SELECT 1 FROM "providers" WHERE "id" = 'opencode')
+    AND EXISTS (
+      SELECT 1 FROM "models" AS keep
+      WHERE keep."provider_id" = 'opencode'
+        AND keep."model_id" = "models"."model_id"
+        AND keep."endpoint_path" = "models"."endpoint_path"
+    );
+DELETE FROM "tenant_disabled_models"
+  WHERE "provider_id" = 'opencodeft'
+    AND EXISTS (SELECT 1 FROM "providers" WHERE "id" = 'opencode')
+    AND EXISTS (
+      SELECT 1 FROM "tenant_disabled_models" AS keep
+      WHERE keep."provider_id" = 'opencode'
+        AND keep."tenant_id" = "tenant_disabled_models"."tenant_id"
+        AND keep."model_id" = "tenant_disabled_models"."model_id"
+        AND keep."endpoint_path" = "tenant_disabled_models"."endpoint_path"
+    );
+DELETE FROM "provider_accounts"
+  WHERE "provider_id" = 'opencodeft'
+    AND EXISTS (SELECT 1 FROM "providers" WHERE "id" = 'opencode')
+    AND EXISTS (
+      SELECT 1 FROM "provider_accounts" AS keep
+      WHERE keep."provider_id" = 'opencode'
+        AND keep."tenant_id" IS NOT DISTINCT FROM "provider_accounts"."tenant_id"
+        AND keep."credential_fingerprint" IS NOT DISTINCT FROM "provider_accounts"."credential_fingerprint"
+    );
+DELETE FROM "provider_routing_settings"
+  WHERE "provider_id" = 'opencodeft'
+    AND EXISTS (SELECT 1 FROM "providers" WHERE "id" = 'opencode')
+    AND EXISTS (
+      SELECT 1 FROM "provider_routing_settings" AS keep
+      WHERE keep."provider_id" = 'opencode'
+        AND keep."tenant_id" IS NOT DISTINCT FROM "provider_routing_settings"."tenant_id"
+    );
 
-UPDATE "models" SET "provider_id" = 'opencode' WHERE "provider_id" = 'opencodeft';
-UPDATE "models" SET "provider_id" = 'opencode-zen' WHERE "provider_id" = 'opencodezen';
-UPDATE "models" SET "provider_id" = 'opencode-go' WHERE "provider_id" = 'opencodego';
+UPDATE "provider_accounts" SET "provider_id" = 'opencode'
+  WHERE "provider_id" = 'opencodeft'
+    AND EXISTS (SELECT 1 FROM "providers" WHERE "id" = 'opencode');
+UPDATE "models" SET "provider_id" = 'opencode'
+  WHERE "provider_id" = 'opencodeft'
+    AND EXISTS (SELECT 1 FROM "providers" WHERE "id" = 'opencode');
+UPDATE "tenant_disabled_models" SET "provider_id" = 'opencode'
+  WHERE "provider_id" = 'opencodeft'
+    AND EXISTS (SELECT 1 FROM "providers" WHERE "id" = 'opencode');
+UPDATE "provider_routing_settings" SET "provider_id" = 'opencode'
+  WHERE "provider_id" = 'opencodeft'
+    AND EXISTS (SELECT 1 FROM "providers" WHERE "id" = 'opencode');
+UPDATE "telemetry_events" SET "provider_id" = 'opencode'
+  WHERE "provider_id" = 'opencodeft'
+    AND EXISTS (SELECT 1 FROM "providers" WHERE "id" = 'opencode');
 
-UPDATE "tenant_disabled_models" SET "provider_id" = 'opencode' WHERE "provider_id" = 'opencodeft';
-UPDATE "tenant_disabled_models" SET "provider_id" = 'opencode-zen' WHERE "provider_id" = 'opencodezen';
-UPDATE "tenant_disabled_models" SET "provider_id" = 'opencode-go' WHERE "provider_id" = 'opencodego';
+DELETE FROM "providers"
+  WHERE "id" = 'opencodeft'
+    AND EXISTS (SELECT 1 FROM "providers" WHERE "id" = 'opencode');
 
-UPDATE "provider_routing_settings" SET "provider_id" = 'opencode' WHERE "provider_id" = 'opencodeft';
-UPDATE "provider_routing_settings" SET "provider_id" = 'opencode-zen' WHERE "provider_id" = 'opencodezen';
-UPDATE "provider_routing_settings" SET "provider_id" = 'opencode-go' WHERE "provider_id" = 'opencodego';
+-- opencodezen -> opencode-zen
+INSERT INTO "providers" (
+  "id", "tenant_id", "wire_family_default", "capability_profile", "base_url",
+  "compatibility_profile", "enabled", "requires_account"
+)
+SELECT
+  'opencode-zen', "tenant_id", "wire_family_default", "capability_profile", "base_url",
+  "compatibility_profile", "enabled", "requires_account"
+FROM "providers"
+WHERE "id" = 'opencodezen'
+ON CONFLICT ("id") DO NOTHING;
 
-UPDATE "telemetry_events" SET "provider_id" = 'opencode' WHERE "provider_id" = 'opencodeft';
-UPDATE "telemetry_events" SET "provider_id" = 'opencode-zen' WHERE "provider_id" = 'opencodezen';
-UPDATE "telemetry_events" SET "provider_id" = 'opencode-go' WHERE "provider_id" = 'opencodego';
+-- Drop rows the repoint would collide with on a unique index.
+DELETE FROM "models"
+  WHERE "provider_id" = 'opencodezen'
+    AND EXISTS (SELECT 1 FROM "providers" WHERE "id" = 'opencode-zen')
+    AND EXISTS (
+      SELECT 1 FROM "models" AS keep
+      WHERE keep."provider_id" = 'opencode-zen'
+        AND keep."model_id" = "models"."model_id"
+        AND keep."endpoint_path" = "models"."endpoint_path"
+    );
+DELETE FROM "tenant_disabled_models"
+  WHERE "provider_id" = 'opencodezen'
+    AND EXISTS (SELECT 1 FROM "providers" WHERE "id" = 'opencode-zen')
+    AND EXISTS (
+      SELECT 1 FROM "tenant_disabled_models" AS keep
+      WHERE keep."provider_id" = 'opencode-zen'
+        AND keep."tenant_id" = "tenant_disabled_models"."tenant_id"
+        AND keep."model_id" = "tenant_disabled_models"."model_id"
+        AND keep."endpoint_path" = "tenant_disabled_models"."endpoint_path"
+    );
+DELETE FROM "provider_accounts"
+  WHERE "provider_id" = 'opencodezen'
+    AND EXISTS (SELECT 1 FROM "providers" WHERE "id" = 'opencode-zen')
+    AND EXISTS (
+      SELECT 1 FROM "provider_accounts" AS keep
+      WHERE keep."provider_id" = 'opencode-zen'
+        AND keep."tenant_id" IS NOT DISTINCT FROM "provider_accounts"."tenant_id"
+        AND keep."credential_fingerprint" IS NOT DISTINCT FROM "provider_accounts"."credential_fingerprint"
+    );
+DELETE FROM "provider_routing_settings"
+  WHERE "provider_id" = 'opencodezen'
+    AND EXISTS (SELECT 1 FROM "providers" WHERE "id" = 'opencode-zen')
+    AND EXISTS (
+      SELECT 1 FROM "provider_routing_settings" AS keep
+      WHERE keep."provider_id" = 'opencode-zen'
+        AND keep."tenant_id" IS NOT DISTINCT FROM "provider_routing_settings"."tenant_id"
+    );
+
+UPDATE "provider_accounts" SET "provider_id" = 'opencode-zen'
+  WHERE "provider_id" = 'opencodezen'
+    AND EXISTS (SELECT 1 FROM "providers" WHERE "id" = 'opencode-zen');
+UPDATE "models" SET "provider_id" = 'opencode-zen'
+  WHERE "provider_id" = 'opencodezen'
+    AND EXISTS (SELECT 1 FROM "providers" WHERE "id" = 'opencode-zen');
+UPDATE "tenant_disabled_models" SET "provider_id" = 'opencode-zen'
+  WHERE "provider_id" = 'opencodezen'
+    AND EXISTS (SELECT 1 FROM "providers" WHERE "id" = 'opencode-zen');
+UPDATE "provider_routing_settings" SET "provider_id" = 'opencode-zen'
+  WHERE "provider_id" = 'opencodezen'
+    AND EXISTS (SELECT 1 FROM "providers" WHERE "id" = 'opencode-zen');
+UPDATE "telemetry_events" SET "provider_id" = 'opencode-zen'
+  WHERE "provider_id" = 'opencodezen'
+    AND EXISTS (SELECT 1 FROM "providers" WHERE "id" = 'opencode-zen');
+
+DELETE FROM "providers"
+  WHERE "id" = 'opencodezen'
+    AND EXISTS (SELECT 1 FROM "providers" WHERE "id" = 'opencode-zen');
+
+-- opencodego -> opencode-go
+INSERT INTO "providers" (
+  "id", "tenant_id", "wire_family_default", "capability_profile", "base_url",
+  "compatibility_profile", "enabled", "requires_account"
+)
+SELECT
+  'opencode-go', "tenant_id", "wire_family_default", "capability_profile", "base_url",
+  "compatibility_profile", "enabled", "requires_account"
+FROM "providers"
+WHERE "id" = 'opencodego'
+ON CONFLICT ("id") DO NOTHING;
+
+-- Drop rows the repoint would collide with on a unique index.
+DELETE FROM "models"
+  WHERE "provider_id" = 'opencodego'
+    AND EXISTS (SELECT 1 FROM "providers" WHERE "id" = 'opencode-go')
+    AND EXISTS (
+      SELECT 1 FROM "models" AS keep
+      WHERE keep."provider_id" = 'opencode-go'
+        AND keep."model_id" = "models"."model_id"
+        AND keep."endpoint_path" = "models"."endpoint_path"
+    );
+DELETE FROM "tenant_disabled_models"
+  WHERE "provider_id" = 'opencodego'
+    AND EXISTS (SELECT 1 FROM "providers" WHERE "id" = 'opencode-go')
+    AND EXISTS (
+      SELECT 1 FROM "tenant_disabled_models" AS keep
+      WHERE keep."provider_id" = 'opencode-go'
+        AND keep."tenant_id" = "tenant_disabled_models"."tenant_id"
+        AND keep."model_id" = "tenant_disabled_models"."model_id"
+        AND keep."endpoint_path" = "tenant_disabled_models"."endpoint_path"
+    );
+DELETE FROM "provider_accounts"
+  WHERE "provider_id" = 'opencodego'
+    AND EXISTS (SELECT 1 FROM "providers" WHERE "id" = 'opencode-go')
+    AND EXISTS (
+      SELECT 1 FROM "provider_accounts" AS keep
+      WHERE keep."provider_id" = 'opencode-go'
+        AND keep."tenant_id" IS NOT DISTINCT FROM "provider_accounts"."tenant_id"
+        AND keep."credential_fingerprint" IS NOT DISTINCT FROM "provider_accounts"."credential_fingerprint"
+    );
+DELETE FROM "provider_routing_settings"
+  WHERE "provider_id" = 'opencodego'
+    AND EXISTS (SELECT 1 FROM "providers" WHERE "id" = 'opencode-go')
+    AND EXISTS (
+      SELECT 1 FROM "provider_routing_settings" AS keep
+      WHERE keep."provider_id" = 'opencode-go'
+        AND keep."tenant_id" IS NOT DISTINCT FROM "provider_routing_settings"."tenant_id"
+    );
+
+UPDATE "provider_accounts" SET "provider_id" = 'opencode-go'
+  WHERE "provider_id" = 'opencodego'
+    AND EXISTS (SELECT 1 FROM "providers" WHERE "id" = 'opencode-go');
+UPDATE "models" SET "provider_id" = 'opencode-go'
+  WHERE "provider_id" = 'opencodego'
+    AND EXISTS (SELECT 1 FROM "providers" WHERE "id" = 'opencode-go');
+UPDATE "tenant_disabled_models" SET "provider_id" = 'opencode-go'
+  WHERE "provider_id" = 'opencodego'
+    AND EXISTS (SELECT 1 FROM "providers" WHERE "id" = 'opencode-go');
+UPDATE "provider_routing_settings" SET "provider_id" = 'opencode-go'
+  WHERE "provider_id" = 'opencodego'
+    AND EXISTS (SELECT 1 FROM "providers" WHERE "id" = 'opencode-go');
+UPDATE "telemetry_events" SET "provider_id" = 'opencode-go'
+  WHERE "provider_id" = 'opencodego'
+    AND EXISTS (SELECT 1 FROM "providers" WHERE "id" = 'opencode-go');
+
+DELETE FROM "providers"
+  WHERE "id" = 'opencodego'
+    AND EXISTS (SELECT 1 FROM "providers" WHERE "id" = 'opencode-go');
+
