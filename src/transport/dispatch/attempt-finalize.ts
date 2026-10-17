@@ -1,6 +1,6 @@
 // Attempt completion bookkeeping: one home for everything every dispatch attempt ends with.
 import { readReportedModel } from "../../providers/operations/reported-model";
-import { GatewayError, publicGatewayErrorBody } from "../../protocol/gateway-error";
+import { GatewayError, PUBLIC_GATEWAY_ORIGIN, publicGatewayErrorBody } from "../../protocol/gateway-error";
 import type { ValidatedOutboundFetch } from "../../providers/provider-contracts";
 import { reportAttemptOutcome } from "../../providers/operations/account-health-service";
 import type { UsageRecord } from "../../protocol/canonical-model";
@@ -67,7 +67,7 @@ export function errorClientResponseBody(error: unknown): string {
     return JSON.stringify(publicGatewayErrorBody(error));
   }
   return JSON.stringify({
-    error: { origin: "cartethyia", code: "internal_error", message: "Internal server error" },
+    error: { origin: PUBLIC_GATEWAY_ORIGIN, code: "internal_error", message: "Internal server error" },
   });
 }
 
