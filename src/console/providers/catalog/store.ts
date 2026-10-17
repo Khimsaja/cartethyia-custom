@@ -9,7 +9,7 @@ import { modelsDevCatalog } from "../../../providers/discovery/models-dev-catalo
 import { globalOrOwnedBy, ownedByOnly } from "../../../persistence/tenant-scope";
 import { nextSortIndex, reorderSortIndex } from "../../../persistence/sort-order";
 import type { CartethyiaDatabase } from "../../../persistence/db-handle";
-import { models, providerAccounts, providerOauthStates, providers, telemetryUsageTotals, tenantDisabledModels } from "../../../persistence/schema";
+import { buddyTaskLedger, models, providerAccounts, providerOauthStates, providers, telemetryUsageTotals, tenantDisabledModels } from "../../../persistence/schema";
 import { queryTelemetryEvents } from "../../../observability/event-log";
 import { isGatewayError } from "../../../observability/telemetry-status";
 import type { WireFamily } from "../../../protocol/canonical-model";
@@ -18,7 +18,7 @@ import { invalidateCredentialCache } from "../../../providers/operations/provide
 import { encryptCredential, hashSecret } from "../../../security/crypto";
 import type { TelemetryBatchBuffer } from "../../../observability/telemetry-buffer";
 import type { BundledProviderCatalog } from "../../../providers/operations/provider-catalog-service";
-import type { AccountInflightReading, ByokConnectionTestRequest, ByokConnectionTestResult, CreateProviderAccountBatchItemResult, CreateProviderAccountBatchResult, CreateProviderAccountRequest, CredentialMode, ModelCatalogEntry, ProbeAllAccountsResult, ProbeAllModelsResult, ProbeModelRequest, ProbeModelResult, ProviderAccountResponse, ProviderAccountTokenUsage, ProviderCatalogStore, ProviderRecord, SetModelEnabledRequest, UpdateModelMetadataRequest, UpdateProviderAccountRequest, ModelMetadataOverride } from "./contracts";
+import type { AccountInflightReading, BuddyGrowthTaskLedgerEntry, ByokConnectionTestRequest, ByokConnectionTestResult, CreateProviderAccountBatchItemResult, CreateProviderAccountBatchResult, CreateProviderAccountRequest, CredentialMode, ModelCatalogEntry, ProbeAllAccountsResult, ProbeAllModelsResult, ProbeModelRequest, ProbeModelResult, ProviderAccountResponse, ProviderAccountTokenUsage, ProviderCatalogStore, ProviderRecord, SetModelEnabledRequest, UpdateModelMetadataRequest, UpdateProviderAccountRequest, ModelMetadataOverride } from "./contracts";
 import { isServiceKind, validateCompatibilityProfile } from "./contracts";
 import { ProviderProbingService, type ProbeOutboundResolver } from "../../../providers/discovery/probing-service";
 import {
@@ -1432,6 +1432,43 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
       .limit(1);
     if (owned.length === 0) return [];
     return listAccountHealthEvents(this.db, accountId);
+  }
+  async listBuddyGrowthTasks(
+    tenantId: string,
+    providerId: string,
+    accountId: string,
+    dayKey: string,
+  ): Promise<readonly BuddyGrowthTaskLedgerEntry[]> {
+    const owned = await this.db
+      .select({ id: providerAccounts.id })
+      .from(providerAccounts)
+      .where(
+        and(
+          eq(providerAccounts.id, accountId),
+          eq(providerAccounts.providerId, providerId),
+          globalOrOwnedBy(providerAccounts.tenantId, tenantId),
+        ),
+      )
+      .limit(1);
+    if (owned.length === 0) return [];
+    const rows = await this.db
+      .select({
+        accountId: buddyTaskLedger.accountId,
+        task: buddyTaskLedger.task,
+        claimedAt: buddyTaskLedger.claimedAt,
+      })
+      .from(buddyTaskLedger)
+      .where(
+        and(
+          eq(buddyTaskLedger.accountId, accountId),
+          eq(buddyTaskLedger.dayKey, dayKey),
+        ),
+      );
+    return rows.map((row) => ({
+      accountId: row.accountId,
+      task: row.task,
+      claimedAt: row.claimedAt.toISOString(),
+    }));
   }
 
   async recoverAccount(

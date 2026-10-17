@@ -79,6 +79,7 @@ export type {
   ByokConnectionTestRequest,
   ByokConnectionTestResult,
   SetModelEnabledRequest,
+  BuddyGrowthTaskLedgerEntry,
 } from "../../../src/console/providers/catalog/contracts";
 
 export type { AccountHealthEventRecord } from "../../../src/providers/operations/account-health-service";

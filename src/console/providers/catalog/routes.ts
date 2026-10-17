@@ -13,6 +13,7 @@ import {
   createProviderCatalogOperations,
   type ProviderCatalogConfig,
 } from "./provider-operations";
+import { buddyDayKey } from "../../../workers/buddy-growth-tasks";
 import type {
   ByokConnectionTestRequest,
   CreateProviderAccountRequest,
@@ -343,6 +344,15 @@ export function createProviderCatalogRoutes(config: ProviderCatalogConfig): Elys
         config.accessResolver(request),
         params.providerId,
         params.accountId,
+      );
+})
+    .get("/:providerId/accounts/:accountId/growth-tasks", async ({ request, params }) => {
+      const dayKey = buddyDayKey();
+      return await factory.listBuddyGrowthTasks(
+        config.accessResolver(request),
+        params.providerId,
+        params.accountId,
+        dayKey,
       );
 })
     .post("/:providerId/accounts/:accountId/recover", async ({ request, params }) => {

@@ -142,7 +142,6 @@ async function claimedToday(
     return false;
   }
 }
-
 /** Every credential-bearing buddy account. */
 async function defaultAccounts(db: CartethyiaDatabase): Promise<readonly BuddyTaskAccount[]> {
   const rows = await db
@@ -154,10 +153,29 @@ async function defaultAccounts(db: CartethyiaDatabase): Promise<readonly BuddyTa
     .from(providerAccounts)
     .where(eq(providerAccounts.status, "active"));
   return rows.filter((row) => isBuddy(row.providerId));
+  }
+/**
+ * Reads the account uid from a JWT, memoised per credential.
+ *
+ * A growth pass walks many accounts, and the uid is only ever present in a
+ * JWT; an opaque API key has none. Decoding the token once per account is
+ * cheap, but the same credential can appear in several tasks in one pass, so
+ * the decode is cached per pass instead of per call.
+ */
+function resolveUid(
+  credential: string,
+  cache: Map<string, string | undefined>,
+): string | undefined {
+  const cached = cache.get(credential);
+  if (cached !== undefined) return cached;
+  const uid = buddyAccountUid(credential);
+  cache.set(credential, uid);
+  return uid;
 }
 
 /** One account's task run, with the credential resolved and the call wired. */
 async function forAccount(
+  uidCache: Map<string, string | undefined>,
   deps: BuddyTaskDeps,
   account: BuddyTaskAccount,
   task: BuddyTaskName,
@@ -180,10 +198,10 @@ async function forAccount(
     accountId: account.id,
     providerId: account.providerId,
     credential,
-    fetcher: withDirectFallback(deps.fetcher),
-    ...(buddyAccountUid(credential) === undefined
+    fetcher: withDirectFallback(deps.fetcher) as FetchLike,
+    ...(resolveUid(credential, uidCache) === undefined
       ? {}
-      : { uid: buddyAccountUid(credential) }),
+      : { uid: resolveUid(credential, uidCache) }),
   };
   if (call.baseUrl.length === 0) return null;
   return run(call);
@@ -195,7 +213,6 @@ function sleep(ms: number): Promise<void> {
   setTimeout(resolve, ms);
   return promise;
 }
-
 /** Walks the accounts, skipping any already settled today. */
 async function runTask(
   deps: BuddyTaskDeps,
@@ -203,6 +220,7 @@ async function runTask(
   run: (call: BuddyGrowthCall) => Promise<BuddyGrowthResult | null>,
 ): Promise<{ readonly attempted: number; readonly claimed: number }> {
   const dayKey = buddyDayKey(deps.now?.() ?? new Date());
+  const uidCache = new Map<string, string | undefined>();
   const accounts = await (deps.listAccounts?.() ?? defaultAccounts(deps.db));
   let attempted = 0;
   let claimed = 0;
@@ -213,7 +231,7 @@ async function runTask(
     attempted += 1;
     let result: BuddyGrowthResult | null = null;
     try {
-      result = await forAccount(deps, account, task, run);
+      result = await forAccount(uidCache, deps, account, task, run);
     } catch (error) {
       log.warn(
         `[${task}] account=${account.id} failed:`,
