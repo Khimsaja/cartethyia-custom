@@ -16,6 +16,7 @@ import { classifyPoolConnectError, classifyPoolProbeResponse, parseEgressIp } fr
 import { encryptCredential } from "../../../security/crypto";
 import { createValidatedFetch } from "../../../network/outbound-fetch";
 import { classifyProviderProbeAnswer } from "./probe-verdict";
+import type { StoredProviderProbe } from "./contracts";
 import {
   createHttpProxyAgent,
   createSocks5Agent,
@@ -63,6 +64,49 @@ const PROVIDER_PROBE_TIMEOUT_MS = 45_000;
 
 /** Worst-case wait for the largest allowed payload on a slow link. */
 const NETWORK_POOL_SPEED_TEST_TIMEOUT_MS = 60_000;
+/**
+ * The stored probe verdict for a row, or nothing when it does not describe the
+ * pool as it stands.
+ *
+ * Two ways it can be stale, and both must read as "never probed" rather than as
+ * a verdict:
+ *
+ * - The endpoint changed. The verdict was measured against a specific egress,
+ *   and the pool now points somewhere else.
+ * - The row was written before `provider_probe_endpoint` existed. There is no
+ *   address to compare against, so the claim cannot be validated.
+ */
+export function storedProviderProbe(
+  row: typeof networkPools.$inferSelect,
+  currentEndpoint: string,
+): StoredProviderProbe | undefined {
+  const status = row.providerProbeStatus;
+  if (
+    status !== "allowed" &&
+    status !== "blocked" &&
+    status !== "throttled" &&
+    status !== "unreachable"
+  ) {
+    return undefined;
+  }
+  if (row.providerProbeEndpoint !== currentEndpoint) return undefined;
+  const providerId = row.providerProbeProviderId;
+  if (!providerId) return undefined;
+  return {
+    providerId,
+    status,
+    endpoint: currentEndpoint,
+    checkedAt: (row.providerProbeAt ?? new Date(0)).toISOString(),
+    ...(row.providerProbeHttpStatus === null || row.providerProbeHttpStatus === undefined
+      ? {}
+      : { httpStatus: row.providerProbeHttpStatus }),
+    ...(row.providerProbeReason ? { reason: row.providerProbeReason } : {}),
+    ...(row.providerProbeLatencyMs === null || row.providerProbeLatencyMs === undefined
+      ? {}
+      : { latencyMs: row.providerProbeLatencyMs }),
+  };
+}
+
 /** Real Drizzle-backed network pool repository. */
 export class DrizzleNetworkPoolStore implements NetworkPoolStore {
   /**
@@ -120,6 +164,14 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
         : {}),
       ...(row.lastSpeedtestError ? { lastSpeedtestError: row.lastSpeedtestError } : {}),
       ...(row.lastSpeedtestAt ? { lastSpeedtestAt: row.lastSpeedtestAt.toISOString() } : {}),
+      ...(() => {
+        // A verdict describes the address recorded beside it. Once the pool is
+        // re-pointed, that address is gone and the verdict is a claim about a
+        // proxy that no longer exists — report "never probed" instead of
+        // showing a colour the operator cannot trust.
+        const probe = storedProviderProbe(row, endpoint ?? "");
+        return probe === undefined ? {} : { providerProbe: probe };
+      })(),
       ...(Object.keys(rest).length > 0 ? { config: rest } : {}),
       ...(row.credentialCiphertext ? { hasCredential: true } : {}),
       ...(row.family ? { family: row.family } : {}),
@@ -202,7 +254,7 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
         reason: error instanceof Error ? error.message : "Failed to build pool agent",
       };
     }
-    return await this.dialProviderProbe(agent, poolId, providerId);
+    return await this.dialProviderProbe(agent, poolId, providerId, poolId);
   }
 
   /**
@@ -237,11 +289,18 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
     return await this.dialProviderProbe(agent, request.endpoint, providerId);
   }
 
-  /** One provider dial through an already-built agent. */
+  /**
+   * One provider dial through an already-built agent.
+   *
+   * `label` is what the result reports (a pool id, or a pasted endpoint that
+   * has no row yet). `poolId` is the row to bank the verdict on — omitted for
+   * an ad-hoc probe, because there is nothing to attach it to.
+   */
   private async dialProviderProbe(
     agent: PoolAgent,
     label: string,
     providerId: string,
+    poolId?: string,
   ): Promise<PoolProviderProbeResult> {
     const { buildProviderProbeRequest } = await import("../../../providers/provider-probe");
     const spec = await buildProviderProbeRequest(providerId);
@@ -276,7 +335,7 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
     // One classifier for the console, the CLI probe, and the tests — see
     // `probe-verdict.ts` for why a 4xx reads as `allowed`.
     const verdict = classifyProviderProbeAnswer(response.status, text);
-    return {
+    const result: PoolProviderProbeResult = {
       poolId: label,
       providerId,
       status: verdict.status,
@@ -284,6 +343,44 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
       latencyMs,
       ...(verdict.reason === undefined ? {} : { reason: verdict.reason }),
     };
+    if (poolId !== undefined) await this.persistProviderProbe(poolId, label, result);
+    return result;
+  }
+
+  /**
+   * Banks a probe verdict on the pool row.
+   *
+   * The verdict used to live in the operator's browser, which made it
+   * decorative: another machine saw nothing, the gateway saw nothing, and
+   * admission kept choosing the pool the badge called blocked. Storing it here
+   * is what makes the badge a fact about the pool rather than about one tab.
+   *
+   * `poolId` is the pool row; `endpoint` is what the verdict was measured
+   * against, so a later edit invalidates it on read. A probe against an unsaved
+   * endpoint has no row and is skipped — there is nothing to attach it to.
+   */
+  private async persistProviderProbe(
+    poolId: string,
+    endpoint: string,
+    result: PoolProviderProbeResult,
+  ): Promise<void> {
+    try {
+      await this.db
+        .update(networkPools)
+        .set({
+          providerProbeProviderId: result.providerId,
+          providerProbeStatus: result.status,
+          providerProbeHttpStatus: result.httpStatus ?? null,
+          providerProbeReason: result.reason ?? null,
+          providerProbeLatencyMs: result.latencyMs ?? null,
+          providerProbeAt: new Date(),
+          providerProbeEndpoint: endpoint,
+        })
+        .where(eq(networkPools.id, poolId));
+    } catch {
+      // A verdict that cannot be stored must not fail the probe: the operator
+      // still gets the answer they asked for, and the next probe retries.
+    }
   }
 
   async list(tenantId: string): Promise<readonly NetworkPoolRecord[]> {
@@ -343,6 +440,14 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
       ...(patch.config ?? {}),
     };
     const effectiveKind = patch.kind ?? current.kind;
+    // A verdict describes the address it was measured against. Re-pointing the
+    // pool — or changing the transport it speaks — invalidates it outright, so
+    // the row is cleared rather than left holding a claim about a proxy that no
+    // longer exists. The read path also compares endpoints, so a stale row can
+    // never be shown; clearing here keeps the database honest too.
+    const endpointChanged =
+      (patch.endpoint !== undefined && patch.endpoint !== current.endpoint) ||
+      (patch.kind !== undefined && patch.kind !== current.kind);
     const clearsProxyResponseFailure =
       patch.status === "active" &&
       current.status === "disabled" &&
@@ -378,6 +483,17 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
         // An explicit `null` clears the family tag; omitting the field leaves
         // it as-is, matching `quotaBytes`.
         ...("family" in patch ? { family: patch.family ?? null } : {}),
+        ...(endpointChanged
+          ? {
+              providerProbeProviderId: null,
+              providerProbeStatus: null,
+              providerProbeHttpStatus: null,
+              providerProbeReason: null,
+              providerProbeLatencyMs: null,
+              providerProbeAt: null,
+              providerProbeEndpoint: null,
+            }
+          : {}),
       })
       .where(and(eq(networkPools.tenantId, tenantId), eq(networkPools.id, poolId)))
       .returning();

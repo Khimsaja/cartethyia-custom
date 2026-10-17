@@ -90,7 +90,6 @@ const BULK_POOL_CREATE_CONCURRENCY = 4;
  */
 type TestPayload = "url" | "opencode";
 const TEST_PAYLOAD_STORAGE_KEY = "cartethyia_proxy_test_payload";
-const PROVIDER_RESULTS_STORAGE_KEY = "cartethyia_proxy_provider_results";
 const CHECK_RESULTS_STORAGE_KEY = "cartethyia_proxy_check_results";
 
 const TEST_PAYLOAD_OPTIONS = [
@@ -1568,27 +1567,18 @@ export default function Proxy(): ReactNode {
     }
   }, [testPayload]);
   const [providerTestingIds, setProviderTestingIds] = useState<ReadonlySet<string>>(new Set());
-  // Persisted like the speed results: a probe is an outbound request through a
-  // paid proxy, and its verdict is still the last known one after a reload.
-  // Keyed by pool id, and seeded from the add form by endpoint so a row shows
-  // the verdict the operator already took before saving it.
-  const [providerResults, setProviderResults] = useState<Record<string, StoredProviderResult>>(
-    () => {
-      try {
-        const saved = localStorage.getItem(PROVIDER_RESULTS_STORAGE_KEY);
-        return saved ? (JSON.parse(saved) as Record<string, StoredProviderResult>) : {};
-      } catch {
-        return {};
-      }
-    },
-  );
-  useEffect(() => {
-    try {
-      localStorage.setItem(PROVIDER_RESULTS_STORAGE_KEY, JSON.stringify(providerResults));
-    } catch {
-      // A blocked storage must not break the page.
-    }
-  }, [providerResults]);
+  /**
+   * Verdicts measured in this tab, before the refetched row carries them.
+   *
+   * The stored verdict lives on the pool row (`providerProbe`) — that is the
+   * one every reader shares. This map only bridges the moment between a probe
+   * finishing and the query refetch landing, and it seeds the add form's
+   * verdict onto a row created in the same session. It is deliberately not
+   * persisted: `localStorage` made the verdict visible to one browser and to
+   * nobody else, so a pool could read "OpenCode blocked" here while dispatch
+   * kept routing through it.
+   */
+  const [providerResults, setProviderResults] = useState<Record<string, StoredProviderResult>>({});
   const providerProbe = useProviderProbeNetworkPool();
   const speedTest = useSpeedTestNetworkPool();
   const [speedBytes, setSpeedBytes] = useState(SPEED_TEST_DEFAULT_BYTES);
@@ -2235,7 +2225,27 @@ export default function Proxy(): ReactNode {
                     isSelected={selectedIds.has(pool.id)}
                     onToggleSelect={toggleSelectOne}
                     checkResult={checkResults[pool.id]}
-                    probe={liveProbeFor(providerResults[pool.id], pool.endpoint)}
+                    probe={
+                      // The row's own verdict wins: it is the one every reader
+                      // shares and the one a reload keeps. The local map only
+                      // covers the gap before the refetch lands.
+                      pool.providerProbe !== undefined
+                        ? {
+                            poolId: pool.id,
+                            providerId: pool.providerProbe.providerId,
+                            status: pool.providerProbe.status,
+                            ...(pool.providerProbe.httpStatus === undefined
+                              ? {}
+                              : { httpStatus: pool.providerProbe.httpStatus }),
+                            ...(pool.providerProbe.reason === undefined
+                              ? {}
+                              : { reason: pool.providerProbe.reason }),
+                            ...(pool.providerProbe.latencyMs === undefined
+                              ? {}
+                              : { latencyMs: pool.providerProbe.latencyMs }),
+                          }
+                        : liveProbeFor(providerResults[pool.id], pool.endpoint)
+                    }
                     isTesting={testingIds.has(pool.id)}
                     onDelete={requestDeletePool}
                     onEdit={setEditingPool}

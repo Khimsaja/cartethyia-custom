@@ -52,6 +52,7 @@ test("each backend has matching baseline and incremental migrations", () => {
     "0008_add_models_route_unique_index.sql",
     "0009_rename_opencode_provider_ids.sql",
     "0010_add_provider_max_inflight_per_proxy.sql",
+    "0011_add_pool_provider_probe.sql",
   ];
   expect(postgres).toEqual(expected);
   expect(sqlite).toEqual(expected);

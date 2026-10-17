@@ -83,6 +83,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- A provider probe verdict is stored on the pool row (`network_pools.provider_probe_*`,
+  migration `0011`) instead of in the operator's browser. It used to live in
+  `localStorage`, which made it decorative: another machine saw nothing, the
+  gateway saw nothing, and admission kept routing through a pool the badge
+  called blocked. The row records the endpoint the verdict was measured
+  against, so re-pointing a pool reports "never probed" rather than a colour
+  about an address that no longer exists.
 - The Proxy Pool tester no longer answers a question nobody asked. A probe
   verdict is keyed to the endpoint it was measured on, so re-pointing a pool at
   a new proxy drops the old verdict instead of showing `OpenCode blocked` for an

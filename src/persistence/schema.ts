@@ -412,6 +412,32 @@ export const networkPools = pgTable("network_pools", {
   lastSpeedtestError: text("last_speedtest_error"),
   /** When the last speed-test ran. */
   lastSpeedtestAt: timestamp("last_speedtest_at", { withTimezone: true }),
+  /**
+   * Provider-scoped probe verdict, stored beside the other last-known facts
+   * (`egress_ip`, `last_latency_ms`, the speed-test columns) rather than in the
+   * browser.
+   *
+   * It lived in `localStorage` first, and that made it decorative: the verdict
+   * was visible to the operator who ran it and to nobody else — not to another
+   * machine, not to the gateway, and not to admission. A pool could read
+   * "OpenCode blocked" on screen while dispatch kept sending traffic through
+   * it, because nothing outside that one browser had ever heard the verdict.
+   *
+   * `null` means never probed. These describe the *address* recorded in
+   * `egress_ip` at the time, so a changed endpoint clears them.
+   */
+  providerProbeProviderId: text("provider_probe_provider_id"),
+  /** `allowed` | `blocked` | `throttled` | `unreachable`; null until probed. */
+  providerProbeStatus: text("provider_probe_status"),
+  /** Upstream HTTP status when a response arrived. */
+  providerProbeHttpStatus: integer("provider_probe_http_status"),
+  /** Operator-facing reason: the upstream's own words, or why the probe failed. */
+  providerProbeReason: text("provider_probe_reason"),
+  providerProbeLatencyMs: integer("provider_probe_latency_ms"),
+  providerProbeAt: timestamp("provider_probe_at", { withTimezone: true }),
+  /** The endpoint the verdict was measured against. Compared on read, so an
+   * edited endpoint reports "never probed" instead of a stale verdict. */
+  providerProbeEndpoint: text("provider_probe_endpoint"),
   /** Metered egress totals, flushed from the in-memory socket counters on
    * every pool-touching write so the quota bar survives a restart. */
   bytesSentTotal: bigint("bytes_sent_total", { mode: "number" }).notNull().default(0),

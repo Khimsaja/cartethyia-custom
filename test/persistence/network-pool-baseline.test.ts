@@ -32,6 +32,8 @@ test("the baseline has the final network-pool schema", async () => {
         "last_speedtest_at",
         "bytes_sent_total",
         "bytes_received_total",
+        "provider_probe_status",
+        "provider_probe_endpoint",
       ]),
     );
 

@@ -88,6 +88,27 @@ export interface NetworkPoolResponse {
     reason: string;
     blocked: boolean;
   }>;
+  /**
+   * Last provider probe recorded **on the row**, so every reader sees the same
+   * answer — another machine, the gateway, and the operator alike.
+   *
+   * Absent when never probed, and also when the pool's endpoint has changed
+   * since the probe: the stored verdict describes an address that no longer
+   * exists, so reporting it would be a stale claim rather than a measurement.
+   */
+  providerProbe?: StoredProviderProbe;
+}
+
+export interface StoredProviderProbe {
+  readonly providerId: string;
+  readonly status: "allowed" | "blocked" | "throttled" | "unreachable";
+  readonly httpStatus?: number;
+  readonly reason?: string;
+  readonly latencyMs?: number;
+  /** ISO timestamp of the probe. */
+  readonly checkedAt: string;
+  /** The endpoint this verdict was measured against. */
+  readonly endpoint: string;
 }
 
 
