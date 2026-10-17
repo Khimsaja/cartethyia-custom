@@ -91,6 +91,7 @@ const BULK_POOL_CREATE_CONCURRENCY = 4;
 type TestPayload = "url" | "opencode";
 const TEST_PAYLOAD_STORAGE_KEY = "cartethyia_proxy_test_payload";
 const PROVIDER_RESULTS_STORAGE_KEY = "cartethyia_proxy_provider_results";
+const CHECK_RESULTS_STORAGE_KEY = "cartethyia_proxy_check_results";
 
 const TEST_PAYLOAD_OPTIONS = [
   { value: "url", label: "Test URL" },
@@ -449,11 +450,14 @@ export function ProxyBulkForm({
   onClose,
   actionsRef,
   onProbeResult,
+  onHealthResult,
 }: {
   readonly onClose: () => void;
   readonly actionsRef?: (actions: ReactNode) => void;
-  /** Hands a probe verdict to the page once the pool row exists. */
+  /** Hands a provider-probe verdict to the page once the pool row exists. */
   readonly onProbeResult?: (poolId: string, result: PoolProviderProbeResult) => void;
+  /** Hands the URL test's verdict along with it, so both survive the save. */
+  readonly onHealthResult?: (poolId: string, result: HealthCheckResult) => void;
 }): ReactNode {
   const createPool = useCreateNetworkPool();
   const probeBatch = useProbeNetworkPoolBatch();
@@ -465,6 +469,11 @@ export function ProxyBulkForm({
   const [log, setLog] = useState<string[]>([]);
   // Keyed by endpoint so a row can inherit the verdict once the pool exists.
   const [probeByEndpoint, setProbeByEndpoint] = useState<Record<string, PoolProviderProbeResult>>({});
+  // The URL test's verdict, kept beside it. The two answer different questions
+  // — "does this tunnel carry traffic" and "will this provider serve it" — and
+  // an operator who ran both expects the saved row to show both, not just the
+  // second one.
+  const [healthByEndpoint, setHealthByEndpoint] = useState<Record<string, HealthCheckResult>>({});
   const [batchSubmitting, setBatchSubmitting] = useState(false);
   // Scheme chip applies to the first non-empty line only, exactly as the
   // operator reads the paste: one prefix choice for the batch.
@@ -518,6 +527,11 @@ export function ProxyBulkForm({
       const okCount = results.filter(
         (r) => r.result.status === "healthy" || r.result.status === "reachable",
       ).length;
+      setHealthByEndpoint((prev) => {
+        const next = { ...prev };
+        for (const entry of results) next[entry.endpoint] = entry.result;
+        return next;
+      });
       setLog([`${okCount}/${results.length} reachable`, ...rows]);
       if (okCount === results.length) toast.success(`All ${results.length} proxies reachable`);
       else toast.error(`${results.length - okCount} of ${results.length} proxies failed`);
@@ -595,11 +609,13 @@ export function ProxyBulkForm({
               ...(perRowQuota.has(index) ? { quotaBytes: perRowQuota.get(index) } : {}),
               ...(family.trim() !== "" ? { family: family.trim() } : {}),
             });
-            // Carry the probe verdict the operator already paid for onto the
-            // row that now exists, so the table shows it without a re-test.
+            // Carry both verdicts the operator already paid for onto the row
+            // that now exists, so the table shows them without a re-test.
             const probed = probeByEndpoint[line];
-            if (probed !== undefined && created?.id) {
-              onProbeResult?.(created.id, probed);
+            const health = healthByEndpoint[line];
+            if (created?.id) {
+              if (health !== undefined) onHealthResult?.(created.id, health);
+              if (probed !== undefined) onProbeResult?.(created.id, probed);
             }
             outcomes[index] = { ok: true };
           } catch (err) {
@@ -1598,7 +1614,19 @@ export default function Proxy(): ReactNode {
       return next;
     });
   }, []);
-  const [checkResults, setCheckResults] = useState<Record<string, HealthCheckResult>>({});
+  const [checkResults, setCheckResults] = useState<Record<string, HealthCheckResult>>(() => {
+    // Seeded from the server row (`lastSuccessAt`/`lastErrorAt`) by
+    // `derivePoolView`, so this map only carries what the browser measured
+    // since the page opened. A bulk import that tests and then saves reports
+    // both verdicts here, and losing them on reload would put the rows back to
+    // "Untested" for a check the operator already paid for.
+    try {
+      const saved = localStorage.getItem(CHECK_RESULTS_STORAGE_KEY);
+      return saved ? (JSON.parse(saved) as Record<string, HealthCheckResult>) : {};
+    } catch {
+      return {};
+    }
+  });
   const [sort, setSort] = useState<{ key: PoolSortKey; direction: "asc" | "desc" }>({
     key: "name",
     direction: "asc",
@@ -1635,6 +1663,14 @@ export default function Proxy(): ReactNode {
       return next;
     });
   }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(CHECK_RESULTS_STORAGE_KEY, JSON.stringify(checkResults));
+    } catch {
+      // A blocked storage must not break the page.
+    }
+  }, [checkResults]);
 
   const results = Object.values(checkResults);
   const testedCount = results.length;
@@ -1935,6 +1971,9 @@ export default function Proxy(): ReactNode {
               ...prev,
               [poolId]: { endpoint: created?.endpoint ?? "", result },
             }));
+          }}
+          onHealthResult={(poolId, result) => {
+            setCheckResults((prev) => ({ ...prev, [poolId]: result }));
           }}
         />
       </Dialog>
