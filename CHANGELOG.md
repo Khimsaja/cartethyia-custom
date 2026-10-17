@@ -83,6 +83,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- A quota fetch that failed for this sweep no longer raises a `Quota
+  unreachable` pill on the account row. The account routes fine — only its
+  allowance is unknown, and the next sweep retries. A real refusal
+  (`quota_exhausted`) still shows, because it does not clear on its own.
+- The Usage request list's reported-model toggle now reads **Show reported** /
+  **Hide reported**, matching the mask toggle beside it instead of naming a
+  state.
 - `muse-spark-1.2-contributor-free` is back in the OpenCode free catalog on the
   Responses wire. It was dropped as deprecated, but it answers `200` with the
   agent tool set; the `403 FreeTierError` it returns without tools is the

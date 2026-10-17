@@ -1806,7 +1806,7 @@ export default function Usage(): ReactNode {
                 }
                 className={`text-badge h-13 px-4 py-0 ${showReported ? "text-accent" : "text-text-secondary"}`}
               >
-                Reported
+                {showReported ? "Hide reported" : "Show reported"}
               </Button>
               <LiveInFlightPill />
             </Inline>

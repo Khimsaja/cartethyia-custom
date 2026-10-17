@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { accountErrorLabel } from "../../src/lib/format/labels";
+import { accountErrorLabel, showsErrorPill } from "../../src/lib/format/labels";
 
 /**
  * The account pill used to render the raw category, so a quota endpoint that
@@ -27,5 +27,36 @@ describe("accountErrorLabel", () => {
 
   test("an unknown category is shown as-is rather than hidden", () => {
     expect(accountErrorLabel("something_new")).toBe("something_new");
+  });
+});
+
+/**
+ * A check that will be retried is not a state of the account.
+ *
+ * `quota_fetch_failed` says the quota *endpoint* did not answer this pass. The
+ * account routes fine; only its allowance is unknown, and the sweep tries again.
+ * A pill reading "Quota unreachable" told the operator the opposite — that the
+ * account could not be used — for a condition that clears itself.
+ */
+describe("showsErrorPill", () => {
+  test("a retryable quota-fetch failure raises no pill", () => {
+    expect(showsErrorPill("quota_fetch_failed")).toBe(false);
+  });
+
+  test("a spent allowance still shows: it will not clear on its own", () => {
+    expect(showsErrorPill("quota_exhausted")).toBe(true);
+  });
+
+  test("a rejected credential still shows", () => {
+    expect(showsErrorPill("auth_invalidated")).toBe(true);
+  });
+
+  test("an unknown category is shown rather than silently swallowed", () => {
+    expect(showsErrorPill("something_new")).toBe(true);
+  });
+
+  test("no category means no pill", () => {
+    expect(showsErrorPill(undefined)).toBe(false);
+    expect(showsErrorPill("")).toBe(false);
   });
 });
