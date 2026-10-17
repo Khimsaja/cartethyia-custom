@@ -56,9 +56,10 @@ const UNAVAILABLE_FREE_ZEN_IDS: readonly string[] = [
   // real free-tier dispatch (this adapter's own fingerprint headers, agent
   // tools) answers 400 "Endpoint is unavailable". Keeping it would re-add a row
   // that can only fail a probe.
-  "ling-3.0-flash-fin-free",
-  // Retired from every OpenCode family: the listing still advertises both, but
-  // neither is served anymore, so discovery must not re-add the row.
+  "ling-3.1-flash-free",
+  // Advertised by `/zen/v1/models` and carrying the free-tier suffix, but
+  // upstream refuses it for this adapter's free-tier dispatch, so discovery
+  // must not re-add the row.
   "mimo-v2.5-free",
   "space-bunny-free",
 ];
