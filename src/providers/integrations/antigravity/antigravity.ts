@@ -973,13 +973,12 @@ function buildAntigravityEnvelope(
       ? { generationConfig }
       : {}),
   };
-  if ((request.tools ?? []).some((tool) => tool.name === "web_search" || tool.name === "web_search_preview")) {
-    const tools = Array.isArray(requestPayload["tools"])
-      ? [...(requestPayload["tools"] as Record<string, unknown>[])]
-      : [];
-    tools.push({ googleSearch: {} });
-    requestPayload["tools"] = tools;
-  }
+  // No built-in tools on this route. A `googleSearch` entry alongside
+  // `functionDeclarations` is refused with
+  // `400 ... enable tool_config.include_server_side_tool_invocations to use
+  // Built-in tools with Function calling`, and the reference client never
+  // sends one: web search reaches Antigravity as an ordinary function tool.
+  // Injecting it was the only reason that refusal ever appeared here.
   if (logicalModelId.includes("claude") && !isRecord(requestPayload["toolConfig"])) {
     requestPayload["toolConfig"] = { functionCallingConfig: { mode: "VALIDATED" } };
   }
