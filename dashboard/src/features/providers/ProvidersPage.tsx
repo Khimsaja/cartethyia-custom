@@ -656,6 +656,11 @@ const FREE_LIMITED_IDS = new Set([
   "grok",
   "opencode",
   "cline",
+  // Nous Research publishes a free allowance alongside its paid catalog, and
+  // its `/v1/models` marks those rows at zero price, so discovery can keep the
+  // list current instead of encoding it by hand.
+  "hermes",
+  "commandcode",
   // Kilo Code resells the OpenRouter catalog — `/api/openrouter`, the same
   // upstream Cline fronts — and serves a `kilo-auto/free` routing alias
   // alongside its paid rows, so its free allowance is metered against that
