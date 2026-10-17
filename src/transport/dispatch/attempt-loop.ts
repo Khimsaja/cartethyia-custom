@@ -25,10 +25,10 @@ import { metrics } from "../../observability/metrics";
 import type { NetworkPoolSelector } from "../../network/pool/selector";
 import type { ProxyRequestState } from "../request/state";
 import type { TelemetryBatchBuffer } from "../../observability/telemetry-buffer";
-import { flagPoolCooldown } from "../../network/pool-health";
+import { flagPoolBlocked, flagPoolCooldown } from "../../network/pool-health";
 import { completeAttempt, errorClientResponseBody, estimatedUsage, type ProviderExchangeCapture } from "./attempt-finalize";
 import { repriceUsage } from "../../providers/provider-usage";
-import { shouldCooldownPool, isOAuthCredentialInvalidated } from "./retry-policy";
+import { isFreeTierIpBlock, isOAuthCredentialInvalidated, shouldCooldownPool } from "./retry-policy";
 import { drainAbortReason } from "../shutdown-notice";
 
 /**
@@ -363,8 +363,15 @@ export async function runAttemptLoop<TResult, TAdapter>(
         ...(deps.telemetryBuffer ? { telemetryBuffer: deps.telemetryBuffer } : {}),
         ...(deps.snapshotService ? { snapshotService: deps.snapshotService } : {}),
       });
-      if (networkPoolId && !cancelled && deps.poolSelector && shouldCooldownPool(error, candidate.provider_id)) {
-        flagPoolCooldown(deps.poolSelector, deps.db, networkPoolId, candidate.provider_id, error);
+      if (networkPoolId && !cancelled && deps.poolSelector) {
+        if (shouldCooldownPool(error, candidate.provider_id)) {
+          flagPoolCooldown(deps.poolSelector, deps.db, networkPoolId, candidate.provider_id, error);
+        } else if (isFreeTierIpBlock(error, candidate.provider_id)) {
+          // The address itself is refused, not the request: retire the egress
+          // so the next attempt leaves by a different one instead of retrying
+          // a proxy the upstream has already flagged.
+          flagPoolBlocked(deps.poolSelector, deps.db, networkPoolId, candidate.provider_id, error);
+        }
       }
       // A 403 can be a deterministic provider policy rejection, not an
       // invalid OAuth credential. Only the evidence-based classifier above

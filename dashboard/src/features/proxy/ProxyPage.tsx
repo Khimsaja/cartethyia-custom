@@ -731,6 +731,9 @@ interface PoolView {
   readonly load: number;
   readonly cooldowns: readonly NonNullable<NetworkPoolResponse["providerCooldowns"]>[number][];
   readonly cooldownText: string;
+  /** Providers this egress is retired for, as opposed to merely throttled. */
+  readonly blocked: readonly NonNullable<NetworkPoolResponse["providerCooldowns"]>[number][];
+  readonly cooldownOnly: readonly NonNullable<NetworkPoolResponse["providerCooldowns"]>[number][];
   readonly metered: number;
   readonly session: number;
   readonly used: number;
@@ -778,13 +781,16 @@ function derivePoolView(
   const inflight = liveBytes?.currentInflight ?? pool.inflight;
   const load = pool.maxInflight > 0 ? Math.min(1, inflight / pool.maxInflight) : 1;
   const cooldowns = pool.providerCooldowns ?? [];
-  const cooldownText = cooldowns
-    .slice(0, 2)
-    .map(
-      (cooldown) =>
-        `${cooldown.providerId} until ${new Date(cooldown.until).toLocaleTimeString()}: ${cooldown.reason}`,
-    )
-    .join(" · ");
+  // A block is not a cooldown with a longer clock: the upstream retired this
+  // address, so it will not come back on its own. Rendering the two as one
+  // number is what let an operator wait out something that never expires.
+  const blocked = cooldowns.filter((entry) => entry.blocked === true);
+  const cooldownOnly = cooldowns.filter((entry) => entry.blocked !== true);
+  const describe = (entry: NonNullable<NetworkPoolResponse["providerCooldowns"]>[number]) =>
+    entry.blocked === true
+      ? `${entry.providerId} blocked: ${entry.reason}`
+      : `${entry.providerId} until ${new Date(entry.until).toLocaleTimeString()}: ${entry.reason}`;
+  const cooldownText = cooldowns.slice(0, 2).map(describe).join(" · ");
   const statusText = isTesting
     ? "Testing…"
     : proxyResponseDisabled
@@ -821,6 +827,8 @@ function derivePoolView(
     inflight,
     load,
     cooldowns,
+    blocked,
+    cooldownOnly,
     cooldownText,
     metered,
     session,
@@ -857,9 +865,14 @@ function PoolTitleBlock({
             {view.latency === undefined ? view.statusText : `${view.statusText} · ${view.latency}ms`}
           </Badge>
         )}
-        {view.cooldowns.length > 0 ? (
+        {view.blocked.length > 0 ? (
+          <Badge tone="disabled" title={view.cooldownText}>
+            {view.blocked.length} blocked
+          </Badge>
+        ) : null}
+        {view.cooldownOnly.length > 0 ? (
           <Badge tone="warn" title={view.cooldownText}>
-            {view.cooldowns.length} cooldown{view.cooldowns.length > 1 ? "s" : ""}
+            {view.cooldownOnly.length} cooldown{view.cooldownOnly.length > 1 ? "s" : ""}
           </Badge>
         ) : null}
       </div>

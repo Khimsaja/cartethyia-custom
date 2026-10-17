@@ -7,6 +7,14 @@ export interface ProxyCooldownEntry {
   readonly providerId: string;
   readonly until: number;
   readonly reason: string;
+  /**
+   * True when the upstream retired this egress rather than throttling it.
+   *
+   * Kept as a field rather than inferred from `until`: a long cooldown and a
+   * block are different facts, and reading one as the other is exactly the
+   * confusion this flag exists to prevent.
+   */
+  readonly blocked?: boolean;
 }
 
 /**
@@ -43,6 +51,7 @@ export function parseCooldownEntry(raw: string): ProxyCooldownEntry | undefined 
         providerId: parsed.providerId.toLowerCase(),
         until: parsed.until,
         reason: parsed.reason.slice(0, 200),
+        ...(parsed.blocked === true ? { blocked: true } : {}),
       };
     }
   } catch {

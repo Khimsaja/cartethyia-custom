@@ -360,7 +360,7 @@ describe("summarizePools", () => {
     const pools = [
       pool({
         id: "a",
-        providerCooldowns: [{ providerId: "anthropic", until, reason: "429" }],
+        providerCooldowns: [{ providerId: "anthropic", until, reason: "429", blocked: false }],
       }),
     ];
     const summary = summarizePools(pools);

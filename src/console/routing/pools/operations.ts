@@ -29,6 +29,14 @@ import {
   type PoolStrategySetting,
 } from "./contracts";
 
+/**
+ * Whether a provider entry is a retired egress rather than a refilling
+ * allowance. Read from the stored flag, never from the duration.
+ */
+function isBlockedEntry(entry: { readonly blocked?: boolean }): boolean {
+  return entry.blocked === true;
+}
+
 export function createNetworkPoolOperations(config: NetworkPoolConfig) {
   const operations = {
     async listPools(access: AccessDecision | undefined): Promise<NetworkPoolResponse[]> {
@@ -52,6 +60,7 @@ export function createNetworkPoolOperations(config: NetworkPoolConfig) {
                       providerId: c.providerId,
                       until: new Date(c.until).toISOString(),
                       reason: c.reason,
+                      blocked: isBlockedEntry(c),
                     })),
                   }
                 : {}),
@@ -82,6 +91,7 @@ export function createNetworkPoolOperations(config: NetworkPoolConfig) {
                   providerId: c.providerId,
                   until: new Date(c.until).toISOString(),
                   reason: c.reason,
+                  blocked: isBlockedEntry(c),
                 })),
               }
             : {}),

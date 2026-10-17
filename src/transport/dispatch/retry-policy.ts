@@ -34,6 +34,33 @@ export function isOAuthCredentialInvalidated(error: unknown): error is GatewayEr
 }
 
 /**
+ * A free-tier IP refusal: the upstream has flagged this egress address, not
+ * this request.
+ *
+ * OpenCode answers a blocked address with `403` and its own
+ * `FreeTierError`/`ModelDeprecated`-style body. The request was never read, so
+ * retrying it — with the same tools, the same headers, or the same credential —
+ * cannot succeed from the same address. Only a different egress can.
+ *
+ * This is deliberately narrower than "any 403": a content-policy rejection or a
+ * licence refusal is also a 403 and must not retire a healthy proxy. The
+ * provider must also declare `ipScopedRateLimit`, which is the same fact the
+ * 429 path already relies on.
+ */
+export function isFreeTierIpBlock(error: unknown, providerId: string): error is GatewayError {
+  if (!(error instanceof GatewayError) || error.origin !== "upstream" || error.status !== 403) {
+    return false;
+  }
+  if (!providerRateLimitIsIpScoped(providerId)) return false;
+  const providerCode = typeof error.details.providerCode === "string" ? error.details.providerCode : "";
+  const raw = String(error.details.raw ?? "");
+  return (
+    /freetier|free.?tier/i.test(providerCode) ||
+    /FreeTierError|free tier can only be used/i.test(`${error.message} ${raw}`)
+  );
+}
+
+/**
  * A provider-scoped 429, on a provider whose limits follow the egress address.
  *
  * Only then is the pool the thing that ran out: the upstream counted requests

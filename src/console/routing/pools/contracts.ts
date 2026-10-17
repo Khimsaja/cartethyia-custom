@@ -74,7 +74,20 @@ export interface NetworkPoolResponse {
   lastSpeedtestError?: string;
   /** ISO timestamp of when the last speed-test ran. */
   lastSpeedtestAt?: string;
-  providerCooldowns?: Array<{ providerId: string; until: string; reason: string }>;
+  /**
+   * Provider-scoped refusals on this pool.
+   *
+   * `blocked` is not a longer `cooldown`: a 429 is an allowance that refills,
+   * while a block means the upstream retired the egress address and only
+   * replacing the proxy clears it. The console renders them differently so an
+   * operator does not wait for a block to expire.
+   */
+  providerCooldowns?: Array<{
+    providerId: string;
+    until: string;
+    reason: string;
+    blocked: boolean;
+  }>;
 }
 
 

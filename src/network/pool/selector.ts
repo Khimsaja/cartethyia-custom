@@ -36,6 +36,17 @@ export type { PoolRotation, PoolUsageSnapshot, ProxyCooldownEntry };
 export { parseCooldownEntry };
 
 // Pool selector
+/**
+ * How long a flagged egress stays out of rotation.
+ *
+ * This is not a cooldown: a free-tier refusal means the upstream has retired
+ * the address, and the only thing that clears it is the operator replacing the
+ * proxy. Ten years is "until someone intervenes" — long enough that no request
+ * spends itself rediscovering the refusal, short enough to stay a bounded
+ * timestamp instead of a nullable flag every reader would have to branch on.
+ */
+export const PROVIDER_BLOCK_MS = 10 * 365 * 24 * 60 * 60 * 1000;
+
 export const DEFAULT_PROXY_CONCURRENCY = 10;
 const DEFAULT_PROXY_WEIGHT = 100;
 const MAX_PROXY_WEIGHT = 1000;
@@ -205,6 +216,49 @@ export class NetworkPoolSelector {
       }
     }
     return entry;
+  }
+
+  /**
+   * Retires an egress permanently for one provider.
+   *
+   * A free-tier refusal means the upstream flagged this address, and the
+   * request was never read — so the address stays flagged for as long as the
+   * upstream remembers it. A timed cooldown would put it back into rotation and
+   * spend a real request discovering it is still refused, which is why this is
+   * a far-future `until` rather than a short window.
+   *
+   * The entry uses the same storage as a cooldown so every reader that already
+   * skips a cooling pool skips this one too; `reason` is what the console
+   * renders to tell an operator-blocked proxy from a throttled one.
+   */
+  async flagProviderBlocked(
+    poolId: string,
+    providerId: string,
+    reason = "Upstream refused this egress address",
+  ): Promise<ProxyCooldownEntry> {
+    const entry = await this.flagProviderCooldown(poolId, providerId, PROVIDER_BLOCK_MS, reason);
+    const blocked: ProxyCooldownEntry = { ...entry, blocked: true };
+    // Rewrite both copies with the flag: the cooldown write above is shared
+    // with the 429 path, so the marker has to be re-stamped rather than
+    // threaded through a second parameter that only this caller sets.
+    this.state.cooldowns.set(this.cooldownKey(poolId, providerId), blocked);
+    if (this.redis) {
+      try {
+        await redisEvalNumber(
+          this.redis,
+          COOLDOWN_FLAG_SCRIPT,
+          2,
+          proxyCooldownKey(poolId, providerId),
+          proxyCooldownProvidersKey(poolId),
+          JSON.stringify(blocked),
+          Math.max(1, Math.ceil(PROVIDER_BLOCK_MS / 1000)),
+          blocked.providerId,
+        );
+      } catch {
+        // The local entry stays authoritative for this process.
+      }
+    }
+    return blocked;
   }
 
   async isProviderCooldown(
