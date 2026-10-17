@@ -30,6 +30,15 @@ export interface ProxyRequestOutcome {
    */
   readonly errorOrigin?: string;
   readonly usage?: UsageRecord;
+  /**
+   * The `model` the upstream put in its own response, verbatim.
+   *
+   * Distinct from the model the request asked for. A provider that answers a
+   * `muse-spark` request as `deepseek-v4.1-flash` is telling the operator
+   * something the request cannot; recording the ask as if it were the answer
+   * would hide exactly that. Absent when the response carried no `model`.
+   */
+  readonly reportedModel?: string;
   readonly ttfbMs?: number;
   readonly tokensPerSec?: number;
   /** First meaningful content delta timestamp (for TTFT calculation). */

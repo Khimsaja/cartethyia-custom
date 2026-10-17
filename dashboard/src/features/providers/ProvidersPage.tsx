@@ -654,8 +654,13 @@ const FOUNDING_IDS = new Set(["inferhub"]);
 /** Free tiers with a small daily allowance rather than a standing free tier. */
 const FREE_LIMITED_IDS = new Set([
   "grok",
-  "opencodeft",
+  "opencode",
   "cline",
+  // Nous Research publishes a free allowance alongside its paid catalog, and
+  // its `/v1/models` marks those rows at zero price, so discovery can keep the
+  // list current instead of encoding it by hand.
+  "hermes",
+  "commandcode",
   // Kilo Code resells the OpenRouter catalog — `/api/openrouter`, the same
   // upstream Cline fronts — and serves a `kilo-auto/free` routing alias
   // alongside its paid rows, so its free allowance is metered against that
@@ -669,15 +674,13 @@ const FREE_LIMITED_IDS = new Set([
  * registered as `ollamacloud`.
  */
 const WELL_KNOWN_API_KEY_IDS = new Set([
-  "commandcode",
-  "hermes",
   "anthropic",
   "openai",
   "gemini",
   "alibabacp",
   "ollamacloud",
-  "opencodezen",
-  "opencodego",
+  "opencode-zen",
+  "opencode-go",
   "mistral",
   "meta",
   "deepseek",

@@ -18,6 +18,34 @@ const ACCOUNT_ERROR_LABELS: Readonly<Record<string, string>> = {
 };
 
 /**
+ * Categories that describe a check that will be retried, not a state of the
+ * account.
+ *
+ * `quota_fetch_failed` says the quota *endpoint* did not answer this pass. The
+ * account is still routable — the sweep tries again, and a transient timeout is
+ * already excluded from `consecutiveFailures` on the write side. Rendering it
+ * as a pill told the operator the account could not be routed, which is the
+ * opposite of true: it routes fine, and only its allowance is unknown.
+ *
+ * A real refusal is not in here. `quota_exhausted` means the allowance is spent
+ * and the account genuinely cannot serve; that stays visible.
+ */
+const RETRYABLE_ERROR_CATEGORIES: ReadonlySet<string> = new Set(["quota_fetch_failed"]);
+
+/**
+ * Whether an error category should be shown as a status pill.
+ *
+ * The write side records a category even for a failure it deliberately does not
+ * count (see `recordAccountCheck`), because the raw value is still useful in a
+ * tooltip. This is what keeps that distinction from becoming a false alarm on
+ * the row.
+ */
+export function showsErrorPill(category: string | undefined): category is string {
+  if (category === undefined || category.length === 0) return false;
+  return !RETRYABLE_ERROR_CATEGORIES.has(category);
+}
+
+/**
  * What the operator must actually do about a rejected credential.
  *
  * `auth_invalidated` used to render "Re-login required" for every credential,

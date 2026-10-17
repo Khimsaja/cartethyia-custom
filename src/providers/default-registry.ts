@@ -228,7 +228,7 @@ export const PROVIDER_CAPABILITIES = {
     }),
   },
   gmi: configuredProvider("gmi"),
-  opencodeft: {
+  opencode: {
     // Only the two families this provider's catalog actually serves. The
     // registry map is what discovery and probing read, so listing `messages`
     // here would resolve a probe onto a wire with no endpoint path and no
@@ -253,16 +253,16 @@ export const PROVIDER_CAPABILITIES = {
       });
     },
   },
-  opencodezen: {
+  "opencode-zen": {
     endpointPathsByWireFamily: {
       chat: "/inference/v1/chat/completions",
       responses: "/inference/v1/responses",
     },
     loadAdapter: async () => createApiKeyAdapter((await import("./integrations/opencode/provider")).OPENCODE_ZEN_SPEC),
     loadModels: async () => (await import("./integrations/opencode/provider")).OPENCODE_ZEN_MODELS,
-    loadModelDiscovery: openAIModelDiscovery("opencodezen", { transformBaseUrl: (baseUrl) => `${baseUrl.replace(/\/+$/, "")}/zen/v1`, headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+    loadModelDiscovery: openAIModelDiscovery("opencode-zen", { transformBaseUrl: (baseUrl) => `${baseUrl.replace(/\/+$/, "")}/zen/v1`, headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
   },
-  opencodego: {
+  "opencode-go": {
     // The billed Go tier serves the same two wire families as the shared Zen
     // base, under its own `/zen/go/v1` prefix. Declaring them here is what the
     // endpoint-parity test guards against the catalog's own rows: without the
@@ -273,7 +273,7 @@ export const PROVIDER_CAPABILITIES = {
     },
     loadAdapter: async () => createApiKeyAdapter((await import("./integrations/opencode/provider")).OPENCODE_GO_SPEC),
     loadModels: async () => (await import("./integrations/opencode/provider")).OPENCODE_GO_MODELS,
-    loadModelDiscovery: openAIModelDiscovery("opencodego", { transformBaseUrl: (baseUrl) => `${baseUrl.replace(/\/+$/, "")}/zen/go/v1`, headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+    loadModelDiscovery: openAIModelDiscovery("opencode-go", { transformBaseUrl: (baseUrl) => `${baseUrl.replace(/\/+$/, "")}/zen/go/v1`, headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
   },
   agentrouter: {
     loadAdapter: async () => (await import("./integrations/agentrouter/agentrouter")).createAgentRouterAdapter(),
@@ -352,6 +352,16 @@ export const PROVIDER_CAPABILITIES = {
   hermes: {
     loadAdapter: async () => createApiKeyAdapter((await import("./integrations/hermes")).HERMES_SPEC),
     loadModels: async () => (await import("./integrations/hermes")).HERMES_MODELS,
+    // `/v1/models` is open and states each row's real limits, so the free
+    // allowance tracks upstream instead of a hand-kept list. The static list
+    // above stays as the offline fallback for a fetch that fails.
+    loadModelDiscovery: async () => async ({ baseUrl, fetcher }) => {
+      const { discoverHermesFreeModels } = await import("./integrations/hermes");
+      return discoverHermesFreeModels({
+        baseUrl,
+        ...(fetcher === undefined ? {} : { fetcher }),
+      });
+    },
   },
   openrouter: {
     loadAdapter: async () => createApiKeyAdapter((await import("./integrations/openrouter/provider")).OPENROUTER_SPEC),

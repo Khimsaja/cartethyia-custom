@@ -17,7 +17,7 @@ import {
   OPENCODE_ZEN_MODELS,
 } from "../../src/providers/integrations/opencode/provider";
 
-function dispatchUrl(providerId: "opencodeft" | "opencodezen" | "opencodego", endpointPath: string): string {
+function dispatchUrl(providerId: "opencode" | "opencode-zen" | "opencode-go", endpointPath: string): string {
   return providerBaseUrl(providerId).replace(/\/+$/, "") + endpointPath;
 }
 
@@ -28,11 +28,35 @@ describe("OpenCode dispatch base", () => {
     }
   });
 
-  test("the free muse model lands on the URL a replay proved returns 200", () => {
-    const muse = OPENCODE_FREE_MODELS.find((model) => model.modelId === "muse-spark-1.3-contributor-free");
-    expect(dispatchUrl("opencodeft", muse?.endpointPath ?? "")).toBe(
+  test("a free model lands on the URL a replay proved returns 200", () => {
+    const free = OPENCODE_FREE_MODELS.find((model) => model.modelId === "longcat-2.5-preview-free");
+    expect(dispatchUrl("opencode", free?.endpointPath ?? "")).toBe(
+      "https://opencode.ai/inference/v1/chat/completions",
+    );
+  });
+
+  test("the restored muse free id is catalogued on the responses wire", () => {
+    // Dropped once as deprecated, then restored: it answers 200 on the
+    // Responses wire with the agent tool set. Without tools it returns 403 —
+    // that is the free-tier gate judging the request shape, not the model, and
+    // reading it as a dead model is what removed this row in the first place.
+    const muse = OPENCODE_FREE_MODELS.find(
+      (model) => model.modelId === "muse-spark-1.2-contributor-free",
+    );
+    expect(muse).toBeDefined();
+    expect(muse?.wireFamily).toBe("responses");
+    expect(dispatchUrl("opencode", muse?.endpointPath ?? "")).toBe(
       "https://opencode.ai/inference/v1/responses",
     );
+  });
+
+  test("the genuinely deprecated muse free id stays out", () => {
+    // 1.3 answers `410 ModelDeprecated` on every wire, so it is not a shape
+    // problem and must not be catalogued.
+    const deprecated = OPENCODE_FREE_MODELS.find(
+      (model) => model.modelId === "muse-spark-1.3-contributor-free",
+    );
+    expect(deprecated).toBeUndefined();
   });
 
   test("go keeps its own base", () => {

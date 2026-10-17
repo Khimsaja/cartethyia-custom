@@ -50,6 +50,11 @@ export interface RouteCandidate {
    * `tenantId` names that pool-owning tenant (settings owner and rotation
    * cursor key). Absent = `least_loaded`. */
   readonly network_pool_routing?: PoolRoutingSetting & { readonly tenantId: string };
+  /** This provider's ceiling on *each* pool's concurrent requests, from
+   * Routing Strategy. Distinct from `max_inflight` (one account) and from
+   * `network_pool_limits` (one pool, every provider). Absent = unlimited, the
+   * default, and then no per-provider counter is ever touched. */
+  readonly network_pool_provider_limit?: number;
   /** `null`/`undefined` = globally routable; a tenant id = routable only for that tenant's requests (BYOK). */
   readonly tenant_id?: string | null;
   /** `false` only for a genuinely credential-less provider (e.g. OpenCode
@@ -73,6 +78,11 @@ export interface ProviderRoutingSetting {
   /** Per-account inflight ceiling from the routing panel; `null` = unlimited
    * concurrency per account. */
   readonly maxInflight: number | null;
+  /** Per-pool inflight ceiling for this provider; `null` = unlimited, and
+   * `null` is the default. Bounds one provider's share of one proxy pool,
+   * independently of `maxInflight` (one account) and of the pool's own
+   * `network_pools.max_inflight` (every provider). */
+  readonly maxInflightPerProxy: number | null;
   /** Minimum remaining allowance an account must hold to stay routable.
    * `null` means no floor. `credit` compares the summed remaining credit;
    * `percent` compares the aggregate credit percent and lowest independent

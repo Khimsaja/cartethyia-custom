@@ -1,3 +1,4 @@
+import { captureProviderExchange, type ProviderExchangeCapture } from "../../transport/dispatch/attempt-finalize";
 import { globalOrOwnedBy } from "../../persistence/tenant-scope";
 /**
  * Provider probing and model-discovery orchestration.
@@ -240,6 +241,12 @@ export class ProviderProbingService {
 
     const probeSignal = AbortSignal.timeout(30_000);
     const events: CanonicalEvent[] = [];
+    /**
+     * Populated when the probe dials. Declared here, not inside the try, so the
+     * model the upstream named is still readable after the block unwinds — the
+     * result is assembled outside it.
+     */
+    let probeCapture: ProviderExchangeCapture | undefined;
     let ttfbMs: number | undefined;
     let dispatchError: unknown;
     /** Hits a `websearch` probe returned; surfaced to the console verbatim. */
@@ -252,7 +259,15 @@ export class ProviderProbingService {
         : { provider_id: parsedProviderId, credential_kind: "none" as const };
       const outbound = asOutboundBinding(await this.outboundFetchFor(tenantId, providerId));
       networkPoolId = outbound.networkPoolId;
-      const probeFetch = createProbeFetch(outbound.fetch);
+      probeCapture = {
+        request: null,
+        response: Promise.resolve(null),
+      };
+      // The same wrapper a real dispatch uses, so the probe reads the model the
+      // upstream named from the raw bytes rather than from a synthesized event.
+      const probeFetch = createProbeFetch(
+        captureProviderExchange(outbound.fetch, probeCapture, false),
+      );
       try {
         if (serviceKind === "websearch") {
           if (typeof adapter.websearch !== "function") {
@@ -481,6 +496,7 @@ export class ProviderProbingService {
     }
 
     const sample = extractSample(events);
+    const reportedModel = await probeCapture?.reportedModel?.catch(() => undefined);
     return {
       ...(accountId ? { accountId } : {}),
       ok,
@@ -488,6 +504,7 @@ export class ProviderProbingService {
       ...(ttfbMs !== undefined ? { ttfbMs } : {}),
       ...(upstreamStatusCode === undefined ? {} : { statusCode: upstreamStatusCode }),
       ...(sample ? { sample } : {}),
+      ...(reportedModel === undefined ? {} : { reportedModel }),
       ...(searchResults !== undefined && searchResults.length > 0 ? { searchResults } : {}),
       ...(errorMessage ? { error: errorMessage } : {}),
     };

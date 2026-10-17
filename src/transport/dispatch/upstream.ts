@@ -1,3 +1,4 @@
+import type { CanonicalEvent } from "../../protocol/canonical-model";
 import type { ValidatedOutboundFetch, ValidatedOutboundWebSocket } from "../../providers/provider-contracts";
 import { GATEWAY_SECURITY_HEADERS } from "../../security/outbound-headers";
 
@@ -77,4 +78,23 @@ export function buildUpstreamDispatchContext(input: {
     ...(input.conversationAffinity ? { conversation_affinity: input.conversationAffinity } : {}),
     ...(input.requestIdentity ? { request_identity: input.requestIdentity } : {}),
   } as Record<string, unknown>;
+}
+
+/**
+ * The model id an upstream put in its own response, verbatim.
+ *
+ * `response_start` is the only event that carries it, and the wire parsers fill
+ * it from the payload's own `model` field. Read as-is — no prefix stripping, no
+ * comparison against the request, no fallback to the requested id. A provider
+ * that answers a `muse-spark` request as `deepseek-v4.1-flash` is telling the
+ * operator something the request cannot, and filling in the ask when the
+ * response carried none would report the ask as if it were the answer.
+ */
+export function reportedModelFrom(events: readonly CanonicalEvent[]): string | undefined {
+  for (const event of events) {
+    if (event.type !== "response_start" && event.type !== "message_start") continue;
+    const model = event.model;
+    if (typeof model === "string" && model.trim().length > 0) return model;
+  }
+  return undefined;
 }

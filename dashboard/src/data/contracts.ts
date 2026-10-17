@@ -181,6 +181,8 @@ export type {
   CreateNetworkPoolRequest,
   NetworkPoolResponse,
   HealthCheckResult,
+  PoolProviderProbeResult,
+  PoolBatchProviderProbeResult,
   PoolSpeedTestResult,
   PoolStrategySetting,
   PoolBatchProbeResult,

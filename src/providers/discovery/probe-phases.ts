@@ -533,9 +533,25 @@ export function buildProbeCanonicalRequest(args: {
       },
     ],
     generation_controls: {
-      max_tokens: request.maxOutputTokens ?? 1024,
-      max_output_tokens: request.maxOutputTokens ?? 1024,
-      temperature: 0.2,
+      // The probe asks for a sentence, not a page. A 1024-token allowance is
+      // the shape a *batch* request takes, and several providers treat an
+      // oversized allowance on a trivial prompt as a non-client request — the
+      // class of refusal that answers `400 request illegal`. Matching the
+      // caller's own small budget keeps the probe the same shape as the traffic
+      // it is meant to predict.
+      max_tokens: request.maxOutputTokens ?? 256,
+      max_output_tokens: request.maxOutputTokens ?? 256,
+      // No temperature. A real dispatch forwards whatever the client sent, and
+      // the client rarely sends one; pinning 0.2 here made the probe a
+      // different request from the traffic it is supposed to predict. The
+      // prompt below is deterministic enough that sampling temperature buys
+      // nothing.
+      //
+      // `include_usage` mirrors what the router attaches to a streamed
+      // dispatch. Without it the probe's upstream body is missing a field the
+      // real one carries, which is exactly the class of difference that made a
+      // provider reject the share page and accept the probe.
+      ...(request.stream === false ? {} : { "extension:include_usage": true }),
     },
     ...(probeReasoning ? { reasoning: probeReasoning as never } : {}),
     // Streaming by default. Every probe funnels through here, so one default

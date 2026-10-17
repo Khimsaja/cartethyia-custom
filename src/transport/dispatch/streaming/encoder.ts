@@ -57,6 +57,10 @@ export class StreamEventPipeline {
   firstByteAt: number | undefined;
   firstContentDeltaAtMs: number | undefined;
   lastEventAtMs: number | undefined;
+  /** The model the upstream named in its own response, captured from the
+   * opening event. Absent when the stream carried none — some providers omit
+   * it, and the requested id is not a substitute. */
+  reportedModel: string | undefined;
   private readonly eventTranscriptHead: Array<CanonicalEvent & { timestamp: number }> = [];
   private readonly eventTranscriptTail: Array<{ event: CanonicalEvent & { timestamp: number }; bytes: number }> = [];
   private eventTranscriptTailStart = 0;
@@ -276,6 +280,18 @@ export class StreamEventPipeline {
 
     if (event.type === "content_delta" && this.firstContentDeltaAtMs === undefined) {
       this.firstContentDeltaAtMs = timestampedEvent.timestamp;
+    }
+
+    // Captured once, from the opening event. Later events do not repeat it, and
+    // a stream that never opens carries no model at all — which is reported as
+    // absent rather than backfilled from the request.
+    if (
+      this.reportedModel === undefined &&
+      (event.type === "response_start" || event.type === "message_start") &&
+      typeof event.model === "string" &&
+      event.model.trim().length > 0
+    ) {
+      this.reportedModel = event.model;
     }
 
     if (event.type === "terminal") {

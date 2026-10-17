@@ -74,7 +74,41 @@ export interface NetworkPoolResponse {
   lastSpeedtestError?: string;
   /** ISO timestamp of when the last speed-test ran. */
   lastSpeedtestAt?: string;
-  providerCooldowns?: Array<{ providerId: string; until: string; reason: string }>;
+  /**
+   * Provider-scoped refusals on this pool.
+   *
+   * `blocked` is not a longer `cooldown`: a 429 is an allowance that refills,
+   * while a block means the upstream retired the egress address and only
+   * replacing the proxy clears it. The console renders them differently so an
+   * operator does not wait for a block to expire.
+   */
+  providerCooldowns?: Array<{
+    providerId: string;
+    until: string;
+    reason: string;
+    blocked: boolean;
+  }>;
+  /**
+   * Last provider probe recorded **on the row**, so every reader sees the same
+   * answer — another machine, the gateway, and the operator alike.
+   *
+   * Absent when never probed, and also when the pool's endpoint has changed
+   * since the probe: the stored verdict describes an address that no longer
+   * exists, so reporting it would be a stale claim rather than a measurement.
+   */
+  providerProbe?: StoredProviderProbe;
+}
+
+export interface StoredProviderProbe {
+  readonly providerId: string;
+  readonly status: "allowed" | "blocked" | "throttled" | "unreachable";
+  readonly httpStatus?: number;
+  readonly reason?: string;
+  readonly latencyMs?: number;
+  /** ISO timestamp of the probe. */
+  readonly checkedAt: string;
+  /** The endpoint this verdict was measured against. */
+  readonly endpoint: string;
 }
 
 
@@ -92,6 +126,39 @@ export interface HealthCheckResult {
   /** Public address the pool egressed from, when the probe could read one. */
   egressIp?: string;
 }
+/**
+ * Whether one upstream provider accepts traffic from this pool's egress.
+ *
+ * Distinct from `HealthCheckResult` in what it asks. A health check says "the
+ * proxy carries traffic" by dialing a neutral canary; this says "this
+ * particular provider will serve us from this address", which a neutral canary
+ * cannot answer — OpenCode's free tier refuses a flagged address on the
+ * dispatch route while still answering its public catalog from the same
+ * address. Only the dispatch route tells the two apart.
+ *
+ * `blocked` is not a transient failure: the upstream retired the address, so
+ * the pool stays out of rotation for that provider until the proxy is
+ * replaced. `unreachable` means the probe itself could not complete, which
+ * says nothing about the address. `throttled` means the address was accepted
+ * and the rate is spent — it recovers, so the pool stays usable.
+ *
+ * A `4xx` that is not the free-tier refusal reads as `allowed`: the provider
+ * checks the address before it validates the body, so reaching its validation
+ * is proof the egress was accepted.
+ */
+export interface PoolProviderProbeResult {
+  poolId: string;
+  providerId: string;
+  status: "allowed" | "blocked" | "throttled" | "unreachable";
+  /** Upstream status when a response arrived. */
+  httpStatus?: number;
+  latencyMs?: number;
+  /** The upstream's own reason, bounded for display. */
+  reason?: string;
+  /** Whether this probe retired the pool for the provider. */
+  blockedPool?: boolean;
+}
+
 /**
  * Throughput measured by dialing a fixed-size download through the pool.
  *
@@ -298,6 +365,18 @@ export interface NetworkPoolStore {
     tenantId: string,
     request: CreateNetworkPoolRequest,
   ): Promise<HealthCheckResult>;
+  /** Asks one provider whether it will serve traffic from this pool. */
+  providerProbe?(
+    tenantId: string,
+    poolId: string,
+    providerId: string,
+  ): Promise<PoolProviderProbeResult>;
+  /** The same probe against an endpoint that has not been saved yet. */
+  probeAdHocProvider?(
+    tenantId: string,
+    request: CreateNetworkPoolRequest,
+    providerId: string,
+  ): Promise<PoolProviderProbeResult>;
   listHealthEvents(tenantId: string, poolId: string): Promise<readonly PoolHealthEvent[]>;
   recover(tenantId: string, poolId: string): Promise<boolean>;
   /** Per-tenant pool-group selection strategy; an absent row reads as
@@ -306,6 +385,12 @@ export interface NetworkPoolStore {
   /** Upserts the tenant's single settings row; returns the stored value. */
   setStrategy(tenantId: string, setting: PoolStrategySetting): Promise<PoolStrategySetting>;
 }
+/** One entry of a batch provider probe: the requested endpoint plus its outcome. */
+export interface PoolBatchProviderProbeResult {
+  readonly endpoint: string;
+  readonly result: PoolProviderProbeResult;
+}
+
 /** One entry of a batch probe: the requested endpoint plus its outcome. */
 export interface PoolBatchProbeResult {
   readonly endpoint: string;
@@ -320,6 +405,15 @@ export const POOL_BATCH_PROBE_CONCURRENCY = 10;
 /** Upper bound on a single batch probe. Each entry dials an external host, so
  * the cap keeps one request from turning into an unbounded fan-out. */
 export const MAX_BATCH_PROBE_TARGETS = 100;
+
+/**
+ * Concurrency for a batch provider probe.
+ *
+ * Lower than `POOL_BATCH_PROBE_CONCURRENCY` because each entry opens a tunnel
+ * *and* a TLS session to the provider, rather than one small canary request.
+ * A wide fan-out here is what makes a batch look like an outage upstream.
+ */
+export const PROVIDER_PROBE_BATCH_CONCURRENCY = 4;
 
 export interface NetworkPoolAgentReleaser {
   releasePool(poolId: string, tenantId: string): Promise<void>;

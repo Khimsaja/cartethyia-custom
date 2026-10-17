@@ -337,6 +337,7 @@ function requestTelemetryEvent(
     ...(state.outcome?.providerId ? { providerId: state.outcome.providerId } : {}),
     ...(state.outcome?.accountId ? { accountId: state.outcome.accountId } : {}),
     ...(state.outcome?.networkPoolId ? { networkPoolId: state.outcome.networkPoolId } : {}),
+    ...(state.outcome?.reportedModel ? { reportedModel: state.outcome.reportedModel } : {}),
     ...(state.outcome?.errorCategory ? { errorCategory: state.outcome.errorCategory } : {}),
     ...(state.outcome?.errorOrigin ? { errorOrigin: state.outcome.errorOrigin } : {}),
     ...(state.outcome?.usage ? { usage: state.outcome.usage } : {}),

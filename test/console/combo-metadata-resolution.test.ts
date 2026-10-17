@@ -44,10 +44,10 @@ describe("combo metadata resolution", () => {
     // publish the 64k ceiling of its other member.
     const metadata = new Map<string, ModelMetadata>([
       ["cb/deepseek-v4.1-flash", member(1_000_000, 384_000)],
-      ["opencodeft/deepseek-v4.1-flash", member(200_000, 64_000)],
+      ["opencode/deepseek-v4.1-flash", member(200_000, 64_000)],
     ]);
     const result = advertisedMetadata(
-      ["cb/deepseek-v4.1-flash", "opencodeft/deepseek-v4.1-flash"],
+      ["cb/deepseek-v4.1-flash", "opencode/deepseek-v4.1-flash"],
       metadata,
     );
     expect(result.contextLimit).toBe(1_000_000);
@@ -59,10 +59,10 @@ describe("combo metadata resolution", () => {
     // "no tools" describes no member that exists.
     const metadata = new Map<string, ModelMetadata>([
       ["cb/deepseek-v4.1-flash", member(1_000_000, 384_000, { toolCall: true, reasoning: true })],
-      ["opencodeft/deepseek-v4.1-flash", member(200_000, 64_000, { toolCall: false, reasoning: false })],
+      ["opencode/deepseek-v4.1-flash", member(200_000, 64_000, { toolCall: false, reasoning: false })],
     ]);
     const result = advertisedMetadata(
-      ["cb/deepseek-v4.1-flash", "opencodeft/deepseek-v4.1-flash"],
+      ["cb/deepseek-v4.1-flash", "opencode/deepseek-v4.1-flash"],
       metadata,
     );
     expect(result.toolCall).toBe(true);
@@ -72,14 +72,14 @@ describe("combo metadata resolution", () => {
   test("an alias resolves through its combo to the same answer", () => {
     const aliases = new Map([["bansos/deepseek-v4.1-flash", "deepseek-pool"]]);
     const combos = new Map([
-      ["deepseek-pool", ["cb/deepseek-v4.1-flash", "opencodeft/deepseek-v4.1-flash"]],
+      ["deepseek-pool", ["cb/deepseek-v4.1-flash", "opencode/deepseek-v4.1-flash"]],
     ]);
     const metadata = new Map<string, ModelMetadata>([
       ["cb/deepseek-v4.1-flash", member(1_000_000, 384_000)],
-      ["opencodeft/deepseek-v4.1-flash", member(200_000, 64_000)],
+      ["opencode/deepseek-v4.1-flash", member(200_000, 64_000)],
     ]);
     const ids = resolveTargetIds("bansos/deepseek-v4.1-flash", aliases, combos);
-    expect(ids).toEqual(["cb/deepseek-v4.1-flash", "opencodeft/deepseek-v4.1-flash"]);
+    expect(ids).toEqual(["cb/deepseek-v4.1-flash", "opencode/deepseek-v4.1-flash"]);
     expect(advertisedMetadata(ids, metadata).outputLimit).toBe(384_000);
   });
 

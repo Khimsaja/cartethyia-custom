@@ -1,3 +1,4 @@
+import { useProviderProbeNetworkPool } from "../../hooks/network";
 import {
   Activity,
   Cloud,
@@ -22,6 +23,7 @@ import { Card, CardBody, CardHeader } from "../../components/ui/card";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { RelayDeployModal } from "../../components/RelayDeployPanel";
 import { useMaskIp, usePrivacyMode } from "../../lib/privacy-mode";
+import { liveProbeFor, type StoredProviderResult } from "./probe-freshness";
 import { Dialog } from "../../components/ui/dialog";
 import { Input } from "../../components/ui/input";
 import { DataTable, StatCard } from "../../components/ui/layout";
@@ -35,7 +37,12 @@ import {
   SPEED_TEST_MAX_BYTES,
   SPEED_TEST_MIN_BYTES,
 } from "../../data/contracts";
-import type { HealthCheckResult, NetworkPoolResponse, PoolSpeedTestResult } from "../../data/contracts";
+import type {
+  HealthCheckResult,
+  NetworkPoolResponse,
+  PoolProviderProbeResult,
+  PoolSpeedTestResult,
+} from "../../data/contracts";
 import {
   useCreateNetworkPool,
   useDeleteNetworkPool,
@@ -43,6 +50,7 @@ import {
   useNetworkPoolHealthEvents,
   useNetworkPools,
   useProbeNetworkPoolBatch,
+  useProbeAdHocProviderBatch,
   useRecoverNetworkPool,
   useSpeedTestNetworkPool,
   useUpdateNetworkPool,
@@ -70,6 +78,35 @@ import { downloadTextFile } from "../../lib/download";
 import { toast } from "../../lib/toast";
 import { getErrorMessage } from "../../data/api";
 const BULK_POOL_CREATE_CONCURRENCY = 4;
+
+/**
+ * What the split Test control sends.
+ *
+ * `url` is the neutral Cloudflare canary: it proves the proxy carries traffic
+ * and reports the egress address, which is what the table column shows.
+ * `opencode` asks the provider itself, because OpenCode refuses a flagged
+ * address on its dispatch route while still serving its public catalog from
+ * the same address — a neutral probe cannot see that.
+ */
+type TestPayload = "url" | "opencode";
+const TEST_PAYLOAD_STORAGE_KEY = "cartethyia_proxy_test_payload";
+const CHECK_RESULTS_STORAGE_KEY = "cartethyia_proxy_check_results";
+
+const TEST_PAYLOAD_OPTIONS = [
+  { value: "url", label: "Test URL" },
+  { value: "opencode", label: "Test OpenCode" },
+];
+
+/** The provider the OpenCode payload asks. */
+const PROBE_PROVIDER_ID = "opencode";
+/**
+ * How many provider probes run at once.
+ *
+ * Lower than the health check's eight: each probe opens a tunnel and a TLS
+ * session to the provider, and a wide fan-out across a large selection is what
+ * makes a batch probe look like an outage from the upstream's side.
+ */
+const PROVIDER_PROBE_CONCURRENCY = 4;
 
 const MYSTERIOUS_PROXY = "Mysterious Proxy";
 
@@ -164,6 +201,7 @@ function PoolEditForm({
   readonly actionsRef?: (actions: ReactNode) => void;
 }): ReactNode {
   const updatePool = useUpdateNetworkPool();
+  const adhocProviderProbe = useProbeAdHocProviderBatch();
   const healthCheck = useHealthCheckNetworkPool();
   const [label, setLabel] = useState(pool.label ?? "");
   const [family, setFamily] = useState(pool.family ?? "");
@@ -178,20 +216,64 @@ function PoolEditForm({
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [testing, setTesting] = useState(false);
 
+  /**
+   * Tests the endpoint **in the form**, not the one stored on the row.
+   *
+   * `healthCheck(pool.id)` dialed the saved endpoint, so an operator who pasted
+   * a new proxy and pressed Test was told about the old one — and the answer
+   * looked authoritative. The provider probe has an ad-hoc form for exactly
+   * this: it builds the pool from the request body, so the verdict describes
+   * what the operator is about to save.
+   *
+   * A stored credential cannot ride along — the ad-hoc form never carries one,
+   * by design, because the console never sends a secret back to the browser.
+   * For an unchanged endpoint on a credentialed pool the saved row is the only
+   * thing that can authenticate, so that case keeps using the health check.
+   */
+  const endpointUnchanged = endpoint.trim() === pool.endpoint;
   const runAdhocTest = async () => {
     setTesting(true);
     setTestResult(null);
     try {
-      const result = await healthCheck.mutateAsync(pool.id);
-      if (result.status === "reachable") {
-        setTestResult({ ok: true, message: result.errorMessage ?? "Proxy reachable" });
-      } else {
-        setTestResult(
-          result.status === "healthy"
-            ? { ok: true, message: `Connected in ${result.latencyMs ?? 0}ms` }
-            : { ok: false, message: result.errorMessage ?? "Connection failed" },
-        );
+      if (endpointUnchanged) {
+        const health = await healthCheck.mutateAsync(pool.id);
+        const ok = health.status === "healthy" || health.status === "reachable";
+        setTestResult({
+          ok,
+          message:
+            health.status === "healthy"
+              ? `Connected in ${health.latencyMs ?? 0}ms`
+              : health.errorMessage ?? "Connection failed",
+        });
+        return;
       }
+      const targets = [
+        {
+          kind: pool.kind,
+          endpoint: endpoint.trim(),
+          ...(pool.family === null || pool.family === undefined ? {} : { family: pool.family }),
+        },
+      ];
+      const [batch] = await adhocProviderProbe.mutateAsync({
+        providerId: PROBE_PROVIDER_ID,
+        targets: targets as never,
+      });
+      const result = batch?.result;
+      if (!result) {
+        setTestResult({ ok: false, message: "Probe returned no result" });
+        return;
+      }
+      const ok = result.status === "allowed" || result.status === "throttled";
+      setTestResult({
+        ok,
+        message:
+          result.reason ??
+          (result.status === "allowed"
+            ? `Reachable${result.latencyMs === undefined ? "" : ` in ${result.latencyMs}ms`}`
+            : result.status === "throttled"
+              ? "Reachable; rate limit spent"
+              : "Probe could not complete"),
+      });
     } catch (err) {
       setTestResult({ ok: false, message: getErrorMessage(err, "Connection failed") });
     } finally {
@@ -363,14 +445,34 @@ export function SchemeChipRow({
     </div>
   );
 }
-export function ProxyBulkForm({ onClose, actionsRef }: { readonly onClose: () => void; readonly actionsRef?: (actions: ReactNode) => void }): ReactNode {
+export function ProxyBulkForm({
+  onClose,
+  actionsRef,
+  onProbeResult,
+  onHealthResult,
+}: {
+  readonly onClose: () => void;
+  readonly actionsRef?: (actions: ReactNode) => void;
+  /** Hands a provider-probe verdict to the page once the pool row exists. */
+  readonly onProbeResult?: (poolId: string, result: PoolProviderProbeResult) => void;
+  /** Hands the URL test's verdict along with it, so both survive the save. */
+  readonly onHealthResult?: (poolId: string, result: HealthCheckResult) => void;
+}): ReactNode {
   const createPool = useCreateNetworkPool();
   const probeBatch = useProbeNetworkPoolBatch();
+  const probeProviderBatch = useProbeAdHocProviderBatch();
   const [text, setText] = useState("");
   const [family, setFamily] = useState("");
   const [quotaGb, setQuotaGb] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [log, setLog] = useState<string[]>([]);
+  // Keyed by endpoint so a row can inherit the verdict once the pool exists.
+  const [probeByEndpoint, setProbeByEndpoint] = useState<Record<string, PoolProviderProbeResult>>({});
+  // The URL test's verdict, kept beside it. The two answer different questions
+  // — "does this tunnel carry traffic" and "will this provider serve it" — and
+  // an operator who ran both expects the saved row to show both, not just the
+  // second one.
+  const [healthByEndpoint, setHealthByEndpoint] = useState<Record<string, HealthCheckResult>>({});
   const [batchSubmitting, setBatchSubmitting] = useState(false);
   // Scheme chip applies to the first non-empty line only, exactly as the
   // operator reads the paste: one prefix choice for the batch.
@@ -402,8 +504,14 @@ export function ProxyBulkForm({ onClose, actionsRef }: { readonly onClose: () =>
     }
   };
 
-  /** Probes every pasted endpoint in one batched request. */
-  const runTest = async () => {
+  /**
+   * Probes every pasted endpoint in one batched request.
+   *
+   * Reports the egress address alongside latency, because the address is what
+   * the table shows after the rows are saved — an operator testing before
+   * adding wants to see the same two facts the table will carry.
+   */
+  const runTestUrl = async () => {
     if (targets.length === 0) return;
     setLog([`Testing ${targets.length} proxy target(s)…`]);
     try {
@@ -411,18 +519,65 @@ export function ProxyBulkForm({ onClose, actionsRef }: { readonly onClose: () =>
       const rows = results.map((entry) => {
         const ok = entry.result.status === "healthy" || entry.result.status === "reachable";
         const latency = entry.result.latencyMs === undefined ? "" : ` · ${entry.result.latencyMs}ms`;
+        const egress = entry.result.egressIp ? ` · ${entry.result.egressIp}` : "";
         const detail = ok ? "" : ` · ${entry.result.errorMessage ?? entry.result.status}`;
-        return `${ok ? "OK  " : "FAIL"} ${entry.endpoint}${latency}${detail}`;
+        return `${ok ? "OK  " : "FAIL"} ${entry.endpoint}${latency}${egress}${detail}`;
       });
       const okCount = results.filter(
         (r) => r.result.status === "healthy" || r.result.status === "reachable",
       ).length;
+      setHealthByEndpoint((prev) => {
+        const next = { ...prev };
+        for (const entry of results) next[entry.endpoint] = entry.result;
+        return next;
+      });
       setLog([`${okCount}/${results.length} reachable`, ...rows]);
       if (okCount === results.length) toast.success(`All ${results.length} proxies reachable`);
       else toast.error(`${results.length - okCount} of ${results.length} proxies failed`);
     } catch (err) {
       setLog([`Test failed: ${getErrorMessage(err, "batch probe failed")}`]);
       toast.error("Test failed", getErrorMessage(err, "batch probe failed"));
+    }
+  };
+
+  /**
+   * Asks OpenCode, through each pasted endpoint, whether it will serve us.
+   *
+   * Separate from the URL test rather than a mode of it: the two answer
+   * different questions, and an operator reading the log needs to know which
+   * one produced a line. A blocked address still answers the URL test, so the
+   * two results are not interchangeable.
+   */
+  const runTestOpencode = async () => {
+    if (targets.length === 0) return;
+    setLog([`Testing ${targets.length} proxy target(s) against OpenCode…`]);
+    try {
+      const results = await probeProviderBatch.mutateAsync({
+        providerId: PROBE_PROVIDER_ID,
+        targets,
+      });
+      const rows = results.map((entry) => {
+        const { status, latencyMs, reason } = entry.result;
+        const latency = latencyMs === undefined ? "" : ` · ${latencyMs}ms`;
+        const detail = reason === undefined ? "" : ` · ${reason}`;
+        return `${status === "allowed" ? "OK  " : status === "blocked" ? "BLOCK" : "FAIL"} ${entry.endpoint}${latency}${detail}`;
+      });
+      setProbeByEndpoint((prev) => {
+        const next = { ...prev };
+        for (const entry of results) next[entry.endpoint] = entry.result;
+        return next;
+      });
+      const allowed = results.filter((r) => r.result.status === "allowed").length;
+      const blocked = results.filter((r) => r.result.status === "blocked").length;
+      setLog([`${allowed}/${results.length} allowed · ${blocked} blocked`, ...rows]);
+      if (blocked === 0 && allowed === results.length) {
+        toast.success(`OpenCode accepted all ${results.length} proxies`);
+      } else {
+        toast.error(`OpenCode: ${allowed} allowed · ${blocked} blocked`);
+      }
+    } catch (err) {
+      setLog([`Test failed: ${getErrorMessage(err, "provider probe failed")}`]);
+      toast.error("Test failed", getErrorMessage(err, "provider probe failed"));
     }
   };
 
@@ -447,12 +602,20 @@ export function ProxyBulkForm({ onClose, actionsRef }: { readonly onClose: () =>
           const index = cursor++;
           const line = chippedLines[index]!;
           try {
-            await createPool.mutateAsync({
+            const created = await createPool.mutateAsync({
               kind: detectProxyKind(line),
               endpoint: line,
               ...(perRowQuota.has(index) ? { quotaBytes: perRowQuota.get(index) } : {}),
               ...(family.trim() !== "" ? { family: family.trim() } : {}),
             });
+            // Carry both verdicts the operator already paid for onto the row
+            // that now exists, so the table shows them without a re-test.
+            const probed = probeByEndpoint[line];
+            const health = healthByEndpoint[line];
+            if (created?.id) {
+              if (health !== undefined) onHealthResult?.(created.id, health);
+              if (probed !== undefined) onProbeResult?.(created.id, probed);
+            }
             outcomes[index] = { ok: true };
           } catch (err) {
             outcomes[index] = { ok: false, error: getErrorMessage(err, "Proxy pool creation failed") };
@@ -545,10 +708,19 @@ export function ProxyBulkForm({ onClose, actionsRef }: { readonly onClose: () =>
             variant="secondary"
             size="sm"
             type="button"
-            onClick={() => void runTest()}
-            disabled={probeBatch.isPending || lines.length === 0 || overCap}
+            onClick={() => void runTestUrl()}
+            disabled={probeBatch.isPending || probeProviderBatch.isPending || lines.length === 0 || overCap}
           >
-            {probeBatch.isPending ? "Testing…" : "Test proxies"}
+            {probeBatch.isPending ? "Testing…" : "Test URL"}
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            type="button"
+            onClick={() => void runTestOpencode()}
+            disabled={probeBatch.isPending || probeProviderBatch.isPending || lines.length === 0 || overCap}
+          >
+            {probeProviderBatch.isPending ? "Testing…" : "Test OpenCode"}
           </Button>
         </div>
       </div>
@@ -731,6 +903,11 @@ interface PoolView {
   readonly load: number;
   readonly cooldowns: readonly NonNullable<NetworkPoolResponse["providerCooldowns"]>[number][];
   readonly cooldownText: string;
+  /** The last OpenCode probe for this pool, when one has run. */
+  readonly probe?: PoolProviderProbeResult;
+  /** Providers this egress is retired for, as opposed to merely throttled. */
+  readonly blocked: readonly NonNullable<NetworkPoolResponse["providerCooldowns"]>[number][];
+  readonly cooldownOnly: readonly NonNullable<NetworkPoolResponse["providerCooldowns"]>[number][];
   readonly metered: number;
   readonly session: number;
   readonly used: number;
@@ -742,6 +919,7 @@ function derivePoolView(
   checkResult: HealthCheckResult | undefined,
   isTesting: boolean,
   liveBytes: PoolUsageRow | null,
+  probe?: PoolProviderProbeResult,
 ): PoolView {
   const display = poolDisplay(pool);
   const poolLabel = poolName(pool);
@@ -778,13 +956,16 @@ function derivePoolView(
   const inflight = liveBytes?.currentInflight ?? pool.inflight;
   const load = pool.maxInflight > 0 ? Math.min(1, inflight / pool.maxInflight) : 1;
   const cooldowns = pool.providerCooldowns ?? [];
-  const cooldownText = cooldowns
-    .slice(0, 2)
-    .map(
-      (cooldown) =>
-        `${cooldown.providerId} until ${new Date(cooldown.until).toLocaleTimeString()}: ${cooldown.reason}`,
-    )
-    .join(" · ");
+  // A block is not a cooldown with a longer clock: the upstream retired this
+  // address, so it will not come back on its own. Rendering the two as one
+  // number is what let an operator wait out something that never expires.
+  const blocked = cooldowns.filter((entry) => entry.blocked === true);
+  const cooldownOnly = cooldowns.filter((entry) => entry.blocked !== true);
+  const describe = (entry: NonNullable<NetworkPoolResponse["providerCooldowns"]>[number]) =>
+    entry.blocked === true
+      ? `${entry.providerId} blocked: ${entry.reason}`
+      : `${entry.providerId} until ${new Date(entry.until).toLocaleTimeString()}: ${entry.reason}`;
+  const cooldownText = cooldowns.slice(0, 2).map(describe).join(" · ");
   const statusText = isTesting
     ? "Testing…"
     : proxyResponseDisabled
@@ -821,7 +1002,10 @@ function derivePoolView(
     inflight,
     load,
     cooldowns,
+    blocked,
+    cooldownOnly,
     cooldownText,
+    ...(probe === undefined ? {} : { probe }),
     metered,
     session,
     used: Math.max(metered, session),
@@ -857,9 +1041,51 @@ function PoolTitleBlock({
             {view.latency === undefined ? view.statusText : `${view.statusText} · ${view.latency}ms`}
           </Badge>
         )}
-        {view.cooldowns.length > 0 ? (
+        {view.blocked.length > 0 ? (
+          <Badge tone="disabled" title={view.cooldownText}>
+            {view.blocked.length} blocked
+          </Badge>
+        ) : null}
+        {view.probe ? (
+          <Badge
+            tone={
+              view.probe.status === "blocked"
+                ? "disabled"
+                : view.probe.status === "allowed"
+                  ? "ok"
+                  : "warn"
+            }
+            title={
+              view.probe.reason ??
+              (view.probe.status === "allowed"
+                ? view.probe.httpStatus !== undefined && view.probe.httpStatus >= 400
+                  // A 4xx here is the upstream rejecting the *probe body*, not
+                  // the egress: its IP gate runs first. Saying "served" would
+                  // overclaim, so the badge reports what actually happened.
+                  ? `Reachable — upstream answered ${view.probe.httpStatus} for the probe body`
+                  : "OpenCode served a probe through this pool"
+                : view.probe.status === "throttled"
+                  ? "OpenCode accepted this egress; the rate is spent"
+                  : "The probe could not complete")
+            }
+          >
+            {/* `unreachable` is reserved for a probe that could not complete.
+                A 4xx from the upstream's own validation means the egress was
+                accepted, so it is never shown as unreachable. */}
+            {view.probe.status === "blocked"
+              ? "OpenCode blocked"
+              : view.probe.status === "allowed"
+                ? view.probe.httpStatus !== undefined && view.probe.httpStatus >= 400
+                  ? "OpenCode reachable"
+                  : "OpenCode OK"
+                : view.probe.status === "throttled"
+                  ? "OpenCode rate-limited"
+                  : "OpenCode unreachable"}
+          </Badge>
+        ) : null}
+        {view.cooldownOnly.length > 0 ? (
           <Badge tone="warn" title={view.cooldownText}>
-            {view.cooldowns.length} cooldown{view.cooldowns.length > 1 ? "s" : ""}
+            {view.cooldownOnly.length} cooldown{view.cooldownOnly.length > 1 ? "s" : ""}
           </Badge>
         ) : null}
       </div>
@@ -1116,11 +1342,13 @@ const PoolRow = memo(function PoolRow({
   isSpeedTesting,
   maskValues,
   maskIp,
+  probe,
 }: {
   readonly pool: NetworkPoolResponse;
   readonly isSelected: boolean;
   readonly onToggleSelect: (id: string) => void;
   readonly checkResult?: HealthCheckResult;
+  readonly probe?: PoolProviderProbeResult;
   readonly isTesting: boolean;
   readonly onDelete: (id: string) => void;
   readonly onEdit: (pool: NetworkPoolResponse) => void;
@@ -1137,7 +1365,7 @@ const PoolRow = memo(function PoolRow({
   // actually re-render.
   const live = useContext(PoolUsageContext);
   const usage = live.live ? live.byId.get(pool.id) : undefined;
-  const view = derivePoolView(pool, checkResult, isTesting, usage ?? null);
+  const view = derivePoolView(pool, checkResult, isTesting, usage ?? null, probe);
   return (
     <tr className={view.isEnabled ? "" : "opacity-60"}>
       <td className="w-13">
@@ -1322,6 +1550,36 @@ export default function Proxy(): ReactNode {
   const ipMask = useMaskIp();
   const maskIp = ipMask.enabled;
   const [testingIds, setTestingIds] = useState<ReadonlySet<string>>(new Set());
+  // The split control's payload choice, persisted like the other view
+  // preferences: an operator debugging OpenCode wants that payload on return.
+  const [testPayload, setTestPayload] = useState<TestPayload>(() => {
+    try {
+      return localStorage.getItem(TEST_PAYLOAD_STORAGE_KEY) === "opencode" ? "opencode" : "url";
+    } catch {
+      return "url";
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(TEST_PAYLOAD_STORAGE_KEY, testPayload);
+    } catch {
+      // A blocked storage must not break the page.
+    }
+  }, [testPayload]);
+  const [providerTestingIds, setProviderTestingIds] = useState<ReadonlySet<string>>(new Set());
+  /**
+   * Verdicts measured in this tab, before the refetched row carries them.
+   *
+   * The stored verdict lives on the pool row (`providerProbe`) — that is the
+   * one every reader shares. This map only bridges the moment between a probe
+   * finishing and the query refetch landing, and it seeds the add form's
+   * verdict onto a row created in the same session. It is deliberately not
+   * persisted: `localStorage` made the verdict visible to one browser and to
+   * nobody else, so a pool could read "OpenCode blocked" here while dispatch
+   * kept routing through it.
+   */
+  const [providerResults, setProviderResults] = useState<Record<string, StoredProviderResult>>({});
+  const providerProbe = useProviderProbeNetworkPool();
   const speedTest = useSpeedTestNetworkPool();
   const [speedBytes, setSpeedBytes] = useState(SPEED_TEST_DEFAULT_BYTES);
   // Persisted like `checkResults`: a measurement is expensive to take (it pulls
@@ -1346,7 +1604,19 @@ export default function Proxy(): ReactNode {
       return next;
     });
   }, []);
-  const [checkResults, setCheckResults] = useState<Record<string, HealthCheckResult>>({});
+  const [checkResults, setCheckResults] = useState<Record<string, HealthCheckResult>>(() => {
+    // Seeded from the server row (`lastSuccessAt`/`lastErrorAt`) by
+    // `derivePoolView`, so this map only carries what the browser measured
+    // since the page opened. A bulk import that tests and then saves reports
+    // both verdicts here, and losing them on reload would put the rows back to
+    // "Untested" for a check the operator already paid for.
+    try {
+      const saved = localStorage.getItem(CHECK_RESULTS_STORAGE_KEY);
+      return saved ? (JSON.parse(saved) as Record<string, HealthCheckResult>) : {};
+    } catch {
+      return {};
+    }
+  });
   const [sort, setSort] = useState<{ key: PoolSortKey; direction: "asc" | "desc" }>({
     key: "name",
     direction: "asc",
@@ -1383,6 +1653,14 @@ export default function Proxy(): ReactNode {
       return next;
     });
   }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(CHECK_RESULTS_STORAGE_KEY, JSON.stringify(checkResults));
+    } catch {
+      // A blocked storage must not break the page.
+    }
+  }, [checkResults]);
 
   const results = Object.values(checkResults);
   const testedCount = results.length;
@@ -1504,6 +1782,78 @@ export default function Proxy(): ReactNode {
     toast.success(`Tested ${targets.length} pools · ${healthy} healthy · ${failed} failed`);
   };
 
+  /**
+   * Asks OpenCode, through each selected pool, whether it will serve us.
+   *
+   * Bounded like the health check but narrower: each probe opens a tunnel and
+   * a TLS session to the provider, so four at a time finishes a selection
+   * without the fan-out reading as an outage upstream.
+   *
+   * Read-only. The probe reports what it saw and leaves the pool in rotation;
+   * a real dispatch that is refused is what retires the egress. An operator
+   * testing a proxy wants to know its state, not to change it — and a probe
+   * that mutated would make "test" unsafe to press.
+   */
+  const runProviderProbeSelected = async () => {
+    const targets = pools.filter((pool) => selectedIds.has(pool.id));
+    if (targets.length === 0) return;
+    let allowed = 0;
+    let blocked = 0;
+    let throttled = 0;
+    let unreachable = 0;
+    let cursor = 0;
+    const worker = async (): Promise<void> => {
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const pool = targets[cursor++];
+        if (!pool) return;
+        setProviderTestingIds((prev) => new Set(prev).add(pool.id));
+        try {
+          const result = await providerProbe.mutateAsync({
+            poolId: pool.id,
+            providerId: PROBE_PROVIDER_ID,
+          });
+          setProviderResults((prev) => ({
+            ...prev,
+            [pool.id]: { endpoint: pool.endpoint ?? "", result },
+          }));
+          if (result.status === "allowed") allowed += 1;
+          else if (result.status === "blocked") blocked += 1;
+          else if (result.status === "throttled") throttled += 1;
+          else unreachable += 1;
+        } catch (err) {
+          unreachable += 1;
+          setProviderResults((prev) => ({
+            ...prev,
+            [pool.id]: {
+              endpoint: pool.endpoint ?? "",
+              result: {
+                poolId: pool.id,
+                providerId: PROBE_PROVIDER_ID,
+                status: "unreachable",
+                reason: getErrorMessage(err, "Provider probe failed"),
+              },
+            },
+          }));
+        } finally {
+          setProviderTestingIds((prev) => {
+            const next = new Set(prev);
+            next.delete(pool.id);
+            return next;
+          });
+        }
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(PROVIDER_PROBE_CONCURRENCY, targets.length) }, () => worker()),
+    );
+    toast.success(
+      `OpenCode: ${allowed} allowed · ${blocked} blocked` +
+        (throttled > 0 ? ` · ${throttled} rate-limited` : "") +
+        (unreachable > 0 ? ` · ${unreachable} unreachable` : ""),
+    );
+  };
+
   // One at a time. Each test pulls several megabytes, and two running together
   // share the operator's uplink, so neither number is the pool's real speed.
   const runSpeedTestSelected = async () => {
@@ -1599,7 +1949,23 @@ export default function Proxy(): ReactNode {
         title="Add Proxy"
         footer={addProxyActions}
       >
-        <ProxyBulkForm onClose={closeAddProxy} actionsRef={setAddProxyActions} />
+        <ProxyBulkForm
+          onClose={closeAddProxy}
+          actionsRef={setAddProxyActions}
+          onProbeResult={(poolId, result) => {
+            // The row may not exist in this list yet (the add form reports
+            // before the refetch lands), so the endpoint is read from the
+            // payload the probe itself carried rather than from `pools`.
+            const created = pools.find((entry) => entry.id === poolId);
+            setProviderResults((prev) => ({
+              ...prev,
+              [poolId]: { endpoint: created?.endpoint ?? "", result },
+            }));
+          }}
+          onHealthResult={(poolId, result) => {
+            setCheckResults((prev) => ({ ...prev, [poolId]: result }));
+          }}
+        />
       </Dialog>
 
       <Dialog
@@ -1713,21 +2079,44 @@ export default function Proxy(): ReactNode {
                 >
                   Test all
                 </Button>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={testingIds.size > 0 || selectedIds.size === 0}
-                  icon={
-                    testingIds.size > 0 ? (
-                      <Loader2 size={12} className="animate-spin" />
-                    ) : (
-                      <FlaskConical size={12} />
-                    )
-                  }
-                  onClick={() => void runTestSelected()}
-                >
-                  Test selected
-                </Button>
+                {/* Split control: the primary half runs the payload the
+                    dropdown selects against the current selection. Test all
+                    stays outside this control because it deliberately ignores
+                    the selection. */}
+                <div className="inline-flex items-stretch h-15">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="rounded-tr-none rounded-br-none"
+                    disabled={
+                      testingIds.size > 0 ||
+                      providerTestingIds.size > 0 ||
+                      selectedIds.size === 0
+                    }
+                    icon={
+                      testingIds.size > 0 || providerTestingIds.size > 0 ? (
+                        <Loader2 size={12} className="animate-spin" />
+                      ) : (
+                        <FlaskConical size={12} />
+                      )
+                    }
+                    onClick={() =>
+                      void (testPayload === "opencode"
+                        ? runProviderProbeSelected()
+                        : runTestSelected())
+                    }
+                  >
+                    {testPayload === "opencode" ? "Test OpenCode" : "Test URL"}
+                  </Button>
+                  <Select
+                    aria-label="Test payload"
+                    value={testPayload}
+                    onValueChange={(value) => setTestPayload(value as TestPayload)}
+                    options={TEST_PAYLOAD_OPTIONS}
+                    disabled={testingIds.size > 0 || providerTestingIds.size > 0}
+                    className="w-auto min-w-38 h-15 rounded-tl-none rounded-bl-none -ml-0.5"
+                  />
+                </div>
                 {/* Split control: the primary half runs the test at the
                     currently-selected payload, the chevron half picks the
                     payload. Kept as two elements in one bordered shell so it
@@ -1836,6 +2225,27 @@ export default function Proxy(): ReactNode {
                     isSelected={selectedIds.has(pool.id)}
                     onToggleSelect={toggleSelectOne}
                     checkResult={checkResults[pool.id]}
+                    probe={
+                      // The row's own verdict wins: it is the one every reader
+                      // shares and the one a reload keeps. The local map only
+                      // covers the gap before the refetch lands.
+                      pool.providerProbe !== undefined
+                        ? {
+                            poolId: pool.id,
+                            providerId: pool.providerProbe.providerId,
+                            status: pool.providerProbe.status,
+                            ...(pool.providerProbe.httpStatus === undefined
+                              ? {}
+                              : { httpStatus: pool.providerProbe.httpStatus }),
+                            ...(pool.providerProbe.reason === undefined
+                              ? {}
+                              : { reason: pool.providerProbe.reason }),
+                            ...(pool.providerProbe.latencyMs === undefined
+                              ? {}
+                              : { latencyMs: pool.providerProbe.latencyMs }),
+                          }
+                        : liveProbeFor(providerResults[pool.id], pool.endpoint)
+                    }
                     isTesting={testingIds.has(pool.id)}
                     onDelete={requestDeletePool}
                     onEdit={setEditingPool}

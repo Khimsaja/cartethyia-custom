@@ -76,6 +76,17 @@ export function createNetworkPoolRoutes(config: NetworkPoolConfig): Elysia {
     .post("/:poolId/recover", async ({ request, params }) => {
       return await factory.recoverPool(config.accessResolver(request), params.poolId);
 })
+    .post(
+      "/:poolId/provider-probe",
+      { body: t.Object({ providerId: t.String() }) },
+      async ({ request, params, body }) => {
+        return await factory.providerProbe(
+          config.accessResolver(request),
+          params.poolId,
+          body.providerId,
+        );
+      },
+    )
     .post("/:poolId/health-check", async ({ request, params }) => {
       return await factory.healthCheck(config.accessResolver(request), params.poolId);
 })
@@ -102,6 +113,22 @@ export function createNetworkPoolRoutes(config: NetworkPoolConfig): Elysia {
         body.targets as CreateNetworkPoolRequest[],
       );
 })
+    .post(
+      "/test-batch/provider",
+      {
+        body: t.Object({
+          providerId: t.String(),
+          targets: t.Array(createPoolBody, { minItems: 1, maxItems: MAX_BATCH_PROBE_TARGETS }),
+        }),
+      },
+      async ({ request, body }) => {
+        return await factory.probeAdHocProviderBatch(
+          config.accessResolver(request),
+          body.targets as CreateNetworkPoolRequest[],
+          body.providerId,
+        );
+      },
+    )
     .post(
       "/:poolId/cooldowns/clear",
       { body: t.Optional(t.Object({ providerId: t.Optional(t.String()) })) },

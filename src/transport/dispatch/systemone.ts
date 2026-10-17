@@ -139,7 +139,7 @@ export function createSystemoneHandler(deps: SystemoneHandlerDeps) {
           capabilities: candidate.capability_profile,
         };
         // The caller names the model with its provider prefix
-        // (`opencodeft/jev-1.13-free`); upstream expects the row's own bare id.
+        // (`opencode/jev-1.13-free`); upstream expects the row's own bare id.
         // Every canonical dispatch rewrites `model` to `candidate.model_id`
         // (via the codecs), so the native body must do the same or the decision
         // endpoint answers "Model … is not supported".

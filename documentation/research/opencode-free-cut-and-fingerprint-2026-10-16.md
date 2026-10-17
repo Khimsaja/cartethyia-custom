@@ -8,7 +8,7 @@ the evidence needed to resume.
 
 | | |
 |---|---|
-| Provider | `opencodeft` (free tier) |
+| Provider | `opencode` (free tier) |
 | Model | `deepseek-v4.1-flash-free` (client asked for `bansos/deepseek-v4.1-flash (max)`) |
 | Client | `codex_cli_rs/0.160.0 (Mac OS 27.0.1; arm64)`, `/v1/chat/completions`, stream |
 | Egress | via the configured proxy pool |
@@ -77,3 +77,57 @@ consistent is the control.
 `test/providers/opencode-fingerprint.test.ts` and
 `test/providers/opencode-endpoint.test.ts` pin the current fingerprint
 behaviour; read them before changing any header.
+
+## Resolved 2026-10-17 — the fingerprint hypothesis was wrong; the egress IP was the cause
+
+The hypothesis above ("a `desktop` marker with a `cli` user agent is what makes
+it refuse") was tested and is **false**. Every permutation of that pair was
+replayed against `https://opencode.ai/inference/v1/chat/completions`:
+
+| Arm | Result |
+|---|---|
+| `x-opencode-client: cli` + `cli` user agent | 403 |
+| `x-opencode-client: desktop` + `cli` user agent | 403 |
+| `x-opencode-client: desktop` + `desktop` user agent | 403 |
+| Either marker, `user-agent: opencode/latest/1.18.0` … `2.0.32` | 403 |
+| No headers at all | 403 |
+| Full captured header set from `opencode-freetier-exact-request-2.0.26.json` | 403 |
+
+Four independent implementations reproduced the same 403 from this host:
+
+1. the official `opencode.exe` v2.0.32 with its real config directory;
+2. the same client after a successful OAuth login
+   (`credential created … integrationID=opencode type=oauth active=true` in
+   `~/.local/share/opencode/log/opencode.log`), still 403;
+3. the stored OAuth access token used directly — it authenticates (a paid model
+   answers `402 Insufficient account funds`, not `401`), but free models still
+   403;
+4. the `opencode2api` Go gateway, run as-is with its embedded genuine 12-tool
+   definitions and its legacy `/zen/v1` lane.
+
+The **same byte-identical request** then returned **200** through an HTTP proxy
+whose exit IP was `193.202.12.2`:
+
+```
+big-pickle /inference/v1/chat/completions   200  (8.1 s)
+big-pickle /zen/v1/chat/completions         200  (8.1 s, legacy 1.18.31 shape)
+```
+
+So the gate is keyed on the **egress IP**, not on the client fingerprint.
+`Bearer public` is valid and required; the 11-tool set and `stream: true` are
+required; the client version and the `cli`/`desktop` marker are not checked.
+
+Two corrections to earlier notes in this repo:
+
+- **`410 ModelDeprecated` is not evidence the gate passed.** It comes from model
+  lookup, which runs *before* the gate. Only a `200` proves the gate.
+- **`Authorization` is not "irrelevant".** `opencode-freetier-replay-2.0.29.md`
+  recorded it as required; this document's earlier table called it optional.
+  The replay above shows a 403 whenever it is absent, so keep sending
+  `Bearer public`.
+
+Deployment consequence: a datacenter egress (Railway and similar) is blocked
+outright, so `opencode` cannot be repaired in `provider.ts` — it needs an
+egress proxy, the same workaround `opencode2api` implements with its proxy pool.
+
+Current contract: [`.skills/cartethyia-trace-replay/references/opencode-free-tier.md`](../../.skills/cartethyia-trace-replay/references/opencode-free-tier.md).

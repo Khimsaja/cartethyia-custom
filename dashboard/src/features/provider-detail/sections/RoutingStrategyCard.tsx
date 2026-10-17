@@ -1,6 +1,7 @@
-import { Cable, Fingerprint, Gauge, Info, Layers, Minus, Plus, Repeat } from "lucide-react";
-import type { ReactNode } from "react";
+import { Cable, Fingerprint, Gauge, Info, Layers, Minus, Plus, Repeat, Waypoints } from "lucide-react";
+import { useState, type ReactNode } from "react";
 import { Card, CardBody, CardHeader } from "../../../components/ui/card";
+import { Dialog } from "../../../components/ui/dialog";
 import { Button } from "../../../components/ui/button";
 import { Inline } from "../../../components/ui/inline";
 import { ListRow } from "../../../components/ui/list-row";
@@ -47,6 +48,7 @@ export function RoutingStrategyCard({
   readonly userAgentEditable: boolean;
 }): ReactNode {
   const routing = useRoutingStrategy(providerId, userAgentEditable);
+  const [limitsHelpOpen, setLimitsHelpOpen] = useState(false);
   const showUnsupportedHint = PROXY_SKIP_HINT_PROVIDERS.has(providerId);
   const presets = userAgentPresets(
     DASHBOARD_VERSION,
@@ -74,6 +76,15 @@ export function RoutingStrategyCard({
   const unlimited = routing.maxInflight === null;
   const sliderValue = unlimited ? SLIDER_MAX + 1 : Math.min(SLIDER_MAX + 1, Math.max(1, routing.maxInflight));
   const shownValue = unlimited ? "∞" : String(routing.maxInflight);
+  const proxyUnlimited = routing.maxInflightPerProxy === null;
+  const proxySliderValue = proxyUnlimited
+    ? SLIDER_MAX + 1
+    : Math.min(SLIDER_MAX + 1, Math.max(1, routing.maxInflightPerProxy));
+  const proxyShownValue = proxyUnlimited ? "∞" : String(routing.maxInflightPerProxy);
+  // Always direct never dials a pool, so the ceiling has nothing to bound. The
+  // stored value is kept, not cleared: turning Always direct back off restores
+  // the operator's limit instead of silently resetting it to unlimited.
+  const proxyLimitInactive = routing.skipProxy;
   const adjustRotateCount = (delta: number) => {
     routing.setRotateCount(Math.min(1000, Math.max(1, routing.rotateCount + delta)));
   };
@@ -279,6 +290,127 @@ export function RoutingStrategyCard({
               </Inline>
             </div>
           </div>
+
+          <div
+            className={`px-6 py-5 rounded-control border border-inner-border bg-surface-2 min-w-0${proxyLimitInactive ? " opacity-60" : ""}`}
+          >
+            <div className="flex items-start justify-between gap-4">
+              <label htmlFor="routing-max-inflight-per-proxy" className="min-w-0">
+                <Inline gap="6px" className="text-body font-semibold">
+                  <Waypoints
+                    size={15}
+                    aria-hidden="true"
+                    className="text-text-tertiary shrink-0"
+                  />
+                  Max inflight / proxy
+                </Inline>
+                <div className="mt-1 text-badge text-text-tertiary">
+                  Each proxy pool carries at most this many concurrent requests for this
+                  provider. Other providers on the same pool are unaffected.
+                </div>
+              </label>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="shrink-0"
+                aria-label="How per-proxy limits work"
+                onClick={() => setLimitsHelpOpen(true)}
+              >
+                How it works
+              </Button>
+            </div>
+            <Inline gap="10px" className="mt-3">
+              <input
+                id="routing-max-inflight-per-proxy"
+                type="range"
+                className="routing-slider flex-1 min-w-0"
+                data-unlimited={proxyUnlimited ? "true" : undefined}
+                min={1}
+                max={SLIDER_MAX + 1}
+                step={1}
+                disabled={proxyLimitInactive}
+                value={proxySliderValue}
+                aria-valuetext={proxyUnlimited ? "Unlimited" : String(routing.maxInflightPerProxy)}
+                onChange={(event) => {
+                  const value = Number(event.target.value);
+                  if (!Number.isFinite(value)) return;
+                  routing.setMaxInflightPerProxy(value > SLIDER_MAX ? null : Math.round(value));
+                }}
+                style={{
+                  ["--slider-pct" as string]: `${(proxySliderValue / (SLIDER_MAX + 1)) * 100}%`,
+                }}
+              />
+              <input
+                type="text"
+                inputMode="numeric"
+                aria-label="Max inflight per proxy"
+                disabled={proxyLimitInactive}
+                value={proxyShownValue}
+                onChange={(event) => {
+                  const raw = event.target.value.trim();
+                  if (raw === "" || raw === "∞") {
+                    routing.setMaxInflightPerProxy(null);
+                    return;
+                  }
+                  const value = Number(raw);
+                  if (Number.isFinite(value) && value >= 1)
+                    routing.setMaxInflightPerProxy(Math.min(MANUAL_MAX, Math.round(value)));
+                }}
+                className={`form-input w-26 shrink-0 px-2 py-3 text-center text-body ${proxyUnlimited ? "text-status-success" : ""}`}
+              />
+            </Inline>
+            <div className="mt-2 text-badge text-text-tertiary">
+              {proxyLimitInactive
+                ? "Always direct is on, so this provider never dials a pool. The limit is kept for when a pool is used again."
+                : `One step past ${SLIDER_MAX} is unlimited.`}
+            </div>
+          </div>
+
+          <Dialog
+            open={limitsHelpOpen}
+            onClose={() => setLimitsHelpOpen(false)}
+            title="How concurrency limits stack"
+            size="md"
+          >
+            <div className="grid gap-4 text-body">
+              <p className="text-text-secondary">
+                Three limits apply at once. Each one bounds a different thing; none
+                replaces another.
+              </p>
+              <dl className="grid gap-3">
+                <div>
+                  <dt className="font-semibold">Max inflight / account</dt>
+                  <dd className="text-badge text-text-tertiary">
+                    One account of this provider, across every proxy. Set here, above.
+                  </dd>
+                </div>
+                <div>
+                  <dt className="font-semibold">Max inflight / proxy</dt>
+                  <dd className="text-badge text-text-tertiary">
+                    One proxy pool's concurrent requests <em>for this provider</em>. The
+                    same number applies to every pool; each pool counts separately. This
+                    is the field above.
+                  </dd>
+                </div>
+                <div>
+                  <dt className="font-semibold">Pool capacity</dt>
+                  <dd className="text-badge text-text-tertiary">
+                    Everything through one pool, all providers combined. Set on the proxy
+                    itself, on the Proxies page.
+                  </dd>
+                </div>
+              </dl>
+              <p className="text-badge text-text-tertiary">
+                A request must clear all three. When a pool is full for this provider, the
+                request moves to another pool that still has room; it only fails with{" "}
+                <code>429</code> when every pool is full.
+              </p>
+              <p className="text-badge text-text-tertiary">
+                Unlimited means no counter is kept for this provider, so the limit costs
+                nothing until you set one.
+              </p>
+            </div>
+          </Dialog>
           {showUnsupportedHint && (
             <Inline
               gap="6px"

@@ -1,6 +1,6 @@
 ---
 name: cartethyia-provider-catalog
-description: "Add, remove, import, authenticate, or curate a provider or model; refresh provider client versions and fetchers. Use for adapters, OAuth/BYOK flows, base-models.json catalog rows, /v1/models, capabilities, client User-Agent versions, and availability claims."
+description: "Add, remove, import, authenticate, or curate a provider or model; refresh provider client versions and fetchers. Use for adapters, OAuth/BYOK flows, packed-catalog rows, /v1/models, capabilities, client User-Agent versions, and availability claims."
 ---
 
 # Provider and catalog
@@ -149,18 +149,32 @@ an operator who turned proxying back on keeps it on.
 ## Model catalog
 
 - OpenCode Zen is id-oriented; models.dev carries rich metadata.
-- OpenCode's **free tier** (`opencodeft`) is gated on an agent-tool fingerprint
-  set present in the wire `tools` array, so any change that trims, dedupes, or
-  rewrites that array can turn a working dispatch into a 403 `FreeTierError`.
+- OpenCode's **free tier** (`opencode`) has two independent failure modes,
+  and they are not interchangeable:
+  - **Egress IP blocked** — a 403 `FreeTierError` that survives every header
+    permutation, and that the official client reproduces from the same host.
+    Nothing in `provider.ts` fixes it; a datacenter IP (Railway and similar) is
+    refused, so this provider needs an egress proxy. Check this first.
+  - **Request shape** — the wire must carry the agent-tool fingerprint set in
+    `tools`, so any change that trims, dedupes, or rewrites that array can turn
+    a working dispatch into a 403 `FreeTierError`.
+
   The names, the trap, and the replay evidence are in
   [`cartethyia-trace-replay`](../cartethyia-trace-replay/references/opencode-free-tier.md).
-  Free ids are chat-only (`responses` → 400 `ModelProtocolUnsupported`).
-- `src/providers/discovery/base-models.json` is the single offline catalog
-  authority, with compact rows and generated indexes in the same file. Do not
-  add a duplicate raw or compact snapshot.
-- Refresh it with `bun run scripts/generate/models-dev-snapshot.ts`; generation
-  fetches models.dev manually and the server reads only the committed file.
-- Provider-id remaps live in `MODELS_DEV_PROVIDER_IDS`
+  Free ids are chat-only (`responses` → 400 `ModelProtocolUnsupported`), and
+  `Authorization: Bearer public` is still required.
+- The offline catalog is a packed, brotli-compressed binary blob:
+  `src/providers/discovery/catalog/catalog-blob.ts` (generated) +
+  `catalog-format.ts` (the `PackedCatalog` reader) +
+  `models-dev-catalog.ts` (the public API). It is the single offline
+  authority for limits, pricing, and capability; do not add a duplicate raw or
+  compact snapshot. Lookups are binary searches over typed-array columns — there
+  is no JSON parse and no per-row object at boot.
+- Refresh it with `bun run scripts/generate/models-catalog.ts`. Generation
+  fetches models.dev for breadth and pricing plus `models.opencode.ai` for the
+  OpenCode family's authoritative limits, and the server reads only the
+  committed blob.
+- Provider-id remaps live in `CATALOG_PROVIDER_IDS`
   (`src/providers/discovery/models-dev-catalog.ts`).
 - `/v1/models` omits unavailable optional fields rather than emitting null.
 - Capabilities are normalized to `text | image | audio | video | pdf` at

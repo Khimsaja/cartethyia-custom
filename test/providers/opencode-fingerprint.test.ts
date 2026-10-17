@@ -8,7 +8,7 @@ describe("OpenCode request fingerprint", () => {
   test("matches the captured CLI identity and reuses session identity per conversation", async () => {
     const context: ProviderDispatchContext = {
       credential: {
-        provider_id: "opencodeft",
+        provider_id: "opencode",
         credential_kind: "none",
       },
       deadline: Date.now() + 1_000,
@@ -64,7 +64,7 @@ describe("OpenCode request fingerprint", () => {
     const tokenLimitField = OPENCODE_FREE_SPEC.chatTokenLimitField;
     if (!tokenLimitField) throw new Error("OpenCode must configure its Chat token-limit field");
     const request: CanonicalRequest = {
-      model: "muse-spark-1.2-contributor-free",
+      model: "longcat-2.5-preview-free",
       messages: [],
       generation_controls: { max_tokens: 512 },
       stream: true,

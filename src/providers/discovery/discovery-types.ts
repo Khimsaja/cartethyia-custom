@@ -82,6 +82,16 @@ export interface ProbeModelResult {
   latencyMs: number;
   ttfbMs?: number;
   sample?: string;
+  /**
+   * The `model` the upstream reported in its own response, verbatim.
+   *
+   * Not the model the probe asked for, and deliberately no fallback to it: a
+   * probe that asked for `muse-spark-1.3` and was answered by
+   * `deepseek-v4.1-flash` has found something, and filling in the requested id
+   * when the response carried none would report the ask as if it were the
+   * answer. Absent means the response said nothing.
+   */
+  reportedModel?: string;
   statusCode?: number;
   error?: string;
   /** Normalized hits a `websearch` probe returned, so the console can show them. */

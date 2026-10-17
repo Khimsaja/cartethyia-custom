@@ -19,8 +19,9 @@ until the boot retirement step runs.
    exported metadata, so removing the metadata row is what makes the id no
    longer builtin.
 2. Remove its adapter, auth, discovery, quota, and request-shaping modules.
-   Search registry, routes, dashboard mirrors, `base-models.json`, scripts,
-   and docs. Migrate every caller in the same change.
+   Search registry, routes, dashboard mirrors, the packed catalog
+   (`discovery/catalog/`), scripts, and docs. Migrate every caller in the same
+   change.
 3. Do not leave an alias, shim, or compatibility id. Do not delete telemetry
    history. Do not delete shared models by `model_id` alone.
 

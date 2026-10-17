@@ -1,4 +1,5 @@
 // Attempt completion bookkeeping: one home for everything every dispatch attempt ends with.
+import { readReportedModel } from "../../providers/operations/reported-model";
 import { GatewayError, publicGatewayErrorBody } from "../../protocol/gateway-error";
 import type { ValidatedOutboundFetch } from "../../providers/provider-contracts";
 import { reportAttemptOutcome } from "../../providers/operations/account-health-service";
@@ -127,6 +128,17 @@ async function readBoundedBody(response: Response, maxBytes: number): Promise<st
 export interface ProviderExchangeCapture {
   request: unknown;
   response: Promise<unknown>;
+  /**
+   * The model the upstream named in its own response, read from the raw bytes.
+   *
+   * Filled by `captureProviderExchange` — the one wrapper every provider's
+   * network call passes through — rather than by each adapter. Adapters were
+   * synthesizing their opening event with the model *we asked for*, so a
+   * provider answering a different one reported as if it had complied; reading
+   * the bytes here is the only place that sees what the upstream actually
+   * wrote, for every wire, without six adapters to keep in step.
+   */
+  reportedModel?: Promise<string | undefined>;
 }
 
 /**
@@ -244,6 +256,10 @@ export function captureProviderExchange(
       captureBody && shouldCaptureProviderResponse(response)
         ? readBoundedBody(response.clone(), PROVIDER_CAPTURE_MAX_BYTES).then(parseCapturedBody)
         : Promise.resolve(null);
+    // Read regardless of `captureBody`: this is metadata about the dispatch, not
+    // payload retention, so a tenant in `metadata` mode still records which
+    // model answered. It clones internally and reads only the head.
+    sink.reportedModel = readReportedModel(response).catch(() => undefined);
     return response;
   };
 }
@@ -456,6 +472,8 @@ export interface AttemptCompletion extends ProxyRequestOutcome {
   readonly firstContentDeltaAtMs?: number;
   /** Last event timestamp (for generation duration calculation). */
   readonly lastEventAtMs?: number;
+  /** The model the upstream reported in its own response, verbatim. */
+  readonly reportedModel?: string;
 }
 
 /**
@@ -597,6 +615,16 @@ export async function completeAttempt(
   // health, then the terminal attempt records the real outcome and emits the
   // one telemetry row the request is owed.
   if (state.completed) return;
+  // Read before the outcome is frozen. The capture wrapper already started the
+  // read when the response arrived; awaiting it here costs nothing on the
+  // non-streaming path and only a bounded head-read on the streaming one.
+  // Absent means the upstream named no model — never backfilled from the
+  // request, which would report the ask as the answer.
+  const reportedModel =
+    completion.reportedModel ??
+    (completion.providerCapture?.reportedModel === undefined
+      ? undefined
+      : await completion.providerCapture.reportedModel.catch(() => undefined));
   state.outcome = {
     status: completion.status,
     httpStatus:
@@ -619,8 +647,10 @@ export async function completeAttempt(
     ...(completion.usage === undefined ? {} : { usage: completion.usage }),
     ...(completion.ttfbMs === undefined ? {} : { ttfbMs: completion.ttfbMs }),
     ...(completion.tokensPerSec === undefined ? {} : { tokensPerSec: completion.tokensPerSec }),
+    ...(reportedModel === undefined ? {} : { reportedModel }),
     ...(completion.firstContentDeltaAtMs === undefined ? {} : { firstContentDeltaAtMs: completion.firstContentDeltaAtMs }),
     ...(completion.lastEventAtMs === undefined ? {} : { lastEventAtMs: completion.lastEventAtMs }),
+    ...(completion.reportedModel === undefined ? {} : { reportedModel: completion.reportedModel }),
   };
   if (completion.terminal) state.completed = true;
   // Usage reconciliation is bookkeeping, and it is the last thing standing

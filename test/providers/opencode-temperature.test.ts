@@ -10,6 +10,7 @@ import {
   FREE_AGENT_TOOL_NAMES,
   OPENCODE_FREE_SPEC,
 } from "../../src/providers/integrations/opencode/provider";
+import { OPENCODE_TOOL_DEFINITIONS } from "../../src/providers/integrations/opencode/tool-definitions";
 import type { CanonicalRequest } from "../../src/protocol/canonical-model";
 import { encodeWireRequest } from "../../src/protocol/registry";
 import type { ProviderDispatchTarget } from "../../src/providers/provider-contracts";
@@ -29,13 +30,13 @@ const prepare = OPENCODE_FREE_SPEC.prepareRequest!;
 describe("OpenCode Free request preparation", () => {
   test("builds and forwards the default agent tools when the client sends none", async () => {
     const prepared = prepare({
-      ...request("opencodeft/muse-spark-1.3-contributor-free", undefined),
+      ...request("opencode/longcat-2.5-preview-free", undefined),
       stream: false,
       tools: [],
     });
     const candidate: ProviderDispatchTarget = {
-      provider_id: "opencodeft",
-      model_id: "muse-spark-1.3-contributor-free",
+      provider_id: "opencode",
+      model_id: "longcat-2.5-preview-free",
       wire_family: "responses",
       endpoint_path: "/v1/responses",
       capabilities: {},
@@ -51,18 +52,17 @@ describe("OpenCode Free request preparation", () => {
     // five-tool subset still answered 403. Asserted against the source list so
     // the two cannot drift apart.
     expect(prepared.tools?.map((tool) => tool.name)).toEqual([...FREE_AGENT_TOOL_NAMES]);
-    expect(payload.tools).toEqual(
-      FREE_AGENT_TOOL_NAMES.map((name) => ({
-        type: "function",
-        name,
-        description: expect.any(String),
-        parameters: {
-          type: "object",
-          properties: { input: { type: "string", description: expect.any(String) } },
-          required: [],
-        },
-      })),
-    );
+    // The gate compares a recognised tool's definition, not just its name, so
+    // the backfill must carry the captured description and schema rather than
+    // a generic stub — a stub with the right name is refused.
+    const sent = payload.tools as { type: string; name: string; description: string; parameters: unknown }[];
+    expect(sent.map((tool) => tool.name)).toEqual([...FREE_AGENT_TOOL_NAMES]);
+    for (const tool of sent) {
+      const definition = OPENCODE_TOOL_DEFINITIONS[tool.name];
+      if (definition === undefined) throw new Error(`no captured definition for ${tool.name}`);
+      expect(tool.description).toBe(definition.description);
+      expect(tool.parameters).toEqual(definition.parameters);
+    }
     expect(payload.store).toBe(false);
   });
 

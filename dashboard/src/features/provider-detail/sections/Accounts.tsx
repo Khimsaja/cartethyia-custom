@@ -15,7 +15,7 @@ import {
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { consoleRequest } from "../../../data/api";
-import { accountErrorLabel, authInvalidatedLabel } from "../../../lib/format/labels";
+import { accountErrorLabel, authInvalidatedLabel, showsErrorPill } from "../../../lib/format/labels";
 import { mapWithConcurrency } from "../../../lib/concurrency";
 import { useMysteriousAccounts } from "../../../lib/privacy-mode";
 import { Badge } from "../../../components/ui/badge";
@@ -132,7 +132,7 @@ export function AccountStatusBadge({
           <Badge tone="warn" title={account.lastError}>
             {authInvalidatedLabel(account.credentialKind)}
           </Badge>
-        ) : account.lastErrorCategory && !(account.lastErrorCategory === "quota_exhausted" && modelCooldowns) ? (
+        ) : showsErrorPill(account.lastErrorCategory) && !(account.lastErrorCategory === "quota_exhausted" && modelCooldowns) ? (
           <Badge tone="warn" title={account.lastError ?? account.lastErrorCategory}>
             {accountErrorLabel(account.lastErrorCategory, account.credentialKind)}
           </Badge>
@@ -153,7 +153,7 @@ export function AccountStatusBadge({
         <Badge tone={activeCredentialTone(account)} dot>
           Active{credentialFamily(account) ? ` - ${credentialFamily(account)}` : ""}
         </Badge>
-        {account.lastErrorCategory && !(account.lastErrorCategory === "quota_exhausted" && modelCooldowns) ? (
+        {showsErrorPill(account.lastErrorCategory) && !(account.lastErrorCategory === "quota_exhausted" && modelCooldowns) ? (
           <Badge tone="warn" title={account.lastError ?? account.lastErrorCategory}>
             {accountErrorLabel(account.lastErrorCategory, account.credentialKind)}
           </Badge>
@@ -169,7 +169,7 @@ export function AccountStatusBadge({
           Cooldown{credentialFamily(account) ? ` - ${credentialFamily(account)}` : ""}{" "}
           {account.cooldownUntil ? `(${formatResetDistance(account.cooldownUntil)})` : ""}
         </Badge>
-        {account.lastErrorCategory && !(account.lastErrorCategory === "quota_exhausted" && modelCooldowns) ? (
+        {showsErrorPill(account.lastErrorCategory) && !(account.lastErrorCategory === "quota_exhausted" && modelCooldowns) ? (
           <Badge tone="warn" title={account.lastError ?? account.lastErrorCategory}>
             {accountErrorLabel(account.lastErrorCategory, account.credentialKind)}
           </Badge>

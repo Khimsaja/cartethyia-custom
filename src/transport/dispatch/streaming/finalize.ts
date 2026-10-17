@@ -23,8 +23,8 @@ import type { AdmissionLease } from "../../../security/admission/contracts";
 import type { Reservation } from "../../routing/route-model";
 import { repriceUsage } from "../../../providers/provider-usage";
 import { metrics } from "../../../observability/metrics";
-import { flagPoolCooldown } from "../../../network/pool-health";
-import { shouldCooldownPool } from "../retry-policy";
+import { flagPoolBlocked, flagPoolCooldown } from "../../../network/pool-health";
+import { isFreeTierIpBlock, shouldCooldownPool } from "../retry-policy";
 import { releaseAttemptLeases } from "../leases";
 import { finalizeRequestTelemetry } from "../../guards/error-lifecycle";
 import { drainAbortReason } from "../../shutdown-notice";
@@ -499,8 +499,12 @@ export class StreamFinalizer {
       ...(pipeline.clientResponseText.length > 0 ? { clientResponseText: pipeline.clientResponseText } : {}),
     });
     this.streamSettled = true;
-    if (candidate.networkPoolId && !cancelled && deps.poolSelector && shouldCooldownPool(err, candidate.providerId)) {
-      flagPoolCooldown(deps.poolSelector, deps.db, candidate.networkPoolId, candidate.providerId, err);
+    if (candidate.networkPoolId && !cancelled && deps.poolSelector) {
+      if (shouldCooldownPool(err, candidate.providerId)) {
+        flagPoolCooldown(deps.poolSelector, deps.db, candidate.networkPoolId, candidate.providerId, err);
+      } else if (isFreeTierIpBlock(err, candidate.providerId)) {
+        flagPoolBlocked(deps.poolSelector, deps.db, candidate.networkPoolId, candidate.providerId, err);
+      }
     }
     if (!cancelled) metrics.proxy_requests_total.inc(1, { status: "failed" });
     else metrics.proxy_requests_total.inc(1, { status: "cancelled" });
@@ -554,6 +558,9 @@ export class StreamFinalizer {
       ...(lease ? { lease } : {}),
       ...(deps.telemetryBuffer ? { telemetryBuffer: deps.telemetryBuffer } : {}),
       ...(deps.snapshotService ? { snapshotService: deps.snapshotService } : {}),
+      ...(this.pipeline.reportedModel === undefined
+        ? {}
+        : { reportedModel: this.pipeline.reportedModel }),
     });
   }
 }

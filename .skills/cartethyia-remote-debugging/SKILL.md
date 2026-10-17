@@ -95,7 +95,7 @@ until it turns 200, and prove the flip after fixing.
 |---|---|
 | `404` | Model id absent from `/v1/models`; alias or combo resolved to a name the provider does not serve |
 | `400` | A payload field, not the model — bisect the body |
-| `401`/`403` | Key or scope, not the payload |
+| `401`/`403` | Key or scope, not the payload — **but see the egress rule below first** |
 | `429` | Rate limit; lower probe counts |
 | `503` | No healthy account upstream, or admission found no route |
 | `504` | Upstream timeout, not a payload bug |
@@ -103,6 +103,22 @@ until it turns 200, and prove the flip after fixing.
 Repeated invalid model requests trip the IP strike window ("Warning n/10 … will
 temporarily ban this IP"). Keep probe counts low and list `/v1/models` before
 guessing ids.
+
+### When a 403 survives every payload change, vary the egress IP
+
+A 403 that is identical across every header, body, and credential permutation
+is usually not a request bug — it is an IP-level block. Before spending another
+round on the payload:
+
+1. Run the **vendor's own client** from the same host. If it also fails, the
+   contract is not yours to satisfy.
+2. Repeat the byte-identical request through a proxy with a different exit IP.
+   A 200 there and a 403 direct proves the block is on egress.
+
+Confirmed against OpenCode's free tier on 2026-10-17: 403 direct, 200 through a
+proxy, with the request unchanged. A datacenter egress was refused outright, so
+the provider needed an egress proxy rather than a header fix. Details:
+[`cartethyia-trace-replay` → `references/opencode-free-tier.md`](../cartethyia-trace-replay/references/opencode-free-tier.md).
 
 ## Hygiene
 

@@ -138,7 +138,7 @@ export const telemetryStatus = pgEnum("telemetry_status", [
 ]);
 
 // The id matches the seven canonical builtin IDs (openai, anthropic, claude,
-// codex, opencodezen, ollamacloud, cerebras) or a custom/BYOK slug
+// codex, opencode-zen, ollamacloud, cerebras) or a custom/BYOK slug
 // rejected at the identity boundary when it collides case-insensitively with
 // a reserved ID — that rejection is application-layer, not a DB constraint
 // here. `capability_profile` is a JSONB routing-capability map with no index:
@@ -412,6 +412,32 @@ export const networkPools = pgTable("network_pools", {
   lastSpeedtestError: text("last_speedtest_error"),
   /** When the last speed-test ran. */
   lastSpeedtestAt: timestamp("last_speedtest_at", { withTimezone: true }),
+  /**
+   * Provider-scoped probe verdict, stored beside the other last-known facts
+   * (`egress_ip`, `last_latency_ms`, the speed-test columns) rather than in the
+   * browser.
+   *
+   * It lived in `localStorage` first, and that made it decorative: the verdict
+   * was visible to the operator who ran it and to nobody else — not to another
+   * machine, not to the gateway, and not to admission. A pool could read
+   * "OpenCode blocked" on screen while dispatch kept sending traffic through
+   * it, because nothing outside that one browser had ever heard the verdict.
+   *
+   * `null` means never probed. These describe the *address* recorded in
+   * `egress_ip` at the time, so a changed endpoint clears them.
+   */
+  providerProbeProviderId: text("provider_probe_provider_id"),
+  /** `allowed` | `blocked` | `throttled` | `unreachable`; null until probed. */
+  providerProbeStatus: text("provider_probe_status"),
+  /** Upstream HTTP status when a response arrived. */
+  providerProbeHttpStatus: integer("provider_probe_http_status"),
+  /** Operator-facing reason: the upstream's own words, or why the probe failed. */
+  providerProbeReason: text("provider_probe_reason"),
+  providerProbeLatencyMs: integer("provider_probe_latency_ms"),
+  providerProbeAt: timestamp("provider_probe_at", { withTimezone: true }),
+  /** The endpoint the verdict was measured against. Compared on read, so an
+   * edited endpoint reports "never probed" instead of a stale verdict. */
+  providerProbeEndpoint: text("provider_probe_endpoint"),
   /** Metered egress totals, flushed from the in-memory socket counters on
    * every pool-touching write so the quota bar survives a restart. */
   bytesSentTotal: bigint("bytes_sent_total", { mode: "number" }).notNull().default(0),
@@ -539,6 +565,20 @@ export const providerRoutingSettings = pgTable(
      * (the field sits next to the failover/round-robin strategy in the UI).
      * `null` = UNLIMITED concurrency per account. */
     maxInflight: integer("max_inflight"),
+    /**
+     * Per-pool inflight ceiling for this provider: how many concurrent
+     * requests one proxy pool may carry *for this provider*.
+     *
+     * A second, independent axis from `maxInflight`. That one bounds a single
+     * account; `network_pools.max_inflight` bounds a pool across every
+     * provider; this one bounds one provider's share of one pool. All three
+     * are enforced together — none replaces another.
+     *
+     * `null` = unlimited, and that is the default: a provider nobody has
+     * configured behaves exactly as it did before this column existed, with no
+     * extra Redis key and no extra round trip.
+     */
+    maxInflightPerProxy: integer("max_inflight_per_proxy"),
     /**
      * Minimum remaining allowance an account must hold to stay routable, for
      * this provider. `null` means no floor. Compared against the account's own
@@ -1020,6 +1060,16 @@ export const telemetryEvents = pgTable(
     requestId: uuid("request_id").notNull(),
     sourceSurface: telemetrySourceSurface("source_surface"),
     requestedModel: text("requested_model"),
+    /**
+     * The `model` the upstream put in its own response, verbatim.
+     *
+     * Separate from `requested_model` because they answer different questions:
+     * one is what the client asked for, the other is what the provider said it
+     * ran. A provider that answers `muse-spark` as `deepseek-v4.1-flash` is
+     * telling the operator something, and overwriting one with the other would
+     * erase it. NULL when the response carried no model.
+     */
+    reportedModel: text("reported_model"),
     /** Canonical reasoning effort the client asked for; NULL when it asked for none. */
     requestedEffort: text("requested_effort"),
     providerId: text("provider_id"),

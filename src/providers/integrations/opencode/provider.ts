@@ -7,14 +7,15 @@ import { PROVIDER_COMPATIBILITY_PROFILES } from "../../provider-metadata";
 import { defineModel } from "../../provider-model-definition";
 import type { ApiKeyProviderSpec } from "../../configured-provider";
 import { buildOpenCodeHeaders } from "./fingerprint";
+import { OPENCODE_TOOL_DEFINITIONS } from "./tool-definitions";
 /**
  * OpenCode's three API-key tiers, all served from `opencode.ai`:
  *
- * - `opencodeft` (OpenCode Free): unauthenticated public route — no
+ * - `opencode` (OpenCode Free): unauthenticated public route — no
  *   `Authorization` header is ever sent, even if a credential were somehow
  *   configured. Serves the free-tier model set.
- * - `opencodezen` (OpenCode Zen): billed API-key route.
- * - `opencodego` (OpenCode Go): billed API-key route on the separate
+ * - `opencode-zen` (OpenCode Zen): billed API-key route.
+ * - `opencode-go` (OpenCode Go): billed API-key route on the separate
  *   `/zen/go/v1` base — a bundled, higher-tier model set.
  *
  * Free and Zen dispatch on `/inference/v1`, NOT `/zen/v1`. The catalog is the
@@ -139,33 +140,44 @@ function opencodeDesktopHeaders(
  * tools" is not enough: backfill the whole set. They are plain
  * `ToolDefinition`s — every wire codec serializes them, no per-wire patching.
  */
-const FREE_AGENT_TOOLS: readonly { readonly name: string; readonly description: string }[] = [
-  { name: "edit", description: "Edit a file. Do not call unless the user explicitly asks for a file edit." },
-  { name: "glob", description: "Find files by pattern. Do not call unless the user explicitly asks to search files." },
-  { name: "grep", description: "Search file contents. Do not call unless the user explicitly asks to search contents." },
-  { name: "read", description: "Read a file. Do not call unless the user explicitly asks for a file read." },
-  { name: "shell", description: "Run a shell command. Do not call unless the user explicitly asks to run a command." },
-  { name: "skill", description: "Run a named skill. Do not call unless the user explicitly asks to run a skill." },
-  { name: "subagent", description: "Delegate work to a subagent. Do not call unless the user explicitly asks to delegate." },
-  { name: "webfetch", description: "Fetch a URL. Do not call unless the user explicitly asks to fetch a URL." },
-  { name: "websearch", description: "Search the web. Do not call unless the user explicitly asks to search the web." },
-  { name: "write", description: "Write a file. Do not call unless the user explicitly asks for a file write." },
-  { name: "execute", description: "Execute a command. Do not call unless the user explicitly asks to execute a command." },
+/**
+ * Every tool the free-tier gate recognises, in the order the client declares
+ * them, with the client's own description and schema.
+ *
+ * The gate compares a recognised tool's definition, not just its name: a stub
+ * carrying the right name is refused. These are therefore verbatim captures —
+ * see `./tool-definitions` for provenance.
+ */
+const FREE_AGENT_TOOL_NAMES_ORDERED: readonly string[] = [
+  "shell",
+  "glob",
+  "read",
+  "grep",
+  "webfetch",
+  "websearch",
+  "write",
+  "edit",
+  "subagent",
+  "execute",
+  "patch",
+  "question",
+  "skill",
 ];
 
 /**
  * The agent-tool names the free tier expects, exported so tests assert against
  * the same list the adapter sends instead of a copy that can drift.
  */
-export const FREE_AGENT_TOOL_NAMES: readonly string[] = FREE_AGENT_TOOLS.map((tool) => tool.name);
+export const FREE_AGENT_TOOL_NAMES: readonly string[] = FREE_AGENT_TOOL_NAMES_ORDERED;
 /**
- * Schema the free-tier gate accepts for a backfilled tool.
+ * Fallback schema for a tool name the capture does not carry.
  *
  * An empty `properties` object is refused: the gate reads the schema, and a
  * tool with no parameters at all is not agent-shaped — an otherwise-correct
  * dispatch carrying eleven such tools returned 403 `FreeTierError`, while the
  * same dispatch with one declared property returned 200 (verified live
- * 2026-10-15). The property is never called; it only has to exist.
+ * 2026-10-15). Every name in `FREE_AGENT_TOOL_NAMES_ORDERED` has a captured
+ * definition, so this is a safety net rather than the normal path.
  */
 const FREE_AGENT_TOOL_SCHEMA = {
   type: "object",
@@ -179,9 +191,16 @@ const FREE_AGENT_TOOL_SCHEMA = {
 function ensureFreeAgentRequest(request: CanonicalRequest): CanonicalRequest {
   const present: Record<string, true> = {};
   for (const tool of request.tools ?? []) present[tool.name] = true;
-  const missing: ToolDefinition[] = FREE_AGENT_TOOLS.filter((tool) => !present[tool.name]).map(
-    (tool) => ({ name: tool.name, description: tool.description, jsonSchema: FREE_AGENT_TOOL_SCHEMA }),
-  );
+  const missing: ToolDefinition[] = FREE_AGENT_TOOL_NAMES_ORDERED.filter(
+    (name) => !present[name],
+  ).map((name) => {
+    const definition = OPENCODE_TOOL_DEFINITIONS[name];
+    return {
+      name,
+      description: definition?.description ?? name,
+      jsonSchema: (definition?.parameters ?? FREE_AGENT_TOOL_SCHEMA) as ToolDefinition["jsonSchema"],
+    };
+  });
   if (missing.length === 0) return request;
   return {
     ...request,
@@ -268,7 +287,7 @@ function clampOpenCodeTools(payload: Record<string, unknown>, request: Canonical
   if (kept.length > OPENCODE_MAX_TOOLS) return;
   payload["tools"] = [...kept, ...rest.slice(0, OPENCODE_MAX_TOOLS - kept.length)];
 }
-function opencodeSpec(providerId: "opencodeft" | "opencodezen" | "opencodego"): ApiKeyProviderSpec {
+function opencodeSpec(providerId: "opencode" | "opencode-zen" | "opencode-go"): ApiKeyProviderSpec {
   // Free-tier gate facts (verified live 2026-10-14 against opencode.ai/zen/v1):
   // a request for a free model with stream:false is ALWAYS refused with 403
   // FreeTierError — regardless of headers, tools, or session shape — while
@@ -309,7 +328,7 @@ function opencodeSpec(providerId: "opencodeft" | "opencodezen" | "opencodego"): 
     },
     // OpenCode Free is a genuinely public, unauthenticated endpoint: no
     // credential is ever forwarded, whatever the account configuration says.
-    ...(providerId === "opencodeft" ? { credential_forwarding: "never" as const } : {}),
+    ...(providerId === "opencode" ? { credential_forwarding: "never" as const } : {}),
     // Free models on any tier need the agent-tool fingerprint and the forced
     // upstream stream (the gate refuses tool-less or stream:false free
     // dispatches with 403 FreeTierError). Billed models dispatch untouched.
@@ -318,11 +337,11 @@ function opencodeSpec(providerId: "opencodeft" | "opencodezen" | "opencodego"): 
   };
 }
 /** OpenCode Free — unauthenticated public route. No credential is ever forwarded. */
-export const OPENCODE_FREE_SPEC: ApiKeyProviderSpec = opencodeSpec("opencodeft");
+export const OPENCODE_FREE_SPEC: ApiKeyProviderSpec = opencodeSpec("opencode");
 /** OpenCode Zen — billed API-key route on `/zen/v1`. */
-export const OPENCODE_ZEN_SPEC: ApiKeyProviderSpec = opencodeSpec("opencodezen");
+export const OPENCODE_ZEN_SPEC: ApiKeyProviderSpec = opencodeSpec("opencode-zen");
 /** OpenCode Go — billed API-key route on the separate `/zen/go/v1` base. */
-export const OPENCODE_GO_SPEC: ApiKeyProviderSpec = opencodeSpec("opencodego");
+export const OPENCODE_GO_SPEC: ApiKeyProviderSpec = opencodeSpec("opencode-go");
 
 /**
  * The free-tier subset of `/zen/v1/models`, as this provider's own discovery.
@@ -345,30 +364,35 @@ export async function discoverOpenCodeFreeModels(options: {
   const { fetchOpenAICompatibleModels } = await import("../../discovery/openai-model-discovery");
   const listed = await fetchOpenAICompatibleModels({
     baseUrl: options.baseUrl,
-    providerId: "opencodeft",
+    providerId: "opencode",
     ...(options.fetcher === undefined ? {} : { fetcher: options.fetcher }),
   });
   if (listed === null) return null;
   return listed
     .filter((model) => isFreeTierZenModel(model.modelId))
-    .map((model) => ({
-      ...model,
-      freeTier: true,
+    .map((model) => {
+      if (!isSystemoneZenModel(model.modelId)) return { ...model, freeTier: true } as const;
       // A System One id survives the free-tier filter (it carries the `-free`
       // suffix) but is not a chat model: reclassify it onto the native decision
-      // endpoint so the chat surface never sees it.
-      ...(isSystemoneZenModel(model.modelId)
-        ? { serviceKind: "systemone" as const, endpointPath: `${ZEN_PATH_PREFIX}/systemone` }
-        : {}),
-    }));
+      // endpoint so the chat surface never sees it, and carry the endpoint's
+      // own limits — the Zen listing publishes none, so this row otherwise
+      // advertised the invented chat window for a decision endpoint.
+      return {
+        ...model,
+        ...systemoneLimits(),
+        freeTier: true,
+        serviceKind: "systemone" as const,
+        endpointPath: `${ZEN_PATH_PREFIX}/systemone`,
+      };
+    });
 }
 
-// Limits and pricing resolve from the committed models.dev snapshot
-// (`base-models.json`) via `providerId`; the snapshot is keyed per provider, so
-// passing it is what makes the lookup answer with OpenCode's own entry instead
-// of a same-named model from another reseller. The snapshot's shared OpenCode
-// row understates this model's 1M context limit, so keep the corrected limit
-// explicit for both tiers that serve it.
+// Limits and pricing resolve from the committed packed catalog
+// (`discovery/catalog/`) via `providerId`; the catalog is keyed per provider,
+// so passing it is what makes the lookup answer with OpenCode's own entry
+// instead of a same-named model from another reseller. The catalog's shared
+// OpenCode row understates this model's 1M context limit, so keep the corrected
+// limit explicit for both tiers that serve it.
 const sharedZenChat: readonly ModelDefinition[] = [
   defineModel({ id: "big-pickle", providerId: "opencode", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, vision: true, reasoning: true }),
   defineModel({
@@ -389,12 +413,22 @@ const sharedZenChat: readonly ModelDefinition[] = [
 const MUSE_SPARK_REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"] as const;
 
 /**
+ * Limits for a System One decision model, as a `(context, output)` pair.
+ *
+ * Not a chat window: the native route posts the caller's `{state, questions}`
+ * body untouched. Kept in one place because the discovery path reclassifies a
+ * fetched System One id onto this endpoint, and the Zen dispatch listing
+ * publishes no limits at all — without this it inherited the invented chat
+ * default instead of the row's own values.
+ */
+const SYSTEMONE_LIMITS = { context: 200_000, output: 8_192 } as const;
+
+/**
  * System One decision models served from the Zen `/systemone` endpoint.
  *
  * Not chat models: a `serviceKind: "systemone"` row is dispatched by the native
- * System One route, which posts the caller's `{state, questions}` body untouched
- * and returns `{answers}`. Both the free and billed Zen tiers front the same
- * endpoint; `jev-1.13-free` is the free-tier spelling.
+ * System One route. Both the free and billed Zen tiers front the same endpoint;
+ * `jev-1.13-free` is the free-tier spelling.
  */
 const systemoneZen = (id: string, free: boolean): ModelDefinition =>
   defineModel({
@@ -403,16 +437,23 @@ const systemoneZen = (id: string, free: boolean): ModelDefinition =>
     serviceKind: "systemone",
     wireFamily: "chat",
     endpoint: `${ZEN_PATH_PREFIX}/systemone`,
-    ctx: 200_000,
-    out: 8_192,
+    ctx: SYSTEMONE_LIMITS.context,
+    out: SYSTEMONE_LIMITS.output,
     toolCall: false,
     ...(free ? { free: true } : {}),
   });
 
+/**
+ * The System One limits in `ModelDefinition`'s field names, so the discovery
+ * path can reclassify a fetched id with this row's own values instead of the
+ * chat default. `defineModel` renames them; a `ModelDefinition` does not.
+ */
+export function systemoneLimits(): Pick<ModelDefinition, "contextLimit" | "outputLimit"> {
+  return { contextLimit: SYSTEMONE_LIMITS.context, outputLimit: SYSTEMONE_LIMITS.output };
+}
+
 export const OPENCODE_FREE_MODELS: readonly ModelDefinition[] = [
   ...sharedZenChat,
-  defineModel({ id: "muse-spark-1.2-contributor-free", providerId: "opencode", wireFamily: "responses", endpoint: `${ZEN_PATH_PREFIX}/responses`, vision: true, reasoning: true, reasoningEfforts: MUSE_SPARK_REASONING_EFFORTS }),
-  defineModel({ id: "muse-spark-1.3-contributor-free", providerId: "opencode", wireFamily: "responses", endpoint: `${ZEN_PATH_PREFIX}/responses`, vision: true, reasoning: true, reasoningEfforts: MUSE_SPARK_REASONING_EFFORTS }),
   // Free-tier chat models the shared Zen listing advertises with the `-free`
   // convention. Each was dispatched through this adapter (its own fingerprint
   // headers, agent tools) and answered, so the row is routable, not merely
@@ -423,6 +464,12 @@ export const OPENCODE_FREE_MODELS: readonly ModelDefinition[] = [
   defineModel({ id: "nemotron-3.5-lightning-free", providerId: "opencode", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, reasoning: true, free: true }),
   // Absent from the snapshot: keep declared limits rather than the generic default.
   defineModel({ id: "longcat-2.5-preview-free", providerId: "opencode", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, ctx: 1_000_000, out: 131_072, reasoning: true, free: true }),
+  // Restored 2026-10-17: this id was dropped as deprecated, but it answers
+  // `200` on the Responses wire with the agent tool set. The 403 it gives
+  // without tools is the free-tier gate refusing the request *shape*, not the
+  // model — `muse-spark-1.3-contributor-free` is the one that is genuinely gone
+  // (`410 ModelDeprecated`), and it stays out.
+  defineModel({ id: "muse-spark-1.2-contributor-free", providerId: "opencode", wireFamily: "responses", endpoint: `${ZEN_PATH_PREFIX}/responses`, vision: true, reasoning: true, reasoningEfforts: MUSE_SPARK_REASONING_EFFORTS, free: true }),
   systemoneZen("jev-1.13-free", true),
 ];
 
@@ -430,27 +477,23 @@ export const OPENCODE_ZEN_MODELS: readonly ModelDefinition[] = [
   ...sharedZenChat,
   defineModel({ id: "nemotron-3-ultra-free", providerId: "opencode", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, reasoning: true }),
   defineModel({ id: "muse-spark-1.2", providerId: "opencode", wireFamily: "responses", endpoint: `${ZEN_PATH_PREFIX}/responses`, vision: true, reasoning: true, reasoningEfforts: MUSE_SPARK_REASONING_EFFORTS }),
-  // Absent from the snapshot: keep the declared limits rather than falling back
-  // to the generic default.
-  defineModel({ id: "muse-spark-1.2-contributor", wireFamily: "responses", endpoint: `${ZEN_PATH_PREFIX}/responses`, ctx: 1048576, out: 131072, vision: true, reasoning: true, reasoningEfforts: MUSE_SPARK_REASONING_EFFORTS }),
-  defineModel({ id: "muse-spark-1.2-contributor-free", providerId: "opencode", wireFamily: "responses", endpoint: `${ZEN_PATH_PREFIX}/responses`, vision: true, reasoning: true, reasoningEfforts: MUSE_SPARK_REASONING_EFFORTS }),
   defineModel({ id: "muse-spark-1.3", providerId: "opencode", wireFamily: "responses", endpoint: `${ZEN_PATH_PREFIX}/responses`, vision: true, reasoning: true, reasoningEfforts: MUSE_SPARK_REASONING_EFFORTS }),
   systemoneZen("jev-1.13", false),
 ];
 
 export const OPENCODE_GO_MODELS: readonly ModelDefinition[] = [
-  // Absent from the snapshot under `opencode-go`: keep the declared limits.
-  defineModel({ id: "muse-spark-1.2", wireFamily: "responses", endpoint: `${GO_PATH_PREFIX}/responses`, ctx: 1048576, out: 131072, vision: true, reasoning: true }),
-  defineModel({ id: "muse-spark-1.2-contributor", providerId: "opencode-go", wireFamily: "responses", endpoint: `${GO_PATH_PREFIX}/responses`, vision: true, reasoning: true }),
-  defineModel({ id: "muse-spark-1.2-contributor-free", providerId: "opencode-go", wireFamily: "responses", endpoint: `${GO_PATH_PREFIX}/responses`, vision: true, reasoning: true }),
-  defineModel({ id: "grok-4.5", providerId: "opencode-go", wireFamily: "chat", endpoint: `${GO_PATH_PREFIX}/chat/completions`, reasoning: true }),
+  // `muse-spark-1.2` is retired upstream; the catalog files
+  // `muse-spark-1.2-contributor` at 1048576/131072, which is what this row
+  // serves.
+  defineModel({ id: "muse-spark-1.2-contributor", providerId: "opencode-go", wireFamily: "responses", endpoint: `${GO_PATH_PREFIX}/responses`, ctx: 1048576, out: 131072, vision: true, reasoning: true }),
+  defineModel({ id: "grok-4.7", providerId: "opencode-go", wireFamily: "chat", endpoint: `${GO_PATH_PREFIX}/chat/completions`, ctx: 500000, out: 500000, reasoning: true }),
   defineModel({ id: "glm-5.2", providerId: "opencode-go", wireFamily: "chat", endpoint: `${GO_PATH_PREFIX}/chat/completions`, reasoning: true }),
   defineModel({ id: "kimi-k3", providerId: "opencode-go", wireFamily: "chat", endpoint: `${GO_PATH_PREFIX}/chat/completions`, vision: true, reasoning: true }),
   defineModel({ id: "kimi-k2.7-code", providerId: "opencode-go", wireFamily: "chat", endpoint: `${GO_PATH_PREFIX}/chat/completions`, reasoning: true }),
   defineModel({ id: "mimo-v2.5-pro", providerId: "opencode-go", wireFamily: "chat", endpoint: `${GO_PATH_PREFIX}/chat/completions`, reasoning: true }),
-  defineModel({ id: "qwen3.7-max", providerId: "opencode-go", wireFamily: "chat", endpoint: `${GO_PATH_PREFIX}/chat/completions`, reasoning: true }),
+  defineModel({ id: "qwen3.8-max", providerId: "opencode-go", wireFamily: "chat", endpoint: `${GO_PATH_PREFIX}/chat/completions`, ctx: 1000000, out: 131072, reasoning: true }),
   defineModel({ id: "minimax-m3", providerId: "opencode-go", wireFamily: "chat", endpoint: `${GO_PATH_PREFIX}/chat/completions`, reasoning: true }),
   defineModel({ id: "deepseek-v4-pro", providerId: "opencode-go", wireFamily: "chat", endpoint: `${GO_PATH_PREFIX}/chat/completions`, reasoning: true }),
-  defineModel({ id: "deepseek-v4-flash", providerId: "opencode-go", wireFamily: "chat", endpoint: `${GO_PATH_PREFIX}/chat/completions`, reasoning: true }),
+  defineModel({ id: "deepseek-v4.1-flash", providerId: "opencode-go", wireFamily: "chat", endpoint: `${GO_PATH_PREFIX}/chat/completions`, ctx: 1000000, out: 384000, reasoning: true }),
   defineModel({ id: "hy3", providerId: "opencode-go", wireFamily: "chat", endpoint: `${GO_PATH_PREFIX}/chat/completions`, reasoning: true }),
 ];

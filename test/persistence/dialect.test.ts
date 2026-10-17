@@ -11,6 +11,7 @@
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/bun-sqlite";
 import {
   caseInsensitiveLike,
   currentTimestamp,
@@ -94,5 +95,39 @@ test("full mode renders PostgreSQL spellings", () => {
     expect(render(laterOf(sql`a`, sql`b`))).toContain("greatest");
     expect(render(currentTimestamp())).toBe("now()");
     expect(render(differsFrom(sql`a`, sql`b`))).toContain("IS DISTINCT FROM");
+  });
+});
+
+/**
+ * The handle path, which is the one a compiled binary takes.
+ *
+ * `mergeJson(column, patch, database)` derives the backend from the connection
+ * rather than the environment, and it used to do that with
+ * `dialect.constructor.name.startsWith("SQLite")`. A minified build renames
+ * that class, so the check answered `false` for a real SQLite handle and the
+ * compiled binary emitted `::jsonb` into SQLite — dying at boot in
+ * `provider-seed` with `unrecognized token: ":"` while `bun run src/main.ts`
+ * worked. The env-forced tests above never exercise this branch, and the mode
+ * is forced to `full` here so an env-based check cannot pass by accident.
+ *
+ * The dialect's constructor is replaced with one named `m`, which is what
+ * minification does. Detection that reads the *name* fails this; detection
+ * that reads the prototype does not.
+ */
+test("a SQLite handle selects the SQLite spelling even when its dialect class is renamed", () => {
+  withMode("full", () => {
+    const sqlite = new Database(":memory:");
+    // `dialect` and `session` are runtime properties Drizzle's public type does
+    // not surface; this test is about what a real handle carries at runtime.
+    const handle = drizzle(sqlite) as unknown as { dialect: object; session: object };
+    const renamed = Object.create(Object.getPrototypeOf(handle.dialect)) as {
+      constructor: unknown;
+    };
+    Object.defineProperty(renamed, "constructor", { value: { name: "m" } });
+    const minified = { dialect: renamed, session: handle.session };
+
+    expect(render(mergeJson(sql`prefs`, sql`'{"b":2}'`, minified))).toContain("json_patch");
+    expect(render(mergeJson(sql`prefs`, sql`'{"b":2}'`, handle))).toContain("json_patch");
+    sqlite.close();
   });
 });

@@ -170,6 +170,12 @@ export interface UsageRequestItem {
   /** Provider account (credential) that served this request, if any. */
   accountId?: string;
   model?: string;
+  /**
+   * The model the upstream named in its own response, verbatim — not the one
+   * the client asked for. Absent when the response carried no `model`; never
+   * backfilled from `model`, because that would report the ask as the answer.
+   */
+  reportedModel?: string;
   endpoint?: string;
   apiKeyId?: string;
   userAgent?: string;

@@ -13,7 +13,7 @@ import { chatAdapter } from "../surface/chat/adapter";
 import { responsesAdapter } from "../surface/responses/adapter";
 import { messagesAdapter } from "../surface/messages/adapter";
 import { completionAdapter } from "../surface/completion";
-import { forwardedRequestHeaders, proxySuccessHeaders, buildUpstreamDispatchContext } from "./upstream";
+import { forwardedRequestHeaders, proxySuccessHeaders, buildUpstreamDispatchContext, reportedModelFrom } from "./upstream";
 import { resolvePromptCacheKey } from "../../providers/operations/session-resolution";
 import { applyTenantPreferences } from "../request/tenant-preferences";
 import { metrics } from "../../observability/metrics";
@@ -310,6 +310,11 @@ export async function handleProviderProxyRequest(
           ...(deps.snapshotService ? { snapshotService: deps.snapshotService } : {}),
         }),
         ...ttfbFields(undefined, firstContentDeltaAtMs, state.upstreamDispatchStartedAtMs),
+        ...(() => {
+          // The model the upstream named in its own response, verbatim.
+          const reported = reportedModelFrom(events);
+          return reported === undefined ? {} : { reportedModel: reported };
+        })(),
         usage: pricedUsage,
         commitUsage: pricedUsage,
         // Decode once: `output.bytes` is a `Uint8Array`, which

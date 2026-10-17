@@ -31,6 +31,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 - `POST /admin/tasks/{name}/run` triggers one scheduled task immediately. It
   uses the same loopback-and-token gate as the drain endpoint, answers 202
   once the run has started, and 409 when that task is already running.
+- `bun run probe:egress` asks a provider whether it will serve a given egress,
+  from a list of proxies, from a file, or from stdin. It sends the provider's
+  own dispatch through the same validated fetch and pool agent the gateway
+  uses, because a neutral canary cannot answer the question: a refused OpenCode
+  address still answers its model listing with 200. See
+  `documentation/archive/opencode-egress-probing.md`.
+- A provider's Routing Strategy card has **Max inflight / proxy**: how many
+  concurrent requests one proxy pool may carry *for that provider*. It is a
+  third ceiling beside the per-account one and the pool's own capacity, not a
+  replacement for either, so a pool can be busy with other providers while this
+  one still has its own share. Default is unlimited, which keeps no counter and
+  costs nothing until an operator sets a value. Migration `0010` adds the
+  column.
 
 
 ### Changed
@@ -46,8 +59,100 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   search provider: a hosted search declaration is forwarded to the upstream
   that owns it, and `POST /v1/search` on a `websearch` catalog row is the only
   way to run a search.
+- The offline model catalog is a packed, brotli-compressed binary blob
+  (`src/providers/discovery/catalog/catalog-blob.ts`, built by
+  `scripts/generate/models-catalog.ts`) instead of the `base-models.json` plus
+  `scripts/generate/models-dev-snapshot.ts` pair, both now removed. Boot cost
+  drops from parsing 8090 JSON rows into live objects to one brotli decompress
+  (~3 ms) and typed-array views: ~140 KB of source where the JSON was 969 KB,
+  with no per-row object until a row is asked for.
+- OpenCode's fetched free models now publish the upstream's real limits. The
+  dispatch listing (`/zen/v1/models`) carries no limits, so absent rows used to
+  be published with an invented 200k/64k; the catalog now takes them from
+  `models.opencode.ai` (e.g. `ling-3.1-flash-free` 262144/32768, `exo-free`
+  1048576/131072). Editing an auto-fetched model on a bundled provider also
+  works, where it previously answered `Model not found`.
+- An OpenCode free-tier (`opencode`) dispatch is refused with 403
+  `FreeTierError` when the **egress IP** is blocked, and no request change
+  helps: the official 2.0.32 client, its stored OAuth token, and a third-party
+  gateway all reproduce the same refusal from an affected host, while the
+  byte-identical request answers 200 through a proxy. A datacenter egress is
+  refused, so this provider needs an egress proxy rather than a header fix. The
+  request contract itself is unchanged: `Authorization: Bearer public`, the
+  11-tool agent set, and `stream: true`.
 
 ### Fixed
+
+- The model probe now sends the same request shape a real dispatch does:
+  `stream_options.include_usage` is attached, the sampling temperature is no
+  longer pinned, and the output allowance is sentence-sized instead of 1024.
+  The probe's whole purpose is to predict what live traffic will do, and it was
+  a different request — which is how a provider could reject the share page with
+  `400 request illegal` while accepting the probe.
+- A quota fetch that failed for this sweep no longer raises a `Quota
+  unreachable` pill on the account row. The account routes fine — only its
+  allowance is unknown, and the next sweep retries. A real refusal
+  (`quota_exhausted`) still shows, because it does not clear on its own.
+- The Usage request list's reported-model toggle now reads **Show reported** /
+  **Hide reported**, matching the mask toggle beside it instead of naming a
+  state.
+- `muse-spark-1.2-contributor-free` is back in the OpenCode free catalog on the
+  Responses wire. It was dropped as deprecated, but it answers `200` with the
+  agent tool set; the `403 FreeTierError` it returns without tools is the
+  free-tier gate judging the request shape, not the model. Its sibling
+  `muse-spark-1.3-contributor-free` is genuinely retired (`410 ModelDeprecated`)
+  and stays out.
+- The model an upstream reports in its own response is now recorded separately
+  from the one the request asked for (migration `0012`, `telemetry_events.reported_model`).
+  A provider that answers a `muse-spark` request as `deepseek-v4.1-flash` is
+  telling the operator something the request cannot, and the two values were
+  previously conflated. The probe toast shows it under a cog beside the sample,
+  and Usage shows it on a third line behind a **Reported** toggle that defaults
+  off. Taken verbatim — no prefix stripping, no comparison — and absent when the
+  response named no model.
+- Testing a pool against OpenCode now **enforces** its verdict: a `blocked`
+  answer retires that egress for the provider, so the next dispatch skips it,
+  and any other answer clears a previous block so a replaced proxy returns to
+  rotation without a separate button. Before this the verdict was recorded and
+  the pool stayed in rotation, which is why a pool could read `OpenCode blocked`
+  and still receive traffic.
+- A provider probe verdict is stored on the pool row (`network_pools.provider_probe_*`,
+  migration `0011`) instead of in the operator's browser. It used to live in
+  `localStorage`, which made it decorative: another machine saw nothing, the
+  gateway saw nothing, and admission kept routing through a pool the badge
+  called blocked. The row records the endpoint the verdict was measured
+  against, so re-pointing a pool reports "never probed" rather than a colour
+  about an address that no longer exists.
+- The Proxy Pool tester no longer answers a question nobody asked. A probe
+  verdict is keyed to the endpoint it was measured on, so re-pointing a pool at
+  a new proxy drops the old verdict instead of showing `OpenCode blocked` for an
+  address that is gone. The edit form tests the endpoint **being typed** rather
+  than the saved one. And the probe timeout rises from 20 s to 45 s: four
+  concurrent probes measured 16.7 s on a healthy egress, which left a working
+  proxy intermittently reported as `unreachable`.
+- An OpenCode probe no longer reports a usable egress as `unreachable`. The
+  probe sent an empty `messages` array, on the theory that the IP gate runs
+  before the body is read; it does not. A healthy address answered
+  `400 messages must not be empty`, and every non-2xx that was not the
+  free-tier refusal was mapped to `unreachable` — so four proxies that serve a
+  real dispatch were shown as "OpenCode unreachable", blaming them for the
+  probe's own request. The probe now sends one short turn, and any 4xx from the
+  upstream's own validation reads as accepted. A spent rate is reported as
+  `throttled` rather than lumped in with failures.
+
+- A request no longer ends on the first refused proxy. `opencode` is
+  credential-less, so its route plan holds a single candidate carrying every
+  eligible pool, and pool selection happens inside one attempt. The attempt
+  loop judged "this is the last candidate" as terminal, which was true on the
+  first failure — so a 403 `FreeTierError` flagged the egress and then failed
+  the request while a healthy pool sat in the same candidate. A failure the
+  pool caused now retries the same candidate against a different pool.
+- When every pool is refused, the answer is `503 proxy_pool_blocked` and says
+  the upstream refuses them, instead of a cooldown message asking the operator
+  to wait for a timer that never fires. Pool exhaustion and a provider's own
+  per-proxy share now answer `proxy_pool_capacity_exceeded` and
+  `proxy_pool_provider_capacity_exceeded` respectively, so the fix each one
+  needs is named.
 
 - An existing database now receives the unique index the bundled model seed
   upserts on. A database created before that index existed died at boot with
