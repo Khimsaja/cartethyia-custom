@@ -237,6 +237,24 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
       const children = await store.sumChildrenConsumed(apiKeyId);
       return (row.lifetimeTokensConsumed ?? 0) + children;
     },
+    // TipRouter: warn key owners via in-app notification when a key keeps
+    // hitting its concurrency limit (429). Fire-and-forget; a Redis-side
+    // dedup caps this at one queue event per key per 60s so a retry storm
+    // cannot flood the queue, and the queue itself is length-capped.
+    ({ apiKeyId, at }) => {
+      if (!redis) return;
+      const dedupKey = `tiprouter:rlhit:dedup:${apiKeyId}`;
+      redis
+        .set(dedupKey, "1", "EX", 60, "NX")
+        .then((ok) => {
+          if (ok !== "OK") return undefined;
+          const payload = JSON.stringify({ keyId: apiKeyId, reason: "concurrency-limit", ts: at });
+          return redis
+            .rpush("tiprouter:ratelimit_hits", payload)
+            .then(() => redis.ltrim("tiprouter:ratelimit_hits", 0, 4999));
+        })
+        .catch(() => undefined);
+    },
   );
   const ipStore = redis
     ? new RedisIpAbuseStore(redis)

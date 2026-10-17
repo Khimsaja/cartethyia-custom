@@ -216,6 +216,17 @@ export const POOL_STATUSES = ["active", "disabled"] as const;
 export type PoolStatus = (typeof POOL_STATUSES)[number];
 
 /**
+ * Statuses the system itself can write to a pool row: the health machine
+ * parks a failing pool in "cooldown" until it recovers. The read path
+ * (sanitizePoolResponse) must accept all of them; POOL_STATUSES stays the
+ * operator-settable subset used by the create/update body schema.
+ * (2026-10-10: missing "cooldown" here made GET /network/pools throw 400
+ * "Pool status is invalid" whenever any pool was cooling down, blanking the
+ * console Proxy & Requests page.)
+ */
+const POOL_READ_STATUSES = ["active", "cooldown", "disabled"] as const;
+
+/**
  * Pool-group selection strategies, as a runtime tuple: the Elysia body schema
  * projects its `t.Literal` union from it and the operations layer validates
  * direct callers against the same list (mirrors `POOL_STATUSES`). Values must
@@ -287,7 +298,7 @@ export function sanitizePoolResponse(pool: unknown): NetworkPoolResponse {
   const p = pool as Record<string, unknown>;
   if (typeof p.kind !== "string" || !(POOL_KINDS as readonly string[]).includes(p.kind))
     throw new ConsoleDomainError("invalid_pool", 400, "Pool kind is required");
-  if (typeof p.status !== "undefined" && !(POOL_STATUSES as readonly string[]).includes(p.status as string))
+  if (typeof p.status !== "undefined" && !(POOL_READ_STATUSES as readonly string[]).includes(p.status as string))
     throw new ConsoleDomainError("invalid_pool", 400, "Pool status is invalid");
   const maxInflight = requiredPoolNumber(p.maxInflight, "maxInflight", 10);
   const weight = requiredPoolNumber(p.weight, "weight", 100);
