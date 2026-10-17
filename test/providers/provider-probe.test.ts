@@ -61,12 +61,15 @@ describe("provider probe", () => {
     expect(names).toContain("read");
   });
 
-  test("it sends no prompt, so it runs no inference", async () => {
+  test("it sends one short turn, not an empty message list", async () => {
     const probe = await buildProviderProbeRequest("opencode");
     const body = probe?.body as { messages?: unknown[] };
-    // The gate rejects a flagged address before reading the body, so an empty
-    // message list still produces the 403 that answers the question — and
-    // costs no tokens when the address is allowed.
-    expect(body.messages).toEqual([]);
+    // An empty list was the original design, on the theory that the gate runs
+    // before the body is read. It does not: an allowed address answers
+    // `400 messages must not be empty` instead of serving the dispatch, so the
+    // probe reported every healthy egress as unusable. One word is the cheapest
+    // body that gets past validation.
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages?.[0]).toMatchObject({ role: "user" });
   });
 });

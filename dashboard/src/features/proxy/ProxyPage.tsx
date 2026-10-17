@@ -986,19 +986,32 @@ function PoolTitleBlock({
         ) : null}
         {view.probe ? (
           <Badge
-            tone={view.probe.status === "blocked" ? "disabled" : view.probe.status === "allowed" ? "ok" : "warn"}
+            tone={
+              view.probe.status === "blocked"
+                ? "disabled"
+                : view.probe.status === "allowed"
+                  ? "ok"
+                  : "warn"
+            }
             title={
               view.probe.reason ??
               (view.probe.status === "allowed"
                 ? "OpenCode served a probe through this pool"
-                : "OpenCode refused this egress")
+                : view.probe.status === "throttled"
+                  ? "OpenCode accepted this egress; the rate is spent"
+                  : "The probe could not complete")
             }
           >
+            {/* `unreachable` is reserved for a probe that could not complete.
+                A 4xx from the upstream's own validation means the egress was
+                accepted, so it is never shown as unreachable. */}
             {view.probe.status === "blocked"
               ? "OpenCode blocked"
               : view.probe.status === "allowed"
                 ? "OpenCode OK"
-                : "OpenCode unreachable"}
+                : view.probe.status === "throttled"
+                  ? "OpenCode rate-limited"
+                  : "OpenCode unreachable"}
           </Badge>
         ) : null}
         {view.cooldownOnly.length > 0 ? (
@@ -1706,6 +1719,7 @@ export default function Proxy(): ReactNode {
     if (targets.length === 0) return;
     let allowed = 0;
     let blocked = 0;
+    let throttled = 0;
     let unreachable = 0;
     let cursor = 0;
     const worker = async (): Promise<void> => {
@@ -1722,6 +1736,7 @@ export default function Proxy(): ReactNode {
           setProviderResults((prev) => ({ ...prev, [pool.id]: result }));
           if (result.status === "allowed") allowed += 1;
           else if (result.status === "blocked") blocked += 1;
+          else if (result.status === "throttled") throttled += 1;
           else unreachable += 1;
         } catch (err) {
           unreachable += 1;
@@ -1748,6 +1763,7 @@ export default function Proxy(): ReactNode {
     );
     toast.success(
       `OpenCode: ${allowed} allowed · ${blocked} blocked` +
+        (throttled > 0 ? ` · ${throttled} rate-limited` : "") +
         (unreachable > 0 ? ` · ${unreachable} unreachable` : ""),
     );
   };

@@ -15,6 +15,7 @@ import {
 import { classifyPoolConnectError, classifyPoolProbeResponse, parseEgressIp } from "./probe-result";
 import { encryptCredential } from "../../../security/crypto";
 import { createValidatedFetch } from "../../../network/outbound-fetch";
+import { classifyProviderProbeAnswer } from "./probe-verdict";
 import {
   createHttpProxyAgent,
   createSocks5Agent,
@@ -259,19 +260,16 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
     }
     const latencyMs = Math.round(performance.now() - started);
     const text = await response.text().catch(() => "");
-    const blocked = response.status === 403 && /freetier|free tier can only be used/i.test(text);
-
+    // One classifier for the console, the CLI probe, and the tests — see
+    // `probe-verdict.ts` for why a 4xx reads as `allowed`.
+    const verdict = classifyProviderProbeAnswer(response.status, text);
     return {
       poolId: label,
       providerId,
-      status: blocked ? "blocked" : response.ok ? "allowed" : "unreachable",
+      status: verdict.status,
       httpStatus: response.status,
       latencyMs,
-      ...(blocked
-        ? { reason: "Upstream refused this egress address" }
-        : response.ok
-          ? {}
-          : { reason: `Upstream answered ${response.status}` }),
+      ...(verdict.reason === undefined ? {} : { reason: verdict.reason }),
     };
   }
 

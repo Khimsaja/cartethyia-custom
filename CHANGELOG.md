@@ -31,6 +31,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 - `POST /admin/tasks/{name}/run` triggers one scheduled task immediately. It
   uses the same loopback-and-token gate as the drain endpoint, answers 202
   once the run has started, and 409 when that task is already running.
+- `bun run probe:egress` asks a provider whether it will serve a given egress,
+  from a list of proxies, from a file, or from stdin. It sends the provider's
+  own dispatch through the same validated fetch and pool agent the gateway
+  uses, because a neutral canary cannot answer the question: a refused OpenCode
+  address still answers its model listing with 200. See
+  `documentation/archive/opencode-egress-probing.md`.
 - A provider's Routing Strategy card has **Max inflight / proxy**: how many
   concurrent requests one proxy pool may carry *for that provider*. It is a
   third ceiling beside the per-account one and the pool's own capacity, not a
@@ -76,6 +82,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   11-tool agent set, and `stream: true`.
 
 ### Fixed
+
+- An OpenCode probe no longer reports a usable egress as `unreachable`. The
+  probe sent an empty `messages` array, on the theory that the IP gate runs
+  before the body is read; it does not. A healthy address answered
+  `400 messages must not be empty`, and every non-2xx that was not the
+  free-tier refusal was mapped to `unreachable` — so four proxies that serve a
+  real dispatch were shown as "OpenCode unreachable", blaming them for the
+  probe's own request. The probe now sends one short turn, and any 4xx from the
+  upstream's own validation reads as accepted. A spent rate is reported as
+  `throttled` rather than lumped in with failures.
 
 - A request no longer ends on the first refused proxy. `opencode` is
   credential-less, so its route plan holds a single candidate carrying every

@@ -146,7 +146,7 @@ async function acquirePoolSlot(
       : failure.reason === "provider_at_capacity"
         ? "Every proxy pool has reached this provider's per-proxy concurrency limit. Retry shortly, raise the limit in the provider's routing settings, or add a pool."
         : failure.reason === "blocked"
-          ? "The upstream refuses every proxy pool configured for this provider, so no egress is available. Replace the blocked proxies, or add one the upstream has not flagged."
+          ? "All proxy pools are saturated for this provider: the upstream refuses every egress configured for it. Replace a blocked proxy, or add one the upstream has not flagged."
           : failure.reason === "cooldown"
             ? "Every proxy pool for this provider is cooling down after upstream failures. Retry once the cooldown resets."
             : "No active proxy pool is configured for this tenant and provider. Add one, or route this provider through direct egress.";

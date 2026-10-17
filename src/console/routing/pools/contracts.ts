@@ -118,12 +118,17 @@ export interface HealthCheckResult {
  * `blocked` is not a transient failure: the upstream retired the address, so
  * the pool stays out of rotation for that provider until the proxy is
  * replaced. `unreachable` means the probe itself could not complete, which
- * says nothing about the address.
+ * says nothing about the address. `throttled` means the address was accepted
+ * and the rate is spent — it recovers, so the pool stays usable.
+ *
+ * A `4xx` that is not the free-tier refusal reads as `allowed`: the provider
+ * checks the address before it validates the body, so reaching its validation
+ * is proof the egress was accepted.
  */
 export interface PoolProviderProbeResult {
   poolId: string;
   providerId: string;
-  status: "allowed" | "blocked" | "unreachable";
+  status: "allowed" | "blocked" | "throttled" | "unreachable";
   /** Upstream status when a response arrived. */
   httpStatus?: number;
   latencyMs?: number;

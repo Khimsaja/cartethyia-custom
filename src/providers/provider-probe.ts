@@ -39,18 +39,24 @@ export function isProbeableProvider(providerId: string): boolean {
 }
 
 /**
- * The minimal canonical request the probe sends.
+ * The canonical request the probe sends.
  *
- * Empty `messages` on purpose: the free-tier gate rejects a flagged address
- * before it reads the body (verified live), so a probe does not need a prompt,
- * does not run inference, and costs no tokens. `stream: true` is what the gate
- * requires of an accepted dispatch, so the probe must carry it or a healthy
- * address would be refused for the wrong reason.
+ * One short user turn, not an empty `messages` array. The empty-body theory was
+ * wrong: the IP gate runs *after* body validation, so a healthy address answers
+ * `400 messages must not be empty` instead of the 200 it would give a real
+ * dispatch. That turned every good pool into `unreachable` — "the probe itself
+ * could not complete" — which is the opposite of what it says, and it hid four
+ * working proxies behind a verdict that blamed them.
+ *
+ * The turn is one word, so an allowed address runs the cheapest possible
+ * inference. `stream: true` is what the gate requires of an accepted dispatch,
+ * so the probe must carry it or a healthy address would be refused for the
+ * wrong reason.
  */
 function probeRequest(): CanonicalRequest {
   return {
     model: PROBE_MODEL,
-    messages: [],
+    messages: [{ role: "user", content: [{ kind: "text", text: "hi" }] }],
     stream: true,
     source_surface: "chat",
     generation_controls: {},
