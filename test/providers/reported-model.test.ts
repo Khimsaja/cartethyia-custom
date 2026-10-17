@@ -1,70 +1,86 @@
 /**
- * The model an upstream reports, versus the one we asked for.
+ * The model an upstream reports, read from the response bytes.
  *
- * These are different facts and the codebase keeps them apart on purpose.
- * `requested_model` is what the client asked for; `reported_model` is what the
- * provider said it ran. A provider that answers a `muse-spark` request as
- * `deepseek-v4.1-flash` is telling the operator something the request cannot,
- * and filling in the ask where the response carried none would report the ask
- * as if it were the answer.
+ * One reader, in `providers/operations/reported-model.ts`, because every
+ * provider dispatch reaches the network through the same wrapper. The adapters
+ * used to synthesize their opening event with the model *we asked for*, so a
+ * provider answering `deepseek-v4.1-flash` to a `nemotron` request reported as
+ * if it had complied — and fixing that per adapter meant six edits with a
+ * seventh always missing.
  *
- * The value is taken **verbatim**: no prefix stripping, no normalisation, no
- * comparison. An earlier draft stripped the provider prefix and hid the chip
- * when the stripped names matched — which suppressed exactly the case worth
- * seeing (`dine-free/muse-spark-1.3` answering `muse-spark-1.3`).
+ * The value is taken **verbatim**: no prefix stripping, no comparison, no
+ * fallback to the requested id. An earlier draft stripped the provider prefix
+ * and hid the chip when the stripped names matched, which suppressed exactly
+ * the case worth seeing.
  */
 import { describe, expect, test } from "bun:test";
-import { extractReportedModel } from "../../src/providers/discovery/probe-phases";
-import { reportedModelFrom } from "../../src/transport/dispatch/upstream";
-import type { CanonicalEvent } from "../../src/protocol/canonical-model";
+import { readReportedModel } from "../../src/providers/operations/reported-model";
 
-function start(model?: string): CanonicalEvent[] {
-  return [
-    {
-      type: "response_start",
-      sequence_number: 1,
-      ...(model === undefined ? {} : { model }),
-    },
-  ];
+function responseOf(body: string): Response {
+  return new Response(body, { headers: { "content-type": "text/event-stream" } });
 }
 
-describe("reported model extraction", () => {
-  test("the probe takes the id verbatim, prefix included", () => {
-    expect(extractReportedModel(start("dine-free/muse-spark-1.3-contributor"))).toBe(
-      "dine-free/muse-spark-1.3-contributor",
-    );
+describe("reported model from the response", () => {
+  test("a chat SSE chunk names the model", async () => {
+    // Byte-identical to the chunk an operator captured from WorkBuddy.
+    const body =
+      'data: {"id":"chatcmpl-cb147f63-0a18-4c55-ab0d-5172cc263cb1","object":"chat.completion.chunk",' +
+      '"created":1792239564.016,"model":"deepseek-v4.1-flash","choices":[{"index":0,' +
+      '"delta":{"role":"assistant","content":""},"finish_reason":null}],"usage":null}\n\n';
+    expect(await readReportedModel(responseOf(body))).toBe("deepseek-v4.1-flash");
   });
 
-  test("the dispatch path reads the same field", () => {
-    expect(reportedModelFrom(start("bansos/glm-5.3-flash"))).toBe("bansos/glm-5.3-flash");
+  test("a prefixed id is returned exactly as written", async () => {
+    const body = 'data: {"model":"bansos/glm-5.3-flash","choices":[]}\n\n';
+    expect(await readReportedModel(responseOf(body))).toBe("bansos/glm-5.3-flash");
   });
 
-  test("an unqualified id is returned unchanged", () => {
-    expect(extractReportedModel(start("deepseek-v4.1-flash"))).toBe("deepseek-v4.1-flash");
+  test("a non-streaming JSON body is read too", async () => {
+    const body = JSON.stringify({ id: "x", model: "glm-5.3-flash", choices: [] });
+    expect(await readReportedModel(responseOf(body))).toBe("glm-5.3-flash");
   });
 
-  test("a response that names no model yields nothing, not the requested id", () => {
-    // The caller must not backfill: absent means the upstream said nothing.
-    expect(extractReportedModel(start())).toBeUndefined();
-    expect(reportedModelFrom(start())).toBeUndefined();
+  test("a Gemini frame is read from modelVersion", async () => {
+    const body = JSON.stringify({ candidates: [], modelVersion: "gemini-2.5-flash" });
+    expect(await readReportedModel(responseOf(body))).toBe("gemini-2.5-flash");
   });
 
-  test("a blank model is treated as absent", () => {
-    expect(extractReportedModel(start("   "))).toBeUndefined();
+  test("a Responses lifecycle frame is read from the nested response", async () => {
+    const body = 'data: {"type":"response.created","response":{"model":"gpt-5.5"}}\n\n';
+    expect(await readReportedModel(responseOf(body))).toBe("gpt-5.5");
   });
 
-  test("message_start carries it too, for providers on that wire", () => {
-    const events: CanonicalEvent[] = [
-      { type: "message_start", sequence_number: 1, model: "claude-sonnet-4" },
-    ];
-    expect(reportedModelFrom(events)).toBe("claude-sonnet-4");
+  test("a body that names no model yields nothing, not the requested id", async () => {
+    // Absent means the upstream said nothing. Filling in the ask would report
+    // the question as if it were the answer.
+    expect(await readReportedModel(responseOf('data: {"choices":[]}\n\n'))).toBeUndefined();
   });
 
-  test("a stream that opens with content still reports the opening model", () => {
-    const events: CanonicalEvent[] = [
-      { type: "response_start", sequence_number: 1, model: "glm-5.3-flash" },
-      { type: "content_delta", sequence_number: 2, content: { kind: "text", text: "hi" } },
-    ];
-    expect(reportedModelFrom(events)).toBe("glm-5.3-flash");
+  test("the model is found before the whole stream is buffered", async () => {
+    // The first frame carries it; the rest is bulk that must not be read.
+    let pulled = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 1;
+        if (pulled === 1) {
+          controller.enqueue(new TextEncoder().encode('data: {"model":"early-model"}\n\n'));
+          return;
+        }
+        // Bulk that would cost real memory if the reader drained it. It must
+        // never be reached: the model was in frame one.
+        if (pulled > 200) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(new TextEncoder().encode("data: " + "x".repeat(4096) + "\n\n"));
+      },
+    });
+    expect(await readReportedModel(new Response(body))).toBe("early-model");
+    // A diagnostic must not stream the whole answer into memory.
+    expect(pulled).toBeLessThan(50);
+  });
+
+  test("a malformed body is not an error", async () => {
+    expect(await readReportedModel(responseOf("not json at all"))).toBeUndefined();
   });
 });
