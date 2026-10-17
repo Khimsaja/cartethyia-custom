@@ -164,18 +164,46 @@ describe("explainGatewayError", () => {
       expect(text).not.toContain(origin);
     }
   });
+
+  test("an upstream error is reworded to the TipRouter message, not the raw provider text", () => {
+    // TipRouter local patch: buyers must never see verbatim third-party
+    // provider text (it leaks provider identity, free-tier notes, billing
+    // URLs). The raw text stays on the error object for logs/telemetry.
+    const raw = "You have hit your ChatGPT usage limit (free plan). Try again in 28m";
+    const error = new GatewayError("quota_exceeded", 429, raw, {}, "upstream");
+    const text = explainGatewayError(error);
+    expect(text).toBe(
+      "TipRouter has reached its usage limit for this model. Please try again later.",
+    );
+    expect(text).not.toContain("ChatGPT");
+    expect(text).not.toContain("free plan");
+    expect(error.message).toBe(raw);
+  });
+
+  test("an upstream error with an unmapped code falls back to a generic message", () => {
+    const error = new GatewayError("tls_rejected", 502, "certificate verify failed", {}, "upstream");
+    const text = explainGatewayError(error);
+    expect(text).toBe("The AI provider returned an error. Please try again.");
+  });
+
+  test("a gateway-origin error keeps its own message", () => {
+    // Only upstream-origin text is reworded; gateway messages are already ours.
+    const error = new GatewayError("capacity_exhausted", 429, "No capacity available");
+    expect(explainGatewayError(error)).toBe("No capacity available");
+  });
 });
 
 describe("publicGatewayErrorDetails — the allowlist", () => {
   test("keeps every allowlisted key it is given", () => {
-    // The allowlist is deliberate: provider, pool, account scope, and routing
+    // The allowlist is deliberate: pool, account scope, and routing
     // reasons are what a client needs to act on a rejection. `maxInflight` and
     // `weight` are the pool-capacity pair `leases.ts` publishes with
     // `proxy_pool_capacity_exceeded` — the retired per-account column was
     // `provider_accounts.max_inflight`, but this key comes from the pool limit,
     // not from that column, and must not be pruned as dead with it.
+    // (TipRouter: `providerId`, `providerCode` and `raw` are NOT allowlisted —
+    // they leak third-party provider identity to buyers.)
     const details = {
-      providerId: "anthropic",
       poolId: "pool-1",
       model: "claude-sonnet-4-6",
       reason: "rpm-exhausted",
@@ -193,8 +221,12 @@ describe("publicGatewayErrorDetails — the allowlist", () => {
   test("drops every key that is not on the allowlist", () => {
     // This is the boundary. An internal field that reaches a client is an
     // information leak, and the failure mode is silent — nothing else breaks.
+    // (TipRouter: providerId/providerCode/raw are deliberately dropped even
+    // though upstream allowlists them — they carry third-party provider text.)
     const details = {
       providerId: "anthropic",
+      providerCode: "anthropic-401",
+      raw: { error: { message: "free plan quota exhausted" } },
       owners: ["tenant-secret"],
       tenantId: "tenant-secret",
       internalNote: "upstream said the key sk-live-EXAMPLE is revoked",
@@ -205,11 +237,13 @@ describe("publicGatewayErrorDetails — the allowlist", () => {
     const public_ = publicGatewayErrorDetails(
       new GatewayError("accounts_unavailable", 503, "x", details),
     );
-    expect(public_).toEqual({ providerId: "anthropic" });
+    expect(public_).toEqual({});
     // Sweep the serialized envelope, so a key added later is caught by this
     // test rather than by an incident.
     const serialized = JSON.stringify(public_);
     for (const secret of [
+      "anthropic",
+      "free plan",
       "tenant-secret",
       "sk-live-EXAMPLE",
       "someInternalFunction",
@@ -225,25 +259,25 @@ describe("publicGatewayErrorDetails — the allowlist", () => {
   });
 
   test("a key that merely resembles an allowlisted one is dropped", () => {
-    // Exact membership, not a prefix or case-insensitive match: `ProviderId`
-    // and `provider_id` are different keys, and only the listed spelling is
+    // Exact membership, not a prefix or case-insensitive match: `Reason`
+    // and `reason_id` are different keys, and only the listed spelling is
     // published.
-    const details = { ProviderId: "anthropic", provider_id: "anthropic", providerId: "anthropic" };
+    const details = { Reason: "x", reason_id: "x", reason: "x" };
     expect(
       publicGatewayErrorDetails(new GatewayError("accounts_unavailable", 503, "x", details)),
-    ).toEqual({ providerId: "anthropic" });
+    ).toEqual({ reason: "x" });
   });
 
   test("a value of undefined is published as undefined, not dropped", () => {
     // MEASURED: the filter is on the key alone. The envelope then serializes
     // the key away in JSON, so this is observable only on the object. Pinned
     // because a change to `Object.entries` handling would alter the shape.
-    const details = { providerId: undefined, reason: "x" };
+    const details = { reason: undefined, model: "x" };
     const public_ = publicGatewayErrorDetails(
       new GatewayError("accounts_unavailable", 503, "x", details),
     );
-    expect("providerId" in public_).toBe(true);
-    expect(public_.providerId).toBeUndefined();
+    expect("reason" in public_).toBe(true);
+    expect(public_.reason).toBeUndefined();
   });
 });
 
@@ -324,13 +358,11 @@ describe("publicGatewayErrorDetails — bounds", () => {
   });
 });
 
-describe("publicGatewayErrorDetails — raw is published verbatim", () => {
-  test("an upstream body reaches the client unmodified", () => {
-    // The `raw` field used to be swept for credential-shaped strings. It no
-    // longer is: rewriting part of an upstream body makes the echoed error
-    // unreadable, and a 400 the operator has to diagnose loses the one field
-    // that names what the provider actually objected to. The upstream decides
-    // what it echoes; the gateway does not edit it.
+describe("publicGatewayErrorDetails — raw/provider identity is dropped (TipRouter)", () => {
+  test("an upstream body never reaches the client — reworded, not echoed", () => {
+    // TipRouter local patch: buyers must never see verbatim third-party
+    // provider text (it leaks provider identity, free-tier notes, billing
+    // URLs). The raw text stays on the error object for logs/telemetry.
     const upstreamBody = {
       error: {
         message: "invalid api key: sk-ant-api03-EXAMPLEnotarealkey000000000000",
@@ -340,26 +372,19 @@ describe("publicGatewayErrorDetails — raw is published verbatim", () => {
     const value = publicGatewayErrorDetails(
       new GatewayError("authentication_failed", 401, "x", { raw: upstreamBody }),
     ).raw;
-    expect(JSON.stringify(value)).toContain("sk-ant-api03-EXAMPLEnotarealkey000000000000");
+    expect(value).toBeUndefined();
   });
 
-  test("a bearer token echoed in an upstream body is preserved", () => {
-    const value = publicGatewayErrorDetails(
+  test("provider identity keys are dropped from the public envelope", () => {
+    const public_ = publicGatewayErrorDetails(
       new GatewayError("authentication_failed", 401, "x", {
         raw: { detail: "Authorization: Bearer EXAMPLEtokenvalue1234567890 was rejected" },
+        providerId: "some-provider",
+        providerCode: "some-provider-401",
       }),
-    ).raw;
-    expect(JSON.stringify(value)).toContain("EXAMPLEtokenvalue1234567890");
-  });
-
-  test("the body keeps its shape rather than collapsing to a placeholder", () => {
-    const value = publicGatewayErrorDetails(
-      new GatewayError("authentication_failed", 401, "x", {
-        raw: { error: { type: "authentication_error", message: "bad key" } },
-      }),
-    ).raw;
-    expect(JSON.stringify(value)).toContain("authentication_error");
-    expect(JSON.stringify(value)).toContain("bad key");
+    );
+    expect(public_).toEqual({});
+    expect(JSON.stringify(public_)).not.toContain("some-provider");
   });
 
   test("every allowlisted field is published verbatim", () => {
@@ -371,14 +396,14 @@ describe("publicGatewayErrorDetails — raw is published verbatim", () => {
     expect(value).toBe("upstream returned 500");
   });
 
-  test("raw is still size-bounded", () => {
-    // The bound survives the removal of the sweep: an enormous upstream body
-    // is still cut down before it reaches an envelope.
+  test("a dropped raw body never reaches the envelope, however large", () => {
+    // TipRouter: `raw` is not allowlisted at all, so no upstream body —
+    // however large — can reach a buyer envelope.
     const longBody = `x${"a".repeat(4_000)}`;
     const value = publicGatewayErrorDetails(
       new GatewayError("authentication_failed", 401, "x", { raw: { message: longBody } }),
     ).raw;
-    expect(JSON.stringify(value).length).toBeLessThan(2_000);
+    expect(value).toBeUndefined();
   });
 });
 
@@ -387,7 +412,7 @@ describe("publicGatewayErrorDetails — a hostile details object", () => {
     // `details` is built by internal code, but a value passed through from an
     // upstream JSON body could in principle be cyclic after a transform. An
     // error path that throws replaces a useful rejection with a 500.
-    const circular: Record<string, unknown> = { providerId: "anthropic" };
+    const circular: Record<string, unknown> = { reason: "x" };
     circular.reason = circular;
     let failure: unknown = null;
     let result: Readonly<Record<string, unknown>> | undefined;
@@ -399,8 +424,10 @@ describe("publicGatewayErrorDetails — a hostile details object", () => {
       failure = error;
     }
     // The depth bound stops the recursion, so this resolves rather than throws.
+    // (TipRouter: providerId is no longer allowlisted, so the circular test
+    // uses `reason`, which is.)
     expect(failure).toBeNull();
-    expect(result?.providerId).toBe("anthropic");
+    expect(result?.reason).toBeDefined();
   });
 
   test("a details object with a getter that throws does not escape", () => {
