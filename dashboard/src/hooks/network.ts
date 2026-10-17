@@ -5,6 +5,7 @@ import type { ApiErrorShape } from "../data/api";
 import type {
   CreateNetworkPoolRequest,
   HealthCheckResult,
+  PoolProviderProbeResult,
   NetworkPoolResponse,
   PoolBatchProbeResult,
   PoolHealthEvent,
@@ -178,6 +179,40 @@ export function useDeleteNetworkPool() {
 }
 
 
+
+/**
+ * Asks one provider whether it will serve traffic from a pool.
+ *
+ * Separate from the health check because the two answer different questions:
+ * a health check proves the proxy carries traffic at all, while this proves
+ * one provider accepts *this* egress. OpenCode refuses a flagged address on
+ * its dispatch route while still serving its public catalog from it, so only
+ * this probe can tell an operator the pool is blocked before a user request
+ * spends itself finding out.
+ */
+export function useProviderProbeNetworkPool() {
+  const queryClient = useQueryClient();
+  return useMutation<
+    PoolProviderProbeResult,
+    ApiErrorShape,
+    { poolId: string; providerId: string; block?: boolean }
+  >({
+    mutationFn: ({ poolId, providerId, block }) =>
+      consoleRequest<PoolProviderProbeResult>(
+        `/network/pools/${encodeURIComponent(poolId)}/provider-probe`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            providerId,
+            ...(block === undefined ? {} : { block }),
+          }),
+        },
+      ),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.network.pools });
+    },
+  });
+}
 
 /** Triggers a health check for a network pool. */
 export function useHealthCheckNetworkPool() {

@@ -106,6 +106,34 @@ export interface HealthCheckResult {
   egressIp?: string;
 }
 /**
+ * Whether one upstream provider accepts traffic from this pool's egress.
+ *
+ * Distinct from `HealthCheckResult` in what it asks. A health check says "the
+ * proxy carries traffic" by dialing a neutral canary; this says "this
+ * particular provider will serve us from this address", which a neutral canary
+ * cannot answer — OpenCode's free tier refuses a flagged address on the
+ * dispatch route while still answering its public catalog from the same
+ * address. Only the dispatch route tells the two apart.
+ *
+ * `blocked` is not a transient failure: the upstream retired the address, so
+ * the pool stays out of rotation for that provider until the proxy is
+ * replaced. `unreachable` means the probe itself could not complete, which
+ * says nothing about the address.
+ */
+export interface PoolProviderProbeResult {
+  poolId: string;
+  providerId: string;
+  status: "allowed" | "blocked" | "unreachable";
+  /** Upstream status when a response arrived. */
+  httpStatus?: number;
+  latencyMs?: number;
+  /** The upstream's own reason, bounded for display. */
+  reason?: string;
+  /** Whether this probe retired the pool for the provider. */
+  blockedPool?: boolean;
+}
+
+/**
  * Throughput measured by dialing a fixed-size download through the pool.
  *
  * Distinct from `HealthCheckResult`: a health check asks "can this pool carry
@@ -311,6 +339,12 @@ export interface NetworkPoolStore {
     tenantId: string,
     request: CreateNetworkPoolRequest,
   ): Promise<HealthCheckResult>;
+  /** Asks one provider whether it will serve traffic from this pool. */
+  providerProbe?(
+    tenantId: string,
+    poolId: string,
+    providerId: string,
+  ): Promise<PoolProviderProbeResult>;
   listHealthEvents(tenantId: string, poolId: string): Promise<readonly PoolHealthEvent[]>;
   recover(tenantId: string, poolId: string): Promise<boolean>;
   /** Per-tenant pool-group selection strategy; an absent row reads as

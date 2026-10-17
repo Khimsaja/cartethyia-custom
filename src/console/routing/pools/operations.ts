@@ -21,6 +21,7 @@ import {
   validateTransportConfig,
   type CreateNetworkPoolRequest,
   type HealthCheckResult,
+  type PoolProviderProbeResult,
   type NetworkPoolConfig,
   type NetworkPoolRecord,
   type NetworkPoolResponse,
@@ -311,6 +312,35 @@ export function createNetworkPoolOperations(config: NetworkPoolConfig) {
         );
       }
       return config.store.speedTest(a.tenantId, poolId, bytes);
+    },
+    /**
+     * Asks one provider whether it will serve traffic from this pool.
+     *
+     * Read-only by default: an operator testing a proxy wants to know its
+     * state, not to change it. `block` is the explicit opt-in that also
+     * retires the pool for that provider.
+     */
+    async providerProbe(
+      access: AccessDecision | undefined,
+      poolId: string,
+      providerId: string,
+      options: { readonly block?: boolean } = {},
+    ): Promise<PoolProviderProbeResult> {
+      const a = requireTenantScope(access, "dashboard:read");
+      if (!config.store.providerProbe) {
+        throw new ConsoleDomainError("not_supported", 400, "Provider probing is unavailable");
+      }
+      const result = await config.store.providerProbe(a.tenantId, poolId, providerId);
+      if (result.status !== "blocked" || options.block !== true) return result;
+      if (!config.poolSelector) {
+        return { ...result, blockedPool: false };
+      }
+      await config.poolSelector.flagProviderBlocked(
+        poolId,
+        providerId,
+        "Upstream refused this egress address",
+      );
+      return { ...result, blockedPool: true };
     },
     async probeAdHocPool(
       access: AccessDecision | undefined,

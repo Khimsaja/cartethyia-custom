@@ -76,6 +76,18 @@ export function createNetworkPoolRoutes(config: NetworkPoolConfig): Elysia {
     .post("/:poolId/recover", async ({ request, params }) => {
       return await factory.recoverPool(config.accessResolver(request), params.poolId);
 })
+    .post(
+      "/:poolId/provider-probe",
+      { body: t.Object({ providerId: t.String(), block: t.Optional(t.Boolean()) }) },
+      async ({ request, params, body }) => {
+        return await factory.providerProbe(
+          config.accessResolver(request),
+          params.poolId,
+          body.providerId,
+          body.block === undefined ? {} : { block: body.block },
+        );
+      },
+    )
     .post("/:poolId/health-check", async ({ request, params }) => {
       return await factory.healthCheck(config.accessResolver(request), params.poolId);
 })

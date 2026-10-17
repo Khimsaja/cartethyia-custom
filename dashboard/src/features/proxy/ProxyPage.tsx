@@ -1,3 +1,4 @@
+import { useProviderProbeNetworkPool } from "../../hooks/network";
 import {
   Activity,
   Cloud,
@@ -35,7 +36,12 @@ import {
   SPEED_TEST_MAX_BYTES,
   SPEED_TEST_MIN_BYTES,
 } from "../../data/contracts";
-import type { HealthCheckResult, NetworkPoolResponse, PoolSpeedTestResult } from "../../data/contracts";
+import type {
+  HealthCheckResult,
+  NetworkPoolResponse,
+  PoolProviderProbeResult,
+  PoolSpeedTestResult,
+} from "../../data/contracts";
 import {
   useCreateNetworkPool,
   useDeleteNetworkPool,
@@ -70,6 +76,33 @@ import { downloadTextFile } from "../../lib/download";
 import { toast } from "../../lib/toast";
 import { getErrorMessage } from "../../data/api";
 const BULK_POOL_CREATE_CONCURRENCY = 4;
+
+/**
+ * What the split Test control sends.
+ *
+ * `url` is the neutral Cloudflare canary: it proves the proxy carries traffic
+ * and reports the egress address, which is what the table column shows.
+ * `opencode` asks the provider itself, because OpenCode refuses a flagged
+ * address on its dispatch route while still serving its public catalog from
+ * the same address — a neutral probe cannot see that.
+ */
+type TestPayload = "url" | "opencode";
+const TEST_PAYLOAD_STORAGE_KEY = "cartethyia_proxy_test_payload";
+const TEST_PAYLOAD_OPTIONS = [
+  { value: "url", label: "Test URL" },
+  { value: "opencode", label: "Test OpenCode" },
+];
+
+/** The provider the OpenCode payload asks. */
+const PROBE_PROVIDER_ID = "opencode";
+/**
+ * How many provider probes run at once.
+ *
+ * Lower than the health check's eight: each probe opens a tunnel and a TLS
+ * session to the provider, and a wide fan-out across a large selection is what
+ * makes a batch probe look like an outage from the upstream's side.
+ */
+const PROVIDER_PROBE_CONCURRENCY = 4;
 
 const MYSTERIOUS_PROXY = "Mysterious Proxy";
 
@@ -731,6 +764,8 @@ interface PoolView {
   readonly load: number;
   readonly cooldowns: readonly NonNullable<NetworkPoolResponse["providerCooldowns"]>[number][];
   readonly cooldownText: string;
+  /** The last OpenCode probe for this pool, when one has run. */
+  readonly probe?: PoolProviderProbeResult;
   /** Providers this egress is retired for, as opposed to merely throttled. */
   readonly blocked: readonly NonNullable<NetworkPoolResponse["providerCooldowns"]>[number][];
   readonly cooldownOnly: readonly NonNullable<NetworkPoolResponse["providerCooldowns"]>[number][];
@@ -745,6 +780,7 @@ function derivePoolView(
   checkResult: HealthCheckResult | undefined,
   isTesting: boolean,
   liveBytes: PoolUsageRow | null,
+  probe?: PoolProviderProbeResult,
 ): PoolView {
   const display = poolDisplay(pool);
   const poolLabel = poolName(pool);
@@ -830,6 +866,7 @@ function derivePoolView(
     blocked,
     cooldownOnly,
     cooldownText,
+    ...(probe === undefined ? {} : { probe }),
     metered,
     session,
     used: Math.max(metered, session),
@@ -868,6 +905,23 @@ function PoolTitleBlock({
         {view.blocked.length > 0 ? (
           <Badge tone="disabled" title={view.cooldownText}>
             {view.blocked.length} blocked
+          </Badge>
+        ) : null}
+        {view.probe ? (
+          <Badge
+            tone={view.probe.status === "blocked" ? "disabled" : view.probe.status === "allowed" ? "ok" : "warn"}
+            title={
+              view.probe.reason ??
+              (view.probe.status === "allowed"
+                ? "OpenCode served a probe through this pool"
+                : "OpenCode refused this egress")
+            }
+          >
+            {view.probe.status === "blocked"
+              ? "OpenCode blocked"
+              : view.probe.status === "allowed"
+                ? "OpenCode OK"
+                : "OpenCode unreachable"}
           </Badge>
         ) : null}
         {view.cooldownOnly.length > 0 ? (
@@ -1129,11 +1183,13 @@ const PoolRow = memo(function PoolRow({
   isSpeedTesting,
   maskValues,
   maskIp,
+  probe,
 }: {
   readonly pool: NetworkPoolResponse;
   readonly isSelected: boolean;
   readonly onToggleSelect: (id: string) => void;
   readonly checkResult?: HealthCheckResult;
+  readonly probe?: PoolProviderProbeResult;
   readonly isTesting: boolean;
   readonly onDelete: (id: string) => void;
   readonly onEdit: (pool: NetworkPoolResponse) => void;
@@ -1150,7 +1206,7 @@ const PoolRow = memo(function PoolRow({
   // actually re-render.
   const live = useContext(PoolUsageContext);
   const usage = live.live ? live.byId.get(pool.id) : undefined;
-  const view = derivePoolView(pool, checkResult, isTesting, usage ?? null);
+  const view = derivePoolView(pool, checkResult, isTesting, usage ?? null, probe);
   return (
     <tr className={view.isEnabled ? "" : "opacity-60"}>
       <td className="w-13">
@@ -1335,6 +1391,25 @@ export default function Proxy(): ReactNode {
   const ipMask = useMaskIp();
   const maskIp = ipMask.enabled;
   const [testingIds, setTestingIds] = useState<ReadonlySet<string>>(new Set());
+  // The split control's payload choice, persisted like the other view
+  // preferences: an operator debugging OpenCode wants that payload on return.
+  const [testPayload, setTestPayload] = useState<TestPayload>(() => {
+    try {
+      return localStorage.getItem(TEST_PAYLOAD_STORAGE_KEY) === "opencode" ? "opencode" : "url";
+    } catch {
+      return "url";
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(TEST_PAYLOAD_STORAGE_KEY, testPayload);
+    } catch {
+      // A blocked storage must not break the page.
+    }
+  }, [testPayload]);
+  const [providerTestingIds, setProviderTestingIds] = useState<ReadonlySet<string>>(new Set());
+  const [providerResults, setProviderResults] = useState<Record<string, PoolProviderProbeResult>>({});
+  const providerProbe = useProviderProbeNetworkPool();
   const speedTest = useSpeedTestNetworkPool();
   const [speedBytes, setSpeedBytes] = useState(SPEED_TEST_DEFAULT_BYTES);
   // Persisted like `checkResults`: a measurement is expensive to take (it pulls
@@ -1515,6 +1590,69 @@ export default function Proxy(): ReactNode {
     };
     await Promise.all(Array.from({ length: Math.min(8, targets.length) }, () => worker()));
     toast.success(`Tested ${targets.length} pools · ${healthy} healthy · ${failed} failed`);
+  };
+
+  /**
+   * Asks OpenCode, through each selected pool, whether it will serve us.
+   *
+   * Bounded like the health check but narrower: each probe opens a tunnel and
+   * a TLS session to the provider, so four at a time finishes a selection
+   * without the fan-out reading as an outage upstream.
+   *
+   * Read-only. The probe reports what it saw and leaves the pool in rotation;
+   * a real dispatch that is refused is what retires the egress. An operator
+   * testing a proxy wants to know its state, not to change it — and a probe
+   * that mutated would make "test" unsafe to press.
+   */
+  const runProviderProbeSelected = async () => {
+    const targets = pools.filter((pool) => selectedIds.has(pool.id));
+    if (targets.length === 0) return;
+    let allowed = 0;
+    let blocked = 0;
+    let unreachable = 0;
+    let cursor = 0;
+    const worker = async (): Promise<void> => {
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const pool = targets[cursor++];
+        if (!pool) return;
+        setProviderTestingIds((prev) => new Set(prev).add(pool.id));
+        try {
+          const result = await providerProbe.mutateAsync({
+            poolId: pool.id,
+            providerId: PROBE_PROVIDER_ID,
+          });
+          setProviderResults((prev) => ({ ...prev, [pool.id]: result }));
+          if (result.status === "allowed") allowed += 1;
+          else if (result.status === "blocked") blocked += 1;
+          else unreachable += 1;
+        } catch (err) {
+          unreachable += 1;
+          setProviderResults((prev) => ({
+            ...prev,
+            [pool.id]: {
+              poolId: pool.id,
+              providerId: PROBE_PROVIDER_ID,
+              status: "unreachable",
+              reason: getErrorMessage(err, "Provider probe failed"),
+            },
+          }));
+        } finally {
+          setProviderTestingIds((prev) => {
+            const next = new Set(prev);
+            next.delete(pool.id);
+            return next;
+          });
+        }
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(PROVIDER_PROBE_CONCURRENCY, targets.length) }, () => worker()),
+    );
+    toast.success(
+      `OpenCode: ${allowed} allowed · ${blocked} blocked` +
+        (unreachable > 0 ? ` · ${unreachable} unreachable` : ""),
+    );
   };
 
   // One at a time. Each test pulls several megabytes, and two running together
@@ -1726,21 +1864,44 @@ export default function Proxy(): ReactNode {
                 >
                   Test all
                 </Button>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={testingIds.size > 0 || selectedIds.size === 0}
-                  icon={
-                    testingIds.size > 0 ? (
-                      <Loader2 size={12} className="animate-spin" />
-                    ) : (
-                      <FlaskConical size={12} />
-                    )
-                  }
-                  onClick={() => void runTestSelected()}
-                >
-                  Test selected
-                </Button>
+                {/* Split control: the primary half runs the payload the
+                    dropdown selects against the current selection. Test all
+                    stays outside this control because it deliberately ignores
+                    the selection. */}
+                <div className="inline-flex items-stretch h-15">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="rounded-tr-none rounded-br-none"
+                    disabled={
+                      testingIds.size > 0 ||
+                      providerTestingIds.size > 0 ||
+                      selectedIds.size === 0
+                    }
+                    icon={
+                      testingIds.size > 0 || providerTestingIds.size > 0 ? (
+                        <Loader2 size={12} className="animate-spin" />
+                      ) : (
+                        <FlaskConical size={12} />
+                      )
+                    }
+                    onClick={() =>
+                      void (testPayload === "opencode"
+                        ? runProviderProbeSelected()
+                        : runTestSelected())
+                    }
+                  >
+                    {testPayload === "opencode" ? "Test OpenCode" : "Test URL"}
+                  </Button>
+                  <Select
+                    aria-label="Test payload"
+                    value={testPayload}
+                    onValueChange={(value) => setTestPayload(value as TestPayload)}
+                    options={TEST_PAYLOAD_OPTIONS}
+                    disabled={testingIds.size > 0 || providerTestingIds.size > 0}
+                    className="w-auto min-w-38 h-15 rounded-tl-none rounded-bl-none -ml-0.5"
+                  />
+                </div>
                 {/* Split control: the primary half runs the test at the
                     currently-selected payload, the chevron half picks the
                     payload. Kept as two elements in one bordered shell so it
@@ -1849,6 +2010,7 @@ export default function Proxy(): ReactNode {
                     isSelected={selectedIds.has(pool.id)}
                     onToggleSelect={toggleSelectOne}
                     checkResult={checkResults[pool.id]}
+                    probe={providerResults[pool.id]}
                     isTesting={testingIds.has(pool.id)}
                     onDelete={requestDeletePool}
                     onEdit={setEditingPool}

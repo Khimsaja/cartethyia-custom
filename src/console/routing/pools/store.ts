@@ -8,6 +8,7 @@ import {
   type HealthCheckResult,
   type NetworkPoolRecord,
   type NetworkPoolStore,
+  type PoolProviderProbeResult,
   type PoolSpeedTestResult,
   type PoolStrategySetting,
 } from "./contracts";
@@ -43,6 +44,9 @@ const NETWORK_POOL_HEALTH_CANARY = "https://www.cloudflare.com/cdn-cgi/trace";
 // not dominate; operators can ask for more when the link is fast enough that
 // a short transfer measures ramp-up instead of throughput.
 const NETWORK_POOL_SPEED_TEST_URL = "https://speed.cloudflare.com/__down?bytes=";
+/** A provider probe is one small request; a slow proxy should not hold the batch. */
+const PROVIDER_PROBE_TIMEOUT_MS = 20_000;
+
 /** Worst-case wait for the largest allowed payload on a slow link. */
 const NETWORK_POOL_SPEED_TEST_TIMEOUT_MS = 60_000;
 /** Real Drizzle-backed network pool repository. */
@@ -147,6 +151,88 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
       egressIp = undefined;
     }
     return { response, latencyMs, ...(egressIp ? { egressIp } : {}) };
+  }
+
+  /**
+   * Asks one provider whether it will serve traffic from this pool's egress.
+   *
+   * The request is built by the provider's own adapter spec, so the probe
+   * exercises the headers and body a real dispatch would send rather than a
+   * stand-in that could pass while dispatch fails. `big-pickle` is the model
+   * used because it is the one free id the listing always carries.
+   *
+   * The payload is deliberately minimal: the gate rejects a flagged address
+   * before it reads the body (verified live — `{model, stream:true}` with no
+   * `messages` still answers `403 FreeTierError`), so nothing is inferred and
+   * no tokens are spent.
+   *
+   * A `blocked` outcome also retires the pool for that provider, which is the
+   * same write a real refused dispatch performs. The probe is the only way to
+   * learn this before spending a user request.
+   */
+  async providerProbe(
+    tenantId: string,
+    poolId: string,
+    providerId: string,
+  ): Promise<PoolProviderProbeResult> {
+    const rec = await this.get(tenantId, poolId);
+    if (!rec) throw new Error(`Pool ${poolId} not found`);
+    let agent: PoolAgent;
+    try {
+      agent = await this.poolAgents.resolveAgent(rec.id, tenantId);
+    } catch (error) {
+      return {
+        poolId,
+        providerId,
+        status: "unreachable",
+        reason: error instanceof Error ? error.message : "Failed to build pool agent",
+      };
+    }
+
+    const { buildProviderProbeRequest } = await import("../../../providers/provider-probe");
+    const spec = await buildProviderProbeRequest(providerId);
+    if (!spec) {
+      return { poolId, providerId, status: "unreachable", reason: "Unknown provider" };
+    }
+
+    const started = performance.now();
+    let response: Response;
+    try {
+      response = await createValidatedFetch({ agent })(spec.url, {
+        method: "POST",
+        headers: spec.headers,
+        body: JSON.stringify(spec.body),
+        signal: AbortSignal.timeout(PROVIDER_PROBE_TIMEOUT_MS),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Probe failed";
+      const timedOut =
+        (error instanceof Error && error.name === "AbortError") ||
+        /timed out|timeout|ETIMEDOUT/i.test(message);
+      return {
+        poolId,
+        providerId,
+        status: "unreachable",
+        latencyMs: Math.round(performance.now() - started),
+        reason: timedOut ? "Probe timed out" : message,
+      };
+    }
+    const latencyMs = Math.round(performance.now() - started);
+    const text = await response.text().catch(() => "");
+    const blocked = response.status === 403 && /freetier|free tier can only be used/i.test(text);
+
+    return {
+      poolId,
+      providerId,
+      status: blocked ? "blocked" : response.ok ? "allowed" : "unreachable",
+      httpStatus: response.status,
+      latencyMs,
+      ...(blocked
+        ? { reason: "Upstream refused this egress address" }
+        : response.ok
+          ? {}
+          : { reason: `Upstream answered ${response.status}` }),
+    };
   }
 
   async list(tenantId: string): Promise<readonly NetworkPoolRecord[]> {
