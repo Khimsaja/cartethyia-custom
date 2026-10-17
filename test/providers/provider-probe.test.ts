@@ -61,6 +61,16 @@ describe("provider probe", () => {
     expect(names).toContain("read");
   });
 
+  test("the probe carries the stream controls a real dispatch does", async () => {
+    const probe = await buildProviderProbeRequest("opencode");
+    const body = probe?.body as { stream_options?: { include_usage?: boolean } };
+    // A streamed dispatch attaches `stream_options.include_usage`. The probe
+    // omitted it, so its upstream body was missing a field the real one
+    // carries — exactly the class of difference that lets a provider accept
+    // the probe and reject live traffic.
+    expect(body.stream_options?.include_usage).toBe(true);
+  });
+
   test("it sends one short turn, not an empty message list", async () => {
     const probe = await buildProviderProbeRequest("opencode");
     const body = probe?.body as { messages?: unknown[] };

@@ -83,6 +83,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- The model probe now sends the same request shape a real dispatch does:
+  `stream_options.include_usage` is attached, the sampling temperature is no
+  longer pinned, and the output allowance is sentence-sized instead of 1024.
+  The probe's whole purpose is to predict what live traffic will do, and it was
+  a different request — which is how a provider could reject the share page with
+  `400 request illegal` while accepting the probe.
 - A quota fetch that failed for this sweep no longer raises a `Quota
   unreachable` pill on the account row. The account routes fine — only its
   allowance is unknown, and the next sweep retries. A real refusal
