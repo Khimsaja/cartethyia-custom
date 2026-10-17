@@ -450,6 +450,8 @@ describe("the error code vocabulary", () => {
       "accounts_rate_limited",
       "capacity_exhausted",
       "proxy_pool_capacity_exceeded",
+      "proxy_pool_provider_capacity_exceeded",
+      "proxy_pool_blocked",
       "proxy_pool_cooldown",
       "proxy_pool_unavailable",
       "proxy_pool_unhealthy",

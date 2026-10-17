@@ -35,6 +35,7 @@ async function acquirePoolSlot(
   let limits = candidate.network_pool_limits;
   let weights = candidate.network_pool_weights;
   let routing = candidate.network_pool_routing;
+  let providerLimit = candidate.network_pool_provider_limit;
   if (!poolIds?.length && !candidate.network_pool_required && source.plan.candidates) {
     const sibling = source.plan.candidates.find(
       (c) =>
@@ -47,6 +48,7 @@ async function acquirePoolSlot(
       limits = sibling.network_pool_limits;
       weights = sibling.network_pool_weights;
       routing = sibling.network_pool_routing;
+      providerLimit = sibling.network_pool_provider_limit;
     }
   }
   // Round-robin rotation rides the strategy the snapshot attached to the
@@ -76,6 +78,7 @@ async function acquirePoolSlot(
       limits,
       weights,
       rotation,
+      providerLimit,
     );
   }
   let acquiredSlot: { poolId: string; release: () => void } | undefined;
@@ -86,6 +89,7 @@ async function acquirePoolSlot(
       limits,
       weights,
       rotation,
+      providerLimit,
     );
   } catch {
     throw new GatewayError(
@@ -117,21 +121,35 @@ async function acquirePoolSlot(
           candidate.provider_id,
           limits,
           weights,
+          providerLimit,
         )
       : { reason: "at_capacity" as const, pools: poolDetails };
+  // One message per outcome, each naming the one action that fixes it. A
+  // blocked egress is never described as a cooldown: nothing clears it on a
+  // timer, so "retry shortly" would send the operator to wait for something
+  // that will not happen.
   const code =
     failure.reason === "at_capacity"
       ? "proxy_pool_capacity_exceeded"
-      : failure.reason === "cooldown"
-        ? "proxy_pool_cooldown"
-        : "proxy_pool_unavailable";
-  const status = failure.reason === "at_capacity" ? 429 : 503;
+      : failure.reason === "provider_at_capacity"
+        ? "proxy_pool_provider_capacity_exceeded"
+        : failure.reason === "blocked"
+          ? "proxy_pool_blocked"
+          : failure.reason === "cooldown"
+            ? "proxy_pool_cooldown"
+            : "proxy_pool_unavailable";
+  const status =
+    failure.reason === "at_capacity" || failure.reason === "provider_at_capacity" ? 429 : 503;
   const message =
     failure.reason === "at_capacity"
       ? "Every proxy pool for this provider is at its concurrency limit. Retry shortly, or add a pool or raise its capacity."
-      : failure.reason === "cooldown"
-        ? "Every proxy pool for this provider is cooling down after upstream failures. Retry once the cooldown resets."
-        : "No active proxy pool is configured for this tenant and provider. Add one, or route this provider through direct egress.";
+      : failure.reason === "provider_at_capacity"
+        ? "Every proxy pool has reached this provider's per-proxy concurrency limit. Retry shortly, raise the limit in the provider's routing settings, or add a pool."
+        : failure.reason === "blocked"
+          ? "The upstream refuses every proxy pool configured for this provider, so no egress is available. Replace the blocked proxies, or add one the upstream has not flagged."
+          : failure.reason === "cooldown"
+            ? "Every proxy pool for this provider is cooling down after upstream failures. Retry once the cooldown resets."
+            : "No active proxy pool is configured for this tenant and provider. Add one, or route this provider through direct egress.";
   throw new GatewayError(code, status, message, {
     pools: failure.pools,
     // Only measured evidence: a cooldown's real reset instant. The

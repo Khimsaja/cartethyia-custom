@@ -31,6 +31,8 @@ export interface RoutingStrategyState {
   readonly rotateCount: number;
   readonly setRotateCount: (next: number) => void;
   readonly maxInflight: number | null;
+  /** Per-pool ceiling for this provider; `null` = unlimited. */
+  readonly maxInflightPerProxy: number | null;
   readonly usageFloor: number | null;
   readonly usageFloorUnit: "credit" | "percent";
   readonly setUsageFloor: (floor: number | null, unit: "credit" | "percent") => void;
@@ -43,6 +45,7 @@ export interface RoutingStrategyState {
   readonly saveFailed: boolean;
   readonly refetch: () => void;
   readonly setMaxInflight: (next: number | null) => void;
+  readonly setMaxInflightPerProxy: (next: number | null) => void;
   readonly setSkipProxy: (next: boolean) => void;
 }
 
@@ -52,6 +55,7 @@ export function useRoutingStrategy(providerId: string, allowUserAgent: boolean):
   const [strategy, setStrategyState] = useState<RoutingStrategy>("fallback");
   const [rotateCount, setRotateCountState] = useState(1);
   const [maxInflight, setMaxInflightState] = useState<number | null>(null);
+  const [maxInflightPerProxy, setMaxInflightPerProxyState] = useState<number | null>(null);
   const [usageFloor, setUsageFloorState] = useState<number | null>(null);
   const [usageFloorUnit, setUsageFloorUnitState] = useState<"credit" | "percent">("percent");
   const [skipProxy, setSkipProxyState] = useState(false);
@@ -66,6 +70,7 @@ export function useRoutingStrategy(providerId: string, allowUserAgent: boolean):
     setStrategyState(query.data.strategy);
     setRotateCountState(query.data.rotateCount);
     setMaxInflightState(query.data.maxInflight);
+    setMaxInflightPerProxyState(query.data.maxInflightPerProxy ?? null);
     setUsageFloorState(query.data.usageFloor);
     setUsageFloorUnitState(query.data.usageFloorUnit);
     setSkipProxyState(query.data.skipProxy);
@@ -76,6 +81,7 @@ export function useRoutingStrategy(providerId: string, allowUserAgent: boolean):
     strategy: RoutingStrategy;
     rotateCount: number;
     maxInflight: number | null;
+    maxInflightPerProxy: number | null;
     usageFloor: number | null;
     usageFloorUnit: "credit" | "percent";
     skipProxy: boolean;
@@ -89,6 +95,7 @@ export function useRoutingStrategy(providerId: string, allowUserAgent: boolean):
           strategy: next.strategy,
           rotateCount: next.rotateCount,
           maxInflight: next.maxInflight,
+          maxInflightPerProxy: next.maxInflightPerProxy,
           usageFloor: next.usageFloor,
           usageFloorUnit: next.usageFloorUnit,
           skipProxy: next.skipProxy,
@@ -101,6 +108,7 @@ export function useRoutingStrategy(providerId: string, allowUserAgent: boolean):
           setStrategyState(query.data.strategy);
           setRotateCountState(query.data.rotateCount);
           setMaxInflightState(query.data.maxInflight);
+          setMaxInflightPerProxyState(query.data.maxInflightPerProxy ?? null);
           setUsageFloorState(query.data.usageFloor);
           setUsageFloorUnitState(query.data.usageFloorUnit);
           setSkipProxyState(query.data.skipProxy);
@@ -114,6 +122,19 @@ export function useRoutingStrategy(providerId: string, allowUserAgent: boolean):
       strategy,
       rotateCount,
       maxInflight: next,
+      maxInflightPerProxy,
+      usageFloor,
+      usageFloorUnit,
+      skipProxy,
+      userAgent,
+    }),
+  );
+  const scheduleMaxInflightPerProxySave = useDebouncedSave((next: number | null) =>
+    save({
+      strategy,
+      rotateCount,
+      maxInflight,
+      maxInflightPerProxy: next,
       usageFloor,
       usageFloorUnit,
       skipProxy,
@@ -125,6 +146,7 @@ export function useRoutingStrategy(providerId: string, allowUserAgent: boolean):
       strategy,
       rotateCount: next,
       maxInflight,
+      maxInflightPerProxy,
       usageFloor,
       usageFloorUnit,
       skipProxy,
@@ -136,6 +158,7 @@ export function useRoutingStrategy(providerId: string, allowUserAgent: boolean):
       strategy,
       rotateCount,
       maxInflight,
+      maxInflightPerProxy,
       usageFloor,
       usageFloorUnit,
       skipProxy,
@@ -146,12 +169,13 @@ export function useRoutingStrategy(providerId: string, allowUserAgent: boolean):
   return {
     strategy,
     maxInflight,
+    maxInflightPerProxy,
     usageFloor,
     usageFloorUnit,
     setUsageFloor: (floor, unit) => {
       setUsageFloorState(floor);
       setUsageFloorUnitState(unit);
-      save({ strategy, rotateCount, maxInflight, usageFloor: floor, usageFloorUnit: unit, skipProxy, userAgent });
+      save({ strategy, rotateCount, maxInflight, maxInflightPerProxy, usageFloor: floor, usageFloorUnit: unit, skipProxy, userAgent });
     },
     skipProxy,
     userAgent,
@@ -164,6 +188,10 @@ export function useRoutingStrategy(providerId: string, allowUserAgent: boolean):
       setMaxInflightState(next);
       scheduleMaxInflightSave(next);
     },
+    setMaxInflightPerProxy: (next) => {
+      setMaxInflightPerProxyState(next);
+      scheduleMaxInflightPerProxySave(next);
+    },
     setUserAgent: (next) => {
       setUserAgentState(next);
       scheduleUserAgentSave(next);
@@ -174,6 +202,7 @@ export function useRoutingStrategy(providerId: string, allowUserAgent: boolean):
         strategy,
         rotateCount,
         maxInflight,
+      maxInflightPerProxy,
         usageFloor,
         usageFloorUnit,
         skipProxy: next,
@@ -188,6 +217,7 @@ export function useRoutingStrategy(providerId: string, allowUserAgent: boolean):
         strategy: resolved,
         rotateCount,
         maxInflight,
+      maxInflightPerProxy,
         usageFloor,
         usageFloorUnit,
         skipProxy,

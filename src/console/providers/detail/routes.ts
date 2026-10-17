@@ -24,6 +24,10 @@ const ROUTING_STRATEGIES = providerRoutingStrategy.enumValues;
 const ROUTING_BOUNDS = {
   rotateCount: { min: 1, max: 1000 },
   maxInflight: PROVIDER_ROUTING_MAX_INFLIGHT_BOUNDS,
+  /** A proxy pool's own concurrency is usually 10, so a per-provider share
+   * above this is almost certainly a typo. Same ceiling as the per-account
+   * field keeps the two sliders from disagreeing about what "large" means. */
+  maxInflightPerProxy: PROVIDER_ROUTING_MAX_INFLIGHT_BOUNDS,
 } as const;
 
 export function createProviderDetailOperations(deps: ProviderDetailConfig) {
@@ -68,6 +72,19 @@ export function createProviderDetailOperations(deps: ProviderDetailConfig) {
             "invalid_max_inflight",
             400,
             `maxInflight must be an integer between ${maxInflight.min} and ${maxInflight.max}, or null`,
+          );
+      }
+      if (patch.maxInflightPerProxy !== undefined && patch.maxInflightPerProxy !== null) {
+        const bound = ROUTING_BOUNDS.maxInflightPerProxy;
+        if (
+          !Number.isInteger(patch.maxInflightPerProxy) ||
+          patch.maxInflightPerProxy < bound.min ||
+          patch.maxInflightPerProxy > bound.max
+        )
+          throw new ConsoleDomainError(
+            "invalid_max_inflight_per_proxy",
+            400,
+            `maxInflightPerProxy must be an integer between ${bound.min} and ${bound.max}, or null`,
           );
       }
       if (patch.usageFloor !== undefined && patch.usageFloor !== null) {
@@ -126,6 +143,14 @@ const updateRoutingBody = t.Object({
   maxInflight: t.Optional(
     t.Nullable(
       t.Integer({ minimum: ROUTING_BOUNDS.maxInflight.min, maximum: ROUTING_BOUNDS.maxInflight.max }),
+    ),
+  ),
+  maxInflightPerProxy: t.Optional(
+    t.Nullable(
+      t.Integer({
+        minimum: ROUTING_BOUNDS.maxInflightPerProxy.min,
+        maximum: ROUTING_BOUNDS.maxInflightPerProxy.max,
+      }),
     ),
   ),
   usageFloor: t.Optional(t.Nullable(t.Integer({ minimum: 0, maximum: 1_000_000 }))),

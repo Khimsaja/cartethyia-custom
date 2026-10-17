@@ -210,7 +210,7 @@ describe("RoutingEngine.plan cooldown classes", () => {
     }, undefined);
     const withFloor = {
       ...snapshot([draining, funded]),
-      providerRouting: { __global__: { p: { strategy: "fallback" as const, usageFloor: 10, usageFloorUnit: "credit" as const, enabled: false, rotateCount: 1, maxInflight: null, skipProxy: false } } },
+      providerRouting: { __global__: { p: { strategy: "fallback" as const, usageFloor: 10, usageFloorUnit: "credit" as const, enabled: false, rotateCount: 1, maxInflight: null, maxInflightPerProxy: null, skipProxy: false } } },
     };
     try {
       await debitCachedQuota("global", "draining", 3, undefined);

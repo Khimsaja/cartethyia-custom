@@ -69,6 +69,14 @@ export const MAX_ROTATION_KEYS = 5_000;
 
 export interface PoolLocalState {
   readonly inflight: Map<string, number>;
+  /**
+   * Provider-scoped inflight, keyed `${poolId}\u0000${providerId}`.
+   *
+   * Only populated for providers that configured a per-pool ceiling — an
+   * unlimited provider never creates an entry, so this map stays empty on a
+   * deployment that has not opted in.
+   */
+  readonly providerInflight: Map<string, number>;
   readonly cooldowns: Map<string, ProxyCooldownEntry>;
   /** Per-key round-robin state: scan position + admissions the pool at that position has served. */
   readonly rotationCursors: Map<string, { pos: number; served: number }>;
@@ -78,6 +86,7 @@ export interface PoolLocalState {
 export function createPoolLocalState(): PoolLocalState {
   return {
     inflight: new Map(),
+    providerInflight: new Map(),
     cooldowns: new Map(),
     rotationCursors: new Map(),
     fairnessCursor: 0,

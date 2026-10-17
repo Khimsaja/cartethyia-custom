@@ -14,10 +14,13 @@ import {
   COOLDOWN_CLEAR_SCRIPT,
   COOLDOWN_FLAG_SCRIPT,
   POOL_ADMIT_SCRIPT,
+  POOL_PROVIDER_ADMIT_SCRIPT,
+  POOL_PROVIDER_RELEASE_SCRIPT,
   POOL_RELEASE_SCRIPT,
   proxyCooldownKey,
   proxyCooldownProvidersKey,
   proxyInflightKey,
+  proxyProviderInflightKey,
 } from "./pool-scripts";
 import {
   advanceRotation,
@@ -70,9 +73,23 @@ function normalizedWeight(weight: number | undefined): number {
   return weight;
 }
 
+/** Local-map key for a provider's share of a pool. NUL cannot appear in either id. */
+function providerInflightStateKey(poolId: string, providerId: string): string {
+  return `${poolId}\u0000${providerId.toLowerCase()}`;
+}
+
+function decrementLocal(counter: Map<string, number>, key: string): void {
+  const value = counter.get(key) ?? 1;
+  if (value <= 1) counter.delete(key);
+  else counter.set(key, value - 1);
+}
+
 export type PoolSelectionFailureReason =
   | "at_capacity"
+  | "provider_at_capacity"
   | "cooldown"
+  /** Every eligible pool was retired by the upstream for this provider. */
+  | "blocked"
   | "coordination_unavailable"
   | "no_active_pool";
 
@@ -83,6 +100,13 @@ export interface PoolCapacitySnapshot {
   readonly available: number;
   readonly weight: number;
   readonly retryAt?: number;
+  /** This provider's ceiling on this pool, when one is configured. */
+  readonly providerMaxInflight?: number;
+  /** This provider's current share of this pool, when a ceiling is configured. */
+  readonly providerInflight?: number;
+  /** True when the upstream refused this egress for this provider outright,
+   * as opposed to throttling it for a window. */
+  readonly blocked?: boolean;
 }
 
 export interface PoolSelectionFailure {
@@ -144,6 +168,60 @@ export class NetworkPoolSelector {
       throw new Error(`invalid pool inflight counter: ${poolId}`);
     }
     return value;
+  }
+
+  /**
+   * This provider's inflight share of one pool. Zero when the provider has no
+   * ceiling configured, because nothing ever records a count for it.
+   */
+  getProviderInflight(poolId: string, providerId: string): number {
+    return this.state.providerInflight.get(providerInflightStateKey(poolId, providerId)) ?? 0;
+  }
+
+  async getProviderInflightAuthoritative(poolId: string, providerId: string): Promise<number> {
+    if (!this.redis) return this.getProviderInflight(poolId, providerId);
+    const raw = await this.redis.get(proxyProviderInflightKey(poolId, providerId));
+    if (raw === null) return 0;
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value < 0) {
+      throw new Error(`invalid provider inflight counter: ${poolId}/${providerId}`);
+    }
+    return value;
+  }
+
+  /**
+   * Raise this provider's share of a pool, enforcing both the pool ceiling and
+   * the provider ceiling. The pool half is still checked here so a caller that
+   * already admitted the pool through `acquire` does not double-count it — use
+   * this instead of `acquire` whenever a provider ceiling applies.
+   */
+  acquireProvider(
+    poolId: string,
+    providerId: string,
+    poolCapacity: number,
+    providerCapacity: number,
+  ): { acquired: boolean; release: () => void } {
+    const current = this.getInflight(poolId);
+    if (current >= poolCapacity) return { acquired: false, release: () => {} };
+    const key = providerInflightStateKey(poolId, providerId);
+    const providerCurrent = this.state.providerInflight.get(key) ?? 0;
+    if (providerCurrent >= providerCapacity) return { acquired: false, release: () => {} };
+
+    enforceInflightLimit(this.state.inflight);
+    enforceInflightLimit(this.state.providerInflight);
+    this.state.inflight.set(poolId, current + 1);
+    this.state.providerInflight.set(key, providerCurrent + 1);
+    this.notifyPoolUsage();
+
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      decrementLocal(this.state.inflight, poolId);
+      decrementLocal(this.state.providerInflight, key);
+      this.notifyPoolUsage();
+    };
+    return { acquired: true, release };
   }
 
   acquire(
@@ -261,15 +339,33 @@ export class NetworkPoolSelector {
     return blocked;
   }
 
+  /**
+   * Whether this pool is out of rotation for this provider, and why.
+   *
+   * `blocked` separates the two facts the caller must not conflate: a 429 is a
+   * window that ends, while a free-tier refusal retires the address for good.
+   * The rejection message says which one the operator is looking at, because
+   * the fix differs — wait, or replace the proxy.
+   */
   async isProviderCooldown(
     poolId: string,
     providerId: string,
-  ): Promise<{ inCooldown: boolean; resetsAt: Date | null; reason: string | null }> {
+  ): Promise<{
+    inCooldown: boolean;
+    resetsAt: Date | null;
+    reason: string | null;
+    blocked: boolean;
+  }> {
     const k = this.cooldownKey(poolId, providerId);
     const local = this.state.cooldowns.get(k);
     if (local) {
       if (Date.now() < local.until) {
-        return { inCooldown: true, resetsAt: new Date(local.until), reason: local.reason };
+        return {
+          inCooldown: true,
+          resetsAt: new Date(local.until),
+          reason: local.reason,
+          blocked: local.blocked === true,
+        };
       }
       this.state.cooldowns.delete(k);
     }
@@ -280,7 +376,12 @@ export class NetworkPoolSelector {
         if (parsed && Date.now() < parsed.until) {
           enforceCooldownLimit(this.state.cooldowns);
           this.state.cooldowns.set(k, parsed);
-          return { inCooldown: true, resetsAt: new Date(parsed.until), reason: parsed.reason };
+          return {
+            inCooldown: true,
+            resetsAt: new Date(parsed.until),
+            reason: parsed.reason,
+            blocked: parsed.blocked === true,
+          };
         }
         if (raw) {
           await this.clearRedisCooldown(poolId, providerId);
@@ -290,10 +391,11 @@ export class NetworkPoolSelector {
           inCooldown: true,
           resetsAt: null,
           reason: "cooldown store unavailable",
+          blocked: false,
         };
       }
     }
-    return { inCooldown: false, resetsAt: null, reason: null };
+    return { inCooldown: false, resetsAt: null, reason: null, blocked: false };
   }
 
   async getPoolCooldowns(poolId: string): Promise<readonly ProxyCooldownEntry[]> {
@@ -429,8 +531,19 @@ export class NetworkPoolSelector {
     limitsByPool?: Record<string, number>,
     weightsByPool?: Record<string, number>,
     rotation?: PoolRotation,
+    /**
+     * This provider's per-pool ceiling. `undefined` means unlimited and keeps
+     * the original single-counter path exactly: no extra key, no extra call.
+     * When set, every candidate must clear it in addition to its pool capacity.
+     */
+    providerMaxInflight?: number,
   ): Promise<{ poolId: string; release: () => void } | undefined> {
     if (eligiblePoolIds.length === 0) return undefined;
+    const providerCapacity =
+      providerMaxInflight === undefined ? undefined : effectiveConcurrency(providerMaxInflight);
+    // A ceiling of zero admits nothing; treat it as "no pool is eligible"
+    // rather than silently ignoring the operator's choice.
+    if (providerCapacity === 0) return undefined;
     const cooldownChecks = await Promise.all(
       eligiblePoolIds.map(async (poolId) => ({
         poolId,
@@ -461,7 +574,15 @@ export class NetworkPoolSelector {
           const candidate = scored[absolute];
           if (!candidate) continue;
           if (this.getInflight(candidate.poolId) >= candidate.capacity) continue;
-          const slot = this.acquire(candidate.poolId, candidate.capacity);
+          const slot =
+            providerCapacity === undefined
+              ? this.acquire(candidate.poolId, candidate.capacity)
+              : this.acquireProvider(
+                  candidate.poolId,
+                  providerId,
+                  candidate.capacity,
+                  providerCapacity,
+                );
           if (!slot.acquired) continue;
           advanceRotation(this.state.rotationCursors, rotation.key, scored.length, absolute, rotation.rotateCount);
           return { poolId: candidate.poolId, release: slot.release };
@@ -476,6 +597,15 @@ export class NetworkPoolSelector {
         if (!candidate) continue;
         const current = this.getInflight(candidate.poolId);
         if (current >= candidate.capacity) continue;
+        // A pool this provider has already filled is skipped exactly like a
+        // full pool, so the scan fails over to one with headroom instead of
+        // stalling on the emptiest pool that cannot serve this provider.
+        if (
+          providerCapacity !== undefined &&
+          this.getProviderInflight(candidate.poolId, providerId) >= providerCapacity
+        ) {
+          continue;
+        }
         const ratio = current / (candidate.capacity * candidate.weight);
         if (ratio < minRatio) {
           minRatio = ratio;
@@ -483,7 +613,10 @@ export class NetworkPoolSelector {
         }
       }
       if (!bestPool) return undefined;
-      const slot = this.acquire(bestPool.poolId, bestPool.capacity);
+      const slot =
+        providerCapacity === undefined
+          ? this.acquire(bestPool.poolId, bestPool.capacity)
+          : this.acquireProvider(bestPool.poolId, providerId, bestPool.capacity, providerCapacity);
       return slot.acquired ? { poolId: bestPool.poolId, release: slot.release } : undefined;
     }
 
@@ -493,6 +626,11 @@ export class NetworkPoolSelector {
     // pre-read is only a score, but serial GETs made admission latency scale
     // with the candidate count on exactly the path that runs per request.
     const inflightKeys = scored.map((candidate) => proxyInflightKey(candidate.poolId));
+    if (providerCapacity !== undefined) {
+      for (const candidate of scored) {
+        inflightKeys.push(proxyProviderInflightKey(candidate.poolId, providerId));
+      }
+    }
     const rawCounts = (await redis.mget(...inflightKeys)) as Array<string | null>;
     const withCounts = scored.map((candidate, index) => {
       const raw = rawCounts[index] ?? null;
@@ -500,10 +638,24 @@ export class NetworkPoolSelector {
       if (!Number.isFinite(count) || count < 0) {
         throw new Error(`invalid pool inflight counter: ${candidate.poolId}`);
       }
+      // The provider half is read in the same MGET, so scoring a
+      // provider-limited pool costs no extra round trip.
+      const providerRaw =
+        providerCapacity === undefined ? null : (rawCounts[scored.length + index] ?? null);
+      const providerCount = providerRaw === null ? 0 : Number(providerRaw);
+      if (!Number.isFinite(providerCount) || providerCount < 0) {
+        throw new Error(`invalid provider inflight counter: ${candidate.poolId}/${providerId}`);
+      }
       return {
         ...candidate,
         count,
-        ratio: count / (candidate.capacity * candidate.weight),
+        providerCount,
+        // A pool with no room for this provider scores as fully loaded, so the
+        // least-loaded scan prefers a pool that can actually take the request.
+        ratio:
+          providerCapacity !== undefined && providerCount >= providerCapacity
+            ? Number.POSITIVE_INFINITY
+            : count / (candidate.capacity * candidate.weight),
       };
     });
     // Original (pre-sort) index = absolute rotation position and
@@ -534,14 +686,33 @@ export class NetworkPoolSelector {
       });
     }
     for (const candidate of withCounts) {
-      const result = await redisEvalNumber(
-        redis,
-        POOL_ADMIT_SCRIPT,
-        1,
-        proxyInflightKey(candidate.poolId),
-        String(candidate.capacity),
-        String(poolInflightTtlSeconds()),
-      );
+      const providerKey =
+        providerCapacity === undefined
+          ? undefined
+          : proxyProviderInflightKey(candidate.poolId, providerId);
+      const result =
+        providerKey === undefined
+          ? await redisEvalNumber(
+              redis,
+              POOL_ADMIT_SCRIPT,
+              1,
+              proxyInflightKey(candidate.poolId),
+              String(candidate.capacity),
+              String(poolInflightTtlSeconds()),
+            )
+          : await redisEvalNumber(
+              redis,
+              POOL_PROVIDER_ADMIT_SCRIPT,
+              2,
+              proxyInflightKey(candidate.poolId),
+              providerKey,
+              String(candidate.capacity),
+              String(providerCapacity),
+              String(poolInflightTtlSeconds()),
+            );
+      // 1 admitted; 0 pool full; 2 provider full. Either full result fails over
+      // to the next pool, which is the whole point of the ceiling: the request
+      // moves to an egress that still has room for this provider.
       if (result !== 1) continue;
       if (rotation) {
         advanceRotation(
@@ -554,6 +725,14 @@ export class NetworkPoolSelector {
       }
       enforceInflightLimit(this.state.inflight);
       this.state.inflight.set(candidate.poolId, this.getInflight(candidate.poolId) + 1);
+      if (providerKey !== undefined) {
+        enforceInflightLimit(this.state.providerInflight);
+        const localProviderKey = providerInflightStateKey(candidate.poolId, providerId);
+        this.state.providerInflight.set(
+          localProviderKey,
+          this.getProviderInflight(candidate.poolId, providerId) + 1,
+        );
+      }
       this.notifyPoolUsage();
       let released = false;
       return {
@@ -561,11 +740,14 @@ export class NetworkPoolSelector {
         release: () => {
           if (released) return;
           released = true;
-          const local = this.getInflight(candidate.poolId);
-          if (local <= 1) this.state.inflight.delete(candidate.poolId);
-          else this.state.inflight.set(candidate.poolId, local - 1);
+          decrementLocal(this.state.inflight, candidate.poolId);
+          if (providerKey !== undefined) {
+            decrementLocal(this.state.providerInflight, providerInflightStateKey(candidate.poolId, providerId));
+          }
           this.notifyPoolUsage();
-          void redisEvalNumber(redis, POOL_RELEASE_SCRIPT, 1, proxyInflightKey(candidate.poolId)).catch(
+          const script = providerKey === undefined ? POOL_RELEASE_SCRIPT : POOL_PROVIDER_RELEASE_SCRIPT;
+          const keys = providerKey === undefined ? [proxyInflightKey(candidate.poolId)] : [proxyInflightKey(candidate.poolId), providerKey];
+          void redisEvalNumber(redis, script, keys.length, ...keys).catch(
             (error: unknown) => {
               log.error("[pool-selector] failed to release distributed slot", error as Error);
             },
@@ -580,8 +762,11 @@ export class NetworkPoolSelector {
     providerId: string,
     limitsByPool?: Record<string, number>,
     weightsByPool?: Record<string, number>,
+    providerMaxInflight?: number,
   ): Promise<PoolSelectionFailure> {
     if (eligiblePoolIds.length === 0) return { reason: "no_active_pool", pools: [] };
+    const providerCapacity =
+      providerMaxInflight === undefined ? undefined : effectiveConcurrency(providerMaxInflight);
     try {
       // One pass, not two: the cooldown lookup is a Redis read per pool, and
       // the first version read it once for the capacity snapshot and again for
@@ -595,6 +780,10 @@ export class NetworkPoolSelector {
           );
           const weight = normalizedWeight(weightsByPool?.[poolId]);
           const currentInflight = await this.getInflightAuthoritative(poolId);
+          const providerInflight =
+            providerCapacity === undefined
+              ? undefined
+              : await this.getProviderInflightAuthoritative(poolId, providerId);
           return {
             cooldown,
             pool: {
@@ -604,6 +793,10 @@ export class NetworkPoolSelector {
               available: Math.max(0, maxInflight - currentInflight),
               weight,
               ...(cooldown.resetsAt ? { retryAt: cooldown.resetsAt.getTime() } : {}),
+              ...(cooldown.blocked ? { blocked: true } : {}),
+              ...(providerCapacity === undefined
+                ? {}
+                : { providerMaxInflight: providerCapacity, providerInflight: providerInflight ?? 0 }),
             } satisfies PoolCapacitySnapshot,
           };
         }),
@@ -617,6 +810,12 @@ export class NetworkPoolSelector {
       if (active.length === 0) return { reason: "no_active_pool", pools };
       const allCooling = cooldowns.every((entry) => entry.inCooldown);
       if (allCooling) {
+        // A retired egress is not a cooldown: nothing clears it on a timer, so
+        // telling the operator to "retry once the cooldown resets" would be a
+        // lie they could wait on indefinitely. Report the stronger fact.
+        if (cooldowns.every((entry) => entry.blocked)) {
+          return { reason: "blocked", pools };
+        }
         const retryAt = Math.min(
           ...cooldowns
             .map((entry) => entry.resetsAt?.getTime())
@@ -627,6 +826,15 @@ export class NetworkPoolSelector {
           pools,
           ...(Number.isFinite(retryAt) ? { retryAt } : {}),
         };
+      }
+      // Distinguish "every pool is full" from "every pool has room, but not
+      // for this provider" — the operator's fix differs (add capacity vs.
+      // raise this provider's share).
+      if (
+        providerCapacity !== undefined &&
+        active.every((pool) => (pool.providerInflight ?? 0) >= providerCapacity)
+      ) {
+        return { reason: "provider_at_capacity", pools };
       }
       return { reason: "at_capacity", pools };
     } catch {

@@ -540,6 +540,20 @@ export const providerRoutingSettings = pgTable(
      * `null` = UNLIMITED concurrency per account. */
     maxInflight: integer("max_inflight"),
     /**
+     * Per-pool inflight ceiling for this provider: how many concurrent
+     * requests one proxy pool may carry *for this provider*.
+     *
+     * A second, independent axis from `maxInflight`. That one bounds a single
+     * account; `network_pools.max_inflight` bounds a pool across every
+     * provider; this one bounds one provider's share of one pool. All three
+     * are enforced together — none replaces another.
+     *
+     * `null` = unlimited, and that is the default: a provider nobody has
+     * configured behaves exactly as it did before this column existed, with no
+     * extra Redis key and no extra round trip.
+     */
+    maxInflightPerProxy: integer("max_inflight_per_proxy"),
+    /**
      * Minimum remaining allowance an account must hold to stay routable, for
      * this provider. `null` means no floor. Compared against the account's own
      * unit: absolute remaining credit when the provider reports credits, the

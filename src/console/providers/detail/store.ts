@@ -35,6 +35,7 @@ function mapRow(row: typeof providerRoutingSettings.$inferSelect): ProviderRouti
     strategy: row.strategy as ProviderRoutingResponse["strategy"],
     rotateCount: row.rotateCount ?? 1,
     maxInflight: row.maxInflight,
+    maxInflightPerProxy: row.maxInflightPerProxy,
     usageFloor: row.usageFloor,
     usageFloorUnit: row.usageFloorUnit === "credit" ? "credit" : "percent",
     enabled: row.enabled,
@@ -87,6 +88,7 @@ export class DrizzleProviderDetailStore implements ProviderDetailStore {
       strategy: "fallback",
       rotateCount: 1,
       maxInflight: DEFAULT_PROVIDER_MAX_INFLIGHT,
+      maxInflightPerProxy: null,
       usageFloor: null,
       usageFloorUnit: "percent",
       enabled: false,
@@ -108,6 +110,7 @@ export class DrizzleProviderDetailStore implements ProviderDetailStore {
       strategy: patch.strategy ?? "fallback",
       rotateCount: patch.rotateCount ?? 1,
       maxInflight: patch.maxInflight ?? null,
+      maxInflightPerProxy: patch.maxInflightPerProxy ?? null,
       usageFloor: patch.usageFloor ?? null,
       usageFloorUnit: patch.usageFloorUnit ?? "percent",
       enabled: patch.enabled ?? false,
@@ -118,6 +121,8 @@ export class DrizzleProviderDetailStore implements ProviderDetailStore {
     if (patch.strategy !== undefined) setClause.strategy = patch.strategy;
     if (patch.rotateCount !== undefined) setClause.rotateCount = patch.rotateCount;
     if (patch.maxInflight !== undefined) setClause.maxInflight = patch.maxInflight;
+    if (patch.maxInflightPerProxy !== undefined)
+      setClause.maxInflightPerProxy = patch.maxInflightPerProxy;
     if (patch.usageFloor !== undefined) setClause.usageFloor = patch.usageFloor;
     if (patch.usageFloorUnit !== undefined) setClause.usageFloorUnit = patch.usageFloorUnit;
     if (patch.enabled !== undefined) setClause.enabled = patch.enabled;

@@ -328,6 +328,9 @@ export function assertProviderRouting(value: unknown): ProviderRoutingResponse {
     value.rotateCount > 1000 ||
     typeof value.enabled !== "boolean" ||
     (value.maxInflight !== null && typeof value.maxInflight !== "number") ||
+    (value.maxInflightPerProxy !== null &&
+      value.maxInflightPerProxy !== undefined &&
+      typeof value.maxInflightPerProxy !== "number") ||
     (value.usageFloor !== null && value.usageFloor !== undefined && typeof value.usageFloor !== "number") ||
     (value.usageFloorUnit !== undefined && value.usageFloorUnit !== "credit" && value.usageFloorUnit !== "percent") ||
     typeof value.skipProxy !== "boolean" ||

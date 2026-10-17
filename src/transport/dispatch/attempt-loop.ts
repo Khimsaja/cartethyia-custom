@@ -308,8 +308,42 @@ export async function runAttemptLoop<TResult, TAdapter>(
       // disagree (a `cancelled` row used to carry `transport_unavailable`/502).
       const terminal = classifyTerminalOutcome(error, state.abortController.signal);
       const cancelled = terminal.status === "cancelled";
+      // A failure the *pool* caused retires that pool, not the candidate: the
+      // next attempt keeps the same provider/model/account and selects a
+      // different egress. That is a genuinely new attempt even though the
+      // candidate index does not move, so it must not be judged terminal by
+      // "this was the last candidate" — that rule is about candidates, and
+      // opencode has exactly one (it is credential-less, so the plan holds a
+      // single candidate carrying every pool). Judging it there is what made a
+      // refused egress end the request instead of failing over to a healthy
+      // one.
+      const rateLimitedPool = !cancelled && shouldCooldownPool(error, candidate.provider_id);
+      // A free-tier refusal is only ever this provider's: the guard is gated on
+      // `ipScopedRateLimit` in the provider metadata, so a 403 from any other
+      // upstream still means what it always did and never retires an egress.
+      const blockedPool = !cancelled && isFreeTierIpBlock(error, candidate.provider_id);
+      const poolScopedFailure =
+        (rateLimitedPool || blockedPool) &&
+        networkPoolId !== undefined &&
+        deps.poolSelector !== undefined;
+      // Flag before the decision below, so the retry that follows already sees
+      // the pool excluded. Both flag helpers write the local entry
+      // synchronously, so the ordering holds even though the Redis mirror is
+      // fire-and-forget.
+      if (networkPoolId && deps.poolSelector && error instanceof GatewayError) {
+        if (rateLimitedPool) {
+          flagPoolCooldown(deps.poolSelector, deps.db, networkPoolId, candidate.provider_id, error);
+        } else if (blockedPool) {
+          // The address itself is refused, not the request: retire the egress
+          // so the next attempt leaves by a different one instead of retrying
+          // a proxy the upstream has already flagged.
+          flagPoolBlocked(deps.poolSelector, deps.db, networkPoolId, candidate.provider_id, error);
+        }
+      }
       const terminalAttempt =
-        cancelled || !isRetryableFailure(error) || index === candidates.length - 1;
+        cancelled ||
+        !isRetryableFailure(error) ||
+        (index === candidates.length - 1 && !poolScopedFailure);
       if (providerCapture.request !== null) firedCaptures.push(providerCapture);
       // The payload store only keeps the terminal attempt's exchange. When the
       // terminal attempt never fired (failover walked past the attempt that
@@ -363,16 +397,6 @@ export async function runAttemptLoop<TResult, TAdapter>(
         ...(deps.telemetryBuffer ? { telemetryBuffer: deps.telemetryBuffer } : {}),
         ...(deps.snapshotService ? { snapshotService: deps.snapshotService } : {}),
       });
-      if (networkPoolId && !cancelled && deps.poolSelector) {
-        if (shouldCooldownPool(error, candidate.provider_id)) {
-          flagPoolCooldown(deps.poolSelector, deps.db, networkPoolId, candidate.provider_id, error);
-        } else if (isFreeTierIpBlock(error, candidate.provider_id)) {
-          // The address itself is refused, not the request: retire the egress
-          // so the next attempt leaves by a different one instead of retrying
-          // a proxy the upstream has already flagged.
-          flagPoolBlocked(deps.poolSelector, deps.db, networkPoolId, candidate.provider_id, error);
-        }
-      }
       // A 403 can be a deterministic provider policy rejection, not an
       // invalid OAuth credential. Only the evidence-based classifier above
       // may trigger a refresh.
@@ -407,8 +431,17 @@ export async function runAttemptLoop<TResult, TAdapter>(
       // every candidate that has not failed yet, so the next attempt cannot
       // stick to it while a sibling remains. It becomes eligible again only
       // after that sibling list is exhausted.
+      //
+      // A pool-scoped failure is exempt: the candidate never got its turn, so
+      // marking it failed would spend its only remaining chance on the pool
+      // that just refused it. The candidate stays at the head, and the next
+      // attempt selects a different pool for it. The attempt budget still
+      // bounds the loop, and once every pool is retired the selection itself
+      // fails with `proxy_pool_blocked`, which is terminal.
       const failureKey = comboCandidateKey(candidate);
-      if (!failedCandidates.has(failureKey)) {
+      if (poolScopedFailure) {
+        // Deliberately no index movement and no `failedCandidates` entry.
+      } else if (!failedCandidates.has(failureKey)) {
         failedCandidates.add(failureKey);
         candidates.push(candidates.splice(index, 1)[0]!);
       } else {

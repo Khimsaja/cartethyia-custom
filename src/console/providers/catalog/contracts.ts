@@ -793,6 +793,9 @@ export interface ProviderRoutingResponse {
   readonly rotateCount: number;
   /** Per-account inflight ceiling; `null` = unlimited concurrency. */
   readonly maxInflight: number | null;
+  /** Per-pool inflight ceiling for this provider — how many concurrent
+   * requests one proxy pool may carry for it. `null` = unlimited, the default. */
+  readonly maxInflightPerProxy: number | null;
   /** Minimum remaining allowance an account must hold to stay routable.
    * `null` means no floor. */
   readonly usageFloor: number | null;
@@ -830,6 +833,8 @@ export interface UpdateProviderRoutingRequest {
   readonly rotateCount?: number;
   /** Per-account inflight ceiling; `null` = unlimited concurrency. */
   readonly maxInflight?: number | null;
+  /** Per-pool inflight ceiling for this provider; `null` = unlimited. */
+  readonly maxInflightPerProxy?: number | null;
   /** Minimum remaining allowance; `null` clears the floor. */
   readonly usageFloor?: number | null;
   readonly usageFloorUnit?: "credit" | "percent";

@@ -31,6 +31,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 - `POST /admin/tasks/{name}/run` triggers one scheduled task immediately. It
   uses the same loopback-and-token gate as the drain endpoint, answers 202
   once the run has started, and 409 when that task is already running.
+- A provider's Routing Strategy card has **Max inflight / proxy**: how many
+  concurrent requests one proxy pool may carry *for that provider*. It is a
+  third ceiling beside the per-account one and the pool's own capacity, not a
+  replacement for either, so a pool can be busy with other providers while this
+  one still has its own share. Default is unlimited, which keeps no counter and
+  costs nothing until an operator sets a value. Migration `0010` adds the
+  column.
 
 
 ### Changed
@@ -69,6 +76,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   11-tool agent set, and `stream: true`.
 
 ### Fixed
+
+- A request no longer ends on the first refused proxy. `opencode` is
+  credential-less, so its route plan holds a single candidate carrying every
+  eligible pool, and pool selection happens inside one attempt. The attempt
+  loop judged "this is the last candidate" as terminal, which was true on the
+  first failure — so a 403 `FreeTierError` flagged the egress and then failed
+  the request while a healthy pool sat in the same candidate. A failure the
+  pool caused now retries the same candidate against a different pool.
+- When every pool is refused, the answer is `503 proxy_pool_blocked` and says
+  the upstream refuses them, instead of a cooldown message asking the operator
+  to wait for a timer that never fires. Pool exhaustion and a provider's own
+  per-proxy share now answer `proxy_pool_capacity_exceeded` and
+  `proxy_pool_provider_capacity_exceeded` respectively, so the fix each one
+  needs is named.
 
 - An existing database now receives the unique index the bundled model seed
   upserts on. A database created before that index existed died at boot with

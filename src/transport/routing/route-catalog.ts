@@ -269,6 +269,7 @@ const ROUTING_COLUMNS = {
   strategy: providerRoutingSettings.strategy,
   rotateCount: providerRoutingSettings.rotateCount,
   maxInflight: providerRoutingSettings.maxInflight,
+  maxInflightPerProxy: providerRoutingSettings.maxInflightPerProxy,
   usageFloor: providerRoutingSettings.usageFloor,
   usageFloorUnit: providerRoutingSettings.usageFloorUnit,
   enabled: providerRoutingSettings.enabled,
@@ -399,6 +400,7 @@ class RouteCatalogRepository {
         strategy: row.strategy as ProviderRoutingMap[string][string]["strategy"],
         rotateCount: row.rotateCount ?? 1,
         maxInflight: row.maxInflight,
+        maxInflightPerProxy: row.maxInflightPerProxy,
         usageFloor: row.usageFloor,
         usageFloorUnit: row.usageFloorUnit === "credit" ? "credit" : "percent",
         enabled: row.enabled,
@@ -445,6 +447,24 @@ class RouteCatalogRepository {
       return resolved ?? DEFAULT_PROVIDER_MAX_INFLIGHT ?? undefined;
     }
 
+    /**
+     * This provider's per-pool inflight ceiling, from Routing Strategy.
+     * `undefined` means unlimited — the default, and the state of every
+     * provider nobody has configured. A stored `null` is the same choice made
+     * explicitly; the two are deliberately indistinguishable downstream so the
+     * hot path never branches on which one it read.
+     */
+    function resolveMaxInflightPerProxy(
+      providerId: string,
+      rowTenantId: string | null,
+    ): number | undefined {
+      const tenantSetting = rowTenantId
+        ? providerRouting[rowTenantId]?.[providerId]?.maxInflightPerProxy
+        : undefined;
+      const globalSetting = providerRouting.__global__?.[providerId]?.maxInflightPerProxy;
+      return tenantSetting ?? globalSetting ?? undefined;
+    }
+
     /** Every active pool the account's tenant owns — dispatch picks the
      * least-loaded/non-cooldown one per request (`tryAcquireAvailablePool`),
      * never an admin-pinned single pool. */
@@ -475,6 +495,16 @@ class RouteCatalogRepository {
         weights,
         ...(routing ? { routing: { tenantId: rowTenantId, ...routing } } : {}),
       };
+    }
+
+    /** The candidate fragment for a provider ceiling, empty when unlimited —
+     * so an unconfigured provider's candidate is byte-for-byte what it was. */
+    function providerLimitFor(
+      providerId: string,
+      rowTenantId: string | null,
+    ): { network_pool_provider_limit?: number } {
+      const limit = resolveMaxInflightPerProxy(providerId, rowTenantId);
+      return limit === undefined ? {} : { network_pool_provider_limit: limit };
     }
 
     // Group usable accounts per provider (not per provider-tenant). Built-in
@@ -520,6 +550,7 @@ class RouteCatalogRepository {
                 network_pool_limits: tenantPools.limits,
                 network_pool_weights: tenantPools.weights,
                 ...(tenantPools.routing ? { network_pool_routing: tenantPools.routing } : {}),
+                ...providerLimitFor(model.providerId, tId),
               };
               if (tenantId === undefined || tenantId === tId) {
                 candidates.push(tenantCandidate);
@@ -549,6 +580,7 @@ class RouteCatalogRepository {
                 network_pool_limits: networkPools.limits,
                 network_pool_weights: networkPools.weights,
                 ...(networkPools.routing ? { network_pool_routing: networkPools.routing } : {}),
+                ...providerLimitFor(model.providerId, providerTenantId),
               }
             : {}),
         };
@@ -593,6 +625,7 @@ class RouteCatalogRepository {
                 network_pool_limits: networkPools.limits,
                 network_pool_weights: networkPools.weights,
                 ...(networkPools.routing ? { network_pool_routing: networkPools.routing } : {}),
+                ...providerLimitFor(model.providerId, rowTenantId),
               }
             : {}),
         };
