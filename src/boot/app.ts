@@ -5,6 +5,7 @@ import type { ScheduledTaskRegistry } from "../workers/scheduler";
 import { createStaticHandler } from "../console/dashboard-assets";
 import { createShareRouter } from "../console/share/share-router";
 import { createShareStatsPort } from "../console/share/share-stats";
+import { getBansosDeepseekStatus, getPublicNetworkStats } from "../console/public-network-stats";
 import { DrizzleShareLinkStore } from "../persistence/stores/share-store";
 import { chatAdapter } from "../transport/surface/chat/adapter";
 import { responsesAdapter } from "../transport/surface/responses/adapter";
@@ -281,6 +282,52 @@ export function createGatewayApp(deps: GatewayAppDeps) {
       },
     )
     .get("/health", () => ({ status: "ok" as const }))
+    .get("/api/stats/public", async () => {
+      // Buyer-facing network stats: aggregate-only, cached 30s in-process,
+      // no auth. Never add per-key / per-IP / cost fields here.
+      const handle = getDbHandle();
+      if (!isPgHandle(handle)) {
+        return new Response(JSON.stringify({ error: "stats unavailable" }), {
+          status: 503,
+          headers: { "content-type": "application/json; charset=utf-8" },
+        });
+      }
+      const stats = await getPublicNetworkStats(handle.db);
+      return new Response(JSON.stringify(stats), {
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "cache-control": "public, max-age=30",
+        },
+      });
+    })
+    .get("/api/stats/bansos-deepseek", async () => {
+      // Public shared bansos key for deepseek-v-4.1-flash.
+      // The key itself is public by design: shown on the landing page for
+      // copy-paste, with a live usage progress bar. No auth. Never add other
+      // keys or per-key internals here.
+      // NOTE: in production nginx routes this path to tiprouter-auth
+      // (login-gated); this router handler is the fallback/direct-origin path.
+      const handle = getDbHandle();
+      if (!isPgHandle(handle)) {
+        return new Response(JSON.stringify({ error: "stats unavailable" }), {
+          status: 503,
+          headers: { "content-type": "application/json; charset=utf-8" },
+        });
+      }
+      const status = await getBansosDeepseekStatus(handle.db);
+      if (!status) {
+        return new Response(JSON.stringify({ error: "bansos key not configured" }), {
+          status: 404,
+          headers: { "content-type": "application/json; charset=utf-8" },
+        });
+      }
+      return new Response(JSON.stringify(status), {
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "cache-control": "public, max-age=30",
+        },
+      });
+    })
     .get("/health/ready", async () => {
       // A draining process reports not-ready so the orchestrator stops
       // sending it traffic and the replacement takes over without the old
