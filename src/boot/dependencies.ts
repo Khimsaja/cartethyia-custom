@@ -51,6 +51,7 @@ import { quotaRefreshSweep } from "../workers/quota-refresh-sweep";
 import { dailyCheckinEgressForPass } from "../workers/daily-checkin";
 import {
   buddyAdoptTask,
+  buddyActivityReportTask,
   buddyLotteryTask,
   buddyRedeemTask,
   buddyStreakTask,
@@ -479,6 +480,16 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
     intervalMs: 6 * 60 * 60_000,
     initialDelayMs: 20 * 60_000,
     run: () => buddyTrialTask(buddyTaskDeps),
+  });
+  // Growth-activity report: the `/v2/report` batch that lights the login streak
+  // and scores the daily growth event. Once a day with its own ledger — it used
+  // to ride the quota sweep with no marker of its own, so its eight POSTs ran
+  // every minute.
+  scheduledTasks.register({
+    name: "buddy-activity-report",
+    intervalMs: 24 * 60 * 60_000,
+    initialDelayMs: 15 * 60 * 60_000,
+    run: () => buddyActivityReportTask(buddyTaskDeps),
   });
   // Real credit deductions, stored so the console renders a figure the upstream
   // actually reported. Six-hourly: the upstream's own window is 30 days, so a

@@ -15,7 +15,7 @@
 // pass instead of forfeiting that day's grant.
 //
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { ValidatedFetch } from "../network/outbound-fetch";
 import type { ValidatedNetworkBindingFactory } from "../network/pool/resolver";
 import type { RedisClient } from "../persistence/redis";
@@ -23,18 +23,15 @@ import type { CartethyiaDatabase } from "../persistence/db-handle";
 import { dailyCheckinLedger, networkPools } from "../persistence/schema";
 import type { ProviderId } from "../providers/provider-contracts";
 import { log } from "../observability/logger";
-import { buddyAccountUid } from "../providers/integrations/buddy/buddy-oauth-shared";
 import {
   DAILY_CHECKIN_PROVIDER_IDS,
   checkinDayKey,
-  fetchBuddyActivityReport,
   fetchDailyCheckin,
-  type BuddyActivityReportResult,
   type DailyCheckinResult,
 } from "../providers/integrations/buddy/buddy-checkin";
 
 export { DAILY_CHECKIN_PROVIDER_IDS, checkinDayKey };
-export type { BuddyActivityReportResult, DailyCheckinResult };
+export type { DailyCheckinResult };
 
 /**
  * Pending check-in requests handed to the sweep by a caller outside it.
@@ -159,23 +156,31 @@ async function reserveDaySlot(
   const set = await redis.set(ledgerKey(dayKey, accountId), "1", "EX", LEDGER_TTL_SECONDS, "NX");
   return set !== null;
 }
-
 /**
- * Releases today's slot so a later pass can retry.
+ * Releases today's slot for many accounts in one round-trip.
  *
- * Only transient outcomes release: `error` is a network/5xx failure and
- * `unavailable` means the probe could not be read — both are worth another
- * attempt, and holding the slot until tomorrow is what made an account look
- * "done" when nothing had been claimed. Terminal states keep the slot.
+ * The sweep reserves a slot per account as it walks the wave; releasing them
+ * one at a time on the error path turned every failed pass into a Redis RTT per
+ * failed account. A pass that budgets out with twenty failures paid twenty
+ * round-trips for bookkeeping that has no bearing on the claim itself.
+ *
+ * A pipeline is used when Redis is present (one `MULTI/DEL` for the whole
+ * batch). The DB path issues one `DELETE ... WHERE (day_key, account_id) IN (...)`
+ * instead of N single deletes.
  */
-async function releaseDaySlot(
+export async function releaseDaySlotsBatch(
   db: CartethyiaDatabase | undefined,
   redis: RedisClient | undefined,
   dayKey: string,
-  accountId: string,
+  accountIds: readonly string[],
 ): Promise<void> {
+  if (accountIds.length === 0) return;
   if (redis !== undefined) {
-    await redis.del(ledgerKey(dayKey, accountId)).catch(() => undefined);
+    const pipeline = redis.pipeline();
+    for (const accountId of accountIds) {
+      pipeline.del(ledgerKey(dayKey, accountId));
+    }
+    await pipeline.exec().catch(() => undefined);
     return;
   }
   if (db === undefined) return;
@@ -184,18 +189,20 @@ async function releaseDaySlot(
       .delete(dailyCheckinLedger)
       .where(
         and(
-          eq(dailyCheckinLedger.dayKey, dayKey),
-          eq(dailyCheckinLedger.accountId, accountId),
+          inArray(dailyCheckinLedger.dayKey, [dayKey]),
+          inArray(dailyCheckinLedger.accountId, [...accountIds]),
         ),
       );
   } catch (error) {
-    log.warn(`[daily-checkin] ledger release failed for account=${accountId}`, error as Error);
+    log.warn(
+      `[daily-checkin] batch ledger release failed for ${accountIds.length} account(s)`,
+      error as Error,
+    );
   }
 }
 
 /**
  * Stamps today's check-in slot for an account.
- *
  * Exists so a caller that deliberately bypasses the ledger — an operator
  * pressing "check in now" — still leaves the evidence that today's attempt
  * happened. Without the stamp the sweep re-POSTs the claim on its next pass
@@ -282,34 +289,44 @@ export function supportsDailyCheckin(providerId: string): boolean {
   return (DAILY_CHECKIN_PROVIDER_IDS as readonly string[]).includes(providerId);
 }
 
+/**
+ * Wraps a proxy-bound fetcher so a 403 falls back to a direct connection once.
+ *
+ * A proxy that answers 403 (auth, expired pool credential, a provider that
+ * rejects the egress) used to fail the whole claim even though the account's
+ * own credential was fine — the proxy was the only thing wrong. One direct
+ * retry costs nothing when the proxy was healthy (the first attempt already
+ * succeeded) and rescues the claim when it was not.
+ *
+ * The fallback only fires on 403, not on every error: a 401 means the account
+ * credential itself is rejected, and retrying that direct would only burn the
+ * same round-trip to the same verdict. When the caller already passed
+ * `globalThis.fetch` (no proxy in play) the wrapper is a pass-through.
+ */
+export function withDirectFallback(fetcher: typeof fetch): typeof fetch {
+  if (fetcher === globalThis.fetch) return fetcher;
+  const wrapped: typeof fetch = (async (input, init) => {
+    const viaProxy = await fetcher(input, init);
+    if (viaProxy.status !== 403) return viaProxy;
+    return globalThis.fetch(input, init);
+  }) as typeof fetch;
+  return wrapped;
+}
+/**
+ * The outcome of one daily check-in pass: the claim alone.
+ *
+ * The growth-activity report is no longer part of this pass — it moved to its
+ * own once-a-day growth task (`buddy-activity-report`) with its own ledger, so
+/**
+ * Runs the full daily growth pass for one account, once per calendar day: the
+ * check-in claim alone. The growth-activity report moved to its own once-a-day
+ * growth task (`buddy-activity-report`) with its own ledger, so it is not
+ * re-POSTed on every sweep. See `buddy-growth-tasks.ts`.
+ */
 export type DailyGrowthPassResult = {
   readonly checkin: DailyCheckinResult;
-  readonly report: BuddyActivityReportResult;
 };
 
-/**
-
-/**
- * Runs the full daily growth pass for one account, once per calendar day:
- * the growth-activity report first, then the check-in claim.
- *
- * Report first because it is the leg that actually lands on a free plan — the
- * check-in activity is often not running at all (`unavailable`), and letting
- * the claim go first meant its state decided whether the report ran, so those
- * accounts got neither daily action. Each leg runs once; neither is retried
- * within the day.
- *
- * The day slot is reserved here, so a caller cannot double-claim. The report
- * leg exists only for the buddy family, so any other provider's pass is the
- * check-in alone and the report field carries a "not supported" marker rather
- * than a fabricated success. It needs a uid, which only a JWT carries, so an
- * opaque API key fails closed instead of reporting one account's activity under
- * another's uid. A report-side failure never releases the day slot: the day's
- * growth action was attempted, and spinning every sweep pass today buys
- * nothing.
- *
- * Returns `null` when no slot could be reserved (already settled today).
- */
 export async function attemptDailyGrowthPass(args: {
   readonly db: CartethyiaDatabase | undefined;
   readonly redis: RedisClient | undefined;
@@ -320,6 +337,7 @@ export async function attemptDailyGrowthPass(args: {
   readonly fetcher?: typeof fetch;
   readonly now?: () => Date;
 }): Promise<DailyGrowthPassResult | null> {
+  const fetcher = withDirectFallback(args.fetcher ?? globalThis.fetch);
   const { db, redis, providerId, accountId, resolveCredential } = args;
   const dayKey = checkinDayKey(args.now?.() ?? new Date());
 
@@ -336,7 +354,6 @@ export async function attemptDailyGrowthPass(args: {
   try {
     credential = await resolveCredential(providerId, accountId);
   } catch (error) {
-    await releaseDaySlot(db, redis, dayKey, accountId);
     return {
       checkin: {
         providerId,
@@ -346,64 +363,15 @@ export async function attemptDailyGrowthPass(args: {
         streakDays: null,
         error: error instanceof Error ? error.message : "Daily check-in failed.",
       },
-      report: {
-        providerId,
-        accountId,
-        state: "error",
-        error: "Skipped (check-in failed).",
-      },
     };
   }
-
-  // The growth-activity report runs FIRST, then the check-in claim.
-  //
-  // The report is the leg that works when the check-in hit does not: it lights
-  // the login streak and scores the daily growth event without depending on the
-  // check-in activity being open. Running the claim first meant an account
-  // whose check-in was `unavailable` — the common case on a free plan — got
-  // *neither* daily action, because the claim's state decided whether the
-  // report ran at all. Putting the reliable leg first means the account always
-  // gets at least its streak, and the claim is attempted after it regardless of
-  // how the report went.
-  //
-  // The growth event scores by uid, and only a JWT carries one. An opaque API
-  // key fails closed here — the sweep must never report one account's activity
-  // under another account's uid.
-  const userId = buddyAccountUid(credential);
-  let report: BuddyActivityReportResult;
-  if (!userId) {
-    report = {
-      providerId,
-      accountId,
-      state: "error",
-      error: "Skipped (no uid in this credential).",
-    };
-  } else {
-    try {
-      report = await fetchBuddyActivityReport({
-        providerId,
-        accountId,
-        credential,
-        userId,
-        fetcher: args.fetcher ?? globalThis.fetch,
-      });
-    } catch (error) {
-      report = {
-        providerId,
-        accountId,
-        state: "error",
-        error: error instanceof Error ? error.message : "Activity report failed.",
-      };
-    }
-  }
-
   let checkin: DailyCheckinResult;
   try {
     checkin = await fetchDailyCheckin({
       providerId,
       accountId,
       credential,
-      fetcher: args.fetcher ?? globalThis.fetch,
+      fetcher,
     });
   } catch (error) {
     checkin = {
@@ -424,19 +392,8 @@ export async function attemptDailyGrowthPass(args: {
   // read "Check-in due" forever while the sweep retried once a minute.
   // `already_claimed`, `not_eligible`, and `event_ended` are terminal for the
   // day and keep the slot.
-  //
-  // A report-side failure never releases either: the day's growth action was
-  // attempted, and spinning every sweep pass today buys nothing.
-  if (checkin.state === "error") await releaseDaySlot(db, redis, dayKey, accountId);
-  return { checkin, report };
+  return { checkin };
 }
-
-/**
- * Builds the per-account fetcher for one quota-sweep pass.
- *
- * Active pools are read once per pass, then rotated per tenant. A tenant can
- * use its own pools and the global pools, but never another tenant's pools.
- */
 export function dailyCheckinEgressForPass(args: {
   readonly db: CartethyiaDatabase;
   readonly networkBindingFactory: ValidatedNetworkBindingFactory;

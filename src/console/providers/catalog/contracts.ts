@@ -535,6 +535,15 @@ export interface ProviderAccountExport {
   cooldownUntil?: string;
   lastErrorCategory?: string;
 }
+/**
+ * One buddy growth-task ledger row: the stamp that says this account's task
+ * was attempted today. Read-only — the console observes, it does not write.
+ */
+export interface BuddyGrowthTaskLedgerEntry {
+  readonly accountId: string;
+  readonly task: string;
+  readonly claimedAt: string;
+}
 /** Response body of `POST /accounts/export`. */
 export interface ProviderAccountsExportResponse {
   exportedAt: string;
@@ -752,6 +761,12 @@ export interface ProviderCatalogStore {
     providerId: string,
     accountId: string,
   ): Promise<readonly AccountHealthEventRecord[]>;
+  listBuddyGrowthTasks(
+    tenantId: string,
+    providerId: string,
+    accountId: string,
+    dayKey: string,
+  ): Promise<readonly BuddyGrowthTaskLedgerEntry[]>;
   recoverAccount(tenantId: string, providerId: string, accountId: string): Promise<boolean>;
 }
 

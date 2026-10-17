@@ -62,6 +62,9 @@ export interface BuddyGrowthCall {
   readonly fetcher: FetchLike;
   /** Account UID for the `X-User-Id` identity header. */
   readonly uid?: string | undefined;
+  /** Which account and provider the call belongs to — needed by the activity report. */
+  readonly accountId: string;
+  readonly providerId: string;
   /** Injectable idempotency token generator (tests). */
   readonly token?: (prefix: string) => string;
 }

@@ -46,6 +46,8 @@ import {
 } from "../providers/integrations/buddy/buddy-growth-shared";
 import { fetchBuddyRequestUsage } from "../providers/integrations/buddy/buddy-usage-shared";
 import { saveBuddyUsageSnapshots } from "../providers/integrations/buddy/buddy-usage-store";
+import { fetchBuddyActivityReport } from "../providers/integrations/buddy/buddy-checkin";
+import { withDirectFallback } from "./daily-checkin";
 import { providerBaseUrl, BUDDY_PROVIDER_IDS } from "../providers/provider-metadata";
 import type { FetchLike } from "../providers/quota/quota-contracts";
 
@@ -57,6 +59,7 @@ export const BUDDY_TASK_NAMES = [
   "buddy-travel",
   "buddy-adopt",
   "buddy-trial",
+  "buddy-activity-report",
 ] as const;
 export type BuddyTaskName = (typeof BUDDY_TASK_NAMES)[number];
 
@@ -139,7 +142,6 @@ async function claimedToday(
     return false;
   }
 }
-
 /** Every credential-bearing buddy account. */
 async function defaultAccounts(db: CartethyiaDatabase): Promise<readonly BuddyTaskAccount[]> {
   const rows = await db
@@ -151,10 +153,29 @@ async function defaultAccounts(db: CartethyiaDatabase): Promise<readonly BuddyTa
     .from(providerAccounts)
     .where(eq(providerAccounts.status, "active"));
   return rows.filter((row) => isBuddy(row.providerId));
+  }
+/**
+ * Reads the account uid from a JWT, memoised per credential.
+ *
+ * A growth pass walks many accounts, and the uid is only ever present in a
+ * JWT; an opaque API key has none. Decoding the token once per account is
+ * cheap, but the same credential can appear in several tasks in one pass, so
+ * the decode is cached per pass instead of per call.
+ */
+function resolveUid(
+  credential: string,
+  cache: Map<string, string | undefined>,
+): string | undefined {
+  const cached = cache.get(credential);
+  if (cached !== undefined) return cached;
+  const uid = buddyAccountUid(credential);
+  cache.set(credential, uid);
+  return uid;
 }
 
 /** One account's task run, with the credential resolved and the call wired. */
 async function forAccount(
+  uidCache: Map<string, string | undefined>,
   deps: BuddyTaskDeps,
   account: BuddyTaskAccount,
   task: BuddyTaskName,
@@ -174,11 +195,13 @@ async function forAccount(
   const call: BuddyGrowthCall = {
     baseUrl: providerBaseUrl(account.providerId) ?? "",
     headers: { "X-Product": "SaaS", "Content-Type": "application/json", Accept: "application/json" },
+    accountId: account.id,
+    providerId: account.providerId,
     credential,
-    fetcher: deps.fetcher,
-    ...(buddyAccountUid(credential) === undefined
+    fetcher: withDirectFallback(deps.fetcher) as FetchLike,
+    ...(resolveUid(credential, uidCache) === undefined
       ? {}
-      : { uid: buddyAccountUid(credential) }),
+      : { uid: resolveUid(credential, uidCache) }),
   };
   if (call.baseUrl.length === 0) return null;
   return run(call);
@@ -190,7 +213,6 @@ function sleep(ms: number): Promise<void> {
   setTimeout(resolve, ms);
   return promise;
 }
-
 /** Walks the accounts, skipping any already settled today. */
 async function runTask(
   deps: BuddyTaskDeps,
@@ -198,6 +220,7 @@ async function runTask(
   run: (call: BuddyGrowthCall) => Promise<BuddyGrowthResult | null>,
 ): Promise<{ readonly attempted: number; readonly claimed: number }> {
   const dayKey = buddyDayKey(deps.now?.() ?? new Date());
+  const uidCache = new Map<string, string | undefined>();
   const accounts = await (deps.listAccounts?.() ?? defaultAccounts(deps.db));
   let attempted = 0;
   let claimed = 0;
@@ -208,7 +231,7 @@ async function runTask(
     attempted += 1;
     let result: BuddyGrowthResult | null = null;
     try {
-      result = await forAccount(deps, account, task, run);
+      result = await forAccount(uidCache, deps, account, task, run);
     } catch (error) {
       log.warn(
         `[${task}] account=${account.id} failed:`,
@@ -324,6 +347,35 @@ export function buddyTrialTask(deps: BuddyTaskDeps) {
     await claimBuddyGift(call);
     await claimBuddyCompensation(call);
     return trial;
+  });
+}
+/**
+ * Growth-activity report: the `/v2/report` batch that lights the login streak and
+ * scores the daily growth event.
+ *
+ * It used to ride the quota sweep with no ledger of its own, which meant eight
+ * POSTs per account *per sweep* (two rounds of four events) because the sweep
+ * ran every minute. It is its own once-a-day task here, gated by the same
+ * (day, account, task) ledger as every other growth task.
+ *
+ * The report is not a credit claim, so its failure never marks an account
+ * unhealthy — the result is logged and the ledger is stamped either way.
+ */
+export function buddyActivityReportTask(deps: BuddyTaskDeps) {
+  return runTask(deps, "buddy-activity-report", async (call) => {
+    if (call.uid === undefined) {
+      return { state: "skipped", error: "No uid in this credential.", credit: null };
+    }
+    const report = await fetchBuddyActivityReport({
+      providerId: call.providerId,
+      accountId: call.accountId,
+      credential: call.credential,
+      userId: call.uid,
+      fetcher: call.fetcher,
+    });
+    if (report.state === "reported") return { state: "claimed", error: null, credit: null };
+    if (report.state === "unavailable") return { state: "already", error: null, credit: null };
+    return { state: "skipped", error: report.error, credit: null };
   });
 }
 

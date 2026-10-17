@@ -83,6 +83,8 @@ const CALL = {
   headers: { "X-Product": "SaaS" },
   credential: "token-1",
   uid: "uid-1",
+  accountId: "acct-1",
+  providerId: "cb",
 } as const;
 
 function withFetcher(fetcher: FetchLike) {

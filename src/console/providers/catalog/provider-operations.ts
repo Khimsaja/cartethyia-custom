@@ -23,7 +23,7 @@ import { getProviderClientVersion, getRouteIdentityVersions } from "../../../pro
 import type { OAuthLoginField } from "../../../providers/authentication/oauth-flow-store";
 import { providerCredentialHint, providerCredentialUrl, providerDisplayName, providerHasAdapterUserAgent, providerOperatorNotice, providerServiceKinds, type CompatibilityProfile } from "../../../providers/provider-metadata";
 import type { AccountHealthEventRecord } from "../../../providers/operations/account-health-service";
-import { CREDENTIAL_MODES, PROVIDER_READ_SCOPES, PROVIDER_WRITE_SCOPES } from "./contracts";
+import { CREDENTIAL_MODES, PROVIDER_READ_SCOPES, PROVIDER_WRITE_SCOPES, type BuddyGrowthTaskLedgerEntry } from "./contracts";
 import { enqueueCheckin } from "../../../workers/daily-checkin";
 import {
   isWireFamily,
@@ -561,6 +561,15 @@ export function createProviderCatalogOperations(config: ProviderCatalogConfig) {
         const a = requireTenantAnyScope(access, PROVIDER_READ_SCOPES);
         return config.store.listAccountHealthEvents(a.tenantId, providerId, accountId);
       },
+    async listBuddyGrowthTasks(
+      access: AccessDecision | undefined,
+      providerId: string,
+      accountId: string,
+      dayKey: string,
+    ): Promise<readonly BuddyGrowthTaskLedgerEntry[]> {
+      const a = requireTenantAnyScope(access, PROVIDER_READ_SCOPES);
+      return config.store.listBuddyGrowthTasks(a.tenantId, providerId, accountId, dayKey);
+    },
     async recoverAccount(
         access: AccessDecision | undefined,
         providerId: string,

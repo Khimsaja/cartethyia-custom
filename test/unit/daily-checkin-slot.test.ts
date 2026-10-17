@@ -205,10 +205,11 @@ describe("attemptDailyGrowthPass — the report leg and the day slot", () => {
       })) as unknown as typeof fetch;
   }
 
-  test("an unavailable check-in still attempts the activity report", async () => {
-    // The report is the first leg, and it is the one that works when the
-    // check-in hit does not. Letting the claim go first meant an account whose
-    // check-in was unavailable got neither daily action, every day.
+  test("the check-in pass no longer runs the activity report", async () => {
+    // The report moved to its own once-a-day growth task
+    // (`buddy-activity-report`) with its own ledger. The check-in pass is the
+    // claim alone now, so an unavailable check-in answers `unavailable` without
+    // touching the report leg at all.
     const redis = fakeRedis();
     const pass = await attemptDailyGrowthPass({
       db: undefined,
@@ -220,10 +221,8 @@ describe("attemptDailyGrowthPass — the report leg and the day slot", () => {
       now: () => NOW,
     });
     expect(pass?.checkin.state).toBe("unavailable");
-    // Not "Skipped (check-in failed)." — the report leg actually ran.
-    expect(pass?.report.error).not.toContain("Skipped (check-in failed)");
+    expect(Object.keys(pass ?? {})).toEqual(["checkin"]);
   });
-
   test("an unavailable check-in keeps the slot, so the day is not retried forever", async () => {
     const redis = fakeRedis();
     // The status endpoint answers 200 with an envelope the gateway cannot read

@@ -56,12 +56,19 @@ import {
   type PoolSortKey,
   type ProxyPoolSummary,
 } from "./proxy-metrics";
+import {
+  SCHEME_CHIPS,
+  type SchemeChip,
+  applySchemeChip,
+  chipTargetLine,
+  detectProxyKind,
+  parseQuotaGb,
+  splitQuotaAcrossFamily,
+} from "./proxy-endpoint";
 import { formatBytes } from "../../lib/format/numbers";
 import { downloadTextFile } from "../../lib/download";
 import { toast } from "../../lib/toast";
 import { getErrorMessage } from "../../data/api";
-const transportKinds = ["http", "https", "socks5"] as const;
-type TransportKind = (typeof transportKinds)[number];
 const BULK_POOL_CREATE_CONCURRENCY = 4;
 
 const MYSTERIOUS_PROXY = "Mysterious Proxy";
@@ -147,15 +154,6 @@ const SPEED_TEST_SIZES = [
   { value: String(50_000_000), label: "50 MB" },
   { value: String(SPEED_TEST_MAX_BYTES), label: "100 MB" },
 ];
-/** Parses a GB field into bytes; blank or invalid means "no quota". */
-function parseQuotaGb(value: string): number | null {
-  const trimmed = value.trim();
-  if (trimmed === "") return null;
-  const gb = Number(trimmed);
-  if (!Number.isFinite(gb) || gb <= 0) return null;
-  return Math.max(1, Math.round(gb * GIB));
-}
-
 function PoolEditForm({
   pool,
   onClose,
@@ -314,15 +312,58 @@ function PoolEditForm({
     </Stack>
   );
 }
-
-function detectProxyKind(line: string): TransportKind {
-  const s = line.trim().toLowerCase();
-  if (s.startsWith("https://")) return "https";
-  if (s.startsWith("socks5://") || s.startsWith("socks://")) return "socks5";
-  return "http";
+/**
+ * The scheme chips row, extracted so it can be rendered directly with props.
+ *
+ * Rendering the whole batch form to test a chip means driving a textarea's
+ * value through happy-dom, and React's synthetic `onChange` does not fire there
+ * — so the chip's behaviour (which scheme is pressed, what preview appears) is
+ * asserted against this component with explicit props instead.
+ *
+ * `endpoint` is the first non-empty paste line, or undefined on an empty paste.
+ * The chips are disabled until it exists, and an explicit scheme on that line
+ * always wins inside `applySchemeChip`, so a chip never masks a host the
+ * operator already wrote.
+ */
+export function SchemeChipRow({
+  endpoint,
+  chip,
+  onChipChange,
+}: {
+  readonly endpoint: string | undefined;
+  readonly chip: SchemeChip | null;
+  readonly onChipChange: (chip: SchemeChip | null) => void;
+}): ReactNode {
+  return (
+    <div className="flex flex-wrap items-center gap-3" role="group" aria-label="Scheme for the first endpoint">
+      <span className="text-badge text-text-secondary">Scheme</span>
+      {SCHEME_CHIPS.map((scheme) => {
+        const active = chip === scheme;
+        return (
+          <Button
+            key={scheme}
+            type="button"
+            variant={active ? "primary" : "secondary"}
+            size="sm"
+            disabled={endpoint === undefined}
+            aria-pressed={active}
+            data-scheme={scheme}
+            onClick={() => onChipChange(active ? null : scheme)}
+            className="font-mono"
+          >
+            {scheme}://
+          </Button>
+        );
+      })}
+      {chip !== null && (
+        <span className="text-badge text-text-tertiary">
+          → {applySchemeChip(endpoint ?? "", chip)}
+        </span>
+      )}
+    </div>
+  );
 }
-
-function ProxyBulkForm({ onClose, actionsRef }: { readonly onClose: () => void; readonly actionsRef?: (actions: ReactNode) => void }): ReactNode {
+export function ProxyBulkForm({ onClose, actionsRef }: { readonly onClose: () => void; readonly actionsRef?: (actions: ReactNode) => void }): ReactNode {
   const createPool = useCreateNetworkPool();
   const probeBatch = useProbeNetworkPoolBatch();
   const [text, setText] = useState("");
@@ -331,15 +372,25 @@ function ProxyBulkForm({ onClose, actionsRef }: { readonly onClose: () => void; 
   const [error, setError] = useState<string | null>(null);
   const [log, setLog] = useState<string[]>([]);
   const [batchSubmitting, setBatchSubmitting] = useState(false);
+  // Scheme chip applies to the first non-empty line only, exactly as the
+  // operator reads the paste: one prefix choice for the batch.
+  const [chip, setChip] = useState<SchemeChip | null>(null);
   const lines = text
     .split("\n")
     .map((l) => l.trim())
     .filter(Boolean);
+  // The chip prefixes the first line; an explicit scheme on that line always
+  // wins, so a chip never masks what the operator already wrote.
+  const firstLine = chipTargetLine(lines);
+  const chippedLines = useMemo(() => {
+    if (chip === null || firstLine === undefined) return lines;
+    return lines.map((line, index) => (line === firstLine && index === 0 ? applySchemeChip(line, chip) : line));
+  }, [lines, chip, firstLine]);
   const overCap = lines.length > MAX_BATCH_PROBE_TARGETS;
   const quotaBytes = parseQuotaGb(quotaGb);
   const targets = useMemo(
-    () => lines.map((line) => ({ kind: detectProxyKind(line), endpoint: line })),
-    [lines],
+    () => chippedLines.map((line) => ({ kind: detectProxyKind(line), endpoint: line })),
+    [chippedLines],
   );
 
   const handlePaste = async () => {
@@ -381,17 +432,25 @@ function ProxyBulkForm({ onClose, actionsRef }: { readonly onClose: () => void; 
     setError(null);
     setBatchSubmitting(true);
     try {
+      // A shared pool, not a per-proxy allowance: every row that names the same
+      // family draws from the one quota figure, so the operator's 100 GB means
+      // 100 GB for that family — 5 endpoints share it at 20 GB each, not 100 GB
+      // apiece. Rows with no family are outside any pool and take no quota.
+      const perRowQuota =
+        quotaBytes === null
+          ? new Map<number, number>()
+          : splitQuotaAcrossFamily(quotaBytes, family, chippedLines.length);
       const outcomes: Array<{ ok: boolean; error?: string }> = new Array(lines.length);
       let cursor = 0;
       const worker = async () => {
         while (cursor < lines.length) {
           const index = cursor++;
-          const line = lines[index]!;
+          const line = chippedLines[index]!;
           try {
             await createPool.mutateAsync({
               kind: detectProxyKind(line),
               endpoint: line,
-              ...(quotaBytes === null ? {} : { quotaBytes }),
+              ...(perRowQuota.has(index) ? { quotaBytes: perRowQuota.get(index) } : {}),
               ...(family.trim() !== "" ? { family: family.trim() } : {}),
             });
             outcomes[index] = { ok: true };
@@ -467,6 +526,7 @@ function ProxyBulkForm({ onClose, actionsRef }: { readonly onClose: () => void; 
         aria-invalid={Boolean(error)}
         className="w-full min-h-32 max-h-64 resize-y overflow-y-auto rounded-control border border-inner-border bg-surface-1 p-3 font-mono text-caption text-text-primary outline-none transition-[border-color,box-shadow] duration-(--dur-micro) ease-spring focus:border-accent focus:shadow-focus"
       />
+      <SchemeChipRow endpoint={firstLine} chip={chip} onChipChange={setChip} />
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <p id="proxy-format-hint" className="m-0 text-badge leading-normal text-text-secondary">
           HTTP, HTTPS, or SOCKS5 | one per line | authentication optional
@@ -1400,6 +1460,50 @@ export default function Proxy(): ReactNode {
     toast.success(`Tested ${targets.length} pools · ${healthy} healthy · ${failed} failed`);
   };
 
+  /**
+   * The same bounded health check as `runAllChecks`, restricted to the current
+   * selection. The selected row is the operator's "test this one first" intent;
+   * without it the only way to test a subset was to select everything else and
+   * use Test all.
+   */
+  const runTestSelected = async () => {
+    const targets = pools.filter((pool) => selectedIds.has(pool.id));
+    if (targets.length === 0) return;
+    let healthy = 0;
+    let failed = 0;
+    let cursor = 0;
+    const worker = async (): Promise<void> => {
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const pool = targets[cursor++];
+        if (!pool) return;
+        setTestingIds((prev) => new Set(prev).add(pool.id));
+        try {
+          const result = await healthCheck.mutateAsync(pool.id);
+          setCheckResults((prev) => ({ ...prev, [pool.id]: result }));
+          if (result.status === "healthy") healthy += 1;
+          else failed += 1;
+        } catch (err) {
+          failed += 1;
+          const result: HealthCheckResult = {
+            poolId: pool.id,
+            status: "timeout",
+            errorMessage: getErrorMessage(err, "Health check failed"),
+          };
+          setCheckResults((prev) => ({ ...prev, [pool.id]: result }));
+        } finally {
+          setTestingIds((prev) => {
+            const next = new Set(prev);
+            next.delete(pool.id);
+            return next;
+          });
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(8, targets.length) }, () => worker()));
+    toast.success(`Tested ${targets.length} pools · ${healthy} healthy · ${failed} failed`);
+  };
+
   // One at a time. Each test pulls several megabytes, and two running together
   // share the operator's uplink, so neither number is the pool's real speed.
   const runSpeedTestSelected = async () => {
@@ -1608,6 +1712,21 @@ export default function Proxy(): ReactNode {
                   onClick={() => void runAllChecks()}
                 >
                   Test all
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={testingIds.size > 0 || selectedIds.size === 0}
+                  icon={
+                    testingIds.size > 0 ? (
+                      <Loader2 size={12} className="animate-spin" />
+                    ) : (
+                      <FlaskConical size={12} />
+                    )
+                  }
+                  onClick={() => void runTestSelected()}
+                >
+                  Test selected
                 </Button>
                 {/* Split control: the primary half runs the test at the
                     currently-selected payload, the chevron half picks the
