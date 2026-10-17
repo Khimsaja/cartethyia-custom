@@ -429,7 +429,7 @@ describe("Buddy upstream protocol alignment", () => {
     expect(result.source).toBe("workbuddycn");
     expect(capturedUrl).toBe("https://www.workbuddy.cn/v2/billing/meter/get-user-resource");
     expect(capturedHeaders?.get("x-domain")).toBe("www.workbuddy.cn");
-    expect(capturedHeaders?.get("user-agent")).toContain("WorkBuddy/5.7.7.40774747");
+    expect(capturedHeaders?.get("user-agent")).toContain("WorkBuddy/5.8.3.41334564");
   });
 
   test("classifies refill and bonus packages into the same spendable credit pool", async () => {

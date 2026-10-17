@@ -167,7 +167,7 @@ const KIRO_NODE_VERSION = "24.18.0";
 export const VERSION_SOURCES = {
   antigravity: {
     key: "antigravity",
-    fallback: "2.23.0",
+    fallback: "2.24.0",
     sources: [
       {
         url: "https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml",
@@ -177,7 +177,7 @@ export const VERSION_SOURCES = {
   },
   qoder: {
     key: "qoder",
-    fallback: "1.1.70",
+    fallback: "1.1.73",
     sources: [
       {
         url: "https://registry.npmjs.org/@qoder-ai/qodercli/latest",
@@ -189,18 +189,18 @@ export const VERSION_SOURCES = {
     key: "opencode",
     // The v1 package (`opencode-ai`) stopped at 1.18. The v2 line publishes
     // under `@opencode/cli`, and this feed is what its own installer reads.
-    fallback: "2.0.28",
+    fallback: "2.0.32",
     minVersion: "2.0.0",
     sources: [{ url: "https://opencode.ai/update/api/latest/cli/npm" }],
   },
   commandcode: {
     key: "commandcode",
-    fallback: "1.81.0",
+    fallback: "1.84.0",
     sources: [{ url: "https://registry.npmjs.org/command-code/latest" }],
   },
   grok: {
     key: "grok",
-    fallback: "1.0.52",
+    fallback: "1.0.62",
     sources: [
       { url: "https://storage.googleapis.com/grok-build-public-artifacts/cli/stable" },
       { url: "https://registry.npmjs.org/@xai-official/grok/latest" },
@@ -208,7 +208,7 @@ export const VERSION_SOURCES = {
   },
   clineClient: {
     key: "cline-client",
-    fallback: "4.1.23",
+    fallback: "4.1.25",
     minVersion: "4.1.23",
     sources: [
       {
@@ -219,17 +219,17 @@ export const VERSION_SOURCES = {
   },
   clineSdk: {
     key: "cline-sdk",
-    fallback: "0.0.92",
+    fallback: "0.0.95",
     sources: [{ url: "https://registry.npmjs.org/@cline/sdk/latest", extract: clineSdkVersion }],
   },
   codex: {
     key: "codex",
-    fallback: "0.162.1",
+    fallback: "0.163.0",
     sources: [{ url: "https://registry.npmjs.org/@openai/codex/latest" }],
   },
   workbuddyClient: {
     key: "workbuddy-client",
-    fallback: "5.7.6.40488862",
+    fallback: "5.8.4.41366630",
     sources: [
       {
         url: "https://www.workbuddy.ai/v2/update?platform=workbuddy-win32-x64-user",
@@ -243,7 +243,7 @@ export const VERSION_SOURCES = {
   },
   workbuddyCnClient: {
     key: "workbuddy-cn-client",
-    fallback: "5.7.7.40774747",
+    fallback: "5.8.3.41334564",
     sources: [
       {
         url: "https://www.workbuddy.cn/v2/update?platform=workbuddy-win32-x64-user",
@@ -257,7 +257,7 @@ export const VERSION_SOURCES = {
   },
   workbuddyCli: {
     key: "workbuddy",
-    fallback: "2.164.0",
+    fallback: "2.168.2",
     sources: [
       { url: "https://registry.npmjs.org/@tencent-ai/codebuddy-code/latest" },
       { url: "https://registry.npmmirror.com/@tencent-ai/codebuddy-code/latest" },
@@ -270,7 +270,7 @@ export const VERSION_SOURCES = {
   },
   kiro: {
     key: "kiro",
-    fallback: "1.2.56",
+    fallback: "1.3.11",
     sources: [
       {
         // Kiro's downloads page no longer exposes a stable version string.
@@ -284,7 +284,7 @@ export const VERSION_SOURCES = {
   },
   codebuddy: {
     key: "codebuddy",
-    fallback: "2.164.0",
+    fallback: "2.168.2",
     sources: [
       { url: "https://registry.npmjs.org/@tencent-ai/codebuddy-code/latest" },
       { url: "https://registry.npmmirror.com/@tencent-ai/codebuddy-code/latest" },
@@ -292,7 +292,7 @@ export const VERSION_SOURCES = {
   },
   codebuddyCn: {
     key: "codebuddy-cn",
-    fallback: "4.12.1.39217423",
+    fallback: "4.12.2.41207131",
     sources: [
       {
         // Official CN builds are listed by Homebrew's maintained cask feed;
@@ -307,7 +307,7 @@ export const VERSION_SOURCES = {
     // Current `@anthropic-ai/claude-code` release, so the billing
     // `cc_version=` suffix and the `claude-cli/` User-Agent stay on what
     // upstream ships.
-    fallback: "2.1.296",
+    fallback: "2.1.302",
     sources: [{ url: "https://registry.npmjs.org/@anthropic-ai/claude-code/latest" }],
   },
   claudeSdk: {
@@ -334,12 +334,12 @@ export const VERSION_SOURCES = {
   },
   kilo: {
     key: "kilo-code",
-    fallback: "7.8.9",
+    fallback: "7.8.14",
     sources: [{ url: "https://open-vsx.org/api/kilocode/kilo-code" }],
   },
   muse: {
     key: "muse-code",
-    fallback: "1.4.7-R6101.1",
+    fallback: "1.4.10-R6427.1",
     sources: [{ url: "https://api.meta.ai/muse-code/channels/muse-stable" }],
   },
   zcode: {
