@@ -83,6 +83,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- Testing a pool against OpenCode now **enforces** its verdict: a `blocked`
+  answer retires that egress for the provider, so the next dispatch skips it,
+  and any other answer clears a previous block so a replaced proxy returns to
+  rotation without a separate button. Before this the verdict was recorded and
+  the pool stayed in rotation, which is why a pool could read `OpenCode blocked`
+  and still receive traffic.
 - A provider probe verdict is stored on the pool row (`network_pools.provider_probe_*`,
   migration `0011`) instead of in the operator's browser. It used to live in
   `localStorage`, which made it decorative: another machine saw nothing, the

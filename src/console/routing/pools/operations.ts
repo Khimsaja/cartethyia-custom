@@ -326,23 +326,31 @@ export function createNetworkPoolOperations(config: NetworkPoolConfig) {
       access: AccessDecision | undefined,
       poolId: string,
       providerId: string,
-      options: { readonly block?: boolean } = {},
     ): Promise<PoolProviderProbeResult> {
       const a = requireTenantScope(access, "dashboard:read");
       if (!config.store.providerProbe) {
         throw new ConsoleDomainError("not_supported", 400, "Provider probing is unavailable");
       }
       const result = await config.store.providerProbe(a.tenantId, poolId, providerId);
-      if (result.status !== "blocked" || options.block !== true) return result;
-      if (!config.poolSelector) {
-        return { ...result, blockedPool: false };
+      if (!config.poolSelector) return result;
+      // The verdict *is* the enforcement. Storing it and leaving the pool in
+      // rotation is what produced "I tested every pool, some are red, and it
+      // still picked a red one": the red was a colour, not a decision.
+      //
+      // `blocked` retires the egress for this provider, so the next dispatch
+      // skips it. Anything else clears a previous block, because the address is
+      // serving again — an operator who replaced a proxy must not have to find
+      // a separate button to un-retire it.
+      if (result.status === "blocked") {
+        await config.poolSelector.flagProviderBlocked(
+          poolId,
+          providerId,
+          "Upstream refused this egress address",
+        );
+        return { ...result, blockedPool: true };
       }
-      await config.poolSelector.flagProviderBlocked(
-        poolId,
-        providerId,
-        "Upstream refused this egress address",
-      );
-      return { ...result, blockedPool: true };
+      await config.poolSelector.clearProviderCooldown(poolId, providerId);
+      return { ...result, blockedPool: false };
     },
     /**
      * Probes many unsaved pool definitions against one provider.

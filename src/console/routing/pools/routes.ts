@@ -78,13 +78,12 @@ export function createNetworkPoolRoutes(config: NetworkPoolConfig): Elysia {
 })
     .post(
       "/:poolId/provider-probe",
-      { body: t.Object({ providerId: t.String(), block: t.Optional(t.Boolean()) }) },
+      { body: t.Object({ providerId: t.String() }) },
       async ({ request, params, body }) => {
         return await factory.providerProbe(
           config.accessResolver(request),
           params.poolId,
           body.providerId,
-          body.block === undefined ? {} : { block: body.block },
         );
       },
     )

@@ -196,17 +196,14 @@ export function useProviderProbeNetworkPool() {
   return useMutation<
     PoolProviderProbeResult,
     ApiErrorShape,
-    { poolId: string; providerId: string; block?: boolean }
+    { poolId: string; providerId: string }
   >({
-    mutationFn: ({ poolId, providerId, block }) =>
+    mutationFn: ({ poolId, providerId }) =>
       consoleRequest<PoolProviderProbeResult>(
         `/network/pools/${encodeURIComponent(poolId)}/provider-probe`,
         {
           method: "POST",
-          body: JSON.stringify({
-            providerId,
-            ...(block === undefined ? {} : { block }),
-          }),
+          body: JSON.stringify({ providerId }),
         },
       ),
     onSuccess: async () => {
