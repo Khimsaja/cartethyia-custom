@@ -16,10 +16,10 @@ import type { ProviderDispatchTarget } from "../../src/providers/provider-contra
 
 function probeRequest(): CanonicalRequest {
   return {
-    model: "muse-spark-1.3-contributor-free",
+    model: "longcat-2.5-preview-free",
     messages: [{ role: "user", content: [{ kind: "text", text: "Reply with exactly: PONG" }] }],
     stream: true,
-    source_surface: "responses",
+    source_surface: "chat",
     generation_controls: {},
   } as unknown as CanonicalRequest;
 }
@@ -27,20 +27,25 @@ function probeRequest(): CanonicalRequest {
 describe("OpenCode free probe — backfilled tools are agent-shaped", () => {
   test("every backfilled tool declares at least one property", async () => {
     const request = OPENCODE_FREE_SPEC.prepareRequest?.(probeRequest()) ?? probeRequest();
-    const payload = await encodeWireRequest("responses", request);
+    const payload = await encodeWireRequest("chat", request);
     const candidate: ProviderDispatchTarget = {
       provider_id: "opencode",
-      model_id: "muse-spark-1.3-contributor-free",
-      wire_family: "responses",
-      endpoint_path: "/inference/v1/responses",
+      model_id: "longcat-2.5-preview-free",
+      wire_family: "chat",
+      endpoint_path: "/inference/v1/chat/completions",
       capabilities: {},
     };
     OPENCODE_FREE_SPEC.prePayload?.(payload, request, candidate);
 
-    const tools = payload.tools as { parameters: { properties: Record<string, unknown> } }[];
+    // Responses puts `parameters` on the tool; chat nests it under `function`.
+    const tools = payload.tools as {
+      parameters?: { properties: Record<string, unknown> };
+      function?: { parameters?: { properties: Record<string, unknown> } };
+    }[];
     expect(tools.length).toBeGreaterThan(0);
     for (const tool of tools) {
-      expect(Object.keys(tool.parameters.properties).length).toBeGreaterThan(0);
+      const parameters = tool.parameters ?? tool.function?.parameters;
+      expect(Object.keys(parameters?.properties ?? {}).length).toBeGreaterThan(0);
     }
   });
 });

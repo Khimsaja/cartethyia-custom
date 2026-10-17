@@ -28,10 +28,10 @@ describe("OpenCode dispatch base", () => {
     }
   });
 
-  test("the free muse model lands on the URL a replay proved returns 200", () => {
-    const muse = OPENCODE_FREE_MODELS.find((model) => model.modelId === "muse-spark-1.3-contributor-free");
-    expect(dispatchUrl("opencode", muse?.endpointPath ?? "")).toBe(
-      "https://opencode.ai/inference/v1/responses",
+  test("a free model lands on the URL a replay proved returns 200", () => {
+    const free = OPENCODE_FREE_MODELS.find((model) => model.modelId === "longcat-2.5-preview-free");
+    expect(dispatchUrl("opencode", free?.endpointPath ?? "")).toBe(
+      "https://opencode.ai/inference/v1/chat/completions",
     );
   });
 

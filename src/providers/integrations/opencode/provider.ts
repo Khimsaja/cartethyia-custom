@@ -435,8 +435,6 @@ export function systemoneLimits(): Pick<ModelDefinition, "contextLimit" | "outpu
 
 export const OPENCODE_FREE_MODELS: readonly ModelDefinition[] = [
   ...sharedZenChat,
-  defineModel({ id: "muse-spark-1.2-contributor-free", providerId: "opencode", wireFamily: "responses", endpoint: `${ZEN_PATH_PREFIX}/responses`, vision: true, reasoning: true, reasoningEfforts: MUSE_SPARK_REASONING_EFFORTS }),
-  defineModel({ id: "muse-spark-1.3-contributor-free", providerId: "opencode", wireFamily: "responses", endpoint: `${ZEN_PATH_PREFIX}/responses`, vision: true, reasoning: true, reasoningEfforts: MUSE_SPARK_REASONING_EFFORTS }),
   // Free-tier chat models the shared Zen listing advertises with the `-free`
   // convention. Each was dispatched through this adapter (its own fingerprint
   // headers, agent tools) and answered, so the row is routable, not merely
@@ -457,7 +455,6 @@ export const OPENCODE_ZEN_MODELS: readonly ModelDefinition[] = [
   // Absent from the snapshot: keep the declared limits rather than falling back
   // to the generic default.
   defineModel({ id: "muse-spark-1.2-contributor", wireFamily: "responses", endpoint: `${ZEN_PATH_PREFIX}/responses`, ctx: 1048576, out: 131072, vision: true, reasoning: true, reasoningEfforts: MUSE_SPARK_REASONING_EFFORTS }),
-  defineModel({ id: "muse-spark-1.2-contributor-free", providerId: "opencode", wireFamily: "responses", endpoint: `${ZEN_PATH_PREFIX}/responses`, vision: true, reasoning: true, reasoningEfforts: MUSE_SPARK_REASONING_EFFORTS }),
   defineModel({ id: "muse-spark-1.3", providerId: "opencode", wireFamily: "responses", endpoint: `${ZEN_PATH_PREFIX}/responses`, vision: true, reasoning: true, reasoningEfforts: MUSE_SPARK_REASONING_EFFORTS }),
   systemoneZen("jev-1.13", false),
 ];
@@ -466,7 +463,6 @@ export const OPENCODE_GO_MODELS: readonly ModelDefinition[] = [
   // Absent from the snapshot under `opencode-go`: keep the declared limits.
   defineModel({ id: "muse-spark-1.2", wireFamily: "responses", endpoint: `${GO_PATH_PREFIX}/responses`, ctx: 1048576, out: 131072, vision: true, reasoning: true }),
   defineModel({ id: "muse-spark-1.2-contributor", providerId: "opencode-go", wireFamily: "responses", endpoint: `${GO_PATH_PREFIX}/responses`, vision: true, reasoning: true }),
-  defineModel({ id: "muse-spark-1.2-contributor-free", providerId: "opencode-go", wireFamily: "responses", endpoint: `${GO_PATH_PREFIX}/responses`, vision: true, reasoning: true }),
   defineModel({ id: "grok-4.5", providerId: "opencode-go", wireFamily: "chat", endpoint: `${GO_PATH_PREFIX}/chat/completions`, reasoning: true }),
   defineModel({ id: "glm-5.2", providerId: "opencode-go", wireFamily: "chat", endpoint: `${GO_PATH_PREFIX}/chat/completions`, reasoning: true }),
   defineModel({ id: "kimi-k3", providerId: "opencode-go", wireFamily: "chat", endpoint: `${GO_PATH_PREFIX}/chat/completions`, vision: true, reasoning: true }),
