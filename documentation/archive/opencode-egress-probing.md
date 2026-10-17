@@ -131,3 +131,52 @@ The probe is **read-only**: it reports, and leaves pools in rotation. A real
 dispatch that is refused is what retires an egress
 (`flagPoolBlocked` → `proxy_pool_blocked`). Keeping "test" non-mutating is what
 makes it safe to press.
+
+## The dashboard tester, and three ways it lied
+
+The Proxy Pool card's "Test OpenCode" runs the same probe. Three defects made
+its verdict wrong even when the probe itself was correct.
+
+### 1. A stale verdict survived an edit
+
+Verdicts were keyed by **pool id**. Re-point a pool from a blocked proxy to a
+working one and the card still read `OpenCode blocked`, because nothing
+compared the verdict to the address it was measured on.
+
+A verdict is a statement about one egress, so it now travels with that egress
+(`dashboard/src/features/proxy/probe-freshness.ts`). An edited endpoint
+discards it; a verdict recorded before the endpoint was known is kept.
+
+### 2. The edit form tested the *saved* proxy, not the one being typed
+
+`runAdhocTest` called `healthCheck(pool.id)`, which dials the stored endpoint.
+An operator pasting a new proxy and pressing Test was told about the old one —
+and the answer looked authoritative.
+
+It now probes the endpoint **in the form** through the ad-hoc provider probe,
+so the verdict describes what is about to be saved. The one exception is an
+unchanged endpoint on a credentialed pool: the ad-hoc form never carries a
+credential (the console never sends a secret back to the browser), so that case
+keeps the health check.
+
+### 3. A 20 s timeout was too tight under the batch's own concurrency
+
+Measured through live proxies on 2026-10-17:
+
+| Situation | Healthy dispatch |
+| --- | --- |
+| One probe, alone | 2–6 s |
+| Four probes together (the UI's concurrency) | **16.7 s** |
+
+At 20 s that left ~3 s of margin, so a working egress intermittently reported
+`Probe timed out` → `unreachable`. The timeout is now 45 s. It is not a quality
+threshold: a probe that needs that long is slow, and the reported latency is
+what says so.
+
+## The lesson that generalises
+
+All three defects share one shape: **the tester answered a question nobody
+asked.** Not "is this proxy up" but "will this provider serve this address" —
+and each bug substituted a different, easier question (is the *stored* pool up,
+is *some* address blocked, did it finish in 20 s) while presenting the answer
+as the hard one.

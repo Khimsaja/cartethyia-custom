@@ -83,6 +83,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- The Proxy Pool tester no longer answers a question nobody asked. A probe
+  verdict is keyed to the endpoint it was measured on, so re-pointing a pool at
+  a new proxy drops the old verdict instead of showing `OpenCode blocked` for an
+  address that is gone. The edit form tests the endpoint **being typed** rather
+  than the saved one. And the probe timeout rises from 20 s to 45 s: four
+  concurrent probes measured 16.7 s on a healthy egress, which left a working
+  proxy intermittently reported as `unreachable`.
 - An OpenCode probe no longer reports a usable egress as `unreachable`. The
   probe sent an empty `messages` array, on the theory that the IP gate runs
   before the body is read; it does not. A healthy address answered

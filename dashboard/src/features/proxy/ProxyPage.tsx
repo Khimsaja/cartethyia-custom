@@ -23,6 +23,7 @@ import { Card, CardBody, CardHeader } from "../../components/ui/card";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { RelayDeployModal } from "../../components/RelayDeployPanel";
 import { useMaskIp, usePrivacyMode } from "../../lib/privacy-mode";
+import { liveProbeFor, type StoredProviderResult } from "./probe-freshness";
 import { Dialog } from "../../components/ui/dialog";
 import { Input } from "../../components/ui/input";
 import { DataTable, StatCard } from "../../components/ui/layout";
@@ -90,6 +91,7 @@ const BULK_POOL_CREATE_CONCURRENCY = 4;
 type TestPayload = "url" | "opencode";
 const TEST_PAYLOAD_STORAGE_KEY = "cartethyia_proxy_test_payload";
 const PROVIDER_RESULTS_STORAGE_KEY = "cartethyia_proxy_provider_results";
+
 const TEST_PAYLOAD_OPTIONS = [
   { value: "url", label: "Test URL" },
   { value: "opencode", label: "Test OpenCode" },
@@ -199,6 +201,7 @@ function PoolEditForm({
   readonly actionsRef?: (actions: ReactNode) => void;
 }): ReactNode {
   const updatePool = useUpdateNetworkPool();
+  const adhocProviderProbe = useProbeAdHocProviderBatch();
   const healthCheck = useHealthCheckNetworkPool();
   const [label, setLabel] = useState(pool.label ?? "");
   const [family, setFamily] = useState(pool.family ?? "");
@@ -213,20 +216,64 @@ function PoolEditForm({
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [testing, setTesting] = useState(false);
 
+  /**
+   * Tests the endpoint **in the form**, not the one stored on the row.
+   *
+   * `healthCheck(pool.id)` dialed the saved endpoint, so an operator who pasted
+   * a new proxy and pressed Test was told about the old one — and the answer
+   * looked authoritative. The provider probe has an ad-hoc form for exactly
+   * this: it builds the pool from the request body, so the verdict describes
+   * what the operator is about to save.
+   *
+   * A stored credential cannot ride along — the ad-hoc form never carries one,
+   * by design, because the console never sends a secret back to the browser.
+   * For an unchanged endpoint on a credentialed pool the saved row is the only
+   * thing that can authenticate, so that case keeps using the health check.
+   */
+  const endpointUnchanged = endpoint.trim() === pool.endpoint;
   const runAdhocTest = async () => {
     setTesting(true);
     setTestResult(null);
     try {
-      const result = await healthCheck.mutateAsync(pool.id);
-      if (result.status === "reachable") {
-        setTestResult({ ok: true, message: result.errorMessage ?? "Proxy reachable" });
-      } else {
-        setTestResult(
-          result.status === "healthy"
-            ? { ok: true, message: `Connected in ${result.latencyMs ?? 0}ms` }
-            : { ok: false, message: result.errorMessage ?? "Connection failed" },
-        );
+      if (endpointUnchanged) {
+        const health = await healthCheck.mutateAsync(pool.id);
+        const ok = health.status === "healthy" || health.status === "reachable";
+        setTestResult({
+          ok,
+          message:
+            health.status === "healthy"
+              ? `Connected in ${health.latencyMs ?? 0}ms`
+              : health.errorMessage ?? "Connection failed",
+        });
+        return;
       }
+      const targets = [
+        {
+          kind: pool.kind,
+          endpoint: endpoint.trim(),
+          ...(pool.family === null || pool.family === undefined ? {} : { family: pool.family }),
+        },
+      ];
+      const [batch] = await adhocProviderProbe.mutateAsync({
+        providerId: PROBE_PROVIDER_ID,
+        targets: targets as never,
+      });
+      const result = batch?.result;
+      if (!result) {
+        setTestResult({ ok: false, message: "Probe returned no result" });
+        return;
+      }
+      const ok = result.status === "allowed" || result.status === "throttled";
+      setTestResult({
+        ok,
+        message:
+          result.reason ??
+          (result.status === "allowed"
+            ? `Reachable${result.latencyMs === undefined ? "" : ` in ${result.latencyMs}ms`}`
+            : result.status === "throttled"
+              ? "Reachable; rate limit spent"
+              : "Probe could not complete"),
+      });
     } catch (err) {
       setTestResult({ ok: false, message: getErrorMessage(err, "Connection failed") });
     } finally {
@@ -996,7 +1043,12 @@ function PoolTitleBlock({
             title={
               view.probe.reason ??
               (view.probe.status === "allowed"
-                ? "OpenCode served a probe through this pool"
+                ? view.probe.httpStatus !== undefined && view.probe.httpStatus >= 400
+                  // A 4xx here is the upstream rejecting the *probe body*, not
+                  // the egress: its IP gate runs first. Saying "served" would
+                  // overclaim, so the badge reports what actually happened.
+                  ? `Reachable — upstream answered ${view.probe.httpStatus} for the probe body`
+                  : "OpenCode served a probe through this pool"
                 : view.probe.status === "throttled"
                   ? "OpenCode accepted this egress; the rate is spent"
                   : "The probe could not complete")
@@ -1008,7 +1060,9 @@ function PoolTitleBlock({
             {view.probe.status === "blocked"
               ? "OpenCode blocked"
               : view.probe.status === "allowed"
-                ? "OpenCode OK"
+                ? view.probe.httpStatus !== undefined && view.probe.httpStatus >= 400
+                  ? "OpenCode reachable"
+                  : "OpenCode OK"
                 : view.probe.status === "throttled"
                   ? "OpenCode rate-limited"
                   : "OpenCode unreachable"}
@@ -1502,11 +1556,11 @@ export default function Proxy(): ReactNode {
   // paid proxy, and its verdict is still the last known one after a reload.
   // Keyed by pool id, and seeded from the add form by endpoint so a row shows
   // the verdict the operator already took before saving it.
-  const [providerResults, setProviderResults] = useState<Record<string, PoolProviderProbeResult>>(
+  const [providerResults, setProviderResults] = useState<Record<string, StoredProviderResult>>(
     () => {
       try {
         const saved = localStorage.getItem(PROVIDER_RESULTS_STORAGE_KEY);
-        return saved ? (JSON.parse(saved) as Record<string, PoolProviderProbeResult>) : {};
+        return saved ? (JSON.parse(saved) as Record<string, StoredProviderResult>) : {};
       } catch {
         return {};
       }
@@ -1733,7 +1787,10 @@ export default function Proxy(): ReactNode {
             poolId: pool.id,
             providerId: PROBE_PROVIDER_ID,
           });
-          setProviderResults((prev) => ({ ...prev, [pool.id]: result }));
+          setProviderResults((prev) => ({
+            ...prev,
+            [pool.id]: { endpoint: pool.endpoint ?? "", result },
+          }));
           if (result.status === "allowed") allowed += 1;
           else if (result.status === "blocked") blocked += 1;
           else if (result.status === "throttled") throttled += 1;
@@ -1743,10 +1800,13 @@ export default function Proxy(): ReactNode {
           setProviderResults((prev) => ({
             ...prev,
             [pool.id]: {
-              poolId: pool.id,
-              providerId: PROBE_PROVIDER_ID,
-              status: "unreachable",
-              reason: getErrorMessage(err, "Provider probe failed"),
+              endpoint: pool.endpoint ?? "",
+              result: {
+                poolId: pool.id,
+                providerId: PROBE_PROVIDER_ID,
+                status: "unreachable",
+                reason: getErrorMessage(err, "Provider probe failed"),
+              },
             },
           }));
         } finally {
@@ -1866,9 +1926,16 @@ export default function Proxy(): ReactNode {
         <ProxyBulkForm
           onClose={closeAddProxy}
           actionsRef={setAddProxyActions}
-          onProbeResult={(poolId, result) =>
-            setProviderResults((prev) => ({ ...prev, [poolId]: result }))
-          }
+          onProbeResult={(poolId, result) => {
+            // The row may not exist in this list yet (the add form reports
+            // before the refetch lands), so the endpoint is read from the
+            // payload the probe itself carried rather than from `pools`.
+            const created = pools.find((entry) => entry.id === poolId);
+            setProviderResults((prev) => ({
+              ...prev,
+              [poolId]: { endpoint: created?.endpoint ?? "", result },
+            }));
+          }}
         />
       </Dialog>
 
@@ -2129,7 +2196,7 @@ export default function Proxy(): ReactNode {
                     isSelected={selectedIds.has(pool.id)}
                     onToggleSelect={toggleSelectOne}
                     checkResult={checkResults[pool.id]}
-                    probe={providerResults[pool.id]}
+                    probe={liveProbeFor(providerResults[pool.id], pool.endpoint)}
                     isTesting={testingIds.has(pool.id)}
                     onDelete={requestDeletePool}
                     onEdit={setEditingPool}

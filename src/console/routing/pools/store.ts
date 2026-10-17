@@ -46,7 +46,20 @@ const NETWORK_POOL_HEALTH_CANARY = "https://www.cloudflare.com/cdn-cgi/trace";
 // a short transfer measures ramp-up instead of throughput.
 const NETWORK_POOL_SPEED_TEST_URL = "https://speed.cloudflare.com/__down?bytes=";
 /** A provider probe is one small request; a slow proxy should not hold the batch. */
-const PROVIDER_PROBE_TIMEOUT_MS = 20_000;
+/**
+ * Bound on one provider probe.
+ *
+ * Measured through live proxies on 2026-10-17: a healthy dispatch answers in
+ * 2–6 s alone, but 16.7 s when four probes run together — the tunnel and TLS
+ * handshake queue behind the operator's own uplink. At the previous 20 s that
+ * left ~3 s of margin, so a working egress intermittently reported
+ * "Probe timed out" and the card said `unreachable` for a pool that serves.
+ *
+ * 45 s is chosen to clear the measured worst case with room for a slower
+ * operator link. It is not a quality threshold: a probe that needs this long is
+ * slow, not broken, and the latency it reports is what says so.
+ */
+const PROVIDER_PROBE_TIMEOUT_MS = 45_000;
 
 /** Worst-case wait for the largest allowed payload on a slow link. */
 const NETWORK_POOL_SPEED_TEST_TIMEOUT_MS = 60_000;
