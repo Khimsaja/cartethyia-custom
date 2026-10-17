@@ -52,9 +52,10 @@ describe("provider probe", () => {
     // `big-pickle` is the free id the listing always carries.
     expect(body.model).toBe("big-pickle");
     expect(body.stream).toBe(true);
-    // The gate reads tool membership; a probe without the set is refused on a
-    // healthy address.
-    expect(body.tools?.length).toBe(11);
+    // The gate reads tool membership *and* each recognised definition; a probe
+    // without the set is refused on a healthy address, and so is one carrying
+    // a stub. Thirteen is the CLI's own tool-name set.
+    expect(body.tools?.length).toBe(13);
     const names = (body.tools ?? []).map((tool) => tool.function?.name);
     expect(names).toContain("shell");
     expect(names).toContain("read");

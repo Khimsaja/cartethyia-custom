@@ -7,6 +7,7 @@ import { PROVIDER_COMPATIBILITY_PROFILES } from "../../provider-metadata";
 import { defineModel } from "../../provider-model-definition";
 import type { ApiKeyProviderSpec } from "../../configured-provider";
 import { buildOpenCodeHeaders } from "./fingerprint";
+import { OPENCODE_TOOL_DEFINITIONS } from "./tool-definitions";
 /**
  * OpenCode's three API-key tiers, all served from `opencode.ai`:
  *
@@ -139,33 +140,44 @@ function opencodeDesktopHeaders(
  * tools" is not enough: backfill the whole set. They are plain
  * `ToolDefinition`s — every wire codec serializes them, no per-wire patching.
  */
-const FREE_AGENT_TOOLS: readonly { readonly name: string; readonly description: string }[] = [
-  { name: "edit", description: "Edit a file. Do not call unless the user explicitly asks for a file edit." },
-  { name: "glob", description: "Find files by pattern. Do not call unless the user explicitly asks to search files." },
-  { name: "grep", description: "Search file contents. Do not call unless the user explicitly asks to search contents." },
-  { name: "read", description: "Read a file. Do not call unless the user explicitly asks for a file read." },
-  { name: "shell", description: "Run a shell command. Do not call unless the user explicitly asks to run a command." },
-  { name: "skill", description: "Run a named skill. Do not call unless the user explicitly asks to run a skill." },
-  { name: "subagent", description: "Delegate work to a subagent. Do not call unless the user explicitly asks to delegate." },
-  { name: "webfetch", description: "Fetch a URL. Do not call unless the user explicitly asks to fetch a URL." },
-  { name: "websearch", description: "Search the web. Do not call unless the user explicitly asks to search the web." },
-  { name: "write", description: "Write a file. Do not call unless the user explicitly asks for a file write." },
-  { name: "execute", description: "Execute a command. Do not call unless the user explicitly asks to execute a command." },
+/**
+ * Every tool the free-tier gate recognises, in the order the client declares
+ * them, with the client's own description and schema.
+ *
+ * The gate compares a recognised tool's definition, not just its name: a stub
+ * carrying the right name is refused. These are therefore verbatim captures —
+ * see `./tool-definitions` for provenance.
+ */
+const FREE_AGENT_TOOL_NAMES_ORDERED: readonly string[] = [
+  "shell",
+  "glob",
+  "read",
+  "grep",
+  "webfetch",
+  "websearch",
+  "write",
+  "edit",
+  "subagent",
+  "execute",
+  "patch",
+  "question",
+  "skill",
 ];
 
 /**
  * The agent-tool names the free tier expects, exported so tests assert against
  * the same list the adapter sends instead of a copy that can drift.
  */
-export const FREE_AGENT_TOOL_NAMES: readonly string[] = FREE_AGENT_TOOLS.map((tool) => tool.name);
+export const FREE_AGENT_TOOL_NAMES: readonly string[] = FREE_AGENT_TOOL_NAMES_ORDERED;
 /**
- * Schema the free-tier gate accepts for a backfilled tool.
+ * Fallback schema for a tool name the capture does not carry.
  *
  * An empty `properties` object is refused: the gate reads the schema, and a
  * tool with no parameters at all is not agent-shaped — an otherwise-correct
  * dispatch carrying eleven such tools returned 403 `FreeTierError`, while the
  * same dispatch with one declared property returned 200 (verified live
- * 2026-10-15). The property is never called; it only has to exist.
+ * 2026-10-15). Every name in `FREE_AGENT_TOOL_NAMES_ORDERED` has a captured
+ * definition, so this is a safety net rather than the normal path.
  */
 const FREE_AGENT_TOOL_SCHEMA = {
   type: "object",
@@ -179,9 +191,16 @@ const FREE_AGENT_TOOL_SCHEMA = {
 function ensureFreeAgentRequest(request: CanonicalRequest): CanonicalRequest {
   const present: Record<string, true> = {};
   for (const tool of request.tools ?? []) present[tool.name] = true;
-  const missing: ToolDefinition[] = FREE_AGENT_TOOLS.filter((tool) => !present[tool.name]).map(
-    (tool) => ({ name: tool.name, description: tool.description, jsonSchema: FREE_AGENT_TOOL_SCHEMA }),
-  );
+  const missing: ToolDefinition[] = FREE_AGENT_TOOL_NAMES_ORDERED.filter(
+    (name) => !present[name],
+  ).map((name) => {
+    const definition = OPENCODE_TOOL_DEFINITIONS[name];
+    return {
+      name,
+      description: definition?.description ?? name,
+      jsonSchema: (definition?.parameters ?? FREE_AGENT_TOOL_SCHEMA) as ToolDefinition["jsonSchema"],
+    };
+  });
   if (missing.length === 0) return request;
   return {
     ...request,
