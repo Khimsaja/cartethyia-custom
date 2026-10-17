@@ -6,6 +6,7 @@ import type {
   CreateNetworkPoolRequest,
   HealthCheckResult,
   PoolProviderProbeResult,
+  PoolBatchProviderProbeResult,
   NetworkPoolResponse,
   PoolBatchProbeResult,
   PoolHealthEvent,
@@ -211,6 +212,27 @@ export function useProviderProbeNetworkPool() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.network.pools });
     },
+  });
+}
+
+/**
+ * Asks one provider about many unsaved proxy endpoints in one call.
+ *
+ * The add form tests a pasted list before it exists as rows, so there is no
+ * pool id to probe. Same bounds as the batch health probe; the dials still run
+ * individually with bounded concurrency.
+ */
+export function useProbeAdHocProviderBatch() {
+  return useMutation<
+    readonly PoolBatchProviderProbeResult[],
+    ApiErrorShape,
+    { providerId: string; targets: readonly CreateNetworkPoolRequest[] }
+  >({
+    mutationFn: ({ providerId, targets }) =>
+      consoleRequest<readonly PoolBatchProviderProbeResult[]>(
+        "/network/pools/test-batch/provider",
+        { method: "POST", body: JSON.stringify({ providerId, targets }) },
+      ),
   });
 }
 

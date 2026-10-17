@@ -49,6 +49,7 @@ import {
   useNetworkPoolHealthEvents,
   useNetworkPools,
   useProbeNetworkPoolBatch,
+  useProbeAdHocProviderBatch,
   useRecoverNetworkPool,
   useSpeedTestNetworkPool,
   useUpdateNetworkPool,
@@ -88,6 +89,7 @@ const BULK_POOL_CREATE_CONCURRENCY = 4;
  */
 type TestPayload = "url" | "opencode";
 const TEST_PAYLOAD_STORAGE_KEY = "cartethyia_proxy_test_payload";
+const PROVIDER_RESULTS_STORAGE_KEY = "cartethyia_proxy_provider_results";
 const TEST_PAYLOAD_OPTIONS = [
   { value: "url", label: "Test URL" },
   { value: "opencode", label: "Test OpenCode" },
@@ -396,14 +398,26 @@ export function SchemeChipRow({
     </div>
   );
 }
-export function ProxyBulkForm({ onClose, actionsRef }: { readonly onClose: () => void; readonly actionsRef?: (actions: ReactNode) => void }): ReactNode {
+export function ProxyBulkForm({
+  onClose,
+  actionsRef,
+  onProbeResult,
+}: {
+  readonly onClose: () => void;
+  readonly actionsRef?: (actions: ReactNode) => void;
+  /** Hands a probe verdict to the page once the pool row exists. */
+  readonly onProbeResult?: (poolId: string, result: PoolProviderProbeResult) => void;
+}): ReactNode {
   const createPool = useCreateNetworkPool();
   const probeBatch = useProbeNetworkPoolBatch();
+  const probeProviderBatch = useProbeAdHocProviderBatch();
   const [text, setText] = useState("");
   const [family, setFamily] = useState("");
   const [quotaGb, setQuotaGb] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [log, setLog] = useState<string[]>([]);
+  // Keyed by endpoint so a row can inherit the verdict once the pool exists.
+  const [probeByEndpoint, setProbeByEndpoint] = useState<Record<string, PoolProviderProbeResult>>({});
   const [batchSubmitting, setBatchSubmitting] = useState(false);
   // Scheme chip applies to the first non-empty line only, exactly as the
   // operator reads the paste: one prefix choice for the batch.
@@ -435,8 +449,14 @@ export function ProxyBulkForm({ onClose, actionsRef }: { readonly onClose: () =>
     }
   };
 
-  /** Probes every pasted endpoint in one batched request. */
-  const runTest = async () => {
+  /**
+   * Probes every pasted endpoint in one batched request.
+   *
+   * Reports the egress address alongside latency, because the address is what
+   * the table shows after the rows are saved — an operator testing before
+   * adding wants to see the same two facts the table will carry.
+   */
+  const runTestUrl = async () => {
     if (targets.length === 0) return;
     setLog([`Testing ${targets.length} proxy target(s)…`]);
     try {
@@ -444,8 +464,9 @@ export function ProxyBulkForm({ onClose, actionsRef }: { readonly onClose: () =>
       const rows = results.map((entry) => {
         const ok = entry.result.status === "healthy" || entry.result.status === "reachable";
         const latency = entry.result.latencyMs === undefined ? "" : ` · ${entry.result.latencyMs}ms`;
+        const egress = entry.result.egressIp ? ` · ${entry.result.egressIp}` : "";
         const detail = ok ? "" : ` · ${entry.result.errorMessage ?? entry.result.status}`;
-        return `${ok ? "OK  " : "FAIL"} ${entry.endpoint}${latency}${detail}`;
+        return `${ok ? "OK  " : "FAIL"} ${entry.endpoint}${latency}${egress}${detail}`;
       });
       const okCount = results.filter(
         (r) => r.result.status === "healthy" || r.result.status === "reachable",
@@ -456,6 +477,47 @@ export function ProxyBulkForm({ onClose, actionsRef }: { readonly onClose: () =>
     } catch (err) {
       setLog([`Test failed: ${getErrorMessage(err, "batch probe failed")}`]);
       toast.error("Test failed", getErrorMessage(err, "batch probe failed"));
+    }
+  };
+
+  /**
+   * Asks OpenCode, through each pasted endpoint, whether it will serve us.
+   *
+   * Separate from the URL test rather than a mode of it: the two answer
+   * different questions, and an operator reading the log needs to know which
+   * one produced a line. A blocked address still answers the URL test, so the
+   * two results are not interchangeable.
+   */
+  const runTestOpencode = async () => {
+    if (targets.length === 0) return;
+    setLog([`Testing ${targets.length} proxy target(s) against OpenCode…`]);
+    try {
+      const results = await probeProviderBatch.mutateAsync({
+        providerId: PROBE_PROVIDER_ID,
+        targets,
+      });
+      const rows = results.map((entry) => {
+        const { status, latencyMs, reason } = entry.result;
+        const latency = latencyMs === undefined ? "" : ` · ${latencyMs}ms`;
+        const detail = reason === undefined ? "" : ` · ${reason}`;
+        return `${status === "allowed" ? "OK  " : status === "blocked" ? "BLOCK" : "FAIL"} ${entry.endpoint}${latency}${detail}`;
+      });
+      setProbeByEndpoint((prev) => {
+        const next = { ...prev };
+        for (const entry of results) next[entry.endpoint] = entry.result;
+        return next;
+      });
+      const allowed = results.filter((r) => r.result.status === "allowed").length;
+      const blocked = results.filter((r) => r.result.status === "blocked").length;
+      setLog([`${allowed}/${results.length} allowed · ${blocked} blocked`, ...rows]);
+      if (blocked === 0 && allowed === results.length) {
+        toast.success(`OpenCode accepted all ${results.length} proxies`);
+      } else {
+        toast.error(`OpenCode: ${allowed} allowed · ${blocked} blocked`);
+      }
+    } catch (err) {
+      setLog([`Test failed: ${getErrorMessage(err, "provider probe failed")}`]);
+      toast.error("Test failed", getErrorMessage(err, "provider probe failed"));
     }
   };
 
@@ -480,12 +542,18 @@ export function ProxyBulkForm({ onClose, actionsRef }: { readonly onClose: () =>
           const index = cursor++;
           const line = chippedLines[index]!;
           try {
-            await createPool.mutateAsync({
+            const created = await createPool.mutateAsync({
               kind: detectProxyKind(line),
               endpoint: line,
               ...(perRowQuota.has(index) ? { quotaBytes: perRowQuota.get(index) } : {}),
               ...(family.trim() !== "" ? { family: family.trim() } : {}),
             });
+            // Carry the probe verdict the operator already paid for onto the
+            // row that now exists, so the table shows it without a re-test.
+            const probed = probeByEndpoint[line];
+            if (probed !== undefined && created?.id) {
+              onProbeResult?.(created.id, probed);
+            }
             outcomes[index] = { ok: true };
           } catch (err) {
             outcomes[index] = { ok: false, error: getErrorMessage(err, "Proxy pool creation failed") };
@@ -578,10 +646,19 @@ export function ProxyBulkForm({ onClose, actionsRef }: { readonly onClose: () =>
             variant="secondary"
             size="sm"
             type="button"
-            onClick={() => void runTest()}
-            disabled={probeBatch.isPending || lines.length === 0 || overCap}
+            onClick={() => void runTestUrl()}
+            disabled={probeBatch.isPending || probeProviderBatch.isPending || lines.length === 0 || overCap}
           >
-            {probeBatch.isPending ? "Testing…" : "Test proxies"}
+            {probeBatch.isPending ? "Testing…" : "Test URL"}
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            type="button"
+            onClick={() => void runTestOpencode()}
+            disabled={probeBatch.isPending || probeProviderBatch.isPending || lines.length === 0 || overCap}
+          >
+            {probeProviderBatch.isPending ? "Testing…" : "Test OpenCode"}
           </Button>
         </div>
       </div>
@@ -1408,7 +1485,27 @@ export default function Proxy(): ReactNode {
     }
   }, [testPayload]);
   const [providerTestingIds, setProviderTestingIds] = useState<ReadonlySet<string>>(new Set());
-  const [providerResults, setProviderResults] = useState<Record<string, PoolProviderProbeResult>>({});
+  // Persisted like the speed results: a probe is an outbound request through a
+  // paid proxy, and its verdict is still the last known one after a reload.
+  // Keyed by pool id, and seeded from the add form by endpoint so a row shows
+  // the verdict the operator already took before saving it.
+  const [providerResults, setProviderResults] = useState<Record<string, PoolProviderProbeResult>>(
+    () => {
+      try {
+        const saved = localStorage.getItem(PROVIDER_RESULTS_STORAGE_KEY);
+        return saved ? (JSON.parse(saved) as Record<string, PoolProviderProbeResult>) : {};
+      } catch {
+        return {};
+      }
+    },
+  );
+  useEffect(() => {
+    try {
+      localStorage.setItem(PROVIDER_RESULTS_STORAGE_KEY, JSON.stringify(providerResults));
+    } catch {
+      // A blocked storage must not break the page.
+    }
+  }, [providerResults]);
   const providerProbe = useProviderProbeNetworkPool();
   const speedTest = useSpeedTestNetworkPool();
   const [speedBytes, setSpeedBytes] = useState(SPEED_TEST_DEFAULT_BYTES);
@@ -1750,7 +1847,13 @@ export default function Proxy(): ReactNode {
         title="Add Proxy"
         footer={addProxyActions}
       >
-        <ProxyBulkForm onClose={closeAddProxy} actionsRef={setAddProxyActions} />
+        <ProxyBulkForm
+          onClose={closeAddProxy}
+          actionsRef={setAddProxyActions}
+          onProbeResult={(poolId, result) =>
+            setProviderResults((prev) => ({ ...prev, [poolId]: result }))
+          }
+        />
       </Dialog>
 
       <Dialog

@@ -345,6 +345,12 @@ export interface NetworkPoolStore {
     poolId: string,
     providerId: string,
   ): Promise<PoolProviderProbeResult>;
+  /** The same probe against an endpoint that has not been saved yet. */
+  probeAdHocProvider?(
+    tenantId: string,
+    request: CreateNetworkPoolRequest,
+    providerId: string,
+  ): Promise<PoolProviderProbeResult>;
   listHealthEvents(tenantId: string, poolId: string): Promise<readonly PoolHealthEvent[]>;
   recover(tenantId: string, poolId: string): Promise<boolean>;
   /** Per-tenant pool-group selection strategy; an absent row reads as
@@ -353,6 +359,12 @@ export interface NetworkPoolStore {
   /** Upserts the tenant's single settings row; returns the stored value. */
   setStrategy(tenantId: string, setting: PoolStrategySetting): Promise<PoolStrategySetting>;
 }
+/** One entry of a batch provider probe: the requested endpoint plus its outcome. */
+export interface PoolBatchProviderProbeResult {
+  readonly endpoint: string;
+  readonly result: PoolProviderProbeResult;
+}
+
 /** One entry of a batch probe: the requested endpoint plus its outcome. */
 export interface PoolBatchProbeResult {
   readonly endpoint: string;
@@ -367,6 +379,15 @@ export const POOL_BATCH_PROBE_CONCURRENCY = 10;
 /** Upper bound on a single batch probe. Each entry dials an external host, so
  * the cap keeps one request from turning into an unbounded fan-out. */
 export const MAX_BATCH_PROBE_TARGETS = 100;
+
+/**
+ * Concurrency for a batch provider probe.
+ *
+ * Lower than `POOL_BATCH_PROBE_CONCURRENCY` because each entry opens a tunnel
+ * *and* a TLS session to the provider, rather than one small canary request.
+ * A wide fan-out here is what makes a batch look like an outage upstream.
+ */
+export const PROVIDER_PROBE_BATCH_CONCURRENCY = 4;
 
 export interface NetworkPoolAgentReleaser {
   releasePool(poolId: string, tenantId: string): Promise<void>;

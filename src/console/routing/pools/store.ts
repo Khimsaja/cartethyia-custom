@@ -188,11 +188,51 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
         reason: error instanceof Error ? error.message : "Failed to build pool agent",
       };
     }
+    return await this.dialProviderProbe(agent, poolId, providerId);
+  }
 
+  /**
+   * The same probe against an endpoint the operator has not saved yet.
+   *
+   * The add form tests a pasted list before it exists as rows, so there is no
+   * pool id to resolve. `poolId` in the result is the endpoint, which is what
+   * the form prints beside each line.
+   */
+  async probeAdHocProvider(
+    _tenantId: string,
+    request: CreateNetworkPoolRequest,
+    providerId: string,
+  ): Promise<PoolProviderProbeResult> {
+    const rawEndpoint = request.endpoint.includes("://")
+      ? request.endpoint
+      : `${request.kind}://${request.endpoint}`;
+    let agent: PoolAgent;
+    try {
+      agent =
+        request.kind === "socks5"
+          ? createSocks5Agent(rawEndpoint, request.credential, this.ssrfPolicy)
+          : createHttpProxyAgent(rawEndpoint, request.credential, this.ssrfPolicy);
+    } catch (error) {
+      return {
+        poolId: request.endpoint,
+        providerId,
+        status: "unreachable",
+        reason: error instanceof Error ? error.message : "Failed to build pool agent",
+      };
+    }
+    return await this.dialProviderProbe(agent, request.endpoint, providerId);
+  }
+
+  /** One provider dial through an already-built agent. */
+  private async dialProviderProbe(
+    agent: PoolAgent,
+    label: string,
+    providerId: string,
+  ): Promise<PoolProviderProbeResult> {
     const { buildProviderProbeRequest } = await import("../../../providers/provider-probe");
     const spec = await buildProviderProbeRequest(providerId);
     if (!spec) {
-      return { poolId, providerId, status: "unreachable", reason: "Unknown provider" };
+      return { poolId: label, providerId, status: "unreachable", reason: "Unknown provider" };
     }
 
     const started = performance.now();
@@ -210,7 +250,7 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
         (error instanceof Error && error.name === "AbortError") ||
         /timed out|timeout|ETIMEDOUT/i.test(message);
       return {
-        poolId,
+        poolId: label,
         providerId,
         status: "unreachable",
         latencyMs: Math.round(performance.now() - started),
@@ -222,7 +262,7 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
     const blocked = response.status === 403 && /freetier|free tier can only be used/i.test(text);
 
     return {
-      poolId,
+      poolId: label,
       providerId,
       status: blocked ? "blocked" : response.ok ? "allowed" : "unreachable",
       httpStatus: response.status,

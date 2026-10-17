@@ -12,6 +12,7 @@ import {
 import { SPEED_TEST_MAX_BYTES, SPEED_TEST_MIN_BYTES } from "./speed-test-sizes";
 import {
   MAX_BATCH_PROBE_TARGETS,
+  PROVIDER_PROBE_BATCH_CONCURRENCY,
   POOL_BATCH_PROBE_CONCURRENCY,
   POOL_ROUTING_STRATEGIES,
   normalizePoolConfig,
@@ -21,6 +22,7 @@ import {
   validateTransportConfig,
   type CreateNetworkPoolRequest,
   type HealthCheckResult,
+  type PoolBatchProviderProbeResult,
   type PoolProviderProbeResult,
   type NetworkPoolConfig,
   type NetworkPoolRecord,
@@ -341,6 +343,57 @@ export function createNetworkPoolOperations(config: NetworkPoolConfig) {
         "Upstream refused this egress address",
       );
       return { ...result, blockedPool: true };
+    },
+    /**
+     * Probes many unsaved pool definitions against one provider.
+     *
+     * Same shape and bounds as `probeAdHocPoolBatch`: the add form tests a
+     * pasted list before saving it, and a per-endpoint verdict is what it
+     * prints. A single failing probe becomes that endpoint's result rather
+     * than failing the batch.
+     */
+    async probeAdHocProviderBatch(
+      access: AccessDecision | undefined,
+      requests: readonly CreateNetworkPoolRequest[],
+      providerId: string,
+    ): Promise<readonly PoolBatchProviderProbeResult[]> {
+      const a = requireTenantScope(access, "dashboard:read");
+      if (requests.length === 0) return [];
+      if (requests.length > MAX_BATCH_PROBE_TARGETS) {
+        throw new ConsoleDomainError(
+          "batch_too_large",
+          422,
+          `At most ${MAX_BATCH_PROBE_TARGETS} targets per batch`,
+        );
+      }
+      if (!config.store.probeAdHocProvider) {
+        throw new ConsoleDomainError("not_supported", 400, "Provider probing is unavailable");
+      }
+      const probe = config.store.probeAdHocProvider.bind(config.store);
+      const results: PoolBatchProviderProbeResult[] = new Array(requests.length);
+      let cursor = 0;
+      const worker = async () => {
+        while (cursor < requests.length) {
+          const index = cursor++;
+          const request = requests[index]!;
+          let result: PoolProviderProbeResult;
+          try {
+            result = await probe(a.tenantId, request, providerId);
+          } catch (error) {
+            result = {
+              poolId: request.endpoint,
+              providerId,
+              status: "unreachable",
+              reason: error instanceof Error ? error.message : "Probe failed",
+            };
+          }
+          results[index] = { endpoint: request.endpoint, result };
+        }
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(PROVIDER_PROBE_BATCH_CONCURRENCY, requests.length) }, () => worker()),
+      );
+      return results;
     },
     async probeAdHocPool(
       access: AccessDecision | undefined,

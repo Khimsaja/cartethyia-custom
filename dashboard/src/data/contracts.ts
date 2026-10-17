@@ -182,6 +182,7 @@ export type {
   NetworkPoolResponse,
   HealthCheckResult,
   PoolProviderProbeResult,
+  PoolBatchProviderProbeResult,
   PoolSpeedTestResult,
   PoolStrategySetting,
   PoolBatchProbeResult,
