@@ -35,6 +35,30 @@ describe("OpenCode dispatch base", () => {
     );
   });
 
+  test("the restored muse free id is catalogued on the responses wire", () => {
+    // Dropped once as deprecated, then restored: it answers 200 on the
+    // Responses wire with the agent tool set. Without tools it returns 403 —
+    // that is the free-tier gate judging the request shape, not the model, and
+    // reading it as a dead model is what removed this row in the first place.
+    const muse = OPENCODE_FREE_MODELS.find(
+      (model) => model.modelId === "muse-spark-1.2-contributor-free",
+    );
+    expect(muse).toBeDefined();
+    expect(muse?.wireFamily).toBe("responses");
+    expect(dispatchUrl("opencode", muse?.endpointPath ?? "")).toBe(
+      "https://opencode.ai/inference/v1/responses",
+    );
+  });
+
+  test("the genuinely deprecated muse free id stays out", () => {
+    // 1.3 answers `410 ModelDeprecated` on every wire, so it is not a shape
+    // problem and must not be catalogued.
+    const deprecated = OPENCODE_FREE_MODELS.find(
+      (model) => model.modelId === "muse-spark-1.3-contributor-free",
+    );
+    expect(deprecated).toBeUndefined();
+  });
+
   test("go keeps its own base", () => {
     for (const model of OPENCODE_GO_MODELS) {
       expect(model.endpointPath.startsWith("/zen/go/v1/")).toBe(true);

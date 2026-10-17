@@ -83,6 +83,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- `muse-spark-1.2-contributor-free` is back in the OpenCode free catalog on the
+  Responses wire. It was dropped as deprecated, but it answers `200` with the
+  agent tool set; the `403 FreeTierError` it returns without tools is the
+  free-tier gate judging the request shape, not the model. Its sibling
+  `muse-spark-1.3-contributor-free` is genuinely retired (`410 ModelDeprecated`)
+  and stays out.
 - The model an upstream reports in its own response is now recorded separately
   from the one the request asked for (migration `0012`, `telemetry_events.reported_model`).
   A provider that answers a `muse-spark` request as `deepseek-v4.1-flash` is
