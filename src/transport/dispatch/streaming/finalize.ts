@@ -11,7 +11,7 @@
  *
  * `test/gateway/streaming-contract.test.ts` pins the observable contract.
  */
-import { GatewayError, explainGatewayError, formatPublicErrorMessage, publicGatewayErrorDetails } from "../../../protocol/gateway-error";
+import { GatewayError, explainGatewayError, formatPublicErrorMessage, publicErrorOrigin, publicGatewayErrorDetails } from "../../../protocol/gateway-error";
 import { classifyTerminalOutcome } from "../../failure-policy";
 import type { CanonicalEvent } from "../../../protocol/canonical-model";
 import type { CartethyiaDatabase } from "../../../persistence/db-handle";
@@ -511,7 +511,7 @@ export class StreamFinalizer {
     if (!cancelled) {
       const gatewayError = err instanceof GatewayError ? err : undefined;
       const code = gatewayError?.code ?? "transport_unavailable";
-      const origin = gatewayError?.origin ?? "network";
+      const origin = publicErrorOrigin(gatewayError?.origin ?? "network");
       const message = gatewayError
         ? explainGatewayError(gatewayError)
         : formatPublicErrorMessage(

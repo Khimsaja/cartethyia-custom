@@ -58,6 +58,18 @@ export type GatewayErrorCode =
 export type GatewayErrorOrigin = "cartethyia" | "upstream" | "network";
 
 /**
+ * Brand buyers see on the wire for gateway-originated errors.
+ * Internal telemetry and the console keep the `cartethyia` origin; only the
+ * public serialization is relabeled so the engine name never leaks to buyers.
+ */
+export const PUBLIC_GATEWAY_ORIGIN = "tiprouter";
+
+/** Map an internal error origin to the value serialized on the wire. */
+export function publicErrorOrigin(origin: GatewayErrorOrigin | string): string {
+  return origin === "cartethyia" ? PUBLIC_GATEWAY_ORIGIN : origin;
+}
+
+/**
  * Error with a client-safe stable code, origin, and sanitized metadata.
  */
 export class GatewayError extends Error {
@@ -135,8 +147,51 @@ export function formatPublicErrorMessage(code: string, message: string): string 
   return explanatory;
 }
 
+/**
+ * TipRouter buyer-facing messages for upstream-origin failures.
+ *
+ * LOCAL TIPROUTER PATCH (not upstream): buyers must never see raw third-party
+ * provider text. Upstream bodies leak provider identity ("free plan" quota
+ * notes, billing URLs, verify-account prompts) and the provider id itself, so
+ * every upstream-origin error is reworded to a neutral TipRouter message. The
+ * raw text stays on the GatewayError object (logs, telemetry, console) — only
+ * the wire serialization is reworded.
+ */
+const UPSTREAM_BUYER_MESSAGE: Partial<Record<GatewayErrorCode, string>> = {
+  authentication_failed:
+    "TipRouter could not authenticate with the AI provider. Please try again.",
+  quota_exceeded:
+    "TipRouter has reached its usage limit for this model. Please try again later.",
+  accounts_rate_limited:
+    "All routes for this model are busy right now. Please try again in a moment.",
+  accounts_unavailable: "This model is temporarily unavailable. Please try again later.",
+  policy_rejected:
+    "The request was rejected by content policy. Please adjust your prompt and try again.",
+  context_length_exceeded:
+    "The conversation is too long for this model. Please shorten it and try again.",
+  request_too_large: "The request is too large. Please reduce its size and try again.",
+  upstream_not_found: "The requested model is not available right now. Please try again later.",
+  upstream_conflict: "The AI provider could not process the request. Please try again.",
+  upstream_unprocessable: "The AI provider could not process the request. Please try again.",
+  platform_unavailable: "The AI provider is temporarily unavailable. Please try again.",
+  transport_unavailable: "The AI provider is temporarily unreachable. Please try again.",
+  deadline_exceeded: "The request took too long to complete. Please try again.",
+  internal_error: "Something went wrong on our side. Please try again.",
+  transport_closed: "The connection was closed before the response completed. Please try again.",
+  not_found: "The requested resource was not found.",
+  invalid_request: "The request was invalid. Please check your parameters and try again.",
+};
+
+const UPSTREAM_BUYER_MESSAGE_FALLBACK =
+  "The AI provider returned an error. Please try again.";
+
 /** Formats a gateway error for public/internal clients without mutating it. */
 export function explainGatewayError(error: GatewayError): string {
+  if (error.origin === "upstream") {
+    const safe =
+      UPSTREAM_BUYER_MESSAGE[error.code] ?? UPSTREAM_BUYER_MESSAGE_FALLBACK;
+    return formatPublicErrorMessage(error.code, safe);
+  }
   return formatPublicErrorMessage(error.code, error.message);
 }
 
@@ -153,11 +208,8 @@ const PUBLIC_ERROR_DETAIL_KEYS = new Set([
   "model",
   "poolId",
   "pools",
-  "providerCode",
-  "providerId",
   "providerStatus",
   "providerScope",
-  "raw",
   "rateLimitScope",
   "reason",
   "reasons",
@@ -173,6 +225,11 @@ const PUBLIC_ERROR_DETAIL_KEYS = new Set([
   "maxInflight",
   "weight",
 ]);
+// NOTE (TipRouter local patch): "raw", "providerId" and "providerCode" were
+// deliberately removed from the public allowlist. They carried verbatim
+// third-party provider text (free-plan notes, billing URLs, provider ids)
+// to buyers; the raw text stays on the GatewayError object for logs and
+// telemetry.
 function sanitizePublicDetail(value: unknown, depth = 0): unknown {
   if (typeof value === "string") return value.slice(0, 500);
   if (typeof value !== "object" || value === null) return value;
@@ -201,7 +258,7 @@ export function publicGatewayErrorDetails(
 /** Serializes a GatewayError with the same public shape as transport errors. */
 export function publicGatewayErrorBody(error: GatewayError): {
   readonly error: {
-    readonly origin: GatewayErrorOrigin;
+    readonly origin: string;
     readonly code: GatewayErrorCode;
     readonly message: string;
     readonly details: Readonly<Record<string, unknown>>;
@@ -209,7 +266,7 @@ export function publicGatewayErrorBody(error: GatewayError): {
 } {
   return {
     error: {
-      origin: error.origin,
+      origin: publicErrorOrigin(error.origin),
       code: error.code,
       message: explainGatewayError(error),
       details: publicGatewayErrorDetails(error),

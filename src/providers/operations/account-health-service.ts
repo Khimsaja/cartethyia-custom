@@ -405,6 +405,15 @@ export function classifyAccountError(
     lower.includes("max-per-mtok") ||
     lower.includes("no provider's ask") ||
     (lower.includes("ask") && lower.includes("bid"));
+  // A WAF prompt rejection is a verdict on the *request*, not on the account.
+  // inferhub answers HTTP 403 with "request blocked by the provider's web
+  // application firewall: the prompt matched an attack signature" when a
+  // buyer's prompt trips the upstream WAF. The credential is fine — refreshing
+  // the token cannot change that outcome — so it must never flip the account
+  // to auth_invalidated/disabled. Only that request fails.
+  const wafPromptRejection =
+    lower.includes("web application firewall") ||
+    (lower.includes("attack signature") && statusCode === 403);
   // Deployment/proxy infrastructure errors (DEPLOYMENT_DISABLED, etc.) are
   // transport-level proxy pool failures, not account quota exhaustion.
   // Mutating the account parks it for an hour while the pool itself stays
@@ -607,6 +616,7 @@ export function classifyAccountError(
       lower.includes("not available in your region"));
   const authSignal =
     !quotaSignal &&
+    !wafPromptRejection &&
     !policyRejection &&
     !hostedToolFailure &&
     !modelEntitlementFailure &&
@@ -682,6 +692,22 @@ export function classifyAccountError(
       0,
       null,
       reason("Request price refused by the provider"),
+      false,
+    );
+  }
+
+  // A WAF prompt block says this prompt was refused by the upstream firewall,
+  // so the account is not at fault and must not be mutated: `mutatesAccount`
+  // is false and the deadline is left null. The category is `policy_blocked`
+  // because the request was refused on policy grounds — not because the
+  // credential is invalid — and the caller can fix it by changing the prompt.
+  if (wafPromptRejection) {
+    return result(
+      "policy_blocked",
+      "cooldown",
+      0,
+      null,
+      reason("Request blocked by the provider WAF"),
       false,
     );
   }

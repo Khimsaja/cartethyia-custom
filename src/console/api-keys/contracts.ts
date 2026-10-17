@@ -195,7 +195,7 @@ export interface ShareLinkResponse {
 }
 
 /** Default prefix for newly generated API keys. */
-export const DEFAULT_API_KEY_PREFIX = "carte_";
+export const DEFAULT_API_KEY_PREFIX = "tip_";
 /** Default prefix used by share templates and the keys they issue. */
 export const DEFAULT_SHARE_API_KEY_PREFIX = "sh-carte_";
 
