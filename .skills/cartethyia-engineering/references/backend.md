@@ -81,7 +81,7 @@ on the next request, not at the next process start.
 | --- | --- |
 | `adapters/` | Per-provider HTTP and stream framing |
 | `authentication/` | Token, OAuth refresh, credential envelope |
-| `discovery/` | Offline catalog (`base-models.json`) and live probe |
+| `discovery/` | Offline packed catalog (`catalog/`) and live probe |
 | `operations/` | Account import, probe, enable, disable |
 | `quota/` | Provider quota windows; cached readings also inform Usage floor routing |
 | `configured-provider.ts` | Declarative `ApiKeyProviderSpec` rows for standard OpenAI-compatible providers |

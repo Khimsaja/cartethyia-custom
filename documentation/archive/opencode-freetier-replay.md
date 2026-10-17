@@ -1,19 +1,27 @@
-# OpenCode free-tier replay — 2.0.29
+# OpenCode free-tier replay — `big-pickle`
 
 > [!NOTE]
 > **200 OK reached.** The anonymous free tier answers at
-> `POST https://opencode.ai/inference/v1/responses` with
+> `POST https://opencode.ai/inference/v1/chat/completions` with
 > `Authorization: Bearer public`, `stream: true`, the four session headers, and
 > the full agent tool set. See "200 OK achieved" for the isolation table and
 > "Defects to fix" for what Cartethyia must change.
+>
+> `big-pickle` is **chat-only**: the Responses wire answers
+> `400 ModelProtocolUnsupported`. It is the free id the listing always carries,
+> which is why it is the one to debug against.
 
 **Status:** complete, live replay, 200 OK reproduced.
-**Date:** 2026-10-14. **Artifacts:** macOS DMG + Linux RPM (2.0.29), installed
-CLI 2.0.26, plus a config-redirected capture of a real free-tier dispatch.
+**Date:** 2026-10-14, corrected 2026-10-17. **Artifacts:** a macOS DMG and a
+Linux RPM of the desktop app, an installed CLI, plus a config-redirected
+capture of a real free-tier dispatch. The client version is deliberately not
+pinned anywhere the gate is described: it does not validate the version
+(1.18.0 through 2.0.32 behave the same), so naming one release reads as if
+that release were required.
 
 ## Question
 
-`opencodeft/muse-spark-1.3-contributor-free` fails via the Responses wire with:
+`opencodeft/big-pickle` fails via the wire with:
 
 ```
 403 FreeTierError — OpenCode's free tier can only be used from within OpenCode.
@@ -30,7 +38,7 @@ Cartethyia's fingerprint can be made 1:1.
 | `opencode-desktop-linux-x86_64.rpm` | `opencode-2.0.29-1` | 194,084,941 B; xz-compressed cpio |
 
 Both differ from the previously inspected 2.0.28 DMG (`1ABBC91E…`), so the
-earlier notes (`opencode-cache-replay-2.0.28.md`) no longer describe this build.
+earlier notes (`opencode-cache-replay.md`) no longer describe this build.
 
 ## The capture that worked (no mitm)
 
@@ -52,18 +60,18 @@ OS-level interception:
    ```
 3. Run the CLI with `OPENCODE_CONFIG_DIR` set to that project and a free model:
    ```
-   opencode run -m opencode/muse-spark-1.3-contributor-free "reply PONG"
+   opencode run -m opencode/big-pickle "reply PONG"
    ```
    `OPENCODE_MODELS_URL` alone is **not** enough — it only overrides the catalog
    fetch; the dispatch still uses the built-in base URL. The config override is
    what redirects the request.
 
-Full captured request/response: `opencode-freetier-capture-2.0.26.log`.
+Full captured request/response: `opencode-freetier-capture.log`.
 
 ### What the real client sends (runtime-confirmed)
 
 ```
-POST /v1/responses
+POST /v1/chat/completions
 authorization:      Bearer public
 x-opencode-client:  cli
 x-opencode-project: 82b484de3985b491abf573de7d60d7999302b858   (40-hex hash)
@@ -71,10 +79,9 @@ x-opencode-session:      ses_ec50fdea1ffe9DeKoTBUAi615X
 x-opencode-session-id:   ses_ec50fdea1ffe9DeKoTBUAi615X
 x-session-affinity:      ses_ec50fdea1ffe9DeKoTBUAi615X
 x-session-id:            ses_ec50fdea1ffe9DeKoTBUAi615X
-user-agent:         opencode/latest/2.0.26/cli
+user-agent:         opencode/latest/cli
 b3 / traceparent:   present
-body: model, input[{type:"message", role:"user", content:[{type:"input_text"}]}],
-      instructions, tools
+body: model, messages[{role:"system"}, {role:"user"}], stream, tools
 ```
 
 Three corrections this forces, all previously wrong in this investigation:
@@ -89,9 +96,14 @@ The session id is 26 chars (`ses_` + 12 hex + 14 base62) with a descending
 time part ending `ffe` (counter 1) — the canonical layout the client mints,
 **not** the 64-hex literal found in the desktop binary.
 
+The wire follows the model, not the tier: `big-pickle` is chat-only, so the
+capture above is the chat shape. A Responses-native free id uses
+`/v1/responses` with `input[]` and `instructions` instead of `messages[]`.
+
 ### 200 OK achieved
 
-The anonymous free tier answers at `POST https://opencode.ai/inference/v1/responses`.
+The anonymous free tier answers at
+`POST https://opencode.ai/inference/v1/chat/completions` for `big-pickle`.
 Isolated by dropping one field at a time from the captured request:
 
 | Variation | Result |
@@ -117,8 +129,13 @@ execute`). A five-tool subset (`bash, edit, glob, grep, read`) is **not enough**
 **Not required:** real instructions, `prompt_cache_key`, `include`,
 `max_output_tokens`, a hashed project id, or `x-opencode-client: cli`.
 
-Evidence: `opencode-freetier-exact-request-2.0.26.json` (the exact captured
-request) and `opencode-freetier-capture-2.0.26.log` (the raw capture).
+Evidence: `opencode-freetier-capture.log` (the raw capture, headers and body).
+
+> [!IMPORTANT]
+> The table above describes **which fields matter once the egress IP is
+> allowed**. From a blocked IP, every row — including the 200s — collapses to
+> `403 FreeTierError`. Check the IP before bisecting anything:
+> [`.skills/cartethyia-trace-replay/references/opencode-free-tier.md`](../../.skills/cartethyia-trace-replay/references/opencode-free-tier.md).
 
 ### `x-opencode-request` actively breaks the dispatch
 
@@ -214,8 +231,8 @@ createServer((req, res) => {
         opencode: {
           id: "opencode", npm: "@ai-sdk/openai-compatible", name: "OpenCode",
           api: "http://127.0.0.1:9901/v1",
-          models: { "muse-spark-1.3-contributor-free": { id: "muse-spark-1.3-contributor-free", name: "Muse" } },
-          free: ["muse-spark-1.3-contributor-free"],
+          models: { "big-pickle": { id: "big-pickle", name: "Muse" } },
+          free: ["big-pickle"],
         },
       }));
       return;
@@ -240,7 +257,7 @@ mkdir -p proj && cat > proj/opencode.json <<'JSON'
 { "provider": { "opencode": { "options": { "baseURL": "http://127.0.0.1:9901/v1" } } } }
 JSON
 OPENCODE_CONFIG_DIR="D:/tmp/cap/proj" \
-  opencode run -m opencode/muse-spark-1.3-contributor-free "reply PONG"
+  opencode run -m opencode/big-pickle "reply PONG"
 ```
 
 `OPENCODE_MODELS_URL` alone is **not** enough — it only overrides the catalog
@@ -258,26 +275,32 @@ bun -e 'const fs=require("fs");
 const rows=fs.readFileSync("D:/tmp/cap/full.jsonl","utf8").trim().split("\n").map(JSON.parse);
 const big=rows.reduce((a,r)=>r.body.length>a.body.length?r:a);
 fs.writeFileSync("exact.json", JSON.stringify({headers:big.headers,body:JSON.parse(big.body)}));
-console.log("tools:", JSON.parse(big.body).tools.map(t=>t.name).join(","));'
+console.log("tools:", JSON.parse(big.body).tools.map(t=>t.name ?? t.function?.name).join(","));'
 ```
 
 ### 4. Replay upstream and bisect
 
 Strip hop-by-hop headers (`host`, `content-length`, `accept-encoding`,
 `connection`), then POST to
-`https://opencode.ai/inference/v1/responses`, dropping one field per run:
+`https://opencode.ai/inference/v1/chat/completions` — the wire the capture was
+taken on. `big-pickle` is chat-only; `/responses` answers
+`400 ModelProtocolUnsupported`. Dropping one field per run:
 
 ```js
 const H = { ...exact.headers, authorization: "Bearer public" };
 for (const k of ["host","content-length","accept-encoding","connection"]) delete H[k];
-const r = await fetch("https://opencode.ai/inference/v1/responses",
+const r = await fetch("https://opencode.ai/inference/v1/chat/completions",
   { method: "POST", headers: H, body: JSON.stringify(exact.body) });
 console.log(r.status, await r.text());
 ```
 
-Expected: `200` with an `response.output_text.delta` carrying `PONG`. Dropping
+Expected: `200` with a `chat.completion.chunk` carrying `PONG`. Dropping
 `authorization`, the tools, or the session headers — or switching the base URL
 to `/zen/v1` — each returns `403`.
+
+If every arm returns `403`, including the one that should be `200`, stop
+bisecting: the egress IP is blocked. Repeat one request through a proxy with a
+different exit IP before changing anything else.
 
 ### Pitfalls
 
@@ -353,13 +376,18 @@ Verified live against `https://opencode.ai/inference/v1`:
 | --- | --- |
 | `POST /inference/v1/responses` free model | **403** `FreeTierError` |
 | `POST /inference/v1/chat/completions` free model | **403** `FreeTierError` |
-| `POST /inference/v1/responses` paid `muse-spark-1.3` | **401** `AuthError: Missing API key` |
+| `POST /inference/v1/responses` paid model, no credential | **401** `AuthError: Missing API key` |
 | `GET /inference/v1/models` | **404** (endpoint serves dispatches, not the catalog) |
 | `POST /inference/go/v1/responses` free model | **400** `Model is unavailable` |
 
-So `/inference/v1` is a real, live dispatch lane — the adapter's `/zen/v1`
-prefix is stale for this build. This is a concrete, independently actionable
-finding even though the free tier still refuses us.
+So `/inference/v1` is a real, live dispatch lane, and the `/zen/v1` prefix the
+adapter used for it was stale.
+
+The `403` rows above were taken from a blocked egress IP and are therefore not
+a statement about the wire: from an allowed IP the same
+`/inference/v1/chat/completions` request answers `200`, and the legacy
+`/zen/v1/chat/completions` lane answers `200` too. See the egress note in
+"200 OK achieved".
 
 ### The desktop app never calls `/zen/v1`
 
@@ -378,13 +406,14 @@ desktop builds were used only for static corroboration.
 
 ## What was tried (all 403 unless noted)
 
-Live probes, UA `opencode/latest/2.0.29/cli`, `stream: true` throughout,
-endpoint `POST https://opencode.ai/zen/v1/responses`.
+Live probes, `stream: true` throughout, endpoint
+`POST https://opencode.ai/zen/v1/responses`, from a **blocked egress IP** — so
+every `403` below is the IP refusal, not a statement about that field.
 
 | Probe | Result |
 | --- | --- |
-| `GET /zen/v1/models` | **200** — 85 models; 9 end in `-free`; `muse-spark-1.3-contributor-free` listed |
-| Paid `muse-spark-1.3` (no `-free`) | **401** `AuthError: Missing API key` |
+| `GET /zen/v1/models` | **200** — 85 models; 9 end in `-free`; `big-pickle` listed |
+| Paid model (no `-free`), no credential | **401** `AuthError: Missing API key` |
 | Free `ling-3.0-flash-free` (chat wire) | **400** `Model is unavailable` |
 | **All 9 `-free` models**, responses wire | **403** `FreeTierError` |
 | No opencode headers at all | **403** |
@@ -394,7 +423,7 @@ endpoint `POST https://opencode.ai/zen/v1/responses`.
 | `msg_` request id, ascending and descending | **403** both |
 | `+ x-opencode-request`, `+ x-opencode-project`, `+ x-opencode-directory` | **403** |
 | `+ x-opencode-ticket` (16 hex / 32 hex / `tkt_`) | **403** |
-| `+ Authorization: Bearer public` | **403** — see below; read as "inert" at the time, which was wrong |
+| `+ Authorization: Bearer public` | **403** — read as "inert" at the time, which was wrong: it is required, and this host was IP-blocked |
 | UA `2.0.26` / `2.0.28` / `2.0.29` / `opencode/1.18.31` | **403** all |
 | ± tools (2, 4, and the 5 core tools) | **403** |
 | ± `store:false`, `instructions`, `tool_choice:auto`, `parallel_tool_calls`, `reasoning`, `max_output_tokens`, `prompt_cache_key`, `stream_options` | **403** |
@@ -485,3 +514,29 @@ four are **required** for a 200; each alone leaves the request at 403.
 `src/providers/integrations/opencode/provider.ts`,
 `test/providers/opencode-fingerprint.test.ts`,
 `documentation/reference/providers.md`.
+
+## Addendum 2026-10-17 — the egress IP, and two corrections
+
+This document's isolation table was produced from a host whose egress IP the
+gate accepted. Re-run from a blocked IP, **every** row in it — including the
+200s — collapses to 403 `FreeTierError`. That was confirmed against four
+independent implementations: the official `opencode.exe` v2.0.32 with its real
+config, the same client after a successful OAuth login, the stored OAuth access
+token used directly, and the `opencode2api` Go gateway run as-is. The identical
+byte-identical request then returned 200 through a proxy with exit
+`193.202.12.2`.
+
+So read the table above as "which *fields* matter once the IP is allowed", not
+as a test of whether the gate is up. The IP is checked first and independently.
+
+Two corrections to the sections above:
+
+- **`Endpoint /zen/v1 instead of /inference/v1` → 403 is not universal.** On
+  2026-10-17, `/zen/v1/chat/completions` answered **200** from an allowed IP
+  when carrying the legacy 1.18.31 shape (`user-agent: opencode/1.18.31 (...)`,
+  `x-opencode-request` present, `x-opencode-project: prj_<24hex>`, one `read`
+  tool). The two lanes have different shapes; both work from an allowed IP.
+- **`x-opencode-request` is lane-specific.** It breaks the `/inference` lane
+  (as this document proves) and is *required* on the legacy `/zen/v1` lane.
+
+Current contract: [`.skills/cartethyia-trace-replay/references/opencode-free-tier.md`](../../.skills/cartethyia-trace-replay/references/opencode-free-tier.md).

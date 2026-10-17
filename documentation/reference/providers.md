@@ -105,11 +105,11 @@ its provider row is enabled and not retired. Two writers produce those rows.
 with `defineModel` (`provider-model-definition.ts`), which resolves limits and
 pricing against the offline base catalog and leaves capability flags to the
 caller — capability does not fall back, because an invented default is worse
-than a stated false. The offline catalog is the single generated file
-`discovery/base-models.json` (`source: models.dev`), read by
-`models-dev-catalog.ts`; refresh with
-`bun run scripts/generate/models-dev-snapshot.ts`; id remaps live in
-`MODELS_DEV_PROVIDER_IDS`. `seedBundledModels` writes rows as
+than a stated false. The offline catalog is a single generated, brotli-packed
+binary blob (`discovery/catalog/catalog-blob.ts`, read by
+`discovery/catalog/catalog-format.ts` behind `models-dev-catalog.ts`); refresh
+with `bun run scripts/generate/models-catalog.ts`; id remaps live in
+`CATALOG_PROVIDER_IDS`. `seedBundledModels` writes rows as
 `source: 'builtin'`, prunes retired pairs, and reconciles capability drift
 while leaving operator-owned `enabled` alone.
 
@@ -175,7 +175,7 @@ Verified in code only. `bespokeWire` = the adapter frames its own protocol, not 
 | openrouter / zcode | PKCE ends by minting a **durable API key**, not an access token; no refresher. |
 | xiaomi-mimo | Two ids: `xiaomipg`, `xiaomitp`, both key-based. MiMo Studio browser-cookie login is not supported. |
 | cb / cbcn / workbuddy / workbuddycn | One billing system: `BUDDY_PROVIDER_IDS` names the family for health, request prep, and daily check-in. WorkBuddy CN mirrors WorkBuddy on `www.workbuddy.cn` plus recent CN model additions. See the [catalog-fetch procedure](../../.skills/cartethyia-provider-catalog/SKILL.md#fetch-a-buddy-model-catalog). |
-| opencodeft / opencodezen / opencodego | Three tiers on `opencode.ai`: free and Zen dispatch on `/inference/v1` (free: `requires_account: false`, `ipScopedRateLimit: true` — 429 cools the pool, not the account; Zen: billed), Go on the separate `/zen/go/v1` base. The `/zen/v1/models` listing is the catalog surface for free/Zen (`/inference/v1/models` answers 404), see `integrations/opencode/provider.ts`. A dispatch carrying more than 128 tool definitions is clamped before it is sent: definitions the conversation already called are kept, and the rest fill the remaining slots in their original order. Upstream refuses the unclamped list. Every tier's dispatch carries the client-identity fingerprint (`integrations/opencode/fingerprint.ts`). |
+| opencodeft / opencodezen / opencodego | Three tiers on `opencode.ai`: free and Zen dispatch on `/inference/v1` (free: `requires_account: false`, `ipScopedRateLimit: true` — 429 cools the pool, not the account; Zen: billed), Go on the separate `/zen/go/v1` base. The `/zen/v1/models` listing is the catalog surface for free/Zen (`/inference/v1/models` answers 404), see `integrations/opencode/provider.ts`. A dispatch carrying more than 128 tool definitions is clamped before it is sent: definitions the conversation already called are kept, and the rest fill the remaining slots in their original order. Upstream refuses the unclamped list. Every tier's dispatch carries the client-identity fingerprint (`integrations/opencode/fingerprint.ts`). The free tier additionally requires `Authorization: Bearer public`, the 11-tool agent set, and `stream: true`, and upstream refuses it outright from a blocked egress IP — a datacenter address is refused, so free-tier dispatch needs an egress proxy, not a header change. |
 | exa / parallel | `serviceKinds: ["websearch"]` only; served by `/v1/search`, never the chat pipeline. No account uses the public MCP; a stored API key uses the higher-limit HTTP API. |
 | deepseek | Bundled API-key provider on the Anthropic Messages adapter at `/anthropic/v1/messages`; its OpenAI-compatible `/v1/models` discovery is separate (`deepseek.ts`). |
 | mistral, fireworks, nvidia, gmi, ollamacloud | Shared configured OpenAI-compatible spec rows. |
@@ -196,6 +196,6 @@ Verified in code only. `bespokeWire` = the adapter frames its own protocol, not 
 | Standard OpenAI chat/responses provider | add an `ApiKeyProviderSpec`, not an adapter (`configured-provider.ts`); per-account base-URL state via `resolveBaseUrl` (`compatible-adapter.ts`) |
 | Shared HTTP/SSE adapter, registration, caching | `src/providers/adapters/`, `provider-registry.ts` |
 | BYOK wire derivation, registration, SSRF | `operations/byok-wire-profile.ts` (`resolveByokWireProfile`), `operations/provider-catalog-service.ts` (`registerByokProviders`) |
-| Catalog seeding, offline limits/pricing, live listing | `provider-catalog-seeder.ts` (`seedBundledModels`), `discovery/base-models.json` + `models-dev-catalog.ts`, the family's `loadModelDiscovery` |
+| Catalog seeding, offline limits/pricing, live listing | `provider-catalog-seeder.ts` (`seedBundledModels`), `discovery/catalog/` + `models-dev-catalog.ts`, the family's `loadModelDiscovery` |
 | Quota, OAuth, account health | the family's `*-quota.ts`; `src/providers/authentication/` + `*-oauth.ts`; [Health-routing skill](../../.skills/cartethyia-health-routing/SKILL.md) |
 

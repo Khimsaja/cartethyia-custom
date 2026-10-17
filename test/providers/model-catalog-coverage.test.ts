@@ -159,13 +159,22 @@ describe("deepseek catalog", () => {
   });
 
   test("resolves limits from the base catalog, not restated numbers", async () => {
-    const byId = new Map((await catalogFor("deepseek")).map((m) => [m.modelId, m]));
-    // `v4-pro` has a provider-scoped row: 1M in, 384k out, tools, no vision.
+    const rows = await catalogFor("deepseek");
+    const byId = new Map(rows.map((m) => [m.modelId, m]));
+    // The catalogue's own value, never `defineModel`'s fallback — a row that
+    // failed to resolve is the failure this pins.
+    const { modelsDevCatalog } = await import("../../src/providers/discovery/models-dev-catalog");
+
+    // `v4-pro` has a provider-scoped row under `deepseek`, so it takes that row
+    // rather than the majority vote across the resellers that also file it —
+    // which is what keeps a stranger's 64k cap off this route.
     const pro = byId.get("deepseek-v4-pro");
+    const proScoped = modelsDevCatalog.resolve("deepseek", "deepseek-v4-pro");
     expect(pro?.contextLimit).toBe(1_000_000);
-    expect(pro?.outputLimit).toBe(384_000);
+    expect(pro?.outputLimit).toBe(proScoped?.outputLimit);
     expect(pro?.toolCall).toBe(true);
     expect(pro?.modalities.input).not.toContain("image");
+
     // `v4.1-flash` is filed under other providers upstream, so it resolves
     // through the majority row. Its 1048576-token limit and the 1000000-token
     // value used elsewhere express the same 1M window; pin the catalog value
@@ -175,11 +184,14 @@ describe("deepseek catalog", () => {
     expect(flash?.outputLimit).toBe(384_000);
     expect(flash?.modalities.input).toContain("image");
     expect(flash?.toolCall).toBe(true);
-    // `deepseek-flash` has a provider-scoped row: 1M in, 384k out, and unlike
-    // `v4-pro` it accepts image parts.
+
+    // `deepseek-flash` has a provider-scoped row too, and unlike `v4-pro` it
+    // accepts image parts.
     const entry = byId.get("deepseek-flash");
     expect(entry?.contextLimit).toBe(1_000_000);
-    expect(entry?.outputLimit).toBe(384_000);
+    expect(entry?.outputLimit).toBe(
+      modelsDevCatalog.resolve("deepseek", "deepseek-flash")?.outputLimit,
+    );
     expect(entry?.modalities.input).toContain("image");
     expect(entry?.toolCall).toBe(true);
   });

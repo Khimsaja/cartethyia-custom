@@ -1,65 +1,91 @@
-import compiledModels from "./base-models.json";
+/**
+ * Offline model catalog: limits, capabilities, and pricing for every model the
+ * bundled providers can route to.
+ *
+ * The data is a packed, brotli-compressed binary blob (`catalog-blob.ts`, built
+ * by `scripts/generate/models-catalog.ts`) read through {@link PackedCatalog}.
+ * There is no JSON parse and no per-row object: a lookup is a binary search
+ * over a typed-array column, and the metadata object for a row is built only
+ * when something asks for that row.
+ *
+ * Sources, both fetched by the generator:
+ * - **models.dev** — the broad catalog and the only per-model pricing.
+ * - **models.opencode.ai** — the authoritative limits for the OpenCode family,
+ *   whose dispatch listing (`/zen/v1/models`) publishes ids with no limits at
+ *   all. Without it every fetched OpenCode model published an invented
+ *   200k/64k.
+ *
+ * Runtime network access is intentionally absent: a deployed instance uses the
+ * exact catalog selected at build time.
+ */
+import { brotliDecompressSync } from "node:zlib";
+import {
+  lowerAscii,
+  PackedCatalog,
+  type ModelsDevModelCost,
+  type ModelsDevModelMetadata,
+} from "./catalog/catalog-format";
+import {
+  CATALOG_BLOB_BROTLI_BASE64,
+  CATALOG_BLOB_BYTES,
+} from "./catalog/catalog-blob";
 
-/** Billing metadata from the prebuilt models.dev base catalog. */
-export interface ModelsDevModelCost {
-  readonly input: number | null;
-  readonly output: number | null;
-  readonly cache_read?: number;
-  readonly cache_write?: number;
-  readonly reasoning?: number;
-  readonly pricing_model: "pay-per-use" | "subscription" | "unknown";
-}
+export type { ModelsDevModelCost, ModelsDevModelMetadata };
 
-/** Canonical model metadata from the prebuilt base catalog. */
-export interface ModelsDevModelMetadata {
-  readonly id: string;
-  readonly name?: string;
-  readonly contextLimit: number | null;
-  readonly outputLimit: number | null;
-  readonly cost: ModelsDevModelCost;
-  readonly modalities: { readonly input: readonly string[]; readonly output: readonly string[] };
-  readonly reasoning: boolean;
-  readonly toolCall: boolean;
-}
-
-type CompactRow = readonly [
-  number,
-  string,
-  string,
-  number,
-  number,
-  number,
-  number,
-  number,
-  BaseCost,
-];
-
-interface CompiledCatalog {
-  readonly providers: readonly string[];
-  readonly modalities: readonly string[];
-  readonly rows: readonly CompactRow[];
-  readonly bareOrder: readonly number[];
-  readonly globalCosts: Readonly<Record<string, number>>;
-}
-
-interface BaseCost {
-  readonly input?: number;
-  readonly output?: number;
-  readonly cache_read?: number;
-  readonly cache_write?: number;
-  readonly reasoning?: number;
-}
-
-const BASE_MODELS = compiledModels as unknown as CompiledCatalog;
-
-function modalityList(mask: number): readonly string[] {
-  return BASE_MODELS.modalities.filter((_, index) => (mask & (1 << index)) !== 0);
-}
-
-const UNKNOWN_COST: ModelsDevModelCost = {
-  input: null,
-  output: null,
-  pricing_model: "unknown",
+/**
+ * Cartethyia provider id → the provider key the catalog files it under.
+ *
+ * Only ids that genuinely differ belong here, and each entry is backed by the
+ * deployment's own upstream: `opencodeft` serves `opencode.ai`, and its model
+ * ids also appear under the catalog's `opencode`. Without this the exact
+ * lookup missed for every one of those models, so each fell through to the bare
+ * lookup — which fails closed when providers disagree — and the entry was
+ * published with invented defaults.
+ *
+ * Deliberately absent: providers with no catalog counterpart (a private
+ * gateway, a BYOK endpoint) and any id whose match rests on model ids alone.
+ * A shared model id is not proof of identity — the same generic id appears
+ * under hundreds of resellers — so a guess here would attribute a stranger's
+ * limits to this gateway's serving, which is the exact failure this catalog's
+ * disagreement rule exists to prevent.
+ *
+ * This table is for **metadata** (limits, modalities), where a wrong row is
+ * harmful and failing closed is right. Pricing does not need it: see
+ * {@link ModelsDevCatalog.costFor}, which falls back to the model's own rate.
+ */
+const CATALOG_PROVIDER_IDS: Readonly<Record<string, string>> = {
+  opencodeft: "opencode",
+  opencodezen: "opencode",
+  opencodego: "opencode-go",
+  ollamacloud: "ollama-cloud",
+  xiaomipg: "xiaomi-token-plan-sgp",
+  xiaomitp: "xiaomi-token-plan-cn",
+  // Cartethyia ids that are shorter than the name the catalog files the
+  // provider under. Without these the exact lookup misses for every model, and
+  // each row falls through to the bare lookup — which fails closed when
+  // providers disagree about the id — so the catalog would publish invented
+  // defaults.
+  github: "github-copilot",
+  // Discovery-backed aggregators whose catalog key is spelled differently.
+  // `qianfan` and `helmcode` are deliberately absent: the catalog files no rows
+  // for either, and an entry pointing at a provider it does not carry would
+  // make every lookup miss and publish invented limits.
+  siliconflowcn: "siliconflow-cn",
+  nanogpt: "nano-gpt",
+  novita: "novita-ai",
+  together: "togetherai",
+  wafer: "wafer.ai",
+  // The Token Plan and the mainland DashScope host. Each points at the key the
+  // catalog files the *same* service under, so without these every one of their
+  // rows missed the exact lookup and fell through to the bare one, which fails
+  // closed when providers disagree about an id that resellers share.
+  //
+  // `cloudflareai` is deliberately absent: the gateway files its rows as
+  // `anthropic/claude-opus-5` while the provider dispatches the bare
+  // `claude-opus-5`, so the exact lookup misses under either key. An entry here
+  // would only restate the miss.
+  alibabacp: "alibaba-token-plan",
+  dashscope: "alibaba-coding-plan-cn",
 };
 
 /**
@@ -75,15 +101,10 @@ function stripDateSuffix(modelId: string): string {
 /**
  * Suffixes a reseller appends to a model id it republishes unchanged.
  *
- * OpenRouter lists `deepseek/deepseek-v4.1-flash:free` and
- * `qwen/qwen3-coder:free` — the `:free` marks its own billing tier, not a
- * different model, so the underlying row is the one that carries the real
- * context and output limits. Left on, the id matched nothing and the discovered
- * model published `n/a` limits while the same id without the suffix resolved.
- *
- * `@variant` is the same idea (a pinned quantization or provider route). Open-
- * Router's leading `~` ("this id tracks the vendor's latest") needs no case
- * here: it sits before the `/`, so the bare-id lookup below already drops it.
+ * OpenRouter lists `deepseek/deepseek-v4.1-flash:free` — the `:free` marks its
+ * own billing tier, not a different model, so the underlying row is the one
+ * carrying the real context and output limits. `@variant` is the same idea (a
+ * pinned quantization or provider route).
  *
  * Stripped for *lookup only* — the id sent upstream is always the caller's.
  */
@@ -91,182 +112,80 @@ function stripVariantSuffix(modelId: string): string {
   return modelId.replace(/[:@][^/@:]*$/, "");
 }
 
-function pricingModel(cost: BaseCost): ModelsDevModelCost["pricing_model"] {
-  return cost.input !== null || cost.output !== null ? "pay-per-use" : "unknown";
-}
-
-function toMetadata(row: CompactRow): ModelsDevModelMetadata {
-  const [, id, name, context, output, inputMask, outputMask, flags, cost] = row;
-  return {
-    id,
-    ...(name.length === 0 ? {} : { name }),
-    contextLimit: context > 0 ? context : null,
-    outputLimit: output > 0 ? output : null,
-    cost: {
-      input: cost.input ?? null,
-      output: cost.output ?? null,
-      ...(cost.cache_read === undefined ? {} : { cache_read: cost.cache_read }),
-      ...(cost.cache_write === undefined ? {} : { cache_write: cost.cache_write }),
-      ...(cost.reasoning === undefined ? {} : { reasoning: cost.reasoning }),
-      pricing_model: pricingModel(cost),
-    },
-    modalities: {
-      input: modalityList(inputMask),
-      output: modalityList(outputMask),
-    },
-    reasoning: (flags & 1) !== 0,
-    toolCall: (flags & 2) !== 0,
-  };
-}
-
-function bareId(modelId: string): string {
-  const normalized = modelId.trim().toLowerCase();
-  return normalized.includes("/") ? normalized.slice(normalized.indexOf("/") + 1) : normalized;
-}
-
-function compareText(left: string, right: string): number {
-  if (left < right) return -1;
-  if (left > right) return 1;
-  return 0;
-}
-
 /**
- * Cartethyia provider id → the provider key models.dev files it under.
+ * The bare id: what follows a reseller's `provider/` prefix, if any.
  *
- * Only ids that genuinely differ belong here, and each entry is backed by the
- * deployment's own upstream: `opencodeft` serves `opencode.ai/zen/v1`, and 78
- * of its 80 model ids also appear under models.dev's `opencode`. Without this
- * the exact lookup missed for every one of those models, so each fell through
- * to the bare lookup — which fails closed when providers disagree — and the
- * entry was published with invented defaults.
- *
- * Deliberately absent: providers with no models.dev counterpart (a private
- * gateway, a BYOK endpoint) and any id whose match rests on model ids alone.
- * A shared model id is not proof of identity — the same generic id appears
- * under hundreds of resellers — so a guess here would attribute a stranger's
- * limits to this gateway's serving, which is the exact failure this catalog's
- * disagreement rule exists to prevent.
- *
- * This table is for **metadata** (limits, modalities), where a wrong row is
- * harmful and failing closed is right. Pricing does not need it: see
- * `globalCostFor`, which falls back to the model's own rate when the routed
- * provider has none of its own.
+ * Returned as bytes because every lookup compares against the packed blob
+ * without allocating a string.
  */
-const MODELS_DEV_PROVIDER_IDS: Readonly<Record<string, string>> = {
-  opencodeft: "opencode",
-  opencodezen: "opencode",
-  opencodego: "opencode-go",
-  ollamacloud: "ollama-cloud",
-  xiaomipg: "xiaomi-token-plan-sgp",
-  xiaomitp: "xiaomi-token-plan-cn",
-  // Cartethyia ids that are shorter than the name models.dev files the provider
-  // under. Without these the exact lookup misses for every model, and each row
-  // falls through to the bare lookup — which fails closed when providers
-  // disagree about the id — so the catalog would publish invented defaults.
-  github: "github-copilot",
-  // Discovery-backed aggregators whose models.dev key is spelled differently.
-  // `qianfan` and `helmcode` are deliberately absent: models.dev files no rows
-  // for either, and an entry pointing at a provider the catalog does not carry
-  // would make every lookup miss and publish invented limits.
-  siliconflowcn: "siliconflow-cn",
-  nanogpt: "nano-gpt",
-  novita: "novita-ai",
-  together: "togetherai",
-  wafer: "wafer.ai",
-  // The Token Plan and the mainland DashScope host. Each points at the key
-  // models.dev files the *same* service under, so without these every one of
-  // their rows missed the exact lookup and fell through to the bare one, which
-  // fails closed when providers disagree about an id that resellers share.
-  //
-  // `cloudflareai` is deliberately absent: the gateway files its rows as
-  // `anthropic/claude-opus-5` while the provider dispatches the bare
-  // `claude-opus-5`, so the exact lookup misses under either key. An entry here
-  // would only restate the miss.
-  alibabacp: "alibaba-token-plan",
-  dashscope: "alibaba-coding-plan-cn",
+function bareBytes(idLower: Uint8Array): Uint8Array {
+  for (let i = 0; i < idLower.length; i += 1) {
+    if (idLower[i] === 0x2f /* "/" */) return idLower.subarray(i + 1);
+  }
+  return idLower;
+}
+
+const UNKNOWN_COST: ModelsDevModelCost = {
+  input: null,
+  output: null,
+  pricing_model: "unknown",
 };
 
 /**
- * Resolves model metadata and pricing exclusively from the prebuilt base
- * catalog shipped with Cartethyia. Runtime network access is intentionally
- * absent: deployed instances use the exact catalog selected at build time.
+ * Decoded once, at module load.
+ *
+ * Brotli + base64, not `JSON.parse`: the blob is columnar, so this allocates
+ * one buffer and takes typed-array views over it rather than materialising
+ * 8900 objects. `CATALOG_BLOB_BYTES` is the decompressed length, checked here
+ * so a consumer paired with a half-regenerated blob fails at boot rather than
+ * resolving a truncated catalog.
+ */
+const CATALOG_BYTES = brotliDecompressSync(Buffer.from(CATALOG_BLOB_BROTLI_BASE64, "base64"));
+if (CATALOG_BYTES.byteLength !== CATALOG_BLOB_BYTES) {
+  throw new Error(
+    `The packed model catalog is ${CATALOG_BYTES.byteLength} B, expected ` +
+      `${CATALOG_BLOB_BYTES} B — regenerate it.`,
+  );
+}
+
+// `PackedCatalog` copies into a 4-byte-aligned buffer of its own, so the
+// decompressed buffer is dropped here rather than held beside the copy.
+const CATALOG = new PackedCatalog(CATALOG_BYTES);
+
+/**
+ * Resolves model metadata and pricing exclusively from the packed base catalog
+ * shipped with Cartethyia.
  */
 export class ModelsDevCatalog {
-  private readonly rows = BASE_MODELS.rows;
-  private readonly providerIndexes = new Map(
-    BASE_MODELS.providers.map((provider, index) => [provider.trim().toLowerCase(), index]),
-  );
+  /** When the generator fetched the upstream catalogs. */
+  readonly fetchedAt: string = CATALOG.fetchedAt;
+  /** Every provider key the catalog files. */
+  readonly providers: readonly string[] = CATALOG.providers;
+
   /**
-   * Bare model id → the price the catalog records for the model itself,
-   * independent of which provider filed it.
+   * Metadata for an exact `(providerIndex, idLower)` pair, or `undefined`.
    *
-   * Pricing is a property of the model, not of the reseller: a gateway that
-   * republishes `grok-4.7` bills the model's rate even though the catalog filed
-   * that id under `xai`. Metadata stays provider-specific and fail-closed on
-   * disagreement, but a price is needed for every routed request.
+   * The provider is tried as given first and then under its mapped key: the
+   * mapped name is a second chance, not a replacement, so an id that already
+   * matches exactly keeps winning.
    */
-  private readonly globalCosts = BASE_MODELS.globalCosts;
-  /** Metadata objects created for rows that were actually queried. */
-  private readonly metadataCache = new Map<number, ModelsDevModelMetadata>();
-
-  private metadataAt(index: number): ModelsDevModelMetadata | undefined {
-    const cached = this.metadataCache.get(index);
-    if (cached) return cached;
-    const row = this.rows[index];
-    if (row === undefined) return undefined;
-    const metadata = toMetadata(row);
-    this.metadataCache.set(index, metadata);
-    return metadata;
+  private exactMetadata(providerLower: string, idLower: Uint8Array): ModelsDevModelMetadata | undefined {
+    const direct = CATALOG.exactIndex(CATALOG.providerIndex(providerLower), idLower);
+    if (direct >= 0) return CATALOG.metadataAt(direct);
+    const mapped = CATALOG_PROVIDER_IDS[providerLower];
+    if (mapped === undefined) return undefined;
+    return CATALOG.metadataAt(CATALOG.exactIndex(CATALOG.providerIndex(mapped), idLower));
   }
 
-  private exactIndex(provider: string, modelId: string): number {
-    const providerIndex = this.providerIndexes.get(provider);
-    if (providerIndex === undefined) return -1;
-    let low = 0;
-    let high = this.rows.length;
-    while (low < high) {
-      const middle = (low + high) >>> 1;
-      const row = this.rows[middle];
-      if (row === undefined) return -1;
-      const comparison = row[0] - providerIndex || compareText(row[1].trim().toLowerCase(), modelId);
-      if (comparison <= 0) low = middle + 1;
-      else high = middle;
+  /** Metadata rows whose *bare* id equals `bare`, in catalog order. */
+  private metadataForBare(bare: Uint8Array): ModelsDevModelMetadata[] {
+    const [start, end] = CATALOG.bareRange(bare);
+    const out: ModelsDevModelMetadata[] = [];
+    for (let position = start; position < end; position += 1) {
+      const metadata = CATALOG.metadataAt(CATALOG.bareOrderAt(position));
+      if (metadata !== undefined) out.push(metadata);
     }
-    const candidate = this.rows[low - 1];
-    return candidate?.[0] === providerIndex && candidate[1].trim().toLowerCase() === modelId
-      ? low - 1
-      : -1;
-  }
-
-  private bareRange(modelId: string): readonly [number, number] {
-    const order = BASE_MODELS.bareOrder;
-    let low = 0;
-    let high = order.length;
-    while (low < high) {
-      const middle = (low + high) >>> 1;
-      const rowIndex = order[middle];
-      const row = rowIndex === undefined ? undefined : this.rows[rowIndex];
-      if (row === undefined || compareText(bareId(row[1]), modelId) < 0) low = middle + 1;
-      else high = middle;
-    }
-    const start = low;
-    while (low < order.length) {
-      const rowIndex = order[low];
-      const row = rowIndex === undefined ? undefined : this.rows[rowIndex];
-      if (row === undefined || bareId(row[1]) !== modelId) break;
-      low += 1;
-    }
-    return [start, low];
-  }
-
-  private metadataForBare(modelId: string): ModelsDevModelMetadata[] {
-    const [start, end] = this.bareRange(modelId);
-    return BASE_MODELS.bareOrder
-      .slice(start, end)
-      .flatMap((index) => {
-        const metadata = this.metadataAt(index);
-        return metadata === undefined ? [] : [metadata];
-      });
+    return out;
   }
 
   /**
@@ -274,67 +193,59 @@ export class ModelsDevCatalog {
    *
    * An exact `provider:model` hit always wins — it is the only lookup that
    * names the provider actually serving the request. The bare-id fallback is
-   * used only when it is **unambiguous**: if the base catalog recorded the id
-   * under several providers with different facts, no row can be called the
-   * model's own, so the answer is `undefined` and the caller keeps its own
-   * declared limits instead of inheriting a stranger's.
+   * used only when it is **unambiguous**: if the catalog recorded the id under
+   * several providers with different facts, no row can be called the model's
+   * own, so the answer is `undefined` and the caller keeps its own declared
+   * limits instead of inheriting a stranger's.
    *
    * Callers that know the provider should pass it; passing `""` opts into the
    * bare lookup, which is why it fails closed on disagreement.
    */
   resolve(providerId: string, modelId: string): ModelsDevModelMetadata | undefined {
     const provider = providerId.trim().toLowerCase();
-    const normalizedModel = modelId.trim().toLowerCase();
-    // Try the id as given, then its models.dev filing name. The mapped name is
-    // a second chance, not a replacement: an id that already matches exactly
-    // must keep winning, or a future provider added upstream under our own id
-    // would be shadowed by the mapping.
-    const exact =
-      this.metadataAt(this.exactIndex(provider, normalizedModel)) ??
-      this.metadataAt(this.exactIndex(MODELS_DEV_PROVIDER_IDS[provider] ?? "", normalizedModel));
-    if (exact) return exact;
-    // A reseller suffix (`:free`, `@variant`) is the reseller's, not the
-    // model's: retry the exact lookup without it before falling through to the
-    // bare id. Doing this here rather than in `stripVariantSuffix` alone keeps
-    // the *provider-scoped* match — `openrouter:deepseek/deepseek-v4.1-flash`
-    // resolves to OpenRouter's own row instead of whichever reseller happens to
-    // file that bare id.
-    const unsuffixed = stripVariantSuffix(normalizedModel);
-    if (unsuffixed !== normalizedModel) {
-      const unsuffixedExact =
-        this.metadataAt(this.exactIndex(provider, unsuffixed)) ??
-        this.metadataAt(this.exactIndex(MODELS_DEV_PROVIDER_IDS[provider] ?? "", unsuffixed));
-      if (unsuffixedExact) return unsuffixedExact;
+    const idLower = lowerAscii(modelId);
+    if (idLower.length === 0) return undefined;
+    const exact = this.exactMetadata(provider, idLower);
+    if (exact !== undefined) return exact;
+    // A reseller suffix is the reseller's, not the model's: retry the exact
+    // lookup without it before falling through to the bare id. Doing this here
+    // rather than stripping up front keeps the provider-scoped match.
+    const unsuffixedText = stripVariantSuffix(modelId.trim().toLowerCase());
+    if (unsuffixedText !== modelId.trim().toLowerCase()) {
+      const unsuffixed = this.exactMetadata(provider, lowerAscii(unsuffixedText));
+      if (unsuffixed !== undefined) return unsuffixed;
     }
-    const bareModelId = bareId(normalizedModel);
-    const bare = this.unambiguousBare(bareModelId);
-    if (bare) return bare;
-    const strippedDate = stripDateSuffix(bareModelId);
-    if (strippedDate !== bareModelId) {
-      const dated = this.unambiguousBare(strippedDate);
-      if (dated) return dated;
+    const bare = bareBytes(idLower);
+    const unambiguous = this.unambiguousBare(bare);
+    if (unambiguous !== undefined) return unambiguous;
+    const strippedText = stripDateSuffix(modelId.trim().toLowerCase());
+    const bareText = new TextDecoder().decode(bare);
+    if (strippedText !== bareText) {
+      const dated = this.unambiguousBare(lowerAscii(strippedText));
+      if (dated !== undefined) return dated;
     }
     // Last chance: the bare id may carry a reseller suffix of its own
     // (`provider/model:free` → bare `model:free`).
-    const unsuffixedBare = stripVariantSuffix(bareModelId);
-    if (unsuffixedBare !== bareModelId && unsuffixedBare !== strippedDate) {
-      return this.unambiguousBare(unsuffixedBare);
+    const unsuffixedBareText = stripVariantSuffix(bareText);
+    if (unsuffixedBareText !== bareText && unsuffixedBareText !== strippedText) {
+      return this.unambiguousBare(lowerAscii(unsuffixedBareText));
     }
     return undefined;
   }
 
   /**
-   * The single row for `bareId`, or `undefined` when the catalog disagrees
-   * about it. Two rows that agree on every reported fact are interchangeable,
-   * so the first is returned rather than treating agreement as ambiguity.
+   * The single row for a bare id, or `undefined` when the catalog disagrees.
+   *
+   * Two rows that agree on every reported fact are interchangeable, so the
+   * first is returned rather than treating agreement as ambiguity.
    */
-  private unambiguousBare(bareId: string): ModelsDevModelMetadata | undefined {
-    const rows = this.metadataForBare(bareId);
+  private unambiguousBare(bare: Uint8Array): ModelsDevModelMetadata | undefined {
+    const rows = this.metadataForBare(bare);
     const first = rows[0];
     if (first === undefined) return undefined;
     if (rows.length === 1) return first;
-    const signature = (m: ModelsDevModelMetadata): string =>
-      JSON.stringify([m.contextLimit, m.outputLimit, m.cost, m.modalities]);
+    const signature = (metadata: ModelsDevModelMetadata): string =>
+      JSON.stringify([metadata.contextLimit, metadata.outputLimit, metadata.cost, metadata.modalities]);
     const expected = signature(first);
     for (const row of rows) {
       if (signature(row) !== expected) return undefined;
@@ -343,7 +254,7 @@ export class ModelsDevCatalog {
   }
 
   /**
-   * The most widely agreed row for `bareId`, or `undefined` when nothing
+   * The most widely agreed row for a bare id, or `undefined` when nothing
    * records it.
    *
    * `resolve`/`unambiguousBare` fail closed on any disagreement, which is right
@@ -360,14 +271,16 @@ export class ModelsDevCatalog {
    * stated too high is caught by the provider.
    */
   majorityFor(modelId: string): { contextLimit: number; outputLimit: number } | undefined {
-    const normalized = modelId.trim().toLowerCase();
-    const bare = bareId(normalized);
+    const idLower = lowerAscii(modelId);
+    const bare = bareBytes(idLower);
     // The bare index is keyed by the id as filed, so a dated spelling needs its
-    // undated form tried too (the global cost index seeds both; this one does
-    // not). Merge rather than pick: both spellings name the same model.
+    // undated form tried too. Merge rather than pick: both name one model.
+    const bareText = new TextDecoder().decode(bare);
     const rows = [
       ...this.metadataForBare(bare),
-      ...(stripDateSuffix(bare) === bare ? [] : this.metadataForBare(stripDateSuffix(bare))),
+      ...(stripDateSuffix(bareText) === bareText
+        ? []
+        : this.metadataForBare(lowerAscii(stripDateSuffix(bareText)))),
     ];
     if (rows.length === 0) return undefined;
     const vote = (values: ReadonlyArray<number | null>): number | undefined => {
@@ -408,15 +321,14 @@ export class ModelsDevCatalog {
   costFor(providerId: string, modelId: string): ModelsDevModelCost {
     if (modelId.trim().length === 0 && providerId.trim().length === 0) return UNKNOWN_COST;
     const own = this.resolve(providerId, modelId)?.cost;
-    if (own && (typeof own.input === "number" || typeof own.output === "number")) return own;
-    const normalized = modelId.trim().toLowerCase();
-    const modelBareId = bareId(normalized);
-    // The generated global index carries both spellings of a dated id.
-    const globalIndex = Object.hasOwn(this.globalCosts, modelBareId)
-      ? this.globalCosts[modelBareId]
-      : undefined;
-    const global = globalIndex === undefined ? undefined : this.metadataAt(globalIndex)?.cost;
-    return global ?? own ?? UNKNOWN_COST;
+    if (own !== undefined && (typeof own.input === "number" || typeof own.output === "number")) {
+      return own;
+    }
+    const idLower = lowerAscii(modelId);
+    const row = CATALOG.globalCostRow(bareBytes(idLower));
+    const global = row >= 0 ? CATALOG.rowCost(row) : undefined;
+    if (global !== undefined && global.pricing_model !== "unknown") return global;
+    return own ?? global ?? UNKNOWN_COST;
   }
 }
 

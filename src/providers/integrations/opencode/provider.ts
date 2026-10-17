@@ -351,24 +351,29 @@ export async function discoverOpenCodeFreeModels(options: {
   if (listed === null) return null;
   return listed
     .filter((model) => isFreeTierZenModel(model.modelId))
-    .map((model) => ({
-      ...model,
-      freeTier: true,
+    .map((model) => {
+      if (!isSystemoneZenModel(model.modelId)) return { ...model, freeTier: true } as const;
       // A System One id survives the free-tier filter (it carries the `-free`
       // suffix) but is not a chat model: reclassify it onto the native decision
-      // endpoint so the chat surface never sees it.
-      ...(isSystemoneZenModel(model.modelId)
-        ? { serviceKind: "systemone" as const, endpointPath: `${ZEN_PATH_PREFIX}/systemone` }
-        : {}),
-    }));
+      // endpoint so the chat surface never sees it, and carry the endpoint's
+      // own limits — the Zen listing publishes none, so this row otherwise
+      // advertised the invented chat window for a decision endpoint.
+      return {
+        ...model,
+        ...systemoneLimits(),
+        freeTier: true,
+        serviceKind: "systemone" as const,
+        endpointPath: `${ZEN_PATH_PREFIX}/systemone`,
+      };
+    });
 }
 
-// Limits and pricing resolve from the committed models.dev snapshot
-// (`base-models.json`) via `providerId`; the snapshot is keyed per provider, so
-// passing it is what makes the lookup answer with OpenCode's own entry instead
-// of a same-named model from another reseller. The snapshot's shared OpenCode
-// row understates this model's 1M context limit, so keep the corrected limit
-// explicit for both tiers that serve it.
+// Limits and pricing resolve from the committed packed catalog
+// (`discovery/catalog/`) via `providerId`; the catalog is keyed per provider,
+// so passing it is what makes the lookup answer with OpenCode's own entry
+// instead of a same-named model from another reseller. The catalog's shared
+// OpenCode row understates this model's 1M context limit, so keep the corrected
+// limit explicit for both tiers that serve it.
 const sharedZenChat: readonly ModelDefinition[] = [
   defineModel({ id: "big-pickle", providerId: "opencode", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, vision: true, reasoning: true }),
   defineModel({
@@ -389,12 +394,22 @@ const sharedZenChat: readonly ModelDefinition[] = [
 const MUSE_SPARK_REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"] as const;
 
 /**
+ * Limits for a System One decision model, as a `(context, output)` pair.
+ *
+ * Not a chat window: the native route posts the caller's `{state, questions}`
+ * body untouched. Kept in one place because the discovery path reclassifies a
+ * fetched System One id onto this endpoint, and the Zen dispatch listing
+ * publishes no limits at all — without this it inherited the invented chat
+ * default instead of the row's own values.
+ */
+const SYSTEMONE_LIMITS = { context: 200_000, output: 8_192 } as const;
+
+/**
  * System One decision models served from the Zen `/systemone` endpoint.
  *
  * Not chat models: a `serviceKind: "systemone"` row is dispatched by the native
- * System One route, which posts the caller's `{state, questions}` body untouched
- * and returns `{answers}`. Both the free and billed Zen tiers front the same
- * endpoint; `jev-1.13-free` is the free-tier spelling.
+ * System One route. Both the free and billed Zen tiers front the same endpoint;
+ * `jev-1.13-free` is the free-tier spelling.
  */
 const systemoneZen = (id: string, free: boolean): ModelDefinition =>
   defineModel({
@@ -403,11 +418,20 @@ const systemoneZen = (id: string, free: boolean): ModelDefinition =>
     serviceKind: "systemone",
     wireFamily: "chat",
     endpoint: `${ZEN_PATH_PREFIX}/systemone`,
-    ctx: 200_000,
-    out: 8_192,
+    ctx: SYSTEMONE_LIMITS.context,
+    out: SYSTEMONE_LIMITS.output,
     toolCall: false,
     ...(free ? { free: true } : {}),
   });
+
+/**
+ * The System One limits in `ModelDefinition`'s field names, so the discovery
+ * path can reclassify a fetched id with this row's own values instead of the
+ * chat default. `defineModel` renames them; a `ModelDefinition` does not.
+ */
+export function systemoneLimits(): Pick<ModelDefinition, "contextLimit" | "outputLimit"> {
+  return { contextLimit: SYSTEMONE_LIMITS.context, outputLimit: SYSTEMONE_LIMITS.output };
+}
 
 export const OPENCODE_FREE_MODELS: readonly ModelDefinition[] = [
   ...sharedZenChat,

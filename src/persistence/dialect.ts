@@ -14,6 +14,7 @@
  * on the SQLite backend.
  */
 import { sql, type SQL } from "drizzle-orm";
+import { SQLiteBunSession } from "drizzle-orm/bun-sqlite";
 import { resolveDbMode } from "./db-mode";
 
 /** True when the running backend is the embedded SQLite database. */
@@ -39,11 +40,19 @@ export function mergeJson(column: SQL, patch: SQL, database?: unknown): SQL {
   return isSqlite ? sql`json_patch(${column}, ${patch})` : sql`${column} || ${patch}::jsonb`;
 }
 
-/** True when `database` is a Drizzle handle whose session speaks SQLite. */
+/**
+ * True when `database` is a Drizzle handle whose session speaks SQLite.
+ *
+ * Prototype identity, not `constructor.name`: a minified build renames the
+ * class, so a `name.startsWith("SQLite")` test answered `false` for a real
+ * SQLite handle and `mergeJson` emitted `::jsonb` into SQLite. The compiled
+ * binary then died at boot — `provider-seed` failed with
+ * `unrecognized token: ":"` — while the unminified build worked, which is what
+ * made the cause non-obvious. `instanceof` compares the prototype, so it
+ * survives minification.
+ */
 function hasSqliteDialect(database: unknown): boolean {
-  const dialect = (database as { dialect?: { constructor?: { name?: string } } } | undefined)
-    ?.dialect?.constructor?.name;
-  return typeof dialect === "string" && dialect.startsWith("SQLite");
+  return (database as { session?: unknown } | undefined)?.session instanceof SQLiteBunSession;
 }
 
 /**

@@ -46,6 +46,27 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   search provider: a hosted search declaration is forwarded to the upstream
   that owns it, and `POST /v1/search` on a `websearch` catalog row is the only
   way to run a search.
+- The offline model catalog is a packed, brotli-compressed binary blob
+  (`src/providers/discovery/catalog/catalog-blob.ts`, built by
+  `scripts/generate/models-catalog.ts`) instead of the `base-models.json` plus
+  `scripts/generate/models-dev-snapshot.ts` pair, both now removed. Boot cost
+  drops from parsing 8090 JSON rows into live objects to one brotli decompress
+  (~3 ms) and typed-array views: ~140 KB of source where the JSON was 969 KB,
+  with no per-row object until a row is asked for.
+- OpenCode's fetched free models now publish the upstream's real limits. The
+  dispatch listing (`/zen/v1/models`) carries no limits, so absent rows used to
+  be published with an invented 200k/64k; the catalog now takes them from
+  `models.opencode.ai` (e.g. `ling-3.1-flash-free` 262144/32768, `exo-free`
+  1048576/131072). Editing an auto-fetched model on a bundled provider also
+  works, where it previously answered `Model not found`.
+- An OpenCode free-tier (`opencodeft`) dispatch is refused with 403
+  `FreeTierError` when the **egress IP** is blocked, and no request change
+  helps: the official 2.0.32 client, its stored OAuth token, and a third-party
+  gateway all reproduce the same refusal from an affected host, while the
+  byte-identical request answers 200 through a proxy. A datacenter egress is
+  refused, so this provider needs an egress proxy rather than a header fix. The
+  request contract itself is unchanged: `Authorization: Bearer public`, the
+  11-tool agent set, and `stream: true`.
 
 ### Fixed
 
