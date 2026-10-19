@@ -7,11 +7,11 @@ import {
 } from "../../src/console/api-keys/contracts";
 
 describe("API key prefixes", () => {
-  test("personal credentials use carte_ followed by 12 random characters", () => {
+  test("personal credentials use tip_ followed by 12 random characters", () => {
     const generated = generateApiKeySecret();
 
     expect(generated.prefix).toBe(DEFAULT_API_KEY_PREFIX);
-    expect(generated.secret).toMatch(/^carte_[A-Za-z0-9_-]{12}$/);
+    expect(generated.secret).toMatch(/^tip_[A-Za-z0-9_-]{12}$/);
   });
 
   test("share credentials use sh-carte_ and upgrade the legacy default", () => {
