@@ -21,6 +21,12 @@ export interface CompatibilityProfile {
    * bundled specs declare it on `ApiKeyProviderSpec.gatewayUserAgent`.
    */
   readonly gateway_user_agent?: boolean;
+  /**
+   * `false` drops OpenAI prompt-cache controls (`prompt_cache_key`) from the
+   * payload. For strict OpenAI-compatible upstreams that 400 on unknown
+   * parameters (e.g. nafnaf, 2026-10-19). Defaults to sending them.
+   */
+  readonly prompt_cache?: boolean;
 }
 
 /** Identity and routing defaults for every builtin provider. */

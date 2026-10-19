@@ -452,7 +452,7 @@ describe("modelAbuseBannedError", () => {
 
   test("the message names the cause without naming a duration", () => {
     const message = modelAbuseBannedError().message;
-    expect(message).toBe("IP kamu diblokir karena terlalu banyak request model yang tidak valid.");
+    expect(message).toBe("Your IP is blocked due to too many requests for invalid models.");
     expect(message).not.toMatch(/\d|hour|jam|minute|menit/i);
   });
 });

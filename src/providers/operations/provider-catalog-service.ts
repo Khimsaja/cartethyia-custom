@@ -371,6 +371,10 @@ export async function registerByokProviders(
           ...(compatibilityProfile?.structured_output
             ? { structured_output: compatibilityProfile.structured_output }
             : {}),
+          // Strict upstreams (nafnaf) 400 on the prompt_cache_key param.
+          ...(compatibilityProfile?.prompt_cache === false
+            ? { supports_prompt_caching: false }
+            : {}),
         }),
     });
     byokRegistrationFingerprints.set(providerId, fingerprint);

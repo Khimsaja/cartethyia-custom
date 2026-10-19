@@ -408,7 +408,7 @@ export function modelAbuseBannedError(): GatewayError {
   return new GatewayError(
     "model_abuse_banned",
     403,
-    "IP kamu diblokir karena terlalu banyak request model yang tidak valid.",
+    "Your IP is blocked due to too many requests for invalid models.",
   );
 }
 

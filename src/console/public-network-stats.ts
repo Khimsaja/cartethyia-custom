@@ -8,6 +8,7 @@
  * telemetry tables (the underlying queries run in ~25ms on an index).
  */
 import type { DatabaseHandle } from "../persistence/db-handle";
+import { queryTelemetryEvents } from "../observability/event-log";
 import { decryptCredentialToString } from "../security/crypto";
 
 export interface PublicModelStat {
@@ -65,60 +66,89 @@ const toNumber = (value: unknown): number => {
 };
 
 async function queryPublicNetworkStats(db: DatabaseHandle): Promise<PublicNetworkStats> {
-  const totals = rowsOf(
+  // NOTE (2026-10-19): per-request telemetry no longer lands in the Postgres
+  // `telemetry_events` table — since the upstream merge it is written to
+  // hourly JSONL files under ./data/telemetry-events (the table's newest row
+  // is 2026-10-17 and it is no longer written). Aggregate from the JSONL log
+  // instead; the table is kept only for historical reference. Measured on
+  // prod: ~204k events/24h parse in ~1.3s, amortized by the 30s cache below.
+  const now = Date.now();
+  const since24h = new Date(now - 24 * 3600 * 1000);
+  const since1hMs = now - 3600 * 1000;
+  const since24hMs = since24h.getTime();
+
+  // Buyer model allowlist: union of all active whitelist key model_lists.
+  // Status page is buyer-facing: only show models buyers can actually call.
+  const allowRows = rowsOf(
     await db.query(
-      "SELECT COUNT(*) FILTER (WHERE http_status IS DISTINCT FROM 429) AS requests, " +
-        "COUNT(*) FILTER (WHERE status = 'completed' AND http_status IS DISTINCT FROM 429) AS ok, " +
-        "COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens, " +
-        "COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens " +
-        "FROM telemetry_events WHERE created_at > NOW() - INTERVAL '24 hours'",
-    ),
-  )[0] ?? {};
-  const topRows = rowsOf(
-    await db.query(
-      "SELECT requested_model AS model, COUNT(*) FILTER (WHERE http_status IS DISTINCT FROM 429) AS hits, " +
-        "COUNT(*) FILTER (WHERE status = 'completed' AND http_status IS DISTINCT FROM 429) AS ok, " +
-        "COALESCE(SUM(input_tokens), 0)::bigint + COALESCE(SUM(output_tokens), 0)::bigint AS tokens " +
-        "FROM telemetry_events WHERE created_at > NOW() - INTERVAL '24 hours' " +
-        `GROUP BY requested_model ORDER BY hits DESC LIMIT ${TOP_MODELS_LIMIT}`,
-    ),
-  );
-  const healthRows = rowsOf(
-    await db.query(
-      "SELECT requested_model AS model, COUNT(*) FILTER (WHERE http_status IS DISTINCT FROM 429) AS hits, " +
-        "COUNT(*) FILTER (WHERE status = 'completed' AND http_status IS DISTINCT FROM 429) AS ok " +
-        "FROM telemetry_events WHERE created_at > NOW() - INTERVAL '1 hour' " +
-        // Status page is buyer-facing: only show models buyers can actually
-        // call. Upstream removed the model_templates table; the allowlist now
-        // lives per API key (model_list + model_access_mode='whitelist'), so
-        // the buyer model set is the union of all active whitelists. Infra
-        // keys with other models are still excluded unless whitelisted too.
-        "AND requested_model IN (SELECT DISTINCT jsonb_array_elements_text(model_list) " +
-        "FROM api_keys WHERE model_access_mode = 'whitelist' AND revoked_at IS NULL " +
-        "AND COALESCE(enabled, true) AND jsonb_typeof(model_list) = 'array') " +
-        "GROUP BY requested_model ORDER BY hits DESC",
+      "SELECT DISTINCT jsonb_array_elements_text(model_list) AS model FROM api_keys " +
+        "WHERE model_access_mode = 'whitelist' AND revoked_at IS NULL " +
+        "AND COALESCE(enabled, true) AND jsonb_typeof(model_list) = 'array'",
     ),
   );
-  const requests = toNumber(totals.requests);
-  const ok = toNumber(totals.ok);
+  const allowlist = new Set<string>();
+  for (const row of allowRows) {
+    if (typeof row.model === "string" && row.model) allowlist.add(row.model);
+  }
+
+  const events = await queryTelemetryEvents({ since: since24h });
+
+  let requests = 0;
+  let ok = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  const perModel = new Map<string, { hits: number; ok: number; tokens: number }>();
+  const health1h = new Map<string, { hits: number; ok: number }>();
+
+  for (const e of events) {
+    // File-level hour filtering is coarse; enforce the exact window here.
+    const at = new Date(e.createdAt).getTime();
+    if (at < since24hMs) continue;
+    // 429s are client-side throttling, not errors: excluded everywhere,
+    // matching the old SQL's `http_status IS DISTINCT FROM 429`.
+    if (e.httpStatus === 429) continue;
+    const model = e.requestedModel && e.requestedModel.length > 0 ? e.requestedModel : "unknown";
+    const succeeded = e.status === "completed";
+    requests++;
+    if (succeeded) ok++;
+    inputTokens += e.inputTokens ?? 0;
+    outputTokens += e.outputTokens ?? 0;
+    let m = perModel.get(model);
+    if (!m) {
+      m = { hits: 0, ok: 0, tokens: 0 };
+      perModel.set(model, m);
+    }
+    m.hits++;
+    if (succeeded) m.ok++;
+    m.tokens += (e.inputTokens ?? 0) + (e.outputTokens ?? 0);
+    if (at >= since1hMs && allowlist.has(model)) {
+      let h = health1h.get(model);
+      if (!h) {
+        h = { hits: 0, ok: 0 };
+        health1h.set(model, h);
+      }
+      h.hits++;
+      if (succeeded) h.ok++;
+    }
+  }
+
+  const topModels = [...perModel.entries()]
+    .map(([model, s]) => ({ model, hits: s.hits, ok: s.ok, tokens: s.tokens }))
+    .sort((a, b) => b.hits - a.hits)
+    .slice(0, TOP_MODELS_LIMIT);
+  const modelHealth = [...health1h.entries()]
+    .map(([model, s]) => ({ model, hits: s.hits, ok: s.ok }))
+    .sort((a, b) => b.hits - a.hits);
+
   return {
     window: "24h",
     requests,
     ok,
     success_rate: requests > 0 ? ok / requests : 0,
-    input_tokens: toNumber(totals.input_tokens),
-    output_tokens: toNumber(totals.output_tokens),
-    top_models: topRows.map((row) => ({
-      model: typeof row.model === "string" && row.model ? row.model : "unknown",
-      hits: toNumber(row.hits),
-      ok: toNumber(row.ok),
-      tokens: toNumber(row.tokens),
-    })),
-    model_health_1h: healthRows.map((row) => ({
-      model: typeof row.model === "string" && row.model ? row.model : "unknown",
-      hits: toNumber(row.hits),
-      ok: toNumber(row.ok),
-    })),
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    top_models: topModels,
+    model_health_1h: modelHealth,
     generated_at: new Date().toISOString(),
   };
 }
