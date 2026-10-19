@@ -88,11 +88,14 @@ async function queryPublicNetworkStats(db: DatabaseHandle): Promise<PublicNetwor
       "SELECT requested_model AS model, COUNT(*) FILTER (WHERE http_status IS DISTINCT FROM 429) AS hits, " +
         "COUNT(*) FILTER (WHERE status = 'completed' AND http_status IS DISTINCT FROM 429) AS ok " +
         "FROM telemetry_events WHERE created_at > NOW() - INTERVAL '1 hour' " +
-        // Status page is buyer-facing: only models in the buyer template
-        // ('tiprouter new'). Infra keys and the playground can hit other
-        // models; those must not appear here.
-        "AND requested_model IN (SELECT jsonb_array_elements_text(models) " +
-        "FROM model_templates WHERE id = 'f1deb75d-80a4-4826-824b-43aaacd4e39f') " +
+        // Status page is buyer-facing: only show models buyers can actually
+        // call. Upstream removed the model_templates table; the allowlist now
+        // lives per API key (model_list + model_access_mode='whitelist'), so
+        // the buyer model set is the union of all active whitelists. Infra
+        // keys with other models are still excluded unless whitelisted too.
+        "AND requested_model IN (SELECT DISTINCT jsonb_array_elements_text(model_list) " +
+        "FROM api_keys WHERE model_access_mode = 'whitelist' AND revoked_at IS NULL " +
+        "AND COALESCE(enabled, true) AND jsonb_typeof(model_list) = 'array') " +
         "GROUP BY requested_model ORDER BY hits DESC",
     ),
   );

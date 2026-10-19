@@ -20,7 +20,7 @@ function fakeDb(
         // query feeds the top-models table. The health query filters to the
         // buyer template — simulate that filter here.
         if (sql.includes("1 hour")) {
-          if (!sql.includes("model_templates")) throw new Error("health query must filter to the buyer template");
+          if (!sql.includes("api_keys")) throw new Error("health query must filter to buyer key whitelists");
           return { rows: healthRows.filter((r) => templateModels.includes(String(r.model))) };
         }
         return { rows: topRows };
