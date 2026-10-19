@@ -36,6 +36,23 @@ import {
   useRevokeApiKey,
   useUpdateApiKey,
 } from "../hooks/api-keys";
+import { useModelTemplates } from "../hooks/model-templates";
+
+/** Tone for the expiry fact: red when past, orange when under 7 days. */
+function expiryTone(expiresAt: string | undefined): "err" | "warn" | "default" {
+  if (!expiresAt) return "default";
+  const ts = new Date(expiresAt).getTime();
+  if (Number.isNaN(ts)) return "default";
+  if (ts <= Date.now()) return "err";
+  if (ts - Date.now() < 7 * 24 * 60 * 60 * 1000) return "warn";
+  return "default";
+}
+
+const EXPIRY_TONE_CLASS: Record<"err" | "warn" | "default", string> = {
+  err: "text-red",
+  warn: "text-orange",
+  default: "text-text-secondary",
+};
 
 /**
  * API-key management panel: access, budgets, usage, and share links.
@@ -64,6 +81,10 @@ export function ApiKeysPanel(): ReactNode {
   const [editActions, setEditActions] = useState<ReactNode>(null);
 
   const keys = keysQuery.data ?? [];
+  const templatesQuery = useModelTemplates();
+  const templateNames = new Map(
+    (templatesQuery.data ?? []).map((template) => [template.id, template.name] as const),
+  );
   // Bans are keyed on the client address, so they are cross-tenant: only a
   // platform admin may see or lift one, and the entry point is hidden for
   // everyone else. The endpoint enforces this too — the gate here is UX.
@@ -182,6 +203,20 @@ export function ApiKeysPanel(): ReactNode {
                     <span className="inline-flex items-center gap-2.5 px-3.5 py-1 border border-inner-border rounded-chip bg-surface-1 text-text-secondary text-badge leading-normal whitespace-nowrap max-medium:justify-between">
                       <span className="text-text-tertiary text-micro font-semibold uppercase tracking-label">RPM</span>
                       {limitLabel(key.requestsPerMinute)}
+                    </span>
+                    <span className="inline-flex items-center gap-2.5 px-3.5 py-1 border border-inner-border rounded-chip bg-surface-1 text-badge leading-normal whitespace-nowrap max-medium:justify-between">
+                      <span className="text-text-tertiary text-micro font-semibold uppercase tracking-label">Expires</span>
+                      <span className={EXPIRY_TONE_CLASS[expiryTone(key.expiresAt)]}>
+                        {key.expiresAt
+                          ? new Date(key.expiresAt).toLocaleDateString()
+                          : "Never"}
+                      </span>
+                    </span>
+                    <span className="inline-flex items-center gap-2.5 px-3.5 py-1 border border-inner-border rounded-chip bg-surface-1 text-text-secondary text-badge leading-normal whitespace-nowrap max-medium:justify-between">
+                      <span className="text-text-tertiary text-micro font-semibold uppercase tracking-label">Template</span>
+                      {key.modelTemplateId
+                        ? (templateNames.get(key.modelTemplateId) ?? `${key.modelTemplateId.slice(0, 8)}…`)
+                        : "Custom"}
                     </span>
                   </div>
                   <div className="api-key-facts flex items-center flex-wrap gap-2 mt-3 min-w-0 max-medium:grid max-medium:grid-cols-3 max-medium:gap-2 max-medium:mt-0">

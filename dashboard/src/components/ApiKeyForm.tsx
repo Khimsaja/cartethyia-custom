@@ -26,10 +26,12 @@ import {
 import { useEffect, useState, type ReactNode } from "react";
 import { Button } from "./ui/button";
 import { FileInput, Input } from "./ui/input";
+import { Select } from "./ui/select";
 import { Switch } from "./ui/switch";
 import { ModelPickerModal } from "./ModelPicker";
 import { useResetToolMappings, useSaveToolMappings, useToolMappings, useToolRegistry } from "../hooks/cli-tools";
 import { useUpdateApiKey } from "../hooks/api-keys";
+import { useModelTemplates } from "../hooks/model-templates";
 import { toast } from "../lib/toast";
 import { getErrorMessage } from "../data/api";
 import {
@@ -112,6 +114,18 @@ function parseLimitOrNull(value: string): number | null | undefined {
   const n = parseLimit(value);
   // Empty input clears an existing limit; a parsed value is kept.
   return value.trim() === "" ? null : n;
+}
+
+/**
+ * Converts an ISO expiry to the `datetime-local` input value (local wall
+ * clock, `YYYY-MM-DDTHH:MM`). Empty when the key never expires.
+ */
+function toDatetimeLocalValue(iso: string | undefined | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 /** Token limit input with 1M/100M/1B/1T quick-pick presets. */
@@ -322,6 +336,13 @@ export interface KeyFormInput {
   dailyTokenLimit?: number | null;
   monthlyTokenLimit?: number | null;
   lifetimeTokenBudget?: number | null;
+  /** ISO expiry for time-boxed keys; `null` clears it on update. */
+  expiresAt?: string | null;
+  /**
+   * Template the key mirrors. A string links (or re-links); `null` detaches.
+   * Omitted when unchanged so an untouched field never clears the link.
+   */
+  modelTemplateId?: string | null;
   notesTitle?: string;
   notesSubtitle?: string;
   notesBody?: string;
@@ -391,6 +412,14 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
       : "recurring",
   );
   const [concurrent, setConcurrent] = useState(record?.maxConcurrentRequests?.toString() ?? "");
+  // Expiry as a datetime-local wall-clock value. Compared against the initial
+  // value on submit so an untouched field never clears or rewrites the expiry.
+  const [expiresAtInput, setExpiresAtInput] = useState(() => toDatetimeLocalValue(record?.expiresAt));
+  const initialExpiresAtInput = toDatetimeLocalValue(record?.expiresAt);
+  // Template link; "" means "Custom (no template)". Same untouched-field rule.
+  const [modelTemplateId, setModelTemplateId] = useState(record?.modelTemplateId ?? "");
+  const initialModelTemplateId = record?.modelTemplateId ?? "";
+  const templatesQuery = useModelTemplates();
   const [scopes, setScopes] = useState<string[]>(() => initialApiKeyScopes(record));
   const [modelAccessMode, setModelAccessMode] = useState<"whitelist" | "blacklist">(
     (record as unknown as { modelAccessMode?: "whitelist" | "blacklist" | null })?.modelAccessMode ??
@@ -448,6 +477,8 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
   const toggleScope = (scope: string) =>
     setScopes((cur) => (cur.includes(scope) ? cur.filter((s) => s !== scope) : [...cur, scope]));
   const submit = () => {
+    const expiresChanged = expiresAtInput !== initialExpiresAtInput;
+    const templateChanged = modelTemplateId !== initialModelTemplateId;
     onDone({
       label: label.trim(),
       ...keyCredentialFields(keyMode, customKey, prefix),
@@ -460,6 +491,12 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
       dailyTokenLimit: isOneTime ? null : (parseTokenLimit(daily) ?? null),
       monthlyTokenLimit: isOneTime ? null : (parseTokenLimit(monthly) ?? null),
       lifetimeTokenBudget: isOneTime ? (parseTokenLimit(lifetime) ?? null) : null,
+      // Only send expiry/template when the operator actually changed them:
+      // `null` clears, omitting leaves the stored value untouched.
+      ...(expiresChanged
+        ? { expiresAt: expiresAtInput ? new Date(expiresAtInput).toISOString() : null }
+        : {}),
+      ...(templateChanged ? { modelTemplateId: modelTemplateId || null } : {}),
       notesTitle: notesTitle.trim(),
       notesSubtitle: notesSubtitle.trim(),
       notesBody: notesBody.trim(),
@@ -703,6 +740,43 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
         )}
       </section>
       </div>
+      <section className="flex flex-col gap-4 min-w-0 p-6 border border-inner-border rounded-card bg-surface-2 col-span-full">
+        <div>
+          <h3 className="text-body font-bold text-text-primary">
+            <ShieldCheck size={16} className="mr-2 inline text-accent" aria-hidden="true" />
+            Lifetime
+          </h3>
+          <p className="mt-1 text-badge text-text-tertiary">
+            When the key stops working, and which model preset it mirrors.
+          </p>
+        </div>
+        <div className="grid grid-cols-2 gap-4 items-start min-w-0 max-medium:grid-cols-1">
+          <Input
+            label="Expires at"
+            type="datetime-local"
+            value={expiresAtInput}
+            onChange={(e) => setExpiresAtInput(e.target.value)}
+            disabled={busy}
+          />
+          <Select
+            label="Model template"
+            value={modelTemplateId}
+            onValueChange={(v) => setModelTemplateId(v === "__none__" ? "" : v)}
+            disabled={busy || templatesQuery.isPending}
+            placeholder={templatesQuery.isPending ? "Loading templates…" : "Custom (no template)"}
+            options={[
+              { value: "__none__", label: "Custom (no template)" },
+              ...(templatesQuery.data ?? []).map((template) => ({
+                value: template.id,
+                label: `${template.name} (${template.models.length} model${template.models.length === 1 ? "" : "s"})`,
+              })),
+            ]}
+          />
+        </div>
+        {templatesQuery.isError ? (
+          <p className="form-error">Could not load model templates.</p>
+        ) : null}
+      </section>
       <section className="flex flex-col gap-4 min-w-0 p-6 border border-inner-border rounded-card bg-surface-2 col-span-full" aria-labelledby="share-popup-heading">
         <div className="flex items-start justify-between gap-6">
           <div>

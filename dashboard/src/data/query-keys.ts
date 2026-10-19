@@ -63,6 +63,9 @@ export const queryKeys = {
   modelBans: {
     all: ["console", "model-bans"] as const,
   },
+  modelTemplates: {
+    all: ["console", "model-templates"] as const,
+  },
   settings: {
 
     runtime: ["console", "settings", "runtime"] as const,

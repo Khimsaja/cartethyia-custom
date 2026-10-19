@@ -6,6 +6,7 @@ import {
   FlaskConical,
   Globe,
   LayoutDashboard,
+  LayoutTemplate,
   LogOut,
   MemoryStick,
   Menu,
@@ -70,6 +71,7 @@ export const navigationGroups: readonly NavGroupDef[] = [
       { label: "Quota Management", path: "/quota", icon: ShieldAlert },
       { label: "Proxy & Requests", path: "/proxy", icon: Network },
       { label: "CLI Tools", path: "/cli-tools", icon: Terminal },
+      { label: "Model Templates", path: "/model-templates", icon: LayoutTemplate },
     ],
   },
   {
@@ -105,6 +107,11 @@ const titlesMap: Record<string, { title: string; sub: string; icon: LucideIcon }
     title: "CLI Tools",
     sub: "Claude Code CLI, OpenCode, and local developer tool integrations",
     icon: Terminal,
+  },
+  "/model-templates": {
+    title: "Model Templates",
+    sub: "Named model-list presets that API keys can mirror",
+    icon: LayoutTemplate,
   },
   "/settings": {
     title: "Settings",
