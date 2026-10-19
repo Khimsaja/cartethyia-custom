@@ -292,7 +292,7 @@ export function createGatewayApp(deps: GatewayAppDeps) {
           headers: { "content-type": "application/json; charset=utf-8" },
         });
       }
-      const stats = await getPublicNetworkStats(handle.db);
+      const stats = await getPublicNetworkStats(handle);
       return new Response(JSON.stringify(stats), {
         headers: {
           "content-type": "application/json; charset=utf-8",
@@ -314,7 +314,7 @@ export function createGatewayApp(deps: GatewayAppDeps) {
           headers: { "content-type": "application/json; charset=utf-8" },
         });
       }
-      const status = await getBansosDeepseekStatus(handle.db);
+      const status = await getBansosDeepseekStatus(handle);
       if (!status) {
         return new Response(JSON.stringify({ error: "bansos key not configured" }), {
           status: 404,

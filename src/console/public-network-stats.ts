@@ -7,7 +7,7 @@
  * cached in-process for 60 seconds so public traffic never hammers the
  * telemetry tables (the underlying queries run in ~25ms on an index).
  */
-import type { CartethyiaDatabase } from "../persistence/db-handle";
+import type { DatabaseHandle } from "../persistence/db-handle";
 import { decryptCredentialToString } from "../security/crypto";
 
 export interface PublicModelStat {
@@ -64,9 +64,9 @@ const toNumber = (value: unknown): number => {
   return Number.isFinite(n) ? n : 0;
 };
 
-async function queryPublicNetworkStats(db: CartethyiaDatabase): Promise<PublicNetworkStats> {
+async function queryPublicNetworkStats(db: DatabaseHandle): Promise<PublicNetworkStats> {
   const totals = rowsOf(
-    await db.execute(
+    await db.query(
       "SELECT COUNT(*) FILTER (WHERE http_status IS DISTINCT FROM 429) AS requests, " +
         "COUNT(*) FILTER (WHERE status = 'completed' AND http_status IS DISTINCT FROM 429) AS ok, " +
         "COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens, " +
@@ -75,7 +75,7 @@ async function queryPublicNetworkStats(db: CartethyiaDatabase): Promise<PublicNe
     ),
   )[0] ?? {};
   const topRows = rowsOf(
-    await db.execute(
+    await db.query(
       "SELECT requested_model AS model, COUNT(*) FILTER (WHERE http_status IS DISTINCT FROM 429) AS hits, " +
         "COUNT(*) FILTER (WHERE status = 'completed' AND http_status IS DISTINCT FROM 429) AS ok, " +
         "COALESCE(SUM(input_tokens), 0)::bigint + COALESCE(SUM(output_tokens), 0)::bigint AS tokens " +
@@ -84,7 +84,7 @@ async function queryPublicNetworkStats(db: CartethyiaDatabase): Promise<PublicNe
     ),
   );
   const healthRows = rowsOf(
-    await db.execute(
+    await db.query(
       "SELECT requested_model AS model, COUNT(*) FILTER (WHERE http_status IS DISTINCT FROM 429) AS hits, " +
         "COUNT(*) FILTER (WHERE status = 'completed' AND http_status IS DISTINCT FROM 429) AS ok " +
         "FROM telemetry_events WHERE created_at > NOW() - INTERVAL '1 hour' " +
@@ -126,7 +126,7 @@ export function clearPublicNetworkStatsCache(): void {
 }
 
 /** Cached public stats; concurrent callers share one in-flight refresh. */
-export async function getPublicNetworkStats(db: CartethyiaDatabase): Promise<PublicNetworkStats> {
+export async function getPublicNetworkStats(db: DatabaseHandle): Promise<PublicNetworkStats> {
   const now = Date.now();
   if (cached && cached.expiresAt > now) return cached.data;
   const data = await queryPublicNetworkStats(db);
@@ -161,10 +161,10 @@ export interface BansosDeepseekStatus {
  * exist (yet). Single indexed row lookup; no cache needed.
  */
 export async function getBansosDeepseekStatus(
-  db: CartethyiaDatabase,
+  db: DatabaseHandle,
 ): Promise<BansosDeepseekStatus | null> {
   const rows = rowsOf(
-    await db.execute(
+    await db.query(
       "SELECT key_encrypted, lifetime_token_budget, lifetime_tokens_consumed, revoked_at, enabled " +
         `FROM api_keys WHERE label = '${BANSOS_DEEPSEEK_KEY_LABEL}' LIMIT 1`,
     ),

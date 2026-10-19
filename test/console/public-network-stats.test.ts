@@ -14,7 +14,7 @@ function fakeDb(
   templateModels: string[] = healthRows.map((r) => String(r.model)),
 ) {
   return {
-    execute: async (sql: string) => {
+    query: async (sql: string) => {
       if (sql.includes("GROUP BY")) {
         // The 1-hour health query feeds the public status page; the 24h
         // query feeds the top-models table. The health query filters to the
@@ -57,7 +57,7 @@ describe("public-network-stats", () => {
   test("caches for 30s: second call does not hit the db", async () => {
     let calls = 0;
     const db = {
-      execute: async () => {
+      query: async () => {
         calls++;
         return { rows: [{ requests: "1", ok: "1", input_tokens: "1", output_tokens: "1" }] };
       },
@@ -117,14 +117,14 @@ describe("public-network-stats", () => {
 
 describe("bansos-deepseek status", () => {
   test("returns null when the shared key does not exist", async () => {
-    const db = { execute: async () => ({ rows: [] }) } as never;
+    const db = { query: async () => ({ rows: [] }) } as never;
     expect(await getBansosDeepseekStatus(db)).toBeNull();
   });
 
   test("queries the shared bansos key by its fixed label", async () => {
     let seenSql = "";
     const db = {
-      execute: async (sql: string) => {
+      query: async (sql: string) => {
         seenSql = sql;
         return { rows: [] };
       },
