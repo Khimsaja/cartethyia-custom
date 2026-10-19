@@ -43,10 +43,14 @@ export interface ApiKeyRecord {
   readonly modelPrefix?: string;
   readonly modelAccessMode?: ApiKeyModelAccessMode;
   readonly modelList?: readonly string[];
+  /** Template this key mirrors; see `api_keys.model_template_id`. */
+  readonly modelTemplateId?: string;
   /** Client-router ids this key refuses; see the schema column for the contract. */
   readonly clientRouterDenylist?: readonly string[];
   readonly createdAt: Date;
   readonly revokedAt?: Date;
+  /** Hard expiry for time-boxed keys; absent means the key never expires. */
+  readonly expiresAt?: Date;
   readonly tokensConsumed: number;
 }
 
@@ -81,6 +85,8 @@ export interface ApiKeyPatch
     | "dailyTokenLimit"
     | "monthlyTokenLimit"
     | "lifetimeTokenBudget"
+    | "modelTemplateId"
+    | "expiresAt"
     | "maxConcurrentRequests"
   > {
   readonly keyHash?: string | null;
@@ -100,6 +106,10 @@ export interface ApiKeyPatch
   readonly monthlyTokenLimit?: number | null;
   readonly lifetimeTokenBudget?: number | null;
   readonly maxConcurrentRequests?: number | null;
+  /** Null detaches the key from its model template; a string links it. */
+  readonly modelTemplateId?: string | null;
+  /** Null clears a previously set expiry; a date moves it. */
+  readonly expiresAt?: Date | null;
 }
 
 interface PopupFields {
@@ -182,6 +192,8 @@ export interface ApiKeyStore {
   list(tenantId: string): Promise<readonly ApiKeyRecord[]>;
   get(tenantId: string, keyId: string): Promise<ApiKeyRecord | undefined>;
   listChildren(tenantId: string, parentKeyId: string): Promise<readonly ApiKeyRecord[]>;
+  /** Every key in the tenant linked to one model template, oldest first. */
+  listByModelTemplate(tenantId: string, templateId: string): Promise<readonly ApiKeyRecord[]>;
   create(record: ApiKeyRecord): Promise<void>;
   /** Rewrites list order for one tenant; `keyIds` is the full desired order. */
   reorder(tenantId: string, keyIds: readonly string[]): Promise<void>;
@@ -247,11 +259,13 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
       ...(row.modelPrefix === null ? {} : { modelPrefix: row.modelPrefix }),
       modelAccessMode: row.modelAccessMode,
       ...(row.modelList === null ? {} : { modelList: row.modelList as string[] }),
+      ...(row.modelTemplateId === null ? {} : { modelTemplateId: row.modelTemplateId }),
       ...(row.clientRouterDenylist === null
         ? {}
         : { clientRouterDenylist: row.clientRouterDenylist as string[] }),
       createdAt: row.createdAt,
       ...(row.revokedAt ? { revokedAt: row.revokedAt } : {}),
+      ...(row.expiresAt ? { expiresAt: row.expiresAt } : {}),
       tokensConsumed: row.lifetimeTokensConsumed,
     };
   }
@@ -308,6 +322,23 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
       .orderBy(apiKeys.createdAt, apiKeys.id);
     return this.withPopups(this.db, rows);
   }
+  /** Every key in the tenant linked to one model template, oldest first. */
+  async listByModelTemplate(
+    tenantId: string,
+    templateId: string,
+  ): Promise<readonly ApiKeyRecord[]> {
+    const rows = await this.db
+      .select()
+      .from(apiKeys)
+      .where(
+        and(
+          eq(apiKeys.tenantId, tenantId),
+          eq(apiKeys.modelTemplateId, templateId),
+        ),
+      )
+      .orderBy(apiKeys.createdAt, apiKeys.id);
+    return this.withPopups(this.db, rows);
+  }
   async create(record: ApiKeyRecord): Promise<void> {
     // Append to the end of the tenant's list rather than relying on creation
     // time, so a new key never displaces the existing rows' positions.
@@ -337,6 +368,8 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
       modelPrefix: record.modelPrefix ?? null,
       modelAccessMode: record.modelAccessMode ?? "whitelist",
       modelList: record.modelList ?? null,
+      modelTemplateId: record.modelTemplateId ?? null,
+      expiresAt: record.expiresAt ?? null,
       clientRouterDenylist: record.clientRouterDenylist ?? null,
       lifetimeTokensConsumed: record.tokensConsumed,
     });
@@ -408,6 +441,10 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
           ...(patch.modelPrefix !== undefined ? { modelPrefix: patch.modelPrefix } : {}),
           ...(patch.modelAccessMode !== undefined ? { modelAccessMode: patch.modelAccessMode } : {}),
           ...(patch.modelList !== undefined ? { modelList: patch.modelList } : {}),
+          ...(patch.modelTemplateId !== undefined
+            ? { modelTemplateId: patch.modelTemplateId }
+            : {}),
+          ...(patch.expiresAt !== undefined ? { expiresAt: patch.expiresAt } : {}),
           ...(patch.clientRouterDenylist !== undefined
             ? { clientRouterDenylist: patch.clientRouterDenylist }
             : {}),

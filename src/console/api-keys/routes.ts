@@ -21,6 +21,7 @@ import {
   validateApiKeyRequest,
   parseRequest,
   finitePositive,
+  resolveCreateExpiresAt,
   type CreateApiKeyRequest,
   type CreateApiKeyResponse,
   resolveKeyPrefix,
@@ -32,6 +33,34 @@ import {
 } from "./contracts";
 import type { SharedKeyActivityDetail, SharedKeySummary } from "../share/share-usage";
 import { popupImageBytes } from "./share-popup-image";
+
+/**
+ * Resolves a request's template link: `undefined` leaves the key unlinked
+ * (create) or untouched (update), `null` detaches, and a string must name a
+ * template the same tenant owns — a foreign or unknown id is a 400, never a
+ * silent link, so one tenant can never pin keys to another tenant's template.
+ */
+async function resolveModelTemplateLink(
+  config: ApiKeyConfig,
+  tenantId: string,
+  raw: string | null | undefined,
+): Promise<string | null | undefined> {
+  if (raw === undefined || raw === null) return raw;
+  if (typeof raw !== "string" || raw.trim().length === 0)
+    throw new ConsoleDomainError(
+      "invalid_model_template",
+      400,
+      "modelTemplateId must be a model template id",
+    );
+  const template = await config.modelTemplateStore?.get(tenantId, raw);
+  if (!template)
+    throw new ConsoleDomainError(
+      "model_template_not_found",
+      400,
+      "No such model template",
+    );
+  return template.id;
+}
 
 export function createApiKeyOperations(config: ApiKeyConfig) {
   const operations = {
@@ -106,7 +135,20 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
     ): Promise<CreateApiKeyResponse> {
       const authorized = requireTenantScope(access, "dashboard:write");
       const scopes = validateApiKeyRequest(request);
+      if (request.extendByDays !== undefined || request.extendByHours !== undefined) {
+        throw new ConsoleDomainError(
+          "invalid_expiry",
+          400,
+          "extendByDays/extendByHours only apply when updating an existing key",
+        );
+      }
+      const createExpiresAt = resolveCreateExpiresAt(request);
       const popupImage = parseSharePopupImage(request.sharePopupImage);
+      const modelTemplateId = await resolveModelTemplateLink(
+        config,
+        authorized.tenantId,
+        request.modelTemplateId,
+      );
       const keyMode = request.keyMode ?? "personal";
       const keyPrefix =
         keyMode === "share"
@@ -145,7 +187,11 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
         ...(request.monthlyTokenLimit == null ? {} : { monthlyTokenLimit: request.monthlyTokenLimit }),
         ...(request.lifetimeTokenBudget == null ? {} : { lifetimeTokenBudget: request.lifetimeTokenBudget }),
         ...(request.maxConcurrentRequests == null ? {} : { maxConcurrentRequests: request.maxConcurrentRequests }),
+        ...(createExpiresAt === undefined ? {} : { expiresAt: createExpiresAt }),
         ...(request.modelPrefix === undefined ? {} : { modelPrefix: request.modelPrefix }),
+        ...(modelTemplateId === undefined || modelTemplateId === null
+          ? {}
+          : { modelTemplateId }),
         modelAccessMode: request.modelAccessMode ?? "whitelist",
         ...(request.modelList === undefined ? {} : { modelList: request.modelList }),
         ...(request.clientRouterDenylist === undefined
@@ -173,6 +219,11 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
     ): Promise<UpdateApiKeyResponse> {
       const authorized = requireTenantScope(access, "dashboard:write");
       const patchRequest = parseRequest(request);
+      const modelTemplateId = await resolveModelTemplateLink(
+        config,
+        authorized.tenantId,
+        patchRequest.modelTemplateId,
+      );
       const current = await config.store.get(authorized.tenantId, keyId);
       if (!current || current.revokedAt !== undefined)
         throw new ConsoleDomainError("key_not_found", 404, "Key not found");
@@ -242,6 +293,32 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
         patchRequest.sharePopupImage === undefined
           ? undefined
           : parseSharePopupImage(patchRequest.sharePopupImage);
+      let expiresAtPatch: { readonly expiresAt: Date | null } | undefined;
+      if (patchRequest.extendByDays !== undefined || patchRequest.extendByHours !== undefined) {
+        if (patchRequest.expiresAt !== undefined)
+          throw new ConsoleDomainError(
+            "invalid_expiry",
+            400,
+            "expiresAt cannot be combined with extendByDays/extendByHours",
+          );
+        if (current.expiresAt === undefined)
+          throw new ConsoleDomainError(
+            "invalid_expiry",
+            400,
+            "This key has no expiry to extend; set expiresAt instead",
+          );
+        const addMs =
+          ((patchRequest.extendByDays ?? 0) * 24 + (patchRequest.extendByHours ?? 0)) * 3_600_000;
+        const base = Math.max(Date.now(), current.expiresAt.getTime());
+        expiresAtPatch = { expiresAt: new Date(base + addMs) };
+      } else if (patchRequest.expiresAt !== undefined) {
+        expiresAtPatch = {
+          expiresAt: patchRequest.expiresAt === null ? null : new Date(patchRequest.expiresAt),
+        };
+      } else if (patchRequest.expiresInDays != null || patchRequest.expiresInHours != null) {
+        const hours = (patchRequest.expiresInDays ?? 0) * 24 + (patchRequest.expiresInHours ?? 0);
+        expiresAtPatch = { expiresAt: new Date(Date.now() + hours * 3_600_000) };
+      }
       const updated = await config.store.update(authorized.tenantId, keyId, {
         ...(patchRequest.enabled === undefined ? {} : { enabled: patchRequest.enabled }),
         ...(isDefaultGatewayApiKey(current) ? { isDefault: true } : {}),
@@ -280,6 +357,8 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
         ...(patchRequest.lifetimeTokenBudget === undefined ? {} : { lifetimeTokenBudget: patchRequest.lifetimeTokenBudget }),
         ...(patchRequest.maxConcurrentRequests === undefined ? {} : { maxConcurrentRequests: patchRequest.maxConcurrentRequests }),
         ...(patchRequest.modelPrefix === undefined ? {} : { modelPrefix: patchRequest.modelPrefix }),
+        ...(expiresAtPatch === undefined ? {} : { expiresAt: expiresAtPatch.expiresAt }),
+        ...(modelTemplateId === undefined ? {} : { modelTemplateId }),
         ...(patchRequest.modelAccessMode === undefined ? {} : { modelAccessMode: patchRequest.modelAccessMode }),
         ...(patchRequest.modelList === undefined ? {} : { modelList: patchRequest.modelList }),
         ...(patchRequest.clientRouterDenylist === undefined
