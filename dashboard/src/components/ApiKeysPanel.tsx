@@ -1,18 +1,22 @@
 import {
   Copy,
+  Eye,
   KeyRound,
   Pencil,
   Plus,
   RotateCw,
+  Search,
   Share2,
   ShieldOff,
   Trash2,
+  X,
 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Card, CardBody, CardHeader } from "./ui/card";
 import { Dialog } from "./ui/dialog";
+import { Input } from "./ui/input";
 import { EmptyState, ErrorState, LoadingState } from "./ui/state";
 import { Switch } from "./ui/switch";
 import { ApiKeyForm, oneTimeSecretForMode, type KeyFormInput } from "./ApiKeyForm";
@@ -24,6 +28,7 @@ import { SortableList } from "./SortableList";
 import { toast } from "../lib/toast";
 import { getErrorMessage } from "../data/api";
 import { compactTokens, limitLabel } from "../lib/format/tokens";
+import { filterApiKeys } from "../lib/api-key-search";
 import { useSessionUser } from "../hooks/system";
 import { useClipboard } from "../hooks/use-clipboard";
 import type { ApiKeyResponse } from "../data/contracts";
@@ -79,8 +84,11 @@ export function ApiKeysPanel(): ReactNode {
   const [bansOpen, setBansOpen] = useState(false);
   const [createActions, setCreateActions] = useState<ReactNode>(null);
   const [editActions, setEditActions] = useState<ReactNode>(null);
+  const [keySearch, setKeySearch] = useState("");
 
   const keys = keysQuery.data ?? [];
+  const searching = keySearch.trim().length > 0;
+  const visibleKeys = useMemo(() => filterApiKeys(keys, keySearch), [keys, keySearch]);
   const templatesQuery = useModelTemplates();
   const templateNames = new Map(
     (templatesQuery.data ?? []).map((template) => [template.id, template.name] as const),
@@ -103,6 +111,15 @@ export function ApiKeysPanel(): ReactNode {
       } else {
         toast.error("Clipboard unavailable on this origin");
       }
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Could not reveal API key."));
+    }
+  };
+
+  const viewApiKey = async (key: ApiKeyResponse) => {
+    try {
+      const { secret } = await revealKey.mutateAsync({ keyId: key.id });
+      setRevealedSecret(secret);
     } catch (error) {
       toast.error(getErrorMessage(error, "Could not reveal API key."));
     }
@@ -159,11 +176,51 @@ export function ApiKeysPanel(): ReactNode {
         ) : (
           // The key list is the tallest thing on the page; bounding it keeps the
           // page chrome in place and scrolls only the rows, like the sidebar.
+          <>
+            <div className="flex items-center gap-3 mb-4">
+              <label className="relative flex-1">
+                <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary" aria-hidden="true" />
+                <Input
+                  value={keySearch}
+                  onChange={(event) => setKeySearch(event.target.value)}
+                  placeholder="Search keys by name, prefix, or model…"
+                  aria-label="Search API keys by name, prefix, or model"
+                  className="pl-9"
+                />
+              </label>
+              {searching ? (
+                <>
+                  <span className="text-badge text-text-tertiary whitespace-nowrap">
+                    {visibleKeys.length} of {keys.length}
+                  </span>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    icon={<X size={13} />}
+                    onClick={() => setKeySearch("")}
+                  >
+                    Clear
+                  </Button>
+                </>
+              ) : null}
+            </div>
+            {visibleKeys.length === 0 ? (
+              <EmptyState
+                title="No API keys match your search"
+                message={`No key name, prefix, or model matches "${keySearch.trim()}".`}
+                icon={<Search size={20} />}
+                action={
+                  <Button variant="secondary" size="sm" onClick={() => setKeySearch("")}>
+                    Clear search
+                  </Button>
+                }
+              />
+            ) : (
           <div className="scroll-region max-h-280 pr-1">
           <SortableList
-            items={keys}
+            items={visibleKeys}
             label="API credentials"
-            disabled={reorderKeys.isPending}
+            disabled={searching || reorderKeys.isPending}
             onReorder={(ids) =>
               reorderKeys.mutate(ids, {
                 onError: (error) =>
@@ -179,8 +236,8 @@ export function ApiKeysPanel(): ReactNode {
                     <strong className="text-body">
                       {key.label || "Unnamed credential"}
                     </strong>
-                    <Badge tone={key.revokedAt ? "err" : key.enabled ? "ok" : "warn"}>
-                      {key.revokedAt ? "revoked" : key.enabled ? "enabled" : "disabled"}
+                    <Badge tone={key.revokedAt ? "err" : key.expiresAt !== undefined && new Date(key.expiresAt).getTime() <= Date.now() ? "err" : key.enabled ? "ok" : "warn"}>
+                      {key.revokedAt ? "revoked" : key.expiresAt !== undefined && new Date(key.expiresAt).getTime() <= Date.now() ? "expired" : key.enabled ? "enabled" : "disabled"}
                     </Badge>
                     <Badge tone={key.keyMode === "share" ? "accent" : "default"}>
                       {key.keyMode === "share" ? "share template" : "personal"}
@@ -205,10 +262,10 @@ export function ApiKeysPanel(): ReactNode {
                       {limitLabel(key.requestsPerMinute)}
                     </span>
                     <span className="inline-flex items-center gap-2.5 px-3.5 py-1 border border-inner-border rounded-chip bg-surface-1 text-badge leading-normal whitespace-nowrap max-medium:justify-between">
-                      <span className="text-text-tertiary text-micro font-semibold uppercase tracking-label">Expires</span>
+                      <span className="text-text-tertiary text-micro font-semibold uppercase tracking-label">{key.expiresAt && new Date(key.expiresAt).getTime() <= Date.now() ? "Expired" : "Expires"}</span>
                       <span className={EXPIRY_TONE_CLASS[expiryTone(key.expiresAt)]}>
                         {key.expiresAt
-                          ? new Date(key.expiresAt).toLocaleDateString()
+                          ? new Date(key.expiresAt).toLocaleString()
                           : "Never"}
                       </span>
                     </span>
@@ -279,6 +336,17 @@ export function ApiKeysPanel(): ReactNode {
                     <Button
                       variant="secondary"
                       size="sm"
+                      icon={<Eye size={13} />}
+                      onClick={() => void viewApiKey(key)}
+                      disabled={revealKey.isPending}
+                    >
+                      Reveal
+                    </Button>
+                  ) : null}
+                  {!key.revokedAt && key.keyMode !== "share" ? (
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       icon={<Copy size={13} />}
                       onClick={() => void copyApiKey(key)}
                       disabled={revealKey.isPending}
@@ -321,6 +389,8 @@ export function ApiKeysPanel(): ReactNode {
             )}
           />
           </div>
+            )}
+          </>
         )}
       </CardBody>
 

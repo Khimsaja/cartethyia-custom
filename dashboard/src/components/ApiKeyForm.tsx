@@ -87,6 +87,13 @@ const TOKEN_BUDGET_PRESETS = [
   { label: "1B", amount: 1_000_000_000, description: "1 billion" },
   { label: "1T", amount: 1_000_000_000_000, description: "1 trillion" },
 ] as const;
+/** Quick-pick durations (in days) offered beside the expiry duration fields. */
+const EXPIRY_DURATION_PRESETS = [
+  { label: "7d", description: "7 days", days: 7 },
+  { label: "30d", description: "30 days", days: 30 },
+  { label: "90d", description: "90 days", days: 90 },
+  { label: "1y", description: "1 year", days: 365 },
+] as const;
 function parseTokenLimit(value: string): number | undefined {
   const raw = value.trim().toLowerCase();
   if (!raw) return undefined;
@@ -114,18 +121,6 @@ function parseLimitOrNull(value: string): number | null | undefined {
   const n = parseLimit(value);
   // Empty input clears an existing limit; a parsed value is kept.
   return value.trim() === "" ? null : n;
-}
-
-/**
- * Converts an ISO expiry to the `datetime-local` input value (local wall
- * clock, `YYYY-MM-DDTHH:MM`). Empty when the key never expires.
- */
-function toDatetimeLocalValue(iso: string | undefined | null): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 /** Token limit input with 1M/100M/1B/1T quick-pick presets. */
@@ -336,8 +331,14 @@ export interface KeyFormInput {
   dailyTokenLimit?: number | null;
   monthlyTokenLimit?: number | null;
   lifetimeTokenBudget?: number | null;
-  /** ISO expiry for time-boxed keys; `null` clears it on update. */
+  /** ISO expiry for time-boxed keys; `null`/absent means the key never expires. */
   expiresAt?: string | null;
+  /** Duration-based create expiry (e.g. 25 days); summed server-side from now. */
+  expiresInDays?: number;
+  expiresInHours?: number;
+  /** Update-only renewal: pushes the stored expiry out, never shortening it. */
+  extendByDays?: number;
+  extendByHours?: number;
   /**
    * Template the key mirrors. A string links (or re-links); `null` detaches.
    * Omitted when unchanged so an untouched field never clears the link.
@@ -412,10 +413,66 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
       : "recurring",
   );
   const [concurrent, setConcurrent] = useState(record?.maxConcurrentRequests?.toString() ?? "");
-  // Expiry as a datetime-local wall-clock value. Compared against the initial
-  // value on submit so an untouched field never clears or rewrites the expiry.
-  const [expiresAtInput, setExpiresAtInput] = useState(() => toDatetimeLocalValue(record?.expiresAt));
-  const initialExpiresAtInput = toDatetimeLocalValue(record?.expiresAt);
+  // Expiry: duration (days + hours) or an exact date behind a segmented
+  // toggle. On create the duration is the key's lifetime; on edit with an
+  // existing expiry it extends from the later of now and that expiry; on
+  // edit without one it sets an absolute expiry. `clearExpiry` is the
+  // edit-only escape hatch back to permanent.
+  const [expiryMode, setExpiryMode] = useState<"duration" | "date">("duration");
+  const [expiryDays, setExpiryDays] = useState("");
+  const [expiryHours, setExpiryHours] = useState("");
+  const [expiryDate, setExpiryDate] = useState("");
+  const [clearExpiry, setClearExpiry] = useState(false);
+  const recordExpiresAt = record?.expiresAt ?? null;
+  const parseCount = (value: string): number | undefined => {
+    if (value.trim() === "") return 0;
+    const n = Number(value);
+    return Number.isInteger(n) && n >= 0 ? n : undefined;
+  };
+  const expiryDayCount = parseCount(expiryDays);
+  const expiryHourCount = parseCount(expiryHours);
+  const countsInvalid =
+    !clearExpiry && expiryMode === "duration" && (expiryDayCount === undefined || expiryHourCount === undefined);
+  const totalHours = (expiryDayCount ?? 0) * 24 + (expiryHourCount ?? 0);
+  const durationSet = !countsInvalid && totalHours > 0;
+  const durationTooLong = durationSet && totalHours > 3650 * 24;
+  const dateValue = expiryDate.trim() === "" ? undefined : new Date(expiryDate);
+  const dateInvalid =
+    !clearExpiry &&
+    expiryMode === "date" &&
+    dateValue !== undefined &&
+    (Number.isNaN(dateValue.getTime()) || dateValue.getTime() <= Date.now());
+  const expiryInvalid = countsInvalid || durationTooLong || dateInvalid;
+  const expiryPreview = clearExpiry
+    ? undefined
+    : expiryMode === "date"
+      ? dateValue && !dateInvalid
+        ? dateValue
+        : undefined
+      : durationSet
+        ? new Date(
+            (mode === "edit" && recordExpiresAt
+              ? Math.max(Date.now(), new Date(recordExpiresAt).getTime())
+              : Date.now()) +
+              totalHours * 3_600_000,
+          )
+        : undefined;
+  const currentExpiryInfo = ((): { text: string; tone?: "red" | "orange" } | undefined => {
+    if (mode !== "edit" || !recordExpiresAt || clearExpiry) return undefined;
+    const expiryMs = new Date(recordExpiresAt).getTime();
+    if (Number.isNaN(expiryMs)) return undefined;
+    const when = new Date(expiryMs).toLocaleString();
+    const remainingMs = expiryMs - Date.now();
+    if (remainingMs <= 0)
+      return { text: `Expired ${when} — add days/hours below to revive this key.`, tone: "red" };
+    const d = Math.floor(remainingMs / 86_400_000);
+    const h = Math.floor((remainingMs % 86_400_000) / 3_600_000);
+    const left = d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h` : "under an hour";
+    return {
+      text: `Currently expires ${when} — about ${left} left. Add days/hours below to extend it.`,
+      tone: remainingMs <= 48 * 3_600_000 ? "orange" : undefined,
+    };
+  })();
   // Template link; "" means "Custom (no template)". Same untouched-field rule.
   const [modelTemplateId, setModelTemplateId] = useState(record?.modelTemplateId ?? "");
   const initialModelTemplateId = record?.modelTemplateId ?? "";
@@ -477,7 +534,28 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
   const toggleScope = (scope: string) =>
     setScopes((cur) => (cur.includes(scope) ? cur.filter((s) => s !== scope) : [...cur, scope]));
   const submit = () => {
-    const expiresChanged = expiresAtInput !== initialExpiresAtInput;
+    if (expiryInvalid) return;
+    // Exactly one expiry instruction is ever sent (or none). Duration mode
+    // sends the duration parts with zero components omitted — the server
+    // rejects a part that is present but not positive. Date mode and
+    // edit-without-an-expiry send an absolute expiresAt.
+    const expiryFields: Partial<KeyFormInput> = clearExpiry
+      ? { expiresAt: null }
+      : expiryMode === "date" && dateValue !== undefined
+        ? { expiresAt: dateValue.toISOString() }
+        : durationSet
+          ? mode === "edit" && recordExpiresAt
+            ? {
+                ...(expiryDayCount !== undefined && expiryDayCount > 0 ? { extendByDays: expiryDayCount } : {}),
+                ...(expiryHourCount !== undefined && expiryHourCount > 0 ? { extendByHours: expiryHourCount } : {}),
+              }
+            : mode === "edit"
+              ? { expiresAt: new Date(Date.now() + totalHours * 3_600_000).toISOString() }
+              : {
+                  ...(expiryDayCount !== undefined && expiryDayCount > 0 ? { expiresInDays: expiryDayCount } : {}),
+                  ...(expiryHourCount !== undefined && expiryHourCount > 0 ? { expiresInHours: expiryHourCount } : {}),
+                }
+          : { expiresAt: mode === "create" ? null : undefined };
     const templateChanged = modelTemplateId !== initialModelTemplateId;
     onDone({
       label: label.trim(),
@@ -491,11 +569,7 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
       dailyTokenLimit: isOneTime ? null : (parseTokenLimit(daily) ?? null),
       monthlyTokenLimit: isOneTime ? null : (parseTokenLimit(monthly) ?? null),
       lifetimeTokenBudget: isOneTime ? (parseTokenLimit(lifetime) ?? null) : null,
-      // Only send expiry/template when the operator actually changed them:
-      // `null` clears, omitting leaves the stored value untouched.
-      ...(expiresChanged
-        ? { expiresAt: expiresAtInput ? new Date(expiresAtInput).toISOString() : null }
-        : {}),
+      ...expiryFields,
       ...(templateChanged ? { modelTemplateId: modelTemplateId || null } : {}),
       notesTitle: notesTitle.trim(),
       notesSubtitle: notesSubtitle.trim(),
@@ -750,14 +824,118 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
             When the key stops working, and which model preset it mirrors.
           </p>
         </div>
-        <div className="grid grid-cols-2 gap-4 items-start min-w-0 max-medium:grid-cols-1">
-          <Input
-            label="Expires at"
-            type="datetime-local"
-            value={expiresAtInput}
-            onChange={(e) => setExpiresAtInput(e.target.value)}
-            disabled={busy}
-          />
+        <div>
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <span className="text-badge font-semibold text-text-secondary">
+              {mode === "edit" && recordExpiresAt ? "Extend expiry" : "Expiry"}
+            </span>
+            <div role="group" aria-label="Expiry mode" className="flex gap-1 p-1 rounded-inset border border-inner-border bg-surface-1">
+              {(["duration", "date"] as const).map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  aria-pressed={expiryMode === option}
+                  onClick={() => setExpiryMode(option)}
+                  disabled={busy || clearExpiry}
+                  className="py-1 px-4 rounded-chip text-micro font-semibold"
+                  style={{
+                    background: expiryMode === option ? "var(--accent-soft)" : "transparent",
+                    color: expiryMode === option ? "var(--accent)" : "var(--text-tertiary)",
+                    border: "none",
+                    cursor: busy || clearExpiry ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {option === "duration" ? "Duration" : "Date"}
+                </button>
+              ))}
+            </div>
+          </div>
+          {mode === "edit" && recordExpiresAt ? (
+            <p className="mt-0 mb-3 flex items-center gap-3 flex-wrap text-badge text-text-tertiary">
+              <span className={new Date(recordExpiresAt).getTime() <= Date.now() ? "text-red font-semibold" : undefined}>
+                {new Date(recordExpiresAt).getTime() <= Date.now() ? "Expired " : "Expires "}
+                {new Date(recordExpiresAt).toLocaleString()}
+              </span>
+              <button
+                type="button"
+                onClick={() => setClearExpiry((v) => !v)}
+                disabled={busy}
+                className="py-1 px-3 rounded-chip text-micro font-semibold"
+                style={{
+                  border: `1px solid ${clearExpiry ? "var(--accent)" : "var(--inner-border)"}`,
+                  background: clearExpiry ? "var(--accent-soft)" : "transparent",
+                  color: clearExpiry ? "var(--accent)" : "var(--text-tertiary)",
+                  cursor: busy ? "not-allowed" : "pointer",
+                }}
+              >
+                {clearExpiry ? "Keep expiry" : "Remove expiry"}
+              </button>
+            </p>
+          ) : null}
+          {expiryMode === "duration" ? (
+            <>
+              <div className="flex gap-3">
+                <div className="flex-1">
+                  <Input label="Days" type="number" min="0" step="1" value={expiryDays} onChange={(e) => setExpiryDays(e.target.value)} placeholder="0" disabled={busy || clearExpiry} />
+                </div>
+                <div className="flex-1">
+                  <Input label="Hours" type="number" min="0" step="1" value={expiryHours} onChange={(e) => setExpiryHours(e.target.value)} placeholder="0" disabled={busy || clearExpiry} />
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2 mt-3" role="group" aria-label="Duration presets">
+                {EXPIRY_DURATION_PRESETS.map((preset) => {
+                  const selected = expiryDayCount === preset.days && (expiryHourCount ?? 0) === 0 && expiryDays.trim() !== "";
+                  return (
+                    <button
+                      key={preset.label}
+                      type="button"
+                      aria-pressed={selected}
+                      aria-label={preset.description}
+                      onClick={() => { setExpiryDays(String(preset.days)); setExpiryHours(""); }}
+                      disabled={busy || clearExpiry}
+                      className="py-1 px-3 rounded-chip text-micro font-semibold"
+                      style={{
+                        cursor: busy || clearExpiry ? "not-allowed" : "pointer",
+                        border: `1px solid ${selected ? "var(--accent)" : "var(--inner-border)"}`,
+                        background: selected ? "var(--accent-soft)" : "transparent",
+                        color: selected ? "var(--accent)" : "var(--text-tertiary)",
+                      }}
+                    >
+                      {preset.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          ) : (
+            <Input type="datetime-local" label="Expires at" value={expiryDate} onChange={(e) => setExpiryDate(e.target.value)} disabled={busy || clearExpiry} />
+          )}
+          {clearExpiry ? (
+            <p className="mt-3 text-badge text-text-tertiary">Saving will make this key never expire.</p>
+          ) : countsInvalid ? (
+            <p className="mt-3 text-badge text-red">Use whole numbers of days and hours (0 or more).</p>
+          ) : durationTooLong ? (
+            <p className="mt-3 text-badge text-red">That's over ~10 years — the longest expiry the server accepts.</p>
+          ) : dateInvalid ? (
+            <p className="mt-3 text-badge text-red">Pick a date in the future.</p>
+          ) : expiryPreview ? (
+            <p className="mt-3 text-badge text-text-tertiary">
+              {mode === "edit" && recordExpiresAt && expiryMode === "duration" ? "Extends to ≈ " : "Expires ≈ "}
+              {expiryPreview.toLocaleString()}
+            </p>
+          ) : currentExpiryInfo ? (
+            <p className={`mt-3 text-badge ${currentExpiryInfo.tone === "red" ? "text-red font-semibold" : currentExpiryInfo.tone === "orange" ? "font-semibold" : "text-text-tertiary"}`}>
+              {currentExpiryInfo.text}
+            </p>
+          ) : (
+            <p className="mt-3 text-badge text-text-tertiary">
+              Optional — leave it empty for a key that never expires. A key past its
+              expiry stops authenticating immediately, so set one for time-boxed
+              subscriptions and extend it here when a subscription renews.
+            </p>
+          )}
+        </div>
+        <div className="min-w-0">
           <Select
             label="Model template"
             value={modelTemplateId}
