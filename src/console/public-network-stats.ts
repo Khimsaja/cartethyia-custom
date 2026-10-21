@@ -56,6 +56,7 @@ export const BUYER_TEMPLATE_NAME = "tiprouter new";
 const TOP_MODELS_LIMIT = 10;
 
 let cached: { data: PublicNetworkStats; expiresAt: number } | null = null;
+let inflight: Promise<PublicNetworkStats> | null = null;
 
 function rowsOf(result: unknown): Record<string, unknown>[] {
   if (Array.isArray(result)) return result as Record<string, unknown>[];
@@ -172,15 +173,27 @@ async function queryPublicNetworkStats(db: DatabaseHandle): Promise<PublicNetwor
 /** Clears the in-process cache. Exported for tests and operational use. */
 export function clearPublicNetworkStatsCache(): void {
   cached = null;
+  inflight = null;
 }
 
 /** Cached public stats; concurrent callers share one in-flight refresh. */
 export async function getPublicNetworkStats(db: DatabaseHandle): Promise<PublicNetworkStats> {
-  const now = Date.now();
-  if (cached && cached.expiresAt > now) return cached.data;
-  const data = await queryPublicNetworkStats(db);
-  cached = { data, expiresAt: now + PUBLIC_STATS_CACHE_TTL_MS };
-  return data;
+  if (cached && cached.expiresAt > Date.now()) return cached.data;
+  if (inflight) return inflight;
+  inflight = (async () => {
+    const data = await queryPublicNetworkStats(db);
+    // Expiry is stamped AFTER the refresh completes. The scan can take
+    // longer than the TTL itself at production data volumes; stamping it
+    // from the pre-scan clock made every entry expire before it was ever
+    // served, so the cache never hit and every caller paid a full scan.
+    cached = { data, expiresAt: Date.now() + PUBLIC_STATS_CACHE_TTL_MS };
+    return data;
+  })();
+  try {
+    return await inflight;
+  } finally {
+    inflight = null;
+  }
 }
 
 /**
