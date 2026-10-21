@@ -225,13 +225,33 @@ export async function queryTelemetryEvents(query: EventQuery): Promise<Telemetry
   // are checked on the raw text: a UUID appearing anywhere in the row is that
   // field, and a false negative is not possible while a false positive costs
   // only the parse it would have paid anyway.
+  // The account and key filters arrive as id sets. Their fields are stored
+  // by JSON.stringify, so the value can be lifted from the raw line with one
+  // pattern and looked up in the set, instead of substring-scanning for every
+  // id. A line whose field is absent or null carries no id and cannot pass
+  // the set check in `matches`, so skipping its parse is exact.
+  const fieldInSet = (field: string, ids: ReadonlySet<string>): ((line: string) => boolean) => {
+    const pattern = new RegExp(`"${field}":"([^"]+)"`);
+    return (line) => {
+      const value = pattern.exec(line)?.[1];
+      return value !== undefined && ids.has(value);
+    };
+  };
+  const accountLine = accounts ? fieldInSet("accountId", accounts) : undefined;
+  const keyLine = keys ? fieldInSet("apiKeyId", keys) : undefined;
   const allow =
-    query.tenantId === undefined && query.requestId === undefined && query.id === undefined
+    query.tenantId === undefined &&
+    query.requestId === undefined &&
+    query.id === undefined &&
+    accountLine === undefined &&
+    keyLine === undefined
       ? undefined
       : (line: string): boolean =>
           (query.tenantId === undefined || line.includes(query.tenantId)) &&
           (query.requestId === undefined || line.includes(query.requestId)) &&
-          (query.id === undefined || line.includes(query.id));
+          (query.id === undefined || line.includes(query.id)) &&
+          (accountLine === undefined || accountLine(line)) &&
+          (keyLine === undefined || keyLine(line));
   // A single-row lookup: stop at the first (newest) match instead of parsing
   // the whole retention window.
   const oneRow = query.requestId !== undefined || query.id !== undefined;
