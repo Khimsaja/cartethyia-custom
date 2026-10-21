@@ -276,7 +276,10 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
     };
   }
   async list(tenantId: string): Promise<readonly ApiKeyRecord[]> {
-    // Bounded: a large tenant key list must not load fully into memory.
+    // Bounded: a large tenant key list must not load fully into memory. The
+    // bound must stay well above a real tenant's key count: callers (console
+    // list, reorder, backup export) treat the result as the full set, so a
+    // cap below the tenant size silently drops the newest keys.
     // Ordered by the explicit `sort_index`, not `created_at`: a stable key means
     // rows keep their position across reloads (and can be reordered) instead of
     // shifting when two rows share a timestamp or one is updated.
@@ -285,7 +288,7 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
       .from(apiKeys)
       .where(eq(apiKeys.tenantId, tenantId))
       .orderBy(apiKeys.sortIndex, apiKeys.createdAt, apiKeys.id)
-      .limit(1000);
+      .limit(10000);
     return this.withPopups(this.db, rows);
   }
 
