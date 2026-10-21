@@ -1451,7 +1451,7 @@ export async function reportAttemptOutcome(
   // nothing routing reads. Invalidating for those rebuilt an 11-SELECT snapshot
   // on the next request, and under a failure wave each rebuild fed the next
   // invalidation.
-  if (classification?.routesVisible) await report.snapshotService?.invalidate();
+  if (classification?.mutatesAccount && classification?.routesVisible) await report.snapshotService?.invalidate();
 }
 
 export async function listAccountHealthEvents(
