@@ -8,6 +8,216 @@ current baseline; an existing one applies the numbered files that followed it.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.5.3] - 2026-10-21
+
+### Changed
+
+- **An unclassified upstream failure cools the account down for 15 minutes.**
+  It was 60 seconds, which returned the account to rotation and re-dialled an
+  upstream that had just answered something this gateway does not understand,
+  so one unknown error was retried every minute. It is still a cooldown with a
+  deadline, never `disabled`, so nothing here can strand an account.
+
+- **The upstream request timeout is 75s, down from 120s.** Clients cap lower
+  than the old default, and a provider that has not answered within 75s is
+  queued or stuck — failing over to another account beats spending the
+  caller's whole budget on one attempt.
+
+- **A timeout is no longer counted as a gateway error.** `504` is a deadline
+  that expired, not a malfunction: the request deadline, the stream-stall
+  watchdog, an HTTP/2 read-idle or WebSocket receive timer. Timeout
+  requests are still recorded, still rendered, and still filterable — they
+  are simply not counted against the gateway's error rate, which otherwise
+  tracks provider latency rather than gateway health.
+
+### Added
+
+- **Restore can be narrowed to selected tables.** Picking a backup file now
+  opens a dialog listing every table it carries, with row counts and a
+  checklist that defaults to all of them. **Restore now** proceeds to the
+  password prompt; **Cancel** abandons it. A table left unchecked is left
+  exactly as it is — selection is a filter, not a rewrite, so "restore one
+  table" no longer overwrites the rest with the file's older copy.
+
+### Fixed
+
+- **Remote Routing stayed off after being switched on.** The API-key update
+  path validated `scopes` and passed them to the store, but the store's update
+  allowlist never included the column, so a grant like `routing:cli_mapping`
+  was accepted and silently dropped. The toggle appeared to save and the badge
+  stayed "no CLI scope".
+
+- **A Qoder model that declares `is_vl: false` is now excluded from image
+  routes.** The router's capability profile granted image support to every row
+  on a canonical-codec provider regardless of what the catalog declared, so
+  the declared modality never mattered and an image was forwarded to an
+  upstream that rejects it. An explicit declaration now wins; the codec grant
+  is the fallback for rows carrying no modality metadata.
+
+- **Request Detail's Provider Request and Provider Response panels were often
+  empty.** Two causes. The client response was stored twice — once under its
+  own key and once under the legacy alias — and the alias was charged against
+  the shared byte budget ahead of both provider panels, so a large request
+  consumed the whole budget before they were reached. And the provider tee was
+  hard-capped at 256 KiB at every capture depth, so raising the depth to
+  Maximum still produced a quarter-megabyte translated request. The alias is
+  now accounted last, and the tee follows the depth (256 KiB / 2 MiB / 4 MiB).
+
+- **A queued upstream is no longer reported as a dead credential.** Qoder
+  answers `403 {"code":"10605", ... "isQueued":true, "queueCount":1395}` when
+  it is busy. The generic 403 arm claimed it as `auth_invalidated`, so a
+  healthy account was parked as "Re-login required" purely because the
+  provider had a queue, and an operator was sent to re-authenticate a
+  credential that was never rejected. It is now a model-scoped capacity
+  cooldown. Real credential rejections are still recognised.
+
+- **WorkBuddy's User-Agent used the product brand instead of the wire token.**
+  It sent `WorkBuddy AI/<v>` where an official client sends
+  `workbuddy-ai/<v>`. The international gateway answers the branded spelling
+  with 403 code `11140`, the same refusal a wrong-brand header gets.
+
+- **Cline `api_key` accounts are no longer probed for quota.** The probe asked
+  `/api/v1/models`, which Cline answers with "make sure you're using the
+  latest version of Cline and re-authenticate" — the same wording it uses for
+  a dead credential. The probe read it as "invalid or revoked", so the sweep
+  reported a working account as needing re-authentication on every pass. These
+  accounts now report quota as unavailable and make no upstream call.
+
+- **Trae `gpt-5.4` reports a 1M context window.** It was filed at 272k.
+
+- **`deepseek-v4.1-flash` and `hy4-preview` are image-capable.** Corrected
+  across the Trae, CodeBuddy/WorkBuddy, OpenCode and TokenHarbor catalogs.
+
+### Changed — routing defaults
+
+- **Antigravity, Trae, Kilo Code, GitHub Copilot and Kiro now dispatch direct
+  by default**, joining Hermes, Cline and InferHub. Each is credential-keyed,
+  so a rotating egress address buys nothing. Not a hard lock: an explicit
+  routing row still wins, so any of them can be put behind a pool.
+
+## [2.5.2] - 2026-10-21
+
+### Breaking changes — manual step after upgrading
+
+- **The default API key may need rotating once.** The key format changed to
+  `pn-carte-`; keys minted before it carry the old `carte_` prefix. Old keys
+  keep working — lookup is by hash, never by prefix — so nothing is rejected
+  outright. The failure is quieter than that: a caller still holding a key
+  recorded under the old format (a CLI config, a client that saved it, a
+  `.env` written by an earlier version) keeps sending a credential that no
+  longer matches anything, and Model Lab reports only "Request failed".
+
+  If Model Lab or a client fails after upgrading, open **API Keys**, rotate
+  **Default Cartethyia API key**, and paste the new key where the old one was
+  used. The 401 now says so instead of "unknown, revoked, or expired".
+
+  **Fresh installs are unaffected** — they generate a key in the current
+  format at first boot. Only installs carried forward from an earlier version,
+  or ones that saved the key somewhere, need the step.
+
+### Changed
+
+- **A 401 for a bad key now says what to do.** It was `invalid_request`, a code
+  named after the shape of the request, which sent callers hunting for a
+  malformed body when the credential was the problem. It is
+  `authentication_failed` now, and the message names the rotate step above
+  instead of telling an operator to issue a new key — something that cannot be
+  done to the default key, which has no delete and only rotates.
+
+- **`.env.example` no longer suggests seeding `CARTETHYIA_API_KEY`.** The
+  console generates and shows the default key at first boot; putting it in the
+  environment means the secret sits in a file that gets copied around. The
+  variable still works, it is simply no longer offered as a default.
+
+### Fixed
+
+- **Kiro's `claude-haiku-5.5` reported the 4.5 limits.** It carried 200K/64K,
+  copied from the `claude-haiku-4.5` row directly above it, while every other
+  5.x model in the same file uses 1M/128K. Haiku moved to the million-token
+  window and the doubled output ceiling with the rest of its generation, so the
+  ceiling was half what the model accepts.
+
+- **Four more catalog rows carried a neighbour's limits.** `claude-sonnet-4.5`
+  claimed a 1M window in Kiro, Claude and Cloudflare while Opus 4.5 and Haiku
+  4.5, in the same files, were 200K — the 4.5 trio predates the million-token
+  window, which arrives with Opus 4.6. Inferhub's `cc/claude-sonnet-4-6`
+  claimed 64K while the Opus 4.6 row above it was 128K.
+
+- **Nine withdrawn free rows left the OpenRouter-backed catalog.** Gemma 4
+  (both rows), Nemotron 3 Super, both Laguna rows, both Inkling rows, Xing4.0
+  and `openrouter/auto` are gone from the shared free roster, so one removal
+  covers Cline, Kilo Code and OpenRouter. `openrouter/auto` published no
+  limits of its own anyway — a router's pricing is -1 — so the committed row
+  was a guess about a window decided at dispatch.
+
+- **Error and empty states are centered everywhere.** The shared primitives in
+  `ui/state.tsx` were already centered, so the ones that read as left-aligned
+  were the call sites not using them: Accounts rendered no empty branch at all
+  when a filter matched nothing, Studio's "No chats yet." was a bare `<p>` in a
+  column, and every state inside a dialog or scroll region reserved the
+  route-level 220px centering floor, turning a one-line message into a
+  scrollbar. Badges, toasts and inline form errors stay left-aligned, which is
+  correct for something sitting in a row.
+
+- **A Cursor quota refusal no longer reports the word "error".** Cursor delivers
+  `resource_exhausted` as a failed terminal event, not as a thrown error, and
+  the probe verdict read only the terminal's `stop_reason` — a canonical
+  one-word label. The toast's entire body was `error`. The verdict now reads
+  `stop_details`, which is where the adapter parks the upstream sentence and
+  where the live dispatch path already read it; the two paths disagreed about
+  the same provider response.
+
+  The same gap had a worse effect: `recordProbeHealth` only recorded a failure
+  when a dispatch error existed, so an exhausted account was **recovered** —
+  consecutive failures zeroed and its cooldown cleared. A failed terminal is
+  now routed through `terminalFailure`, the same function the live path uses,
+  so both classify it identically.
+
+- **A probe records all four payload stages.** The probe's capture passed only
+  the request and the client response, and built its exchange wrapper with body
+  capture off, so the provider-response tee always resolved to null. Every
+  probe row reported the middle two stages as absent — a constant, not a
+  measurement, which made the stage markers useless for the diagnosis they
+  exist for. Measured: the bitmask went from 9 to 15.
+
+  The client events were also passed as `responseBody`, the legacy alias, which
+  lit the client stage over a body that was never captured. They now go to the
+  dedicated client surface.
+
+- **A throttled account is no longer counted as healthy on the provider list.**
+  A model-scoped backoff leaves `status: "active"`, so a card built from status
+  alone read "1 Healthy · 1 Cooling" for a single account that could not serve
+  the model being asked for. Cooldown and Cooling are now one badge, and
+  neither is counted under Healthy — the counts are mutually exclusive and add
+  up to the account total.
+
+### Added
+
+- **The update badge opens a dialog instead of a release page.** Pointing it at
+  GitHub told an operator a release existed and left them to work out the
+  install themselves, on a page that does not mention it. The dialog shows what
+  is running against what is published, gives the command, and copies it.
+
+  A release alert in the notifications bell now opens the same dialog rather
+  than the release page; other alert kinds keep their link.
+
+  **It also opens on its own**, once per release. An operator on an old version
+  is the one least likely to go looking, so waiting for a click defeats the
+  point. But a dialog returning on every navigation punishes whoever already
+  decided not to upgrade, so dismissing records the version and the prompt stays
+  away until a newer one is published. The badge still opens it on demand.
+
+- **The dialog says why the console cannot just install it.** npm cannot replace
+  the package directory while a process is executing out of it — on Windows the
+  rename fails with `EBUSY` — so a button that tried would fail in a way that
+  looks like a gateway bug. The command is the honest offer, and the dialog
+  explains why.
+
+### Changed
+
+- The update command lives in one place (`NPM_UPDATE_COMMAND`) so the console,
+  the CLI's printed instructions, and the docs cannot disagree about the flag.
+
 ## [2.5.1] - 2026-10-21
 
 Version housekeeping, plus one fix for the tray.
