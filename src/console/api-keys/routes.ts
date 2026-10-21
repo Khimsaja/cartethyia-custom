@@ -62,6 +62,69 @@ async function resolveModelTemplateLink(
   return template.id;
 }
 
+/**
+ * Whether an operator-chosen key label must be unique within the tenant.
+ *
+ * Buyer-facing automation reuses labels on purpose: checkout mints one key
+ * per purchase with the buyer's email as the label, and gacha keys are
+ * labelled `bansos-<email>` — a repeat buyer legitimately holds several
+ * keys with the same label, so email-shaped and bansos/gacha labels are
+ * exempt. A hand-picked name (a handle, a project, a person) is how the
+ * operator tells keys apart in the console, so a second key with the same
+ * name is always a mistake — the console accepted it silently and the two
+ * keys became indistinguishable in every list.
+ */
+const EMAIL_SHAPED_LABEL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function labelNeedsUniqueness(label: string): boolean {
+  const normalized = label.trim().toLowerCase();
+  if (normalized === "") return false;
+  if (EMAIL_SHAPED_LABEL.test(normalized)) return false;
+  if (normalized.startsWith("bansos-") || normalized.startsWith("gacha-")) return false;
+  return true;
+}
+
+/**
+ * Rejects a create/rename whose label another live top-level key already
+ * carries (case-insensitive). Revoked keys free their name for reuse, and
+ * share children are ignored: they are managed through their parent and
+ * never appear as console keys in their own right.
+ */
+async function assertKeyLabelAvailable(
+  config: ApiKeyConfig,
+  tenantId: string,
+  label: string,
+  excludeKeyId?: string,
+): Promise<void> {
+  if (!labelNeedsUniqueness(label)) return;
+  // Prefer the store's targeted lookup: `list` is capped, so scanning it
+  // misses keys beyond the cap and the check would silently let duplicates
+  // through on exactly the large tenants where names matter most. The scan
+  // remains as a fallback for stores without the lookup (test doubles).
+  const findByLabel = config.store.findActiveByLabel?.bind(config.store);
+  let clash = false;
+  if (findByLabel) {
+    const found = await findByLabel(tenantId, label);
+    clash = found !== undefined && found.id !== excludeKeyId;
+  } else {
+    const normalized = label.trim().toLowerCase();
+    const records = await config.store.list(tenantId);
+    clash = records.some(
+      (record) =>
+        record.revokedAt === undefined &&
+        record.parentKeyId === undefined &&
+        record.id !== excludeKeyId &&
+        record.label.trim().toLowerCase() === normalized,
+    );
+  }
+  if (clash)
+    throw new ConsoleDomainError(
+      "key_label_exists",
+      409,
+      `A key named "${label.trim()}" already exists. Choose a different name.`,
+    );
+}
+
 export function createApiKeyOperations(config: ApiKeyConfig) {
   const operations = {
     async listKeys(access: AccessDecision | undefined): Promise<ApiKeyResponse[]> {
@@ -160,11 +223,33 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
             ? generateApiKeySecret(keyPrefix)
             : { ...prepareCustomKey(request.key), prefix: keyPrefix }
           : undefined;
+      const label = request.label?.trim() || (keyMode === "share" ? "Share template" : "API key");
+      // Only an explicitly typed name is checked: the fallback labels are
+      // shared by design, and automated buyer labels are exempt inside
+      // assertKeyLabelAvailable itself.
+      if (request.label?.trim())
+        await assertKeyLabelAvailable(config, authorized.tenantId, label);
+      // A key linked to a template without a model list of its own means
+      // the template's list. The console form used to send the link alone
+      // (its picker never copied the models in), leaving the new key with
+      // an empty whitelist that only the template sweep repaired later.
+      // An explicit non-empty list always wins.
+      const templateModels =
+        modelTemplateId != null &&
+        (request.modelList === undefined || request.modelList.length === 0)
+          ? (await config.modelTemplateStore?.get(authorized.tenantId, modelTemplateId))?.models
+          : undefined;
+      const effectiveModelList =
+        request.modelList !== undefined && request.modelList.length > 0
+          ? request.modelList
+          : templateModels !== undefined
+            ? [...templateModels]
+            : request.modelList;
       const record: ApiKeyRecord = {
         id: randomUUID(),
         tenantId: authorized.tenantId,
         enabled: request.enabled ?? true,
-        label: request.label?.trim() || (keyMode === "share" ? "Share template" : "API key"),
+        label,
         keyHash: generated?.hash ?? null,
         keyMode,
         scopes,
@@ -193,7 +278,7 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
           ? {}
           : { modelTemplateId }),
         modelAccessMode: request.modelAccessMode ?? "whitelist",
-        ...(request.modelList === undefined ? {} : { modelList: request.modelList }),
+        ...(effectiveModelList === undefined ? {} : { modelList: effectiveModelList }),
         ...(request.clientRouterDenylist === undefined
           ? {}
           : { clientRouterDenylist: request.clientRouterDenylist }),
@@ -319,6 +404,27 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
         const hours = (patchRequest.expiresInDays ?? 0) * 24 + (patchRequest.expiresInHours ?? 0);
         expiresAtPatch = { expiresAt: new Date(Date.now() + hours * 3_600_000) };
       }
+      // Renaming onto another live key's name creates the same ambiguity as
+      // a duplicate create, so it takes the same check (excluding this key,
+      // and excluding a pure case change of its own name).
+      if (patchRequest.label !== undefined && patchRequest.label.trim() !== "") {
+        const nextLabel = patchRequest.label.trim();
+        if (nextLabel.toLowerCase() !== current.label.trim().toLowerCase())
+          await assertKeyLabelAvailable(config, authorized.tenantId, nextLabel, keyId);
+      }
+      // Same rule as create, for a fresh link: naming a template without
+      // sending a model list adopts the template's list. An explicit list
+      // (even an empty one) is the operator's deliberate choice and stands.
+      const linkedTemplateModels =
+        typeof modelTemplateId === "string" && patchRequest.modelList === undefined
+          ? (await config.modelTemplateStore?.get(authorized.tenantId, modelTemplateId))?.models
+          : undefined;
+      const effectivePatchModelList =
+        patchRequest.modelList !== undefined
+          ? patchRequest.modelList
+          : linkedTemplateModels !== undefined
+            ? [...linkedTemplateModels]
+            : undefined;
       const updated = await config.store.update(authorized.tenantId, keyId, {
         ...(patchRequest.enabled === undefined ? {} : { enabled: patchRequest.enabled }),
         ...(isDefaultGatewayApiKey(current) ? { isDefault: true } : {}),
@@ -360,7 +466,7 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
         ...(expiresAtPatch === undefined ? {} : { expiresAt: expiresAtPatch.expiresAt }),
         ...(modelTemplateId === undefined ? {} : { modelTemplateId }),
         ...(patchRequest.modelAccessMode === undefined ? {} : { modelAccessMode: patchRequest.modelAccessMode }),
-        ...(patchRequest.modelList === undefined ? {} : { modelList: patchRequest.modelList }),
+        ...(effectivePatchModelList === undefined ? {} : { modelList: effectivePatchModelList }),
         ...(patchRequest.clientRouterDenylist === undefined
           ? {}
           : { clientRouterDenylist: patchRequest.clientRouterDenylist }),

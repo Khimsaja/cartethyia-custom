@@ -201,6 +201,12 @@ export interface ApiKeyStore {
   revoke(tenantId: string, keyId: string, revokedAt: Date): Promise<boolean>;
   findActiveByHash?(hash: string): Promise<typeof apiKeys.$inferSelect | undefined>;
   findActiveById?(keyId: string): Promise<typeof apiKeys.$inferSelect | undefined>;
+  /**
+   * One live top-level key carrying this label (case-insensitive, trimmed),
+   * if any. Targeted lookup for name-uniqueness checks: `list` is capped,
+   * so scanning it silently misses keys beyond the cap.
+   */
+  findActiveByLabel?(tenantId: string, label: string): Promise<ApiKeyRecord | undefined>;
   sumChildrenConsumed?(parentKeyId: string): Promise<number>;
 }
 
@@ -508,6 +514,28 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
       .where(and(eq(apiKeys.id, keyId), eq(apiKeys.enabled, true), isNull(apiKeys.revokedAt)))
       .limit(1);
     return rows[0];
+  }
+
+  async findActiveByLabel(
+    tenantId: string,
+    label: string,
+  ): Promise<ApiKeyRecord | undefined> {
+    const normalized = label.trim().toLowerCase();
+    if (normalized === "") return undefined;
+    const rows = await this.db
+      .select()
+      .from(apiKeys)
+      .where(
+        and(
+          eq(apiKeys.tenantId, tenantId),
+          isNull(apiKeys.revokedAt),
+          isNull(apiKeys.parentKeyId),
+          sql<boolean>`lower(trim(${apiKeys.label})) = ${normalized}`,
+        ),
+      )
+      .limit(1);
+    const [record] = await this.withPopups(this.db, rows);
+    return record;
   }
 
   /**

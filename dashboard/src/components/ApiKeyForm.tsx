@@ -939,7 +939,19 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
           <Select
             label="Model template"
             value={modelTemplateId}
-            onValueChange={(v) => setModelTemplateId(v === "__none__" ? "" : v)}
+            onValueChange={(v) => {
+              const next = v === "__none__" ? "" : v;
+              setModelTemplateId(next);
+              // Picking a template applies it: submit sends this form's own
+              // model list, so the template's models are copied in for the
+              // operator to see (and adjust) before saving. Without the copy
+              // the key was created with an empty whitelist and only the
+              // link set — a key that could call nothing until repaired.
+              if (next) {
+                const template = templatesQuery.data?.find((t) => t.id === next);
+                if (template) setModels([...template.models]);
+              }
+            }}
             disabled={busy || templatesQuery.isPending}
             placeholder={templatesQuery.isPending ? "Loading templates…" : "Custom (no template)"}
             options={[
