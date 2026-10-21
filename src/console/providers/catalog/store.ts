@@ -1119,6 +1119,19 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
     return this.accountsWithUsage(tenantId, rows);
   }
 
+  async listConfiguredProviderIds(tenantId: string): Promise<readonly string[]> {
+    // Distinct provider ids owning at least one account — the provider
+    // catalog list only needs this "configured" set. Loading every
+    // account with its usage here (listAllAccounts) scans a full day of
+    // telemetry events just to answer it, which made the catalog page
+    // time out behind the proxy under load (502 on 2026-10-21).
+    const rows = await this.db
+      .selectDistinct({ providerId: providerAccounts.providerId })
+      .from(providerAccounts)
+      .where(globalOrOwnedBy(providerAccounts.tenantId, tenantId));
+    return rows.map((row) => row.providerId);
+  }
+
   async createAccount(
     tenantId: string,
     providerId: string,

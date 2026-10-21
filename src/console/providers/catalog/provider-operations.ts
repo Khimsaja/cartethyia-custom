@@ -224,11 +224,11 @@ export function createProviderCatalogOperations(config: ProviderCatalogConfig) {
   const operations = {
     async listProviders(access: AccessDecision | undefined): Promise<ProviderResponse[]> {
       const a = requireTenantAnyScope(access, PROVIDER_READ_SCOPES);
-      const [records, accounts] = await Promise.all([
+      const [records, configuredIds] = await Promise.all([
         config.store.list(a.tenantId),
-        config.store.listAllAccounts(a.tenantId),
+        config.store.listConfiguredProviderIds(a.tenantId),
       ]);
-      const configured = new Set(accounts.map((account) => account.providerId));
+      const configured = new Set(configuredIds);
       return Promise.all(
         records.map((r) =>
           attachProviderCapabilities(

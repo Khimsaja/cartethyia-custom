@@ -764,6 +764,7 @@ export interface ProviderCatalogStore {
   syncModels(tenantId: string, providerId: string): Promise<{ synced: number }>;
   listAccounts(tenantId: string, providerId: string): Promise<readonly ProviderAccountResponse[]>;
   listAllAccounts(tenantId: string): Promise<readonly ProviderAccountResponse[]>;
+  listConfiguredProviderIds(tenantId: string): Promise<readonly string[]>;
   createAccount(
     tenantId: string,
     providerId: string,
