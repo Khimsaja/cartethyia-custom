@@ -180,7 +180,13 @@ export interface ApiKeyConfig {
 export interface ShareKeyResponse {
   readonly id: string;
   readonly url: string;
-  readonly token: string;
+  /**
+   * The bearer half of the link. Null when the row was written under an
+   * encryption key this deployment no longer holds: the page stays reachable
+   * from `url`, but the secret cannot be shown again and must be regenerated
+   * before the link can authenticate.
+   */
+  readonly token: string | null;
   readonly kind: ShareLinkKind;
   readonly expiresAt: string | null;
 }
@@ -195,10 +201,26 @@ export interface ShareLinkResponse {
   readonly lastViewedAt: string | null;
 }
 
-/** Default prefix for newly generated API keys. */
+/**
+ * Default prefix for newly generated API keys.
+ *
+ * TipRouter fork: buyer keys keep the `tip_` brand prefix (upstream uses
+ * `pn-carte-`). The prefix is metadata shown in the console — nothing looks
+ * a key up by its prefix — so rows already stored keep the prefix they were
+ * issued with. The random tail length follows upstream (16 characters).
+ */
 export const DEFAULT_API_KEY_PREFIX = "tip_";
 /** Default prefix used by share templates and the keys they issue. */
-export const DEFAULT_SHARE_API_KEY_PREFIX = "sh-carte_";
+export const DEFAULT_SHARE_API_KEY_PREFIX = "sh-carte-";
+
+/**
+ * Bytes of entropy behind the random tail.
+ *
+ * 12 bytes base64url-encodes to exactly 16 characters with no padding, which
+ * is the whole reason for the number: the length in the constants above and
+ * the length a generated key actually has cannot disagree.
+ */
+const KEY_SECRET_BYTES = 12;
 
 /** Label of the default gateway API key seeded at first boot; never revoked. */
 export const DEFAULT_API_KEY_LABEL = "Default Cartethyia API key";
@@ -220,7 +242,7 @@ export function generateApiKeySecret(prefix = DEFAULT_API_KEY_PREFIX): {
   hash: string;
   prefix: string;
 } {
-  const secret = `${prefix}${randomBytes(9).toString("base64url")}`;
+  const secret = `${prefix}${randomBytes(KEY_SECRET_BYTES).toString("base64url")}`;
   return { secret, hash: hashSecret(secret), prefix };
 }
 
