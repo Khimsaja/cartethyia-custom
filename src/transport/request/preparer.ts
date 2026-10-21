@@ -229,11 +229,12 @@ export class ProxyRequestPreparer {
         "model_not_found",
         404,
         `This key may only use models starting with '${authorization.modelPrefix}'. Ask for one inside that prefix, or have an operator widen the key.`,
-        { model: request.model, required_prefix: authorization.modelPrefix },
+        { model: request.model, required_prefix: authorization.modelPrefix, allowlist_miss: true },
       );
     if (!allowedForKey) {
       throw new GatewayError("model_not_found", 404, "model is not allowed for this API key", {
         model: request.model,
+        allowlist_miss: true,
       });
     }
     // An inline image that cannot survive the upstream is dropped here rather
@@ -305,6 +306,7 @@ export class ProxyRequestPreparer {
     if (policyCandidates.length === 0)
       throw new GatewayError("model_not_found", 404, "model is not allowed for this API key", {
         model: request.model,
+        allowlist_miss: true,
       });
     if (policyCandidates.length !== plan.candidates.length)
       plan = { ...plan, candidates: policyCandidates };
@@ -459,11 +461,12 @@ export class ProxyRequestPreparer {
         "model_not_found",
         404,
         `This key may only use models starting with '${input.authorization.modelPrefix}'. Ask for one inside that prefix, or have an operator widen the key.`,
-        { model: input.model, required_prefix: input.authorization.modelPrefix },
+        { model: input.model, required_prefix: input.authorization.modelPrefix, allowlist_miss: true },
       );
     if (!allowedForKey)
       throw new GatewayError("model_not_found", 404, "model is not allowed for this API key", {
         model: input.model,
+        allowlist_miss: true,
       });
     const plan = await this.deps.routingEngine.plan(
       input.model,
@@ -486,6 +489,7 @@ export class ProxyRequestPreparer {
     if (policyCandidates.length === 0)
       throw new GatewayError("model_not_found", 404, "model is not allowed for this API key", {
         model: input.model,
+        allowlist_miss: true,
       });
     const candidates = policyCandidates.filter(input.eligible);
     if (candidates.length === 0)

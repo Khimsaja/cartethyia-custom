@@ -34,6 +34,18 @@ function isModelRejection(error: unknown): boolean {
 }
 
 /**
+ * TipRouter local patch (not upstream): a rejection the preparer marked
+ * `allowlist_miss` names a model that exists in the catalog but sits outside
+ * this key's allowlist/prefix policy. That is a packaging mismatch, not
+ * probing — buyers discover catalog models from public pages and docs — so
+ * it must not accrue abuse strikes. Only names that resolve to nothing
+ * (unmarked `model_not_found`) count toward a ban.
+ */
+function isAllowlistMiss(error: unknown): boolean {
+  return error instanceof GatewayError && error.details.allowlist_miss === true;
+}
+
+/**
  * Re-throws a model rejection carrying the escalating strike warning, so an
  * honest client that mistyped sees "Warning 1 of 3" instead of the same generic
  * 404 three times and then a ban. The code/status are unchanged — only the
@@ -284,7 +296,7 @@ export function createProxyRoutePreparationMiddleware(deps: {
         // Only a *model* rejection is a strike: an invalid model the key may not
         // use, or a name that resolves to nothing. A store outage, an aborted
         // request, or any other failure is not the caller probing for models.
-        if (strikeIdentity && isModelRejection(error)) {
+        if (strikeIdentity && isModelRejection(error) && !isAllowlistMiss(error)) {
           const outcome = await strikeIdentity.strikes
             .noteInvalid({ ip: strikeIdentity.ip })
             .catch(() => null);
