@@ -17,7 +17,7 @@ import { GatewayError } from "../../protocol/gateway-error";
 import { fastPathname } from "../pathname";
 
 /** In-flight `/v1` requests one process will carry before refusing. */
-export const PROCESS_CONCURRENCY_CAP = 192;
+export const PROCESS_CONCURRENCY_CAP = 256;
 const PROCESS_CONCURRENCY_RETRY_MS = 3_000;
 
 let inFlight = 0;
