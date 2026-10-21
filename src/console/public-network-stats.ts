@@ -50,6 +50,9 @@ export interface PublicNetworkStats {
 /** Public cache TTL: matches the website's 30s refresh cadence. */
 export const PUBLIC_STATS_CACHE_TTL_MS = 30_000;
 
+/** Buyer template whose model list defines the public status page catalog. */
+export const BUYER_TEMPLATE_NAME = "tiprouter new";
+
 const TOP_MODELS_LIMIT = 10;
 
 let cached: { data: PublicNetworkStats; expiresAt: number } | null = null;
@@ -77,15 +80,28 @@ async function queryPublicNetworkStats(db: DatabaseHandle): Promise<PublicNetwor
   const since1hMs = now - 3600 * 1000;
   const since24hMs = since24h.getTime();
 
-  // Buyer model allowlist: union of all active whitelist key model_lists.
-  // Status page is buyer-facing: only show models buyers can actually call.
-  const allowRows = rowsOf(
+  // Buyer model allowlist: the 'tiprouter new' template's model list.
+  // Status page is buyer-facing: only show models buyers actually get.
+  // Unioning every active whitelist key's model_list leaked infra-only
+  // models onto the page (MASTER KEY and admin keys carry models that are
+  // not in the buyer template). Fall back to that union only if the
+  // template is missing/empty, so the page never goes blank on a rename.
+  const templateRows = rowsOf(
     await db.query(
-      "SELECT DISTINCT jsonb_array_elements_text(model_list) AS model FROM api_keys " +
-        "WHERE model_access_mode = 'whitelist' AND revoked_at IS NULL " +
-        "AND COALESCE(enabled, true) AND jsonb_typeof(model_list) = 'array'",
+      "SELECT DISTINCT jsonb_array_elements_text(models) AS model FROM model_templates " +
+        `WHERE name = '${BUYER_TEMPLATE_NAME}' AND jsonb_typeof(models) = 'array'`,
     ),
   );
+  const allowRows =
+    templateRows.length > 0
+      ? templateRows
+      : rowsOf(
+          await db.query(
+            "SELECT DISTINCT jsonb_array_elements_text(model_list) AS model FROM api_keys " +
+              "WHERE model_access_mode = 'whitelist' AND revoked_at IS NULL " +
+              "AND COALESCE(enabled, true) AND jsonb_typeof(model_list) = 'array'",
+          ),
+        );
   const allowlist = new Set<string>();
   for (const row of allowRows) {
     if (typeof row.model === "string" && row.model) allowlist.add(row.model);
