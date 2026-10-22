@@ -1119,6 +1119,26 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
     return this.accountsWithUsage(tenantId, rows);
   }
 
+  async countActiveAccountsByProvider(tenantId: string): Promise<ReadonlyMap<string, number>> {
+    // One narrow query (provider id only) + a JS tally instead of loading
+    // every account with its usage: callers that only need "does this
+    // provider have an active account, and how many" (the flat model list)
+    // must not pay accountsWithUsage's full day of telemetry events just to
+    // answer it.
+    const rows = await this.db
+      .select({ providerId: providerAccounts.providerId })
+      .from(providerAccounts)
+      .where(
+        and(
+          globalOrOwnedBy(providerAccounts.tenantId, tenantId),
+          eq(providerAccounts.status, "active"),
+        ),
+      );
+    const counts = new Map<string, number>();
+    for (const row of rows) counts.set(row.providerId, (counts.get(row.providerId) ?? 0) + 1);
+    return counts;
+  }
+
   async listConfiguredProviderIds(tenantId: string): Promise<readonly string[]> {
     // Distinct provider ids owning at least one account — the provider
     // catalog list only needs this "configured" set. Loading every

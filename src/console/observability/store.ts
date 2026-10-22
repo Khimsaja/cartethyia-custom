@@ -189,7 +189,6 @@ async function resolveProxyLabel(
   const { endpoint, label } = splitEndpointConfig((row.endpointConfig ?? {}) as Record<string, unknown>);
   return label ?? endpoint ?? `${poolId.slice(0, 8)}…`;
 }
-const HEALTH_WINDOW_MS = 24 * 3_600_000;
 const TOP_N = 50;
 /**
  * How long a parsed window is shared. A dashboard poll fires ~8 usage
@@ -197,7 +196,7 @@ const TOP_N = 50;
  * endpoints that missed it each re-read and re-parsed the same files, which is
  * how one page load became several full parses of the retention window.
  */
-const PERIOD_MEMO_TTL_MS = 5_000;
+const PERIOD_MEMO_TTL_MS = 30_000;
 
 /** Nearest-rank percentile over a sorted array, matching `percentile_cont` closely enough for a health gauge. */
 function percentile(sorted: readonly number[], fraction: number): number {
@@ -351,8 +350,9 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
     try {
       // Bounded 24h rolling window (matches the Overview copy). The file is the
       // source, so the percentiles are computed over the retained events.
-      const since = new Date(Date.now() - HEALTH_WINDOW_MS);
-      const events = await queryTelemetryEvents({ tenantId, since });
+      // Read through the shared period memo so a health poll and a usage poll
+      // for the same window never pay for two parses of it.
+      const events = await this.periodEvents(tenantId, "24h");
       const latencies: number[] = [];
       let latencySum = 0;
       let inputTokens = 0;
@@ -454,8 +454,12 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
    * configured — and returns the strong validator alongside it, so a repeated
    * poll can be answered with a `304` instead of the whole payload.
    */
-  private readThroughWithEtag<T>(key: string, compute: () => Promise<T>): Promise<CachedResult<T>> {
-    return cachedReadWithEtag(this.redis, key, compute);
+  private readThroughWithEtag<T>(
+    key: string,
+    compute: () => Promise<T>,
+    ttlSeconds?: number,
+  ): Promise<CachedResult<T>> {
+    return cachedReadWithEtag(this.redis, key, compute, ttlSeconds);
   }
 
   private async computeUsage(tenantId: string, period: string): Promise<UsageResponse> {
@@ -748,24 +752,13 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
     limit: number,
     httpStatus?: number,
   ): Promise<CachedResult<UsageRequestsResponse>> {
-    // Ask the reader for `limit` rows instead of folding the whole window and
-    // slicing it. It stops at the newest file that fills the page, so the
-    // console's most-polled endpoint no longer parses the retention window just
-    // to show 50 rows.
-    const since = periodStartDate(period);
-    const events = await queryTelemetryEvents({
-      tenantId,
-      limit,
-      ...(httpStatus === undefined ? {} : { httpStatus }),
-      ...(since === undefined ? {} : { since }),
-    });
-    const rows = events.slice(0, limit);
     const hideClientIp = await shouldMaskClientIp(this.preferences, tenantId);
     // Cached like its siblings, so a repeated poll costs a `304` instead of
     // another read. The mask flag is part of the key: it is a privacy setting,
     // so a page must never be served from an entry computed under the other
-    // value. The rows were already read above — this bounds the label lookup
-    // and the mapping, not the telemetry read.
+    // value. The telemetry read lives INSIDE the compute: it used to run
+    // before the cache lookup, so even a cache hit paid a full file parse and
+    // threw the rows away — on the gateway's event loop, per poll.
     return this.readThroughWithEtag(
       this.usageCacheKey(
         tenantId,
@@ -773,6 +766,18 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
         "requests",
       ),
       async () => {
+        // Ask the reader for `limit` rows instead of folding the whole window
+        // and slicing it. It stops at the newest file that fills the page, so
+        // the console's most-polled endpoint no longer parses the retention
+        // window just to show 50 rows.
+        const since = periodStartDate(period);
+        const events = await queryTelemetryEvents({
+          tenantId,
+          limit,
+          ...(httpStatus === undefined ? {} : { httpStatus }),
+          ...(since === undefined ? {} : { since }),
+        });
+        const rows = events.slice(0, limit);
         const keyIds = [...new Set(rows.map((row) => row.apiKeyId).filter((id): id is string => id !== null))];
         const labels = await this.apiKeyLabels(tenantId, keyIds);
         // One indexed read for the whole page, not one per row: presence lives
@@ -793,6 +798,11 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
           }),
         };
       },
+      // 30 s, not the shared 10 s default: the dashboard polls this feed on
+      // the 10 s live cadence, so a 10 s TTL made every other poll a miss —
+      // and a miss is a telemetry parse on the gateway loop. A request log
+      // that lags half a minute is the right trade for that.
+      30,
     );
   }
 

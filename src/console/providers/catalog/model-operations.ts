@@ -61,11 +61,10 @@ export function createModelCatalogOperations(config: ProviderCatalogConfig) {
     async listFlatModels(access: AccessDecision | undefined): Promise<readonly FlatModelCatalogEntry[]> {
       const a = requireTenantAnyScope(access, MODEL_READ_SCOPES);
       const providers = await config.store.list(a.tenantId);
-      const accountsByProvider = new Map<string, number>();
-      for (const account of await config.store.listAllAccounts(a.tenantId)) {
-        if (account.status === "active")
-          accountsByProvider.set(account.providerId, (accountsByProvider.get(account.providerId) ?? 0) + 1);
-      }
+      // Only the per-provider active counts are needed here. Loading every
+      // account with its usage (listAllAccounts) scans a full day of telemetry
+      // events just to produce these numbers.
+      const accountsByProvider = await config.store.countActiveAccountsByProvider(a.tenantId);
       /** Synthetic catalog entry for an alias/combo: they are routing targets,
        * not `models` rows, so they have no enriched capability metadata. */
       const syntheticEntry = (id: string, source: string): ModelCatalogEntry => ({

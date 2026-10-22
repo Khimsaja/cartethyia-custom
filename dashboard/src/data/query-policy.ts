@@ -48,7 +48,7 @@ export const POLL = {
   /** A page that is filling in and should converge within a second or two. */
   warming: 2_000,
   /** A counter or feed the operator is watching right now. */
-  live: 5_000,
+  live: 10_000,
   /** Health and status that should feel current but is not a ticker. */
   status: 10_000,
   /** A catalog or overview that changes on mutation, polled as a backstop. */

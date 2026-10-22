@@ -764,6 +764,8 @@ export interface ProviderCatalogStore {
   syncModels(tenantId: string, providerId: string): Promise<{ synced: number }>;
   listAccounts(tenantId: string, providerId: string): Promise<readonly ProviderAccountResponse[]>;
   listAllAccounts(tenantId: string): Promise<readonly ProviderAccountResponse[]>;
+  /** Active-account count per provider, without loading accounts or usage. */
+  countActiveAccountsByProvider(tenantId: string): Promise<ReadonlyMap<string, number>>;
   listConfiguredProviderIds(tenantId: string): Promise<readonly string[]>;
   createAccount(
     tenantId: string,
