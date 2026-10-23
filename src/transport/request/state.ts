@@ -9,6 +9,13 @@ import { createInFlightRegistry, type InFlightSnapshot } from "./inflight";
 import { log } from "../../observability/logger";
 import { fastPathname } from "../pathname";
 
+/**
+ * Grace between a client abort and the request-state store evicting the state
+ * itself. The normal conclusion paths (Elysia `afterResponse`, the streaming
+ * finalizer) run within milliseconds; this only fires when none of them did.
+ */
+const ABORT_EVICTION_GRACE_MS = 10_000;
+
 export interface ProxyRequestOutcome {
   readonly status: "completed" | "failed" | "cancelled" | "truncated";
   /**
@@ -381,6 +388,25 @@ export class ProxyRequestStateStore {
     this.liveControllers.set(state.requestId, abortController);
     this.tracker?.track(state.requestId);
     this.states.set(request, state);
+    // A client disconnect must evict this state even when no lifecycle path
+    // remains to do it: Elysia's `afterResponse` does not fire for a request
+    // whose client vanished mid-flight, and the streaming finalizer can be
+    // parked behind its lease release — both leave `cleanup()` (and with it
+    // the in-flight untrack) unrun until the backstop sweep, minutes later.
+    // The store owns request lifetime, so on client abort it arms its own
+    // eviction: the grace lets the normal conclusion path win the race, and
+    // `cleanup()` is idempotent when that path already ran.
+    const armAbortEviction = (): void => {
+      const eviction = setTimeout(() => {
+        try {
+          state.cleanup();
+        } catch {
+        }
+      }, ABORT_EVICTION_GRACE_MS);
+      (eviction as unknown as { unref?: () => void })?.unref?.();
+    };
+    if (request.signal.aborted) armAbortEviction();
+    else request.signal.addEventListener("abort", armAbortEviction, { once: true });
     return state;
   }
   require(request: Request): ProxyRequestState {

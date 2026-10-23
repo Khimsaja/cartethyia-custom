@@ -340,25 +340,31 @@ export class StreamFinalizer {
     this.streamController = undefined;
     this.clearClientKeepaliveTimer();
     this.clearStallWatchdog();
-    await releaseAttemptLeases(
-      {
-        lease,
-        reservation,
-        proxySlot,
-        ...(this.input.leaseOwnership === undefined
-          ? {}
-          : { ownership: this.input.leaseOwnership }),
-      },
-      prepared.routingEngine,
-    );
-    // Streaming responses defer telemetry + request/state cleanup to
-    // stream completion/cancel: `afterResponse` fires at the headers
-    // flush and would otherwise abort this controller mid-stream.
-    // completeAttempt already finalized terminal outcomes; only
-    // unterminated paths (client abort mid-pull) finalize here.
-    if (!state.completed && deps.telemetryBuffer)
-      finalizeRequestTelemetry(state, deps.telemetryBuffer);
-    state.cleanup();
+    try {
+      await releaseAttemptLeases(
+        {
+          lease,
+          reservation,
+          proxySlot,
+          ...(this.input.leaseOwnership === undefined
+            ? {}
+            : { ownership: this.input.leaseOwnership }),
+        },
+        prepared.routingEngine,
+      );
+      // Streaming responses defer telemetry + request/state cleanup to
+      // stream completion/cancel: `afterResponse` fires at the headers
+      // flush and would otherwise abort this controller mid-stream.
+      // completeAttempt already finalized terminal outcomes; only
+      // unterminated paths (client abort mid-pull) finalize here.
+      if (!state.completed && deps.telemetryBuffer)
+        finalizeRequestTelemetry(state, deps.telemetryBuffer);
+    } finally {
+      // State eviction must not depend on the lease release succeeding: a
+      // rejection above previously skipped cleanup entirely, leaking the
+      // in-flight flight until the backstop sweep minutes later.
+      state.cleanup();
+    }
   }
 
   /**
