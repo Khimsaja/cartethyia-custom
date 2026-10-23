@@ -274,7 +274,7 @@ const AUTH_KEY_COLUMNS = [
   "monthly_token_limit", "lifetime_token_budget", "lifetime_tokens_consumed",
   "max_concurrent_requests", "model_access_mode", "model_list", "client_router_denylist",
   "model_prefix", "created_at", "enabled", "revoked_at", "key_prefix", "key_encrypted",
-  "notes_title", "notes_subtitle", "notes_body", "is_default", "sort_index",
+  "notes_title", "notes_subtitle", "notes_body", "is_default", "sort_index", "expires_at",
 ].join(", ");
 
 export interface SqliteAuthStatements {

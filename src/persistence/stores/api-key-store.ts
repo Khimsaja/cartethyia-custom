@@ -505,24 +505,39 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
     // path skips it. PostgreSQL has no prepared statement here and uses the
     // builder, whose plan is cached server-side.
     const prepared = getDbHandle().auth;
-    if (prepared) return this.authRow(prepared.byHash.get(hash));
+    if (prepared) return this.liveRow(this.authRow(prepared.byHash.get(hash)));
     const rows = await this.db
       .select()
       .from(apiKeys)
       .where(and(eq(apiKeys.keyHash, hash), eq(apiKeys.enabled, true), isNull(apiKeys.revokedAt)))
       .limit(1);
-    return rows[0];
+    return this.liveRow(rows[0]);
   }
 
   async findActiveById(keyId: string): Promise<typeof apiKeys.$inferSelect | undefined> {
     const prepared = getDbHandle().auth;
-    if (prepared) return this.authRow(prepared.byId.get(keyId));
+    if (prepared) return this.liveRow(this.authRow(prepared.byId.get(keyId)));
     const rows = await this.db
       .select()
       .from(apiKeys)
       .where(and(eq(apiKeys.id, keyId), eq(apiKeys.enabled, true), isNull(apiKeys.revokedAt)))
       .limit(1);
-    return rows[0];
+    return this.liveRow(rows[0]);
+  }
+
+  /**
+   * Hard expiry is an active-condition too: a key past `expiresAt` resolves
+   * to nothing, exactly like a revoked one (the 401 surface deliberately
+   * does not distinguish). Enforced here rather than in the queries because
+   * the prepared SQLite lookup cannot express it, and auth must behave the
+   * same on both backends.
+   */
+  private liveRow(
+    row: typeof apiKeys.$inferSelect | undefined,
+  ): typeof apiKeys.$inferSelect | undefined {
+    if (row === undefined) return undefined;
+    if (row.expiresAt != null && row.expiresAt.getTime() <= Date.now()) return undefined;
+    return row;
   }
 
   async findActiveByLabel(
@@ -600,6 +615,7 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
       createdAt: date("created_at") ?? new Date(0),
       enabled: flag("enabled"),
       revokedAt: date("revoked_at"),
+      expiresAt: date("expires_at"),
       keyPrefix: text("key_prefix"),
       keyEncrypted: raw["key_encrypted"] ?? null,
       notesTitle: text("notes_title"),
