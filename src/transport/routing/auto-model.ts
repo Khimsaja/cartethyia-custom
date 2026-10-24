@@ -186,6 +186,21 @@ export function filterAutoCandidates(list: readonly string[]): readonly string[]
   return list.filter((entry) => entry !== AUTO_MODEL_NAME);
 }
 
+/**
+ * Whether this key may be shown `auto` as a model it can use. The listing
+ * and the preparer must agree: `auto` is advertised exactly when the
+ * preparer can resolve it — a whitelist with at least one real candidate.
+ * A blacklist key, an allow-all key, or a list holding only `auto` itself
+ * gets no entry, because a request for `auto` on such a key answers
+ * `auto_no_allowlist` instead of routing anywhere.
+ */
+export function shouldAdvertiseAutoModel(policy: AutoModelPolicy): boolean {
+  if (policy.model_access_mode === "blacklist") return false;
+  const raw = policy.model_list;
+  const list = raw == null ? [] : raw instanceof Set ? [...raw] : [...raw];
+  return filterAutoCandidates(list).length > 0;
+}
+
 export interface AutoModelPolicy {
   readonly model_access_mode?: string | null | undefined;
   readonly model_list?: readonly string[] | ReadonlySet<string> | null | undefined;

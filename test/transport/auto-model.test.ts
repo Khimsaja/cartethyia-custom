@@ -12,6 +12,7 @@ import {
   AutoModelScorer,
   filterAutoCandidates,
   pickAutoModel,
+  shouldAdvertiseAutoModel,
   type AutoModelStats,
 } from "../../src/transport/routing/auto-model";
 
@@ -106,4 +107,14 @@ test("a list of only auto is no allowlist", async () => {
   await expect(
     scorer.pickForKey({ model_access_mode: "whitelist", model_list: ["auto"] }),
   ).resolves.toEqual({ ok: false, reason: "no_allowlist" });
+});
+
+test("auto is advertised exactly when the key can use it", () => {
+  expect(shouldAdvertiseAutoModel({ model_access_mode: "whitelist", model_list: ["model-a", "model-b"] })).toBe(true);
+  expect(shouldAdvertiseAutoModel({ model_access_mode: "whitelist", model_list: new Set(["model-a"]) })).toBe(true);
+  expect(shouldAdvertiseAutoModel({ model_access_mode: "whitelist", model_list: ["auto", "model-a"] })).toBe(true);
+  expect(shouldAdvertiseAutoModel({ model_access_mode: "blacklist", model_list: ["model-a"] })).toBe(false);
+  expect(shouldAdvertiseAutoModel({ model_access_mode: "whitelist", model_list: [] })).toBe(false);
+  expect(shouldAdvertiseAutoModel({ model_access_mode: "whitelist", model_list: null })).toBe(false);
+  expect(shouldAdvertiseAutoModel({ model_access_mode: "whitelist", model_list: ["auto"] })).toBe(false);
 });
