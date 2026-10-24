@@ -359,15 +359,20 @@ export async function handleProviderProxyRequest(
         terminal.usage ??
         estimatedUsage(prepared.estimatedInputTokens, prepared.estimatedOutputTokens);
       const pricedUsage = repriceUsage(usage, candidate.provider_id, candidate.model_id);
+      // A display model (the `auto` trigger) relabels the client-facing
+      // response on every surface: the buyer sees `auto`, never the picked
+      // model or its provider. Routing, telemetry, and cost keep the pick.
+      const displayModel = prepared.displayModel;
       const options = {
         created: Date.now() / 1000,
         include_usage: dispatchRequest.generation_controls["extension:include_usage"] === true,
+        ...(displayModel === undefined ? {} : { model: displayModel, modelPinned: true }),
       };
       const output =
         dispatchRequest.source_surface === "chat"
           ? chatAdapter.encode(events, options)
           : dispatchRequest.source_surface === "responses"
-            ? responsesAdapter.encodeOutput(events, { ...options, model: dispatchRequest.model })
+            ? responsesAdapter.encodeOutput(events, { ...options, model: displayModel ?? dispatchRequest.model })
             : dispatchRequest.source_surface === "messages"
               ? messagesAdapter.encodeOutput(events, options as never)
               : completionAdapter.encodeOutput(events, {

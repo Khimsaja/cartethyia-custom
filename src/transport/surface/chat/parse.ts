@@ -10,6 +10,13 @@ export interface ChatEncodeOptions {
   response_id?: string;
   responseId?: string;
   model?: string;
+  /**
+   * When true, `model` is a display name the client asked for (today: the
+   * `auto` trigger), not the routed model: upstream events must not
+   * override it, and the upstream system fingerprint is withheld, so the
+   * client cannot learn which model or provider actually served the turn.
+   */
+  modelPinned?: boolean;
   created?: number;
   service_tier?: string;
   serviceTier?: string;

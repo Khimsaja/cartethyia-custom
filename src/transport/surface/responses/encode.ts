@@ -97,7 +97,7 @@ export class ResponsesEventEncoder extends SurfaceStreamEncoder<CanonicalEvent, 
       model: this.responseModel ?? this.context.model ?? "unknown",
       output: this.outputItems.map((item) => ({ ...item })),
     };
-    if (this.systemFingerprint !== undefined)
+    if (this.systemFingerprint !== undefined && !this.context.modelPinned)
       response.system_fingerprint = this.systemFingerprint;
     if (this.usage !== undefined) response.usage = usageToResponsesWire(this.usage);
     return response;
@@ -105,12 +105,23 @@ export class ResponsesEventEncoder extends SurfaceStreamEncoder<CanonicalEvent, 
 
   private start(model?: string): ResponsesWireEvent[] {
     if (this.started) {
-      if (model !== undefined && this.responseModel !== undefined && model !== this.responseModel)
+      if (
+        !this.context.modelPinned &&
+        model !== undefined &&
+        this.responseModel !== undefined &&
+        model !== this.responseModel
+      )
         throw new ResponsesLifecycleError("Response model changed after response.created");
       return [];
     }
     this.started = true;
-    this.responseModel = model ?? this.context.model;
+    // A pinned display model wins over whatever the upstream named: the
+    // first event would otherwise install the picked model as the response
+    // model, and a later different name would trip the lifecycle error.
+    this.responseModel =
+      this.context.modelPinned && this.context.model !== undefined
+        ? this.context.model
+        : (model ?? this.context.model);
     return [this.emit("response.created", { response: this.responseObject("in_progress") })];
   }
   private openKey(kind: OpenOutput["kind"], callId?: string): string {

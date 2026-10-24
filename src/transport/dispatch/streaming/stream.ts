@@ -242,9 +242,14 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
       providerRouteCandidate as never,
       dispatchContext as never,
     );
+  // A display model (the `auto` trigger) relabels the client-facing
+  // stream on every surface: the buyer sees `auto`, never the picked model
+  // or its provider. Routing, telemetry, and cost keep the pick.
+  const displayModel = prepared.displayModel;
   const streamOptions = {
     created: Date.now() / 1000,
     include_usage: canonicalRequest.generation_controls["extension:include_usage"] === true,
+    ...(displayModel === undefined ? {} : { model: displayModel, modelPinned: true }),
   };
   let iterable = createUpstreamIterable();
   let iterator = iterable[Symbol.asyncIterator]();
@@ -267,14 +272,14 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
     canonicalRequest.source_surface,
     canonicalRequest.source_surface === "completion"
       ? {
-          model: candidate.model_id,
+          model: displayModel ?? candidate.model_id,
           created: Date.now() / 1000,
           prompt: canonicalRequest.generation_controls["extension:completion.prompt"],
           echo: canonicalRequest.generation_controls["extension:completion.echo"] === true,
           suffix: canonicalRequest.generation_controls["extension:completion.suffix"],
         }
       : canonicalRequest.source_surface === "messages"
-        ? { response_id: `msg-${crypto.randomUUID()}`, model: candidate.model_id }
+        ? { response_id: `msg-${crypto.randomUUID()}`, model: displayModel ?? candidate.model_id }
         : streamOptions,
     recoverableResponsesPrelude,
   );
