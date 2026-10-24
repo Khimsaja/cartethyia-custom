@@ -34,8 +34,18 @@ export interface ModelTemplateResponse {
 export interface ModelTemplateSyncResponse {
   readonly templateId: string;
   readonly updatedKeys: readonly { readonly id: string; readonly label: string }[];
-  /** Linked keys left alone (revoked, share-mode, or share children). */
+  /** Linked keys left alone (revoked, share-mode, share children, or excluded labels). */
   readonly skippedCount: number;
+}
+
+/**
+ * Update result: the saved template, plus the auto-apply outcome when the
+ * edit changed the model list. Saving a template applies the new list to
+ * every linked key automatically, so the console can report what moved
+ * without a second round-trip; a name-only edit carries no `sync` field.
+ */
+export interface ModelTemplateUpdateResponse extends ModelTemplateResponse {
+  readonly sync?: ModelTemplateSyncResponse;
 }
 
 function invalid(message: string): ConsoleDomainError {

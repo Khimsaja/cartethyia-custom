@@ -20,8 +20,8 @@ import {
 
 /**
  * Model-template management: named model-list presets that API keys can
- * mirror. Editing a template here does not touch keys; use "Sync to keys" to
- * push the list onto every linked key.
+ * mirror. Saving a changed list applies it to every linked key
+ * automatically; "Sync to keys" re-applies it on demand to repair drift.
  */
 function TemplateForm({
   initial,
@@ -222,7 +222,7 @@ export default function ModelTemplatesPage(): ReactNode {
         open={editTarget !== null}
         onClose={() => setEditTarget(null)}
         title="Edit Model Template"
-        description="Rename the template or change its model list. Linked keys keep their current list until you sync."
+        description="Rename the template or change its model list. Saving a changed list applies it to every linked key automatically (excluded keys are left alone)."
       >
         <TemplateForm
           key={editTarget?.id ?? "new"}
@@ -233,9 +233,18 @@ export default function ModelTemplatesPage(): ReactNode {
             updateTemplate.mutate(
               { templateId: editTarget.id, request: input },
               {
-                onSuccess: () => {
+                onSuccess: (res) => {
                   setEditTarget(null);
-                  toast.success("Model template updated");
+                  if (res.sync) {
+                    toast.success(
+                      `Model template updated and applied to ${res.sync.updatedKeys.length} key${res.sync.updatedKeys.length === 1 ? "" : "s"}` +
+                        (res.sync.skippedCount > 0
+                          ? `, ${res.sync.skippedCount} skipped`
+                          : ""),
+                    );
+                  } else {
+                    toast.success("Model template updated");
+                  }
                 },
                 onError: (error) =>
                   toast.error(getErrorMessage(error, "Could not update template.")),

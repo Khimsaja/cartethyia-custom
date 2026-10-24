@@ -18,6 +18,7 @@ import {
   toModelTemplateResponse,
   type ModelTemplateResponse,
   type ModelTemplateSyncResponse,
+  type ModelTemplateUpdateResponse,
 } from "./contracts";
 
 export interface ModelTemplateConfig {
@@ -40,6 +41,85 @@ function isTemplateNameTaken(error: unknown): boolean {
     current = current.cause;
   }
   return false;
+}
+
+/**
+ * Labels the template sync never touches, mirroring the template sweep's
+ * exclusion list: the infra keys (minting/checkout/admin) plus the retired
+ * shared bansos pools. A key carrying one of these labels keeps its own list
+ * even when it is linked to the template — unlinking is not required to opt
+ * out. Unlinked keys are skipped by construction (only linked keys sync).
+ * Infra labels match exactly, as in the sweep; the bansos family matches
+ * case-insensitively.
+ */
+const SYNC_EXCLUDED_LABELS: ReadonlySet<string> = new Set([
+  "agent-manager",
+  "admin",
+  "agent-master",
+  "tiprouter-auth (website)",
+  "admin hermes",
+  "tiprouter-bot (automation)",
+  "tiprouter-checkout",
+  "MASTER KEY",
+]);
+
+function isSyncExcludedLabel(label: string): boolean {
+  if (SYNC_EXCLUDED_LABELS.has(label)) return true;
+  const lower = label.toLowerCase();
+  return lower === "bansos" || lower === "bansos-web" || lower.startsWith("bansos-deepseek-");
+}
+
+/** Order-insensitive model-list equality (the sweep compares the same way). */
+function sameModelSet(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  const set = new Set(a);
+  return b.every((model) => set.has(model));
+}
+
+/**
+ * Pushes a template's current model list onto every linked key that is
+ * eligible for it. Shared by the manual sync endpoint and by the automatic
+ * apply that runs when a template's model list is edited.
+ */
+async function pushTemplateToLinkedKeys(
+  config: ModelTemplateConfig,
+  tenantId: string,
+  template: { id: string; name: string; models: readonly string[] },
+  access: AccessDecision,
+): Promise<ModelTemplateSyncResponse> {
+  const linked = await config.apiKeyStore.listByModelTemplate(tenantId, template.id);
+  const updatedKeys: { id: string; label: string }[] = [];
+  let skippedCount = 0;
+  for (const key of linked) {
+    if (
+      key.revokedAt !== undefined ||
+      key.parentKeyId !== undefined ||
+      key.keyMode !== "personal" ||
+      isSyncExcludedLabel(key.label)
+    ) {
+      skippedCount += 1;
+      continue;
+    }
+    const updated = await config.apiKeyStore.update(tenantId, key.id, {
+      modelAccessMode: "whitelist",
+      modelList: [...template.models],
+    });
+    if (!updated) {
+      skippedCount += 1;
+      continue;
+    }
+    // The model list is an auth-snapshot field: drop the cached snapshot
+    // so the new list governs the key's very next request.
+    invalidateApiKeyCache(key.id);
+    updatedKeys.push({ id: key.id, label: key.label });
+  }
+  await config.auditSink?.record({
+    access,
+    action: "model_template.synced",
+    target: template.id,
+    detail: { name: template.name, updated: updatedKeys.length, skipped: skippedCount },
+  });
+  return { templateId: template.id, updatedKeys, skippedCount };
 }
 
 export function createModelTemplateOperations(config: ModelTemplateConfig) {
@@ -82,9 +162,10 @@ export function createModelTemplateOperations(config: ModelTemplateConfig) {
       access: AccessDecision | undefined,
       templateId: string,
       body: unknown,
-    ): Promise<ModelTemplateResponse> {
+    ): Promise<ModelTemplateUpdateResponse> {
       const authorized = requireTenantScope(access, "dashboard:write");
       const request = parseUpdateModelTemplateRequest(body);
+      const before = await config.store.get(authorized.tenantId, templateId);
       let record;
       try {
         record = await config.store.update(authorized.tenantId, templateId, request);
@@ -107,7 +188,23 @@ export function createModelTemplateOperations(config: ModelTemplateConfig) {
         target: record.id,
         detail: { name: record.name, modelCount: record.models.length },
       });
-      return toModelTemplateResponse(record);
+      // Saving a changed model list applies it to every linked key right
+      // away — the template edit is the apply, not a draft waiting for a
+      // second click. A name-only edit syncs nothing.
+      const modelsChanged =
+        request.models !== undefined &&
+        before !== undefined &&
+        !sameModelSet(before.models, record.models);
+      if (!modelsChanged) {
+        return toModelTemplateResponse(record);
+      }
+      const sync = await pushTemplateToLinkedKeys(
+        config,
+        authorized.tenantId,
+        record,
+        authorized,
+      );
+      return { ...toModelTemplateResponse(record), sync };
     },
 
     async deleteTemplate(
@@ -129,12 +226,12 @@ export function createModelTemplateOperations(config: ModelTemplateConfig) {
     },
 
     /**
-     * Pushes the template's current model list onto every key linked to it.
-     * This is the deliberate counterpart to create-time copying: the operator
-     * edits the template, then explicitly applies it to keys already issued.
-     * Only live top-level personal keys are rewritten — revoked keys, share
-     * templates, and share children keep their lists (children follow their
-     * parent, and a revoked key must not silently come back different).
+     * Pushes the template's current model list onto every linked key.
+     * Manual re-apply: since edits already auto-apply on save, this exists
+     * to repair drift (a key whose list was changed behind the template's
+     * back). Only live top-level personal keys are rewritten — revoked keys,
+     * share children, and excluded labels (infra/checkout/retired bansos
+     * pools) keep their lists.
      */
     async syncTemplate(
       access: AccessDecision | undefined,
@@ -145,37 +242,7 @@ export function createModelTemplateOperations(config: ModelTemplateConfig) {
       if (!template) {
         throw new ConsoleDomainError("template_not_found", 404, "No such model template");
       }
-      const linked = await config.apiKeyStore.listByModelTemplate(
-        authorized.tenantId,
-        templateId,
-      );
-      const updatedKeys: { id: string; label: string }[] = [];
-      let skippedCount = 0;
-      for (const key of linked) {
-        if (key.revokedAt !== undefined || key.parentKeyId !== undefined || key.keyMode !== "personal") {
-          skippedCount += 1;
-          continue;
-        }
-        const updated = await config.apiKeyStore.update(authorized.tenantId, key.id, {
-          modelAccessMode: "whitelist",
-          modelList: [...template.models],
-        });
-        if (!updated) {
-          skippedCount += 1;
-          continue;
-        }
-        // The model list is an auth-snapshot field: drop the cached snapshot
-        // so the new list governs the key's very next request.
-        invalidateApiKeyCache(key.id);
-        updatedKeys.push({ id: key.id, label: key.label });
-      }
-      await config.auditSink?.record({
-        access: authorized,
-        action: "model_template.synced",
-        target: template.id,
-        detail: { name: template.name, updated: updatedKeys.length, skipped: skippedCount },
-      });
-      return { templateId: template.id, updatedKeys, skippedCount };
+      return pushTemplateToLinkedKeys(config, authorized.tenantId, template, authorized);
     },
   };
 }

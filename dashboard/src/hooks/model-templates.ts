@@ -5,6 +5,7 @@ import type {
   UpdateModelTemplateRequest,
   ModelTemplateResponse,
   ModelTemplateSyncResponse,
+  ModelTemplateUpdateResponse,
 } from "../data/contracts";
 import { queryKeys } from "../data/query-keys";
 import { DASHBOARD_QUERY_OPTIONS } from "../data/query-policy";
@@ -34,16 +35,20 @@ export function useCreateModelTemplate() {
   });
 }
 
-/** Updates a model template's name and/or model list. */
+/**
+ * Updates a model template's name and/or model list. Saving a changed list
+ * applies it to every linked key automatically; the response carries the
+ * apply outcome so the editor can report what moved.
+ */
 export function useUpdateModelTemplate() {
   const queryClient = useQueryClient();
   return useMutation<
-    ModelTemplateResponse,
+    ModelTemplateUpdateResponse,
     ApiErrorShape,
     { templateId: string; request: UpdateModelTemplateRequest }
   >({
     mutationFn: ({ templateId, request }) =>
-      consoleRequest<ModelTemplateResponse>(
+      consoleRequest<ModelTemplateUpdateResponse>(
         `/model-templates/${encodeURIComponent(templateId)}`,
         {
           method: "PATCH",

@@ -236,4 +236,5 @@ export type {
   UpdateModelTemplateRequest,
   ModelTemplateResponse,
   ModelTemplateSyncResponse,
+  ModelTemplateUpdateResponse,
 } from "../../../src/console/model-templates/contracts";
