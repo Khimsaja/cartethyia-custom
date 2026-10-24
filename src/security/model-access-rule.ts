@@ -61,17 +61,23 @@ function bareModelId(targetModel: string): string {
  *    model (the deployment default).
  *  - `blacklist` — a listed name is refused; an empty list refuses nothing.
  *
- * Matching is exact for qualified names. A bare entry matches a qualified
- * target only when the bare entry is itself the request's usable name; a
- * qualified alias entry does not authorize unrelated provider routes that
- * happen to share the same final path segment. When an alias request is
- * present, it is checked explicitly through `requestedModel`.
+ * Whitelist matching is exact-name (TipRouter local patch): when the caller
+ * supplies the name it actually requested (`requestedModel`), that name alone
+ * decides — it must appear in the list verbatim. A bare entry no longer
+ * authorizes qualified or multi-segment targets (`provider/model`,
+ * `aggregator/upstream/model`) whose final path segment happens to match,
+ * which let buyers ride routes the operator never listed. An allowlisted
+ * alias or combo name still authorizes its resolved targets, because the
+ * requested name itself is listed. Callers that supply no requested name
+ * (discovery surfaces, dashboard previews) keep the legacy name expansion:
+ * the target, its bare final segment, and its provider-qualified form are
+ * all compared against the list.
  *
  * There is deliberately NO escape hatch for CLI remapping. A remapped request
- * is authorized only when the caller's own requested name (`requestedModel`) or
- * the resolved target is allowed — a CLI mapping can no longer launder access
- * to a model the key is not allowed to reach. The CLI mapping page surfaces a
- * warning and a one-click fix for a mapping that is no longer authorized.
+ * is authorized only when the caller's own requested name (`requestedModel`)
+ * is itself allowed — a CLI mapping can no longer launder access to a model
+ * the key is not allowed to reach. The CLI mapping page surfaces a warning
+ * and a one-click fix for a mapping that is no longer authorized.
  */
 export function modelRejectionReason(
   policy: ModelAccessPolicy,
@@ -92,6 +98,11 @@ export function modelRejectionReason(
     return names.some((name) => listIncludes(list, name)) ? "model-denied" : null;
   }
   if (list == null || listSize(list) === 0) return null;
+  // Exact-name whitelist (TipRouter local patch): a real request is judged by
+  // the exact name the caller asked for, never by the resolved target's final
+  // path segment. Without a requested name (discovery/preview), fall back to
+  // the legacy expansion over every name the target carries.
+  if (requestedModel) return listIncludes(list, requestedModel) ? null : "model-not-allowed";
   if (names.some((name) => listIncludes(list, name))) return null;
   return "model-not-allowed";
 }

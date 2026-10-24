@@ -288,6 +288,32 @@ describe("modelRejectionReason", () => {
     const snap = snapshot({ allow: ["model-x"] });
     expect(modelRejectionReason(snap, "provider/group/model-x", "provider")).toBeNull();
   });
+
+  test("exact-name whitelist: a qualified request is not rescued by a bare entry", () => {
+    // The leak this closes: the caller asked for a provider-qualified (or
+    // multi-segment aggregator) name that is not listed; the resolved
+    // target's final segment matching a bare entry must not authorize it.
+    const snap = snapshot({ allow: ["model-x"] });
+    expect(
+      modelRejectionReason(snap, "provider/model-x", "provider", "provider/model-x"),
+    ).toBe("model-not-allowed");
+    expect(
+      modelRejectionReason(snap, "agg/up/model-x", "agg", "agg/up/model-x"),
+    ).toBe("model-not-allowed");
+  });
+
+  test("exact-name whitelist: a listed bare request authorizes its qualified target", () => {
+    const snap = snapshot({ allow: ["model-x"] });
+    expect(modelRejectionReason(snap, "provider/model-x", "provider", "model-x")).toBeNull();
+    expect(modelRejectionReason(snap, "agg/up/model-x", "agg", "model-x")).toBeNull();
+  });
+
+  test("exact-name whitelist: a listed qualified request authorizes its target", () => {
+    const snap = snapshot({ allow: ["provider/model-x"] });
+    expect(
+      modelRejectionReason(snap, "provider/model-x", "provider", "provider/model-x"),
+    ).toBeNull();
+  });
 });
 
 describe("isModelAllowed", () => {
