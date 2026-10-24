@@ -65,14 +65,19 @@ async function writeLifetimeDeltas(
   // text and the join against a uuid key fails. SQLite stores the key as text
   // and rejects `UPDATE ... FROM (VALUES ...)` outright, so the same rows are
   // a SELECT with named columns instead.
+  // Each branch carries its own `v` alias: the statement template below must
+  // not add another one. (TipRouter local fix: the PostgreSQL branch already
+  // ended in `AS v(id, delta)`, so the shared template's trailing `v` produced
+  // `AS v(id, delta) v` — a syntax error that failed every batched flush on
+  // PostgreSQL and silently fell back to one UPDATE per key.)
   const source = sqliteDialect()
-    ? `(${rows.map((row) => `SELECT '${row.apiKeyId}' AS id, ${row.delta} AS delta`).join(" UNION ALL ")})`
+    ? `(${rows.map((row) => `SELECT '${row.apiKeyId}' AS id, ${row.delta} AS delta`).join(" UNION ALL ")}) AS v`
     : `(VALUES ${rows.map((row) => `('${row.apiKeyId}'::uuid, ${row.delta}::bigint)`).join(", ")}) AS v(id, delta)`;
   await db.execute(sql.raw(`
     UPDATE "api_keys"
     SET "lifetime_tokens_consumed" =
       COALESCE("api_keys"."lifetime_tokens_consumed", 0) + v.delta
-    FROM ${source} v
+    FROM ${source}
     WHERE "api_keys"."id" = v.id
   `));
 }
