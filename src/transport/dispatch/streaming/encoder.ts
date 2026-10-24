@@ -70,6 +70,13 @@ export class StreamEventPipeline {
 
   private readonly recoverableResponsesPrelude: boolean;
   private clientVisibleEvent = false;
+  // Whether the stream carried usable answer content: non-empty answer text
+  // or a tool call. Reasoning-only deltas do not set it — the client saw
+  // thinking, not an answer. Deliberately NOT reset by
+  // resetUncommittedPrelude, like clientVisibleEvent: once the client got
+  // something, the verdict stays.
+  private hasAnswerText = false;
+  private hasToolCall = false;
   // Decoded chunks collected per event and joined once at finalize: `+=` on
   // every chunk reallocates the whole prefix (O(n^2) up to the 512 KiB cap).
   private readonly clientResponseChunks: string[] = [];
@@ -102,6 +109,11 @@ export class StreamEventPipeline {
   /** Whether any client-renderable event has been emitted (gates the Responses prelude retry). */
   get hasClientVisibleEvent(): boolean {
     return this.clientVisibleEvent;
+  }
+
+  /** Whether the stream delivered an answer: text or a tool call, not just reasoning. */
+  get hasVisibleContent(): boolean {
+    return this.hasAnswerText || this.hasToolCall;
   }
 
   /** The client-facing response transcript (decoded SSE/JSON) — distinct from the provider-side canonical events. */
@@ -280,6 +292,21 @@ export class StreamEventPipeline {
 
     if (event.type === "content_delta" && this.firstContentDeltaAtMs === undefined) {
       this.firstContentDeltaAtMs = timestampedEvent.timestamp;
+    }
+
+    // Answer-content verdict for pick quality. Reasoning deltas set
+    // firstContentDeltaAtMs above but are not an answer, so they do not
+    // count here; only answer text and tool calls do.
+    if (
+      event.type === "content_delta" &&
+      event.content.kind === "text" &&
+      typeof event.content.text === "string" &&
+      event.content.text.length > 0
+    ) {
+      this.hasAnswerText = true;
+    }
+    if (event.type === "tool_call_delta" || event.type === "tool_result") {
+      this.hasToolCall = true;
     }
 
     // Captured once, from the opening event. Later events do not repeat it, and

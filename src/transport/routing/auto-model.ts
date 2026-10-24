@@ -18,6 +18,11 @@
  *   named it directly. Nothing downstream knows auto existed.
  * - Telemetry is read from the gateway's own day files, cached for 60s, so
  *   an auto request never pays a file scan per request.
+ * - "Stable" means completed WITH usable content (`hasContent`, recorded
+ *   per request from the client body / stream deltas). An empty 200 counts
+ *   against the model: token counts cannot be the signal, because a missing
+ *   upstream usage is filled with an estimate and thinking tokens count as
+ *   output. Rows without the signal fail open and still count.
  * - Events whose requested model is `auto` itself are skipped, so auto
  *   traffic can never vote for its own candidates.
  *
@@ -49,17 +54,31 @@ export function isAutoModelEnabled(): boolean {
 export interface AutoModelStats {
   readonly total: number;
   readonly completed: number;
+  /**
+   * Completed requests whose answer carried usable content (answer text or
+   * a tool call). An empty 200 stays in `total` but not here: without
+   * this, a model that burns its budget on reasoning and answers nothing
+   * looks perfect. Absent on stats built before this field existed — the
+   * picker then falls back to `completed`.
+   */
+  readonly qualityCompleted?: number;
   readonly avgLatencyMs: number | null;
 }
 
-function emptyStats(): { total: number; completed: number; latencySum: number; latencyCount: number } {
-  return { total: 0, completed: 0, latencySum: 0, latencyCount: 0 };
+function emptyStats(): {
+  total: number;
+  completed: number;
+  qualityCompleted: number;
+  latencySum: number;
+  latencyCount: number;
+} {
+  return { total: 0, completed: 0, qualityCompleted: 0, latencySum: 0, latencyCount: 0 };
 }
 
 /**
- * Pure pick: highest success rate wins; ties break on lower average
- * latency, then on higher volume. Models below the sample floor are never
- * picked. Returns null when no candidate has usable data.
+ * Pure pick: highest quality success rate wins; ties break on lower
+ * average latency, then on higher volume. Models below the sample floor
+ * are never picked. Returns null when no candidate has usable data.
  */
 export function pickAutoModel(
   candidates: readonly string[],
@@ -72,7 +91,7 @@ export function pickAutoModel(
   for (const candidate of candidates) {
     const entry = stats.get(candidate);
     if (!entry || entry.total < AUTO_MODEL_MIN_SAMPLES) continue;
-    const rate = entry.completed / entry.total;
+    const rate = (entry.qualityCompleted ?? entry.completed) / entry.total;
     const latency = entry.avgLatencyMs ?? Number.POSITIVE_INFINITY;
     if (
       rate > bestRate ||
@@ -93,6 +112,7 @@ interface RawTelemetryLine {
   readonly requestedModel?: unknown;
   readonly status?: unknown;
   readonly latencyMs?: unknown;
+  readonly hasContent?: unknown;
 }
 
 function utcDatePrefix(offsetDays: number, now: number): string {
@@ -112,7 +132,10 @@ export async function readAutoModelStats(
 ): Promise<ReadonlyMap<string, AutoModelStats>> {
   const sinceMs = since.getTime();
   const prefixes = [utcDatePrefix(0, now), utcDatePrefix(-1, now)];
-  const folded = new Map<string, { total: number; completed: number; latencySum: number; latencyCount: number }>();
+  const folded = new Map<
+    string,
+    { total: number; completed: number; qualityCompleted: number; latencySum: number; latencyCount: number }
+  >();
   let files: string[] = [];
   try {
     files = (await readdir(TELEMETRY_EVENT_DIR)).filter(
@@ -154,7 +177,13 @@ export async function readAutoModelStats(
       }
       const bucket = folded.get(raw.requestedModel) ?? emptyStats();
       bucket.total += 1;
-      if (raw.status === "completed") bucket.completed += 1;
+      if (raw.status === "completed") {
+        bucket.completed += 1;
+        // Fail open: rows from before the signal existed, and rows from
+        // paths that cannot tell, carry no hasContent and still count.
+        // Only an explicit false demotes an empty answer.
+        if (raw.hasContent !== false) bucket.qualityCompleted += 1;
+      }
       if (typeof raw.latencyMs === "number" && Number.isFinite(raw.latencyMs)) {
         bucket.latencySum += raw.latencyMs;
         bucket.latencyCount += 1;
@@ -167,6 +196,7 @@ export async function readAutoModelStats(
     stats.set(model, {
       total: bucket.total,
       completed: bucket.completed,
+      qualityCompleted: bucket.qualityCompleted,
       avgLatencyMs: bucket.latencyCount > 0 ? bucket.latencySum / bucket.latencyCount : null,
     });
   }
@@ -231,6 +261,7 @@ export class AutoModelScorer {
       candidates: list.length,
       total: this.cached.stats.get(picked)?.total ?? 0,
       completed: this.cached.stats.get(picked)?.completed ?? 0,
+      qualityCompleted: this.cached.stats.get(picked)?.qualityCompleted ?? 0,
     });
     return { ok: true, model: picked };
   }
