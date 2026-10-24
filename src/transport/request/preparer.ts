@@ -207,16 +207,20 @@ export class ProxyRequestPreparer {
     // model is authorized exactly like a direct request for it. Nothing
     // downstream — alias resolution, allowlist, plan, telemetry — sees
     // "auto"; it only ever sees the picked model.
+    // Auto failures carry their own error codes (auto_*), never
+    // model_not_found: the strike layer counts only model_not_found, and a
+    // legitimate auto request (disabled, unconfigured, no data) is not
+    // model probing and must never push the caller toward an abuse ban.
     if (request.model === AUTO_MODEL_NAME) {
       if (!isAutoModelEnabled()) {
-        throw new GatewayError("model_not_found", 404, "model 'auto' is not enabled on this gateway", {
+        throw new GatewayError("auto_not_enabled", 404, "model 'auto' is not enabled on this gateway", {
           model: request.model,
         });
       }
       const scorer = this.deps.autoModelScorer;
       if (!scorer) {
         throw new GatewayError(
-          "model_not_found",
+          "auto_not_configured",
           404,
           "model 'auto' is not configured on this gateway",
           { model: request.model },
@@ -225,7 +229,7 @@ export class ProxyRequestPreparer {
       const pick = await scorer.pickForKey(authorization.snapshot);
       if (!pick.ok) {
         throw new GatewayError(
-          "model_not_found",
+          pick.reason === "no_allowlist" ? "auto_no_allowlist" : "auto_no_data",
           404,
           pick.reason === "no_allowlist"
             ? "model 'auto' needs a key with an explicit model allowlist"
