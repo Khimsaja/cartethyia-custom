@@ -31,7 +31,8 @@ import { Switch } from "./ui/switch";
 import { ModelPickerModal } from "./ModelPicker";
 import { useResetToolMappings, useSaveToolMappings, useToolMappings, useToolRegistry } from "../hooks/cli-tools";
 import { useUpdateApiKey } from "../hooks/api-keys";
-import { useModelTemplates } from "../hooks/model-templates";
+import { useModelTemplates, useUpdateModelTemplate } from "../hooks/model-templates";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { toast } from "../lib/toast";
 import { getErrorMessage } from "../data/api";
 import {
@@ -487,6 +488,21 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
     return m ? [...m] : [];
   });
   const [pickerOpen, setPickerOpen] = useState(false);
+  // "Save list to template": pushes this form's current whitelist back into
+  // the selected template (the reverse of picking a template, which copies
+  // the template's list into the form). The template save auto-applies to
+  // every linked key, so this is a shared-template write, not a key edit —
+  // hence the confirmation dialog. Only meaningful in whitelist mode: a
+  // template holds an allow-list, never a block-list.
+  const [templateSaveOpen, setTemplateSaveOpen] = useState(false);
+  const updateTemplate = useUpdateModelTemplate();
+  const selectedTemplate = modelTemplateId
+    ? templatesQuery.data?.find((t) => t.id === modelTemplateId)
+    : undefined;
+  const listMatchesTemplate =
+    selectedTemplate !== undefined &&
+    models.length === selectedTemplate.models.length &&
+    models.every((m) => selectedTemplate.models.includes(m));
   const [blockedRouters, setBlockedRouters] = useState<string[]>(() => {
     const list = (record as unknown as { clientRouterDenylist?: string[] | null })
       ?.clientRouterDenylist;
@@ -1148,15 +1164,41 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
               ))
             )}
           </div>
-          <Button
-            variant="secondary"
-            size="sm"
-            type="button"
-            onClick={() => setPickerOpen(true)}
-            disabled={busy}
-          >
-            Browse models
-          </Button>
+          <div className="flex gap-3 flex-wrap">
+            <Button
+              variant="secondary"
+              size="sm"
+              type="button"
+              onClick={() => setPickerOpen(true)}
+              disabled={busy}
+            >
+              Browse models
+            </Button>
+            {modelAccessMode === "whitelist" ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                type="button"
+                onClick={() => setTemplateSaveOpen(true)}
+                disabled={
+                  busy ||
+                  templatesQuery.isPending ||
+                  selectedTemplate === undefined ||
+                  listMatchesTemplate ||
+                  updateTemplate.isPending
+                }
+                title={
+                  selectedTemplate === undefined
+                    ? "Pick a template first"
+                    : listMatchesTemplate
+                      ? "This list already matches the template"
+                      : `Write this list into the "${selectedTemplate.name}" template`
+                }
+              >
+                Save list to template
+              </Button>
+            ) : null}
+          </div>
           <ModelPickerModal
             open={pickerOpen}
             onClose={() => setPickerOpen(false)}
@@ -1166,6 +1208,32 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
             }
             title={modelAccessMode === "whitelist" ? "Select allowed models" : "Select blocked models"}
             multi
+          />
+          <ConfirmDialog
+            open={templateSaveOpen}
+            onClose={() => setTemplateSaveOpen(false)}
+            title="Save list to template?"
+            message={
+              selectedTemplate
+                ? `Replace the "${selectedTemplate.name}" template with this list (${models.length} model${models.length === 1 ? "" : "s"})? The new list is then applied automatically to every key linked to that template.`
+                : ""
+            }
+            confirmLabel="Save to template"
+            onConfirm={async () => {
+              if (!selectedTemplate) return;
+              const res = await updateTemplate.mutateAsync({
+                templateId: selectedTemplate.id,
+                request: { models: [...models] },
+              });
+              if (res.sync) {
+                toast.success(
+                  `Template "${selectedTemplate.name}" updated and applied to ${res.sync.updatedKeys.length} key${res.sync.updatedKeys.length === 1 ? "" : "s"}` +
+                    (res.sync.skippedCount > 0 ? `, ${res.sync.skippedCount} skipped` : ""),
+                );
+              } else {
+                toast.success(`Template "${selectedTemplate.name}" updated`);
+              }
+            }}
           />
         </div>
         <section aria-labelledby="blocked-routers-heading" className="flex flex-col gap-4">
