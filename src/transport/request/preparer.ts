@@ -126,6 +126,13 @@ function lookupPendingCall(
 }
 
 export interface PreparedProxyRequest {
+  /**
+   * Model id the client sees in place of the routed model. Set only when
+   * the request asked for `auto`: the buyer sees `auto`, never the picked
+   * model or its provider. Routing, telemetry, and cost keep using the
+   * picked model — this only relabels the client-facing response.
+   */
+  readonly displayModel?: string;
   readonly canonicalRequest: CanonicalRequest;
   readonly authorization: ResolvedApiKey;
   readonly candidate: RouteCandidate;
@@ -211,7 +218,8 @@ export class ProxyRequestPreparer {
     // model_not_found: the strike layer counts only model_not_found, and a
     // legitimate auto request (disabled, unconfigured, no data) is not
     // model probing and must never push the caller toward an abuse ban.
-    if (request.model === AUTO_MODEL_NAME) {
+    const requestedAuto = request.model === AUTO_MODEL_NAME;
+    if (requestedAuto) {
       if (!isAutoModelEnabled()) {
         throw new GatewayError("auto_not_enabled", 404, "model 'auto' is not enabled on this gateway", {
           model: request.model,
@@ -446,6 +454,7 @@ export class ProxyRequestPreparer {
     const chosen = eligible[0]!;
     // plan() guarantees a non-empty candidate list (it throws otherwise).
     return {
+      ...(requestedAuto ? { displayModel: AUTO_MODEL_NAME } : {}),
       canonicalRequest: effectiveRequest,
       authorization,
       candidate: chosen,

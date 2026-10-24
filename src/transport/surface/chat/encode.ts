@@ -275,7 +275,10 @@ export function jsonCompletion(
     (event): event is Extract<CanonicalEvent, { type: "response_start" | "message_start" }> =>
       event.type === "response_start" || event.type === "message_start",
   );
-  if (start?.system_fingerprint !== undefined)
+  // A pinned display model (the `auto` trigger) must not leak the provider
+  // through its fingerprint either: a fingerprint that matches a direct
+  // request's would identify the picked provider just as surely as a name.
+  if (start?.system_fingerprint !== undefined && !options.modelPinned)
     result.system_fingerprint = start.system_fingerprint;
   return result;
 }
