@@ -5,6 +5,11 @@ import type { ApiKeyAdmissionService } from "../../security/admission/service";
 import type { RouteCandidate as RouteCandidate, InMemoryRouteSnapshotService, RoutePlan } from "../routing/route-model";
 import type { RouteContinuationAffinity } from "../routing/route-model";
 import { resolveAliasTarget, type RoutingEngine } from "../routing/router";
+import {
+  AUTO_MODEL_NAME,
+  isAutoModelEnabled,
+  type AutoModelScorer,
+} from "../routing/auto-model";
 import { projectForRoute, routeCapabilitiesFor } from "../translation/capabilities";
 import type { RequiredCapability } from "../translation/capabilities";
 import { isModelAllowed, type ResolvedApiKey } from "../../security/api-key-auth";
@@ -159,6 +164,8 @@ export interface ProxyRequestPreparerDeps {
   readonly snapshotService: InMemoryRouteSnapshotService;
   readonly routingEngine: RoutingEngine;
   readonly admissionService: ApiKeyAdmissionService;
+  /** Auto-model scorer; absent means the `auto` model is unconfigured. */
+  readonly autoModelScorer?: AutoModelScorer;
 }
 
 export class ProxyRequestPreparer {
@@ -191,10 +198,47 @@ export class ProxyRequestPreparer {
     // chosen yet, and the level is a statement about the request, not about any
     // one upstream. Each model's own ladder is applied later, after routing.
     const { model: bareModel, intent: thinkingIntent } = parseThinkingSuffix(initialRequest.model);
-    const request =
+    let request =
       thinkingIntent === null
         ? initialRequest
         : withThinkingSuffixIntent({ ...initialRequest, model: bareModel }, thinkingIntent);
+    // "auto" model (env-gated, default off): resolve to the most stable model
+    // on this key's own allowlist BEFORE any policy check, so the resolved
+    // model is authorized exactly like a direct request for it. Nothing
+    // downstream — alias resolution, allowlist, plan, telemetry — sees
+    // "auto"; it only ever sees the picked model.
+    // Auto failures carry their own error codes (auto_*), never
+    // model_not_found: the strike layer counts only model_not_found, and a
+    // legitimate auto request (disabled, unconfigured, no data) is not
+    // model probing and must never push the caller toward an abuse ban.
+    if (request.model === AUTO_MODEL_NAME) {
+      if (!isAutoModelEnabled()) {
+        throw new GatewayError("auto_not_enabled", 404, "model 'auto' is not enabled on this gateway", {
+          model: request.model,
+        });
+      }
+      const scorer = this.deps.autoModelScorer;
+      if (!scorer) {
+        throw new GatewayError(
+          "auto_not_configured",
+          404,
+          "model 'auto' is not configured on this gateway",
+          { model: request.model },
+        );
+      }
+      const pick = await scorer.pickForKey(authorization.snapshot);
+      if (!pick.ok) {
+        throw new GatewayError(
+          pick.reason === "no_allowlist" ? "auto_no_allowlist" : "auto_no_data",
+          404,
+          pick.reason === "no_allowlist"
+            ? "model 'auto' needs a key with an explicit model allowlist"
+            : "model 'auto' has no stability data for your models yet — send traffic to them first",
+          { model: request.model },
+        );
+      }
+      request = { ...request, model: pick.model };
+    }
     const snapshot = await this.deps.snapshotService.getSnapshot();
     // Scope opts the key into the mapping table; the User-Agent decides whether
     // *this* request may consume it. Without the UA gate, a Claude→DeepSeek

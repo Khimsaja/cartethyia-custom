@@ -44,6 +44,7 @@ import {
 } from "../security/model-abuse";
 import { checkReadiness } from "../persistence/readiness";
 import { ProxyRequestPreparer } from "../transport/request/preparer";
+import { AutoModelScorer } from "../transport/routing/auto-model";
 import { DrizzleNetworkPoolLoader } from "../network/pool/loader";
 import {
   PoolAgentResolver,
@@ -605,6 +606,7 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
       snapshotService,
       routingEngine,
       admissionService,
+      autoModelScorer: new AutoModelScorer(),
     }),
     networkBindingFactory,
     ipAbuseProtection,
