@@ -8,6 +8,10 @@
  *   or a whitelist key with an empty list (which means "allow everything")
  *   cannot use auto: there is no bounded candidate set to choose from, and
  *   guessing one would let auto reach models the operator never listed.
+ * - The name `auto` itself is never a candidate, even when the template that
+ *   produced the allowlist lists it: it is the trigger, not a model, and it
+ *   has no stability data of its own (its own traffic is recorded under the
+ *   resolved model, and `auto` events are skipped when reading telemetry).
  * - The pick is advisory input to the normal pipeline, not a bypass. The
  *   preparer rewrites the request model to the pick BEFORE the allowlist
  *   check, so the resolved model is authorized exactly like a request that
@@ -173,6 +177,15 @@ export type AutoPick =
   | { readonly ok: true; readonly model: string }
   | { readonly ok: false; readonly reason: "no_allowlist" | "no_data" };
 
+/**
+ * The candidate set for a key: its allowlist minus the `auto` trigger
+ * itself. A template may list `auto` alongside real models; the trigger
+ * must never be picked, and a list of only `auto` is no allowlist at all.
+ */
+export function filterAutoCandidates(list: readonly string[]): readonly string[] {
+  return list.filter((entry) => entry !== AUTO_MODEL_NAME);
+}
+
 export interface AutoModelPolicy {
   readonly model_access_mode?: string | null | undefined;
   readonly model_list?: readonly string[] | ReadonlySet<string> | null | undefined;
@@ -184,12 +197,13 @@ export class AutoModelScorer {
 
   async pickForKey(policy: AutoModelPolicy, now: number = Date.now()): Promise<AutoPick> {
     if (policy.model_access_mode === "blacklist") return { ok: false, reason: "no_allowlist" };
-    const list =
+    const raw =
       policy.model_list == null
         ? []
         : policy.model_list instanceof Set
           ? [...policy.model_list]
           : [...policy.model_list];
+    const list = filterAutoCandidates(raw);
     if (list.length === 0) return { ok: false, reason: "no_allowlist" };
     if (this.cached === null || now - this.cached.at >= AUTO_MODEL_CACHE_MS) {
       const stats = await readAutoModelStats(new Date(now - AUTO_MODEL_WINDOW_MS), now);

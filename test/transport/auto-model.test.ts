@@ -10,6 +10,7 @@ import { expect, test } from "bun:test";
 import {
   AUTO_MODEL_MIN_SAMPLES,
   AutoModelScorer,
+  filterAutoCandidates,
   pickAutoModel,
   type AutoModelStats,
 } from "../../src/transport/routing/auto-model";
@@ -93,4 +94,16 @@ test("blacklist keys and empty whitelists cannot use auto", async () => {
     ok: false,
     reason: "no_allowlist",
   });
+});
+
+test("the auto trigger itself is never a candidate", () => {
+  expect(filterAutoCandidates(["auto", "model-a", "model-b"])).toEqual(["model-a", "model-b"]);
+  expect(filterAutoCandidates(["auto"])).toEqual([]);
+});
+
+test("a list of only auto is no allowlist", async () => {
+  const scorer = new AutoModelScorer();
+  await expect(
+    scorer.pickForKey({ model_access_mode: "whitelist", model_list: ["auto"] }),
+  ).resolves.toEqual({ ok: false, reason: "no_allowlist" });
 });
