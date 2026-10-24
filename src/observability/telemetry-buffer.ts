@@ -58,6 +58,12 @@ export interface TelemetryEventInput {
   readonly firstContentDeltaAtMs?: number;
   readonly lastEventAtMs?: number;
   /**
+   * Whether the completed answer carried usable content (answer text or a
+   * tool call). False only for an empty 200. Absent on rows from paths
+   * that cannot tell; readers fail open on absent.
+   */
+  readonly hasContent?: boolean;
+  /**
    * Why this request's drawer payloads are empty, or `captured`. Carried onto
    * the telemetry row so a remote operator can read the reason from the request
    * list instead of needing the server's logs.
@@ -144,6 +150,11 @@ function telemetryEventRow(event: TelemetryEventInput) {
     tokensPerSec: event.tokensPerSec != null ? String(event.tokensPerSec) : null,
     firstContentDeltaAtMs: event.firstContentDeltaAtMs ?? null,
     lastEventAtMs: event.lastEventAtMs ?? null,
+    // File-only signal, deliberately without a Postgres column: per-request
+    // rows live in the append-only file (see insertEvents), Postgres keeps
+    // only aggregates, and the auto scorer reads the file. NULL on rows
+    // from paths that cannot tell, which readers treat as content-bearing.
+    hasContent: event.hasContent ?? null,
     payloadCaptureState: event.payloadCaptureState ?? null,
   };
 }

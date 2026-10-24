@@ -74,6 +74,8 @@ export interface TelemetryEventRecord {
   readonly tokensPerSec: number | null;
   readonly firstContentDeltaAtMs: number | null;
   readonly lastEventAtMs: number | null;
+  /** Whether the completed answer carried usable content; null when unrecorded. */
+  readonly hasContent?: boolean | null;
   /** Why the drawer payloads are empty, or `captured`; absent when unrecorded. */
   readonly payloadCaptureState?: string | null;
 }
@@ -128,6 +130,7 @@ function normalize(raw: Record<string, unknown>): TelemetryEventRecord | undefin
     tokensPerSec: asNumber(raw["tokensPerSec"]),
     firstContentDeltaAtMs: asNumber(raw["firstContentDeltaAtMs"]),
     lastEventAtMs: asNumber(raw["lastEventAtMs"]),
+    hasContent: typeof raw["hasContent"] === "boolean" ? raw["hasContent"] : null,
   };
 }
 

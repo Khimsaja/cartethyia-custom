@@ -16,8 +16,13 @@ import {
   type AutoModelStats,
 } from "../../src/transport/routing/auto-model";
 
-function stats(total: number, completed: number, avgLatencyMs: number | null): AutoModelStats {
-  return { total, completed, avgLatencyMs };
+function stats(
+  total: number,
+  completed: number,
+  avgLatencyMs: number | null,
+  qualityCompleted?: number,
+): AutoModelStats {
+  return { total, completed, avgLatencyMs, ...(qualityCompleted === undefined ? {} : { qualityCompleted }) };
 }
 
 test("highest success rate wins", () => {
@@ -69,6 +74,29 @@ test("no usable data returns null", () => {
   expect(
     pickAutoModel(["model-a"], new Map([["model-b", stats(100, 100, 100)]])),
   ).toBeNull();
+});
+
+test("empty answers lose to real answers at a lower raw rate", () => {
+  const picked = pickAutoModel(
+    ["model-a", "model-b"],
+    new Map([
+      // 99 raw completions, but 40 of them were empty 200s.
+      ["model-a", stats(100, 99, 500, 59)],
+      ["model-b", stats(100, 70, 500, 70)],
+    ]),
+  );
+  expect(picked).toBe("model-b");
+});
+
+test("missing quality data falls back to raw completions", () => {
+  const picked = pickAutoModel(
+    ["model-a", "model-b"],
+    new Map([
+      ["model-a", stats(100, 95, 500)],
+      ["model-b", stats(100, 60, 100)],
+    ]),
+  );
+  expect(picked).toBe("model-a");
 });
 
 test("missing latency never beats measured latency on a tie", () => {

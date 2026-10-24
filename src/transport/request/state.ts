@@ -47,6 +47,13 @@ export interface ProxyRequestOutcome {
    * would hide exactly that. Absent when the response carried no `model`.
    */
   readonly reportedModel?: string;
+  /**
+   * Whether the client-visible answer carried usable content. False only
+   * when the completed response structurally carried no answer text and no
+   * tool call — an empty 200. Absent when the path could not tell (legacy
+   * rows, passthrough bodies): readers treat absent as content-bearing.
+   */
+  readonly hasContent?: boolean;
   readonly ttfbMs?: number;
   readonly tokensPerSec?: number;
   /** First meaningful content delta timestamp (for TTFT calculation). */

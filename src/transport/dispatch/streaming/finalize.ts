@@ -416,6 +416,9 @@ export class StreamFinalizer {
       await completeAttempt(state, {
         status: upstreamTruncated ? "truncated" : "completed",
         ...this.streamCompletionContext(),
+        // Explicit verdict: the transcript body is canonical events, not
+        // the client body, so completeAttempt must not derive it there.
+        hasContent: pipeline.hasVisibleContent,
         ...ttfbFields(pipeline.firstByteAt, pipeline.firstContentDeltaAtMs, state.upstreamDispatchStartedAtMs),
         ...(upstreamTruncated
           ? {
