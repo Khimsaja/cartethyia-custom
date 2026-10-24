@@ -14,6 +14,7 @@ import type { CartethyiaDatabase } from "../../../persistence/db-handle";
 import { modelAliases, modelCombos, models, providerAccounts, providers } from "../../../persistence/schema";
 import { isModelAllowed, listIncludes, type ApiKeyAuthorizationSnapshot } from "../../../security/api-key-auth";
 import { modelsDevCatalog } from "../../../providers/discovery/models-dev-catalog";
+import { AUTO_MODEL_NAME, shouldAdvertiseAutoModel } from "../../../transport/routing/auto-model";
 import { FALLBACK_CONTEXT_LIMIT, FALLBACK_OUTPUT_LIMIT } from "../../../providers/provider-model-definition";
 
 export interface AllowedModelEntry {
@@ -537,6 +538,20 @@ export class PublicModelCatalogStore {
           ...(target.cost != null ? { cost: target.cost } : {}),
         });
       }
+    }
+    // "auto" is a virtual model, not a catalog row: the preparer resolves
+    // it to the most stable model on this key's own allowlist (for a
+    // template-linked key, the template's models). It is advertised exactly
+    // when the key can actually use it, so buyers can discover the trigger
+    // without it ever routing to a provider model literally named "auto".
+    // No limits are stated: they belong to whichever model wins the pick.
+    if (shouldAdvertiseAutoModel(snapshot)) {
+      modelEntries.push({
+        id: AUTO_MODEL_NAME,
+        object: "model" as const,
+        created: now,
+        owned_by: "tiprouter",
+      });
     }
     return modelEntries.sort((a, b) => a.id.localeCompare(b.id));
   }
