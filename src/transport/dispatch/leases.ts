@@ -97,6 +97,29 @@ export interface AttemptLeaseSource {
   readonly borrowsHeldSession?: boolean;
 }
 
+/**
+ * Providers whose accounts pin to one pool by rendezvous affinity (see
+ * `NetworkPoolSelector.tryAcquireAvailablePool`): an account's egress stays
+ * on the same proxy until that pool fills or cools, instead of changing
+ * address on nearly every request, so upstream risk controls read one
+ * stable client per account. Comma-separated provider ids in
+ * `CARTETHYIA_POOL_AFFINITY_PROVIDERS`; defaults to `cb`, whose accounts
+ * are long-lived app sessions. An explicitly empty value disables
+ * affinity entirely.
+ */
+const POOL_AFFINITY_PROVIDERS = new Set(
+  (process.env.CARTETHYIA_POOL_AFFINITY_PROVIDERS ?? "cb")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter((value) => value.length > 0),
+);
+
+function poolAffinityKey(candidate: RouteCandidate): string | undefined {
+  if (candidate.provider_account_id === undefined) return undefined;
+  if (!POOL_AFFINITY_PROVIDERS.has(candidate.provider_id.toLowerCase())) return undefined;
+  return `${candidate.provider_id}:${candidate.provider_account_id}`;
+}
+
 async function acquirePoolSlot(
   candidate: RouteCandidate,
   source: AttemptLeaseSource,
@@ -130,6 +153,9 @@ async function acquirePoolSlot(
     routing?.strategy === "round_robin"
       ? { key: routing.tenantId, rotateCount: routing.rotateCount }
       : undefined;
+  // Affinity applies only when no tenant rotation overrides selection;
+  // the selector itself also gives rotation precedence.
+  const affinityKey = rotation ? undefined : poolAffinityKey(candidate);
 
   if (!poolIds?.length || !poolSelector) {
     if (candidate.network_pool_required && strictPoolSelection) {
@@ -151,6 +177,7 @@ async function acquirePoolSlot(
       weights,
       rotation,
       providerLimit,
+      affinityKey,
     );
   }
   let acquiredSlot: { poolId: string; release: () => void } | undefined;
@@ -162,6 +189,7 @@ async function acquirePoolSlot(
       weights,
       rotation,
       providerLimit,
+      affinityKey,
     );
   } catch {
     throw new GatewayError(

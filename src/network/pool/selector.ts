@@ -7,6 +7,7 @@
  * `pool-state.ts` (local inflight/rotation/cooldown state). This file keeps
  * the selection algorithm and the `NetworkPoolSelector` public surface.
  */
+import { createHash } from "node:crypto";
 import { redisEvalNumber, type RedisClient } from "../../persistence/redis";
 import { resolveInflightTtlSeconds } from "../../config/timeouts";
 import { log } from "../../observability/logger";
@@ -71,6 +72,20 @@ function normalizedWeight(weight: number | undefined): number {
   if (weight === undefined) return DEFAULT_PROXY_WEIGHT;
   if (!Number.isInteger(weight) || weight < 1 || weight > MAX_PROXY_WEIGHT) return 0;
   return weight;
+}
+
+/**
+ * Rendezvous (highest-random-weight) score of one pool for an affinity key:
+ * a deterministic hash of (affinityKey, poolId) mapped into (0, 1), raised
+ * to 1/weight so a heavier pool wins proportionally more keys. The same key
+ * always ranks the same pools in the same order — that stable ranking, not
+ * a single pinned pick, is what makes the assignment sticky while still
+ * failing over in a fixed order when the first choice is full or cooling.
+ */
+function affinityScore(affinityKey: string, poolId: string, weight: number): number {
+  const digest = createHash("sha256").update(`${affinityKey}\u0000${poolId}`).digest();
+  const fraction = (digest.readUInt32BE(0) + 1) / 0x1_0000_0000;
+  return Math.pow(fraction, 1 / weight);
 }
 
 /** Local-map key for a provider's share of a pool. NUL cannot appear in either id. */
@@ -524,6 +539,12 @@ export class NetworkPoolSelector {
    * successful admissions before the cursor advances by one, and a pool that
    * is full or cooling falls through to the next offset (failover),
    * preserving every gate above.
+   *
+   * When `affinityKey` is supplied (and no rotation), scoring is replaced
+   * by rendezvous order for that key: candidates are tried in the key's
+   * stable hash ranking, so the same key lands on the same pool while that
+   * pool keeps admitting, and fails over in a fixed order when it does
+   * not. Every gate above still applies; only the ordering changes.
    */
   async tryAcquireAvailablePool(
     eligiblePoolIds: readonly string[],
@@ -537,6 +558,8 @@ export class NetworkPoolSelector {
      * When set, every candidate must clear it in addition to its pool capacity.
      */
     providerMaxInflight?: number,
+    /** Sticky-assignment key (e.g. one provider account); see the doc above. */
+    affinityKey?: string,
   ): Promise<{ poolId: string; release: () => void } | undefined> {
     if (eligiblePoolIds.length === 0) return undefined;
     const providerCapacity =
@@ -586,6 +609,37 @@ export class NetworkPoolSelector {
           if (!slot.acquired) continue;
           advanceRotation(this.state.rotationCursors, rotation.key, scored.length, absolute, rotation.rotateCount);
           return { poolId: candidate.poolId, release: slot.release };
+        }
+        return undefined;
+      }
+      if (affinityKey) {
+        // Affinity: try pools in this key's rendezvous order; the first
+        // with room wins. Load is deliberately not scored — a stable
+        // assignment is the point — but the capacity gates still apply, so
+        // a saturated first choice fails over to the key's next pool.
+        const ranked = [...scored].sort(
+          (a, b) =>
+            affinityScore(affinityKey, b.poolId, b.weight) -
+            affinityScore(affinityKey, a.poolId, a.weight),
+        );
+        for (const candidate of ranked) {
+          if (this.getInflight(candidate.poolId) >= candidate.capacity) continue;
+          if (
+            providerCapacity !== undefined &&
+            this.getProviderInflight(candidate.poolId, providerId) >= providerCapacity
+          ) {
+            continue;
+          }
+          const slot =
+            providerCapacity === undefined
+              ? this.acquire(candidate.poolId, candidate.capacity)
+              : this.acquireProvider(
+                  candidate.poolId,
+                  providerId,
+                  candidate.capacity,
+                  providerCapacity,
+                );
+          if (slot.acquired) return { poolId: candidate.poolId, release: slot.release };
         }
         return undefined;
       }
@@ -673,6 +727,17 @@ export class NetworkPoolSelector {
           (((absoluteIndex.get(right.poolId) ?? 0) - start + withCounts.length) %
             withCounts.length),
       );
+    } else if (affinityKey) {
+      // Affinity: admit in this key's rendezvous order. The CAS admit below
+      // still enforces pool and provider capacity, so a saturated or
+      // provider-capped first choice fails over to the key's next pool.
+      withCounts.sort((left, right) => {
+        const byScore =
+          affinityScore(affinityKey, right.poolId, right.weight) -
+          affinityScore(affinityKey, left.poolId, left.weight);
+        if (byScore !== 0) return byScore;
+        return (absoluteIndex.get(left.poolId) ?? 0) - (absoluteIndex.get(right.poolId) ?? 0);
+      });
     } else {
       const start = this.state.fairnessCursor++ % withCounts.length;
       const tieOrder = absoluteIndex;
