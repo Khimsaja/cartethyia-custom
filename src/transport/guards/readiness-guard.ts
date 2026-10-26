@@ -20,6 +20,11 @@ export function createDependencyReadinessMiddleware(deps: ReadinessMiddlewareDep
         const notice = shutdownNotice(deps.shutdownCoordinator.shutdownReason?.());
         throw new GatewayError(notice.code, 503, notice.message);
       }
+      // GET /v1/models only reads the public catalog — the same cheap read
+      // the concurrency guard exempts — so a slow readiness probe must not
+      // turn a models fetch into a 503. Drain still blocks it: a draining
+      // process is going away regardless of how cheap the read is.
+      if (request.method === "GET" && fastPathname(request.url) === "/v1/models") return;
       const readiness = await deps.readiness();
       if (readiness.status !== "ready")
         throw new GatewayError("platform_unavailable", 503, "The gateway's dependencies are not ready, so no request can be served. Retry shortly; if it persists, check the database and coordination backend.");
