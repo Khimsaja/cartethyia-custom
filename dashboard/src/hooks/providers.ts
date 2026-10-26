@@ -292,7 +292,9 @@ export function useCreateProviderAccount() {
     onSuccess: async (_result, variables) => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.providers.accounts(variables.providerId) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.providers.all }),
+        // Exact: refresh the provider list (accountCount) without refetching
+        // every provider's models/accounts — see useCreateProvider.
+        queryClient.invalidateQueries({ queryKey: queryKeys.providers.all, exact: true }),
       ]);
     },
   });
@@ -651,7 +653,7 @@ export function usePollOAuthDevice() {
   });
 }
 
-/** Creates a custom provider and refreshes all provider-derived views. */
+/** Creates a custom provider and refreshes the provider list. */
 export function useCreateProvider() {
   const queryClient = useQueryClient();
   return useMutation<ProviderResponse, ApiErrorShape, CreateProviderRequest>({
@@ -661,10 +663,12 @@ export function useCreateProvider() {
         body: JSON.stringify(request),
       }),
     onSuccess: async (result) => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.providers.all }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.modelRouting.all }),
-      ]);
+      // Exact match only: the provider list itself. A prefix invalidation
+      // here refetched models + accounts for EVERY provider row (hundreds of
+      // requests, some multi-MB), and the create dialog sat on "Creating..."
+      // for minutes while the submit awaited that storm. A bare new provider
+      // adds no aliases or combos, so modelRouting is left untouched.
+      await queryClient.invalidateQueries({ queryKey: queryKeys.providers.all, exact: true });
       toast.success("Provider created", result.label ?? result.providerId);
     },
     onError: (error) => {
