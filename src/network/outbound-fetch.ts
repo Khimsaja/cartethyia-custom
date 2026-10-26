@@ -160,13 +160,32 @@ async function pinnedFetch(
   const headers = new Headers(init.headers);
   // String/Buffer/Uint8Array bodies go direct: routing them through
   // `new Response(body).arrayBuffer()` copied the whole body per request.
+  //
+  // A web ReadableStream body is written chunk by chunk instead of being
+  // buffered the same way: buffering it would recreate exactly the flat
+  // copy the streamed-body caller avoided, and hold it for the whole
+  // upstream wait (this function resolves on response headers). Chunks are
+  // released once written, so by the time the upstream is thinking, no
+  // body bytes are retained here. A stream body gets no content-length —
+  // Node falls back to chunked encoding for it.
   const rawBody = init.body;
+  const streamBody =
+    rawBody !== undefined &&
+    rawBody !== null &&
+    typeof rawBody !== "string" &&
+    !Buffer.isBuffer(rawBody) &&
+    !(rawBody instanceof Uint8Array) &&
+    typeof (rawBody as ReadableStream<Uint8Array>).getReader === "function"
+      ? (rawBody as ReadableStream<Uint8Array>)
+      : undefined;
   const body =
-    rawBody === undefined || rawBody === null
+    streamBody !== undefined
       ? undefined
-      : typeof rawBody === "string" || Buffer.isBuffer(rawBody) || rawBody instanceof Uint8Array
-        ? rawBody
-        : Buffer.from(await new Response(rawBody).arrayBuffer());
+      : rawBody === undefined || rawBody === null
+        ? undefined
+        : typeof rawBody === "string" || Buffer.isBuffer(rawBody) || rawBody instanceof Uint8Array
+          ? rawBody
+          : Buffer.from(await new Response(rawBody).arrayBuffer());
   const outboundHeaders: Record<string, string> = {};
   headers.forEach((value, key) => {
     outboundHeaders[key] = value;
@@ -243,8 +262,43 @@ async function pinnedFetch(
       },
     );
     nodeRequest.on("error", reject);
-    if (body !== undefined) nodeRequest.write(body);
-    nodeRequest.end();
+    if (streamBody !== undefined) {
+      // Pump chunks with backpressure; a destroyed socket (abort, error)
+      // stops the pump instead of writing into a dead request. The reader
+      // is not closed here — destroying the node request is the teardown,
+      // and the stream's owner releases it.
+      const signal = init.signal;
+      void (async () => {
+        const reader = streamBody.getReader();
+        try {
+          for (;;) {
+            if (signal?.aborted) {
+              nodeRequest.destroy(signal.reason as Error | undefined);
+              return;
+            }
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (value === undefined || value.byteLength === 0) continue;
+            const flushed = nodeRequest.write(value);
+            if (!flushed) {
+              await new Promise<void>((resolveDrain) => {
+                nodeRequest.once("drain", () => resolveDrain());
+                nodeRequest.once("error", () => resolveDrain());
+              });
+              if (signal?.aborted) return;
+            }
+          }
+          nodeRequest.end();
+        } catch (error) {
+          nodeRequest.destroy(error as Error);
+        } finally {
+          reader.releaseLock();
+        }
+      })();
+    } else {
+      if (body !== undefined) nodeRequest.write(body);
+      nodeRequest.end();
+    }
   });
 }
 
@@ -350,6 +404,23 @@ export function createValidatedFetch(options: ValidatedFetchOptions = {}): Valid
         if (method !== "GET" && method !== "HEAD" && requestInit.body !== undefined) {
           throw new GatewayError("invalid_request", 400, "cross-origin redirect with body blocked");
         }
+      }
+      if (
+        !isCrossOriginRedirect &&
+        (response.status === 307 || response.status === 308) &&
+        requestInit.body !== undefined &&
+        typeof requestInit.body !== "string" &&
+        !Buffer.isBuffer(requestInit.body) &&
+        !(requestInit.body instanceof Uint8Array)
+      ) {
+        // A 307/308 replays the body on the next hop, but a stream body was
+        // already consumed by the first hop. Failing loudly beats sending
+        // an empty body the upstream would read as a different request.
+        throw new GatewayError(
+          "invalid_request",
+          400,
+          "same-origin redirect cannot replay a streamed request body",
+        );
       }
       url = nextUrl;
       if (response.status === 301 || response.status === 302 || response.status === 303) {

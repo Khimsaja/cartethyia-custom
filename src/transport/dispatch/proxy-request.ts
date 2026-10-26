@@ -239,6 +239,17 @@ export async function handleProviderProxyRequest(
         candidateRequest,
         routeCapabilitiesFor(candidate),
       );
+      // Resolved once per attempt (memoized on state) and shared by the
+      // capture wrapper below and the streaming-body decision: when capture
+      // will persist this attempt's provider body, the adapter must keep
+      // the string body capture can read.
+      const captureProviderBody = deps.networkBindingFactory
+        ? await shouldCaptureProviderBodyForRequest(
+            deps.db,
+            prepared.authorization.snapshot.tenant_id,
+            state,
+          )
+        : undefined;
       const dispatchContextBase = buildUpstreamDispatchContext({
         credential,
         deadline: state.deadlineMs,
@@ -259,11 +270,7 @@ export async function handleProviderProxyRequest(
                   prepared.authorization.snapshot.tenant_id,
                 ),
                 providerCapture,
-                await shouldCaptureProviderBodyForRequest(
-                  deps.db,
-                  prepared.authorization.snapshot.tenant_id,
-                  state,
-                ),
+                captureProviderBody ?? false,
                 providerCaptureMaxBytes(
                   await resolveCaptureDepthForRequest(
                     deps.db,
@@ -295,6 +302,7 @@ export async function handleProviderProxyRequest(
           : {}),
         ...(leaseOwnership === undefined ? {} : { leaseOwnership }),
         ...(continuationScope === undefined ? {} : { continuationScope }),
+        ...(captureProviderBody === undefined ? {} : { captureProviderBody }),
       });
       if (dispatchRequest.stream) {
         return dispatchStreamingAttempt({

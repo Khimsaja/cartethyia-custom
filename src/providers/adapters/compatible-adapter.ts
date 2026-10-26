@@ -276,12 +276,17 @@ export class OpenAICompatibleAdapter extends BaseProviderAdapter {
       return u.toString();
     })();
     const outboundFetch = context.outbound_fetch ?? this.config.fetch ?? globalThis.fetch;
+    // Stream the body when capture will not persist it: the stringified
+    // copy is otherwise retained for the whole upstream wait. When the
+    // flag is absent (a reduced composition that never resolved capture),
+    // keep the string path rather than guessing.
     const upstream = await postUpstreamJson(
       fetchUrl,
       headers,
       payload as Record<string, unknown>,
       context,
       outboundFetch,
+      { streamBody: context.capture_provider_body === false },
     );
     upstream.release();
     return upstream.res;

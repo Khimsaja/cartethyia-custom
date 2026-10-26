@@ -64,6 +64,8 @@ export function buildUpstreamDispatchContext(input: {
   readonly imageClampMaxBytes?: number;
   /** Opaque identity shared by retries of one logical gateway request. */
   readonly requestIdentity?: object;
+  /** Whether this attempt's provider request body will be persisted by capture. */
+  readonly captureProviderBody?: boolean;
 }): Record<string, unknown> {
   const credentialKind =
     typeof input.credential === "object" && input.credential !== null && "credential_kind" in input.credential
@@ -104,6 +106,9 @@ export function buildUpstreamDispatchContext(input: {
       ? {}
       : { image_clamp_max_bytes: input.imageClampMaxBytes }),
     ...(input.requestIdentity ? { request_identity: input.requestIdentity } : {}),
+    ...(input.captureProviderBody === undefined
+      ? {}
+      : { capture_provider_body: input.captureProviderBody }),
   } as Record<string, unknown>;
 }
 

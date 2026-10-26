@@ -156,6 +156,14 @@ export interface ProviderDispatchContext {
   /** Opaque identity shared by retries of one logical gateway request. */
   readonly request_identity?: object | undefined;
   /**
+   * Whether this attempt's provider request body will be persisted by
+   * payload capture (`full` mode). Adapters that can stream their body
+   * read this to decide: a streamed body has no string for capture to
+   * read, so streaming is only safe when this is `false`. Absent means
+   * unknown — callers that cannot prove it keep the string path.
+   */
+  readonly capture_provider_body?: boolean | undefined;
+  /**
    * Ownership of this attempt's account/network-pool lease. Present only when
    * the route holds a lease; a provider session that outlives the request
    * (Cursor's Run) takes it over so the slot is not released while the Run is
