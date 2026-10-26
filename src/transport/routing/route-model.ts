@@ -463,6 +463,15 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
   async invalidate(): Promise<RoutingRevision> {
     this.revision += 1;
     this.snapshot = undefined;
+    // Background warm-up: rebuild eagerly off the request path so the next
+    // routing request does not pay the full catalog build (a dozen Postgres
+    // queries plus candidate compilation). Fire-and-forget: invalidate()
+    // still returns the revision token immediately and the mutating request
+    // never waits for the build. A failed warm-up is swallowed here — the
+    // lazy rebuild on the next getSnapshot() still applies exactly as before.
+    // getSnapshot() dedups against an in-flight build for this revision, so
+    // concurrent invalidations and requests never start duplicate builds.
+    void this.getSnapshot().catch(() => {});
     // Lazy: the next getSnapshot() rebuilds. Dashboard mutations only need
     // the new revision token — they must not pay seven Postgres round-trips
     // inside the mutating request while holding no pool pressure budget.
