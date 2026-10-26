@@ -538,8 +538,28 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
       }, DEBOUNCE_MS);
       return;
     }
-    this.snapshot = undefined;
-    void this.getSnapshot().catch(() => {});
+    if (this.building) return; // A build for this revision is already in flight.
+    // Serve the previous snapshot while the rebuild runs; swap only on
+    // success (build() assigns this.snapshot itself when the revision still
+    // matches). Previously this cleared the snapshot first, so a failed
+    // build rejected every request waiting on it — a minute-burst of 500
+    // internal_error across all models, with nothing in the journal. A
+    // failed build now leaves the previous snapshot in place; the next
+    // invalidation rebuilds (invalidations arrive several times a minute
+    // under normal churn, so the lag is bounded in practice).
+    const revision = this.revision;
+    const promise = this.build(revision);
+    this.building = { revision, promise };
+    void promise
+      .catch(() => {
+        // Swallow: the old snapshot keeps serving. getSnapshot() never sees
+        // this rejection because it returns the cached snapshot while one
+        // exists; only a boot-time build with no snapshot yet can still
+        // reject to its waiters, and there is nothing else to serve there.
+      })
+      .finally(() => {
+        if (this.building?.promise === promise) this.building = undefined;
+      });
   }
 
   private async build(revision: RoutingRevision): Promise<RouteSnapshot> {
