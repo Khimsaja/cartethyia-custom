@@ -380,6 +380,28 @@ type ModelRouteRow = { [K in keyof typeof MODEL_COLUMNS]: (typeof models.$inferS
 type RouteCatalogSnapshotResult = Omit<RouteSnapshot, "revision" | "created_at"> & { created_at?: number };
 
 /** Repository abstracting database queries for the route catalog snapshot. */
+/**
+ * Memoizes a pure (providerId, tenantId) resolver for one snapshot build.
+ * The route-catalog resolvers are pure over data loaded once per build,
+ * but they ran per candidate — millions of duplicate pool arrays, records
+ * and lookups per rebuild (2026-10-26: 137x slower fan-out at 50k
+ * candidates). Provider ids are slugs and tenant ids are UUIDs, so "\0"
+ * cannot collide inside a key. Undefined results are cached too (the
+ * has() check distinguishes them from a cache miss).
+ */
+export function memoizePair<R>(
+  fn: (providerId: string, tenantId: string | null) => R,
+): (providerId: string, tenantId: string | null) => R {
+  const cache = new Map<string, R>();
+  return (providerId, tenantId) => {
+    const key = `${providerId}\0${tenantId ?? ""}`;
+    if (cache.has(key)) return cache.get(key) as R;
+    const value = fn(providerId, tenantId);
+    cache.set(key, value);
+    return value;
+  };
+}
+
 class RouteCatalogRepository {
   constructor(private readonly db: CartethyiaDatabase) {}
 
@@ -610,6 +632,21 @@ class RouteCatalogRepository {
     }
 
     const candidates: RouteCandidateWithHealth[] = [];
+    // Per-build memoization (2026-10-26): resolveNetworkPools,
+    // resolveMaxInflight, resolveUserAgent and providerLimitFor are pure
+    // functions of (providerId, tenantId) over data loaded once per build,
+    // but they ran per candidate — millions of duplicate pool arrays,
+    // records and lookups per rebuild (measured: 137x slower fan-out at
+    // 50k candidates). Sharing the resolved values is output-identical:
+    // candidates only read them, and the snapshot is deep-frozen before
+    // it is served. See the module-level memoizePair helper.
+    const memoNetworkPools = memoizePair(resolveNetworkPools);
+    const memoMaxInflight = memoizePair(resolveMaxInflight);
+    const memoUserAgent = memoizePair(resolveUserAgent);
+    const memoProviderLimit = memoizePair(providerLimitFor);
+    // Yield counter for the fan-out loop below.
+    let yieldCounter = 0;
+    const FANOUT_YIELD_EVERY = 8192;
     for (const model of mergedModelRows) {
       const providerTenantId = providerTenantById.get(model.providerId);
       if (providerTenantId === undefined) continue;
@@ -625,7 +662,7 @@ class RouteCatalogRepository {
         if (!providerRequiresAccount) {
           // Public models inherit active pools for each tenant that has active pools
           for (const tId of configuredPoolTenants) {
-            const tenantPools = resolveNetworkPools(model.providerId, tId);
+            const tenantPools = memoNetworkPools(model.providerId, tId);
             if (tenantPools) {
               const tenantCandidate: RouteCandidateWithHealth = {
                 provider_id: model.providerId,
@@ -642,7 +679,7 @@ class RouteCatalogRepository {
                 network_pool_limits: tenantPools.limits,
                 network_pool_weights: tenantPools.weights,
                 ...(tenantPools.routing ? { network_pool_routing: tenantPools.routing } : {}),
-                ...providerLimitFor(model.providerId, tId),
+                ...memoProviderLimit(model.providerId, tId),
               };
               if (tenantId === undefined || tenantId === tId) {
                 candidates.push(tenantCandidate);
@@ -652,7 +689,7 @@ class RouteCatalogRepository {
         }
         const networkPools = providerRequiresAccount
           ? undefined
-          : resolveNetworkPools(model.providerId, providerTenantId);
+          : memoNetworkPools(model.providerId, providerTenantId);
         const candidate: RouteCandidateWithHealth = {
           provider_id: model.providerId,
           model_id: model.modelId,
@@ -672,7 +709,7 @@ class RouteCatalogRepository {
                 network_pool_limits: networkPools.limits,
                 network_pool_weights: networkPools.weights,
                 ...(networkPools.routing ? { network_pool_routing: networkPools.routing } : {}),
-                ...providerLimitFor(model.providerId, providerTenantId),
+                ...memoProviderLimit(model.providerId, providerTenantId),
               }
             : {}),
         };
@@ -691,8 +728,8 @@ class RouteCatalogRepository {
         ) {
           continue;
         }
-        const networkPools = resolveNetworkPools(model.providerId, rowTenantId);
-        const routeUserAgent = resolveUserAgent(model.providerId, rowTenantId);
+        const networkPools = memoNetworkPools(model.providerId, rowTenantId);
+        const routeUserAgent = memoUserAgent(model.providerId, rowTenantId);
         const candidate: RouteCandidateWithHealth = {
           provider_id: model.providerId,
           model_id: model.modelId,
@@ -714,7 +751,7 @@ class RouteCatalogRepository {
           // Provider-wide concurrency ceiling from Routing Strategy; legacy
           // account overrides are never read here.
           ...(() => {
-            const resolved = resolveMaxInflight(model.providerId, rowTenantId);
+            const resolved = memoMaxInflight(model.providerId, rowTenantId);
             return resolved === undefined ? {} : { max_inflight: resolved };
           })(),
           ...(networkPools
@@ -724,7 +761,7 @@ class RouteCatalogRepository {
                 network_pool_limits: networkPools.limits,
                 network_pool_weights: networkPools.weights,
                 ...(networkPools.routing ? { network_pool_routing: networkPools.routing } : {}),
-                ...providerLimitFor(model.providerId, rowTenantId),
+                ...memoProviderLimit(model.providerId, rowTenantId),
               }
             : {}),
         };
@@ -785,6 +822,14 @@ class RouteCatalogRepository {
         }
         if (tenantId === undefined || candidate.tenant_id === null || candidate.tenant_id === tenantId) {
           candidates.push(candidate);
+        }
+        // Yield to the event loop every N fan-out iterations: building a
+        // multi-hundred-thousand-candidate snapshot must not stall request
+        // handling for seconds (2026-10-26: the /v1/models 401 path stalled
+        // 2-16s while a rebuild ran). The previous snapshot keeps serving
+        // meanwhile, and a newer revision still discards this build.
+        if (++yieldCounter % FANOUT_YIELD_EVERY === 0) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
         }
       }
     }
