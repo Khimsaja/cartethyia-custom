@@ -81,6 +81,35 @@ function sameModelSet(a: readonly string[], b: readonly string[]): boolean {
  * eligible for it. Shared by the manual sync endpoint and by the automatic
  * apply that runs when a template's model list is edited.
  */
+/**
+ * Applies `fn` to `items` with at most `limit` in flight, preserving result
+ * order. Template syncs used to await one key update after another, so a
+ * template linked to 1000+ keys held the PATCH open for minutes; bounded
+ * parallelism keeps the same per-key semantics while leaving DB-pool
+ * headroom for buyer traffic (pool is 40).
+ */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next++;
+      const item = items[index];
+      if (item === undefined) continue;
+      results[index] = await fn(item);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+// Per-key apply parallelism for template syncs (see mapWithConcurrency).
+const TEMPLATE_SYNC_CONCURRENCY = 12;
+
 async function pushTemplateToLinkedKeys(
   config: ModelTemplateConfig,
   tenantId: string,
@@ -88,31 +117,28 @@ async function pushTemplateToLinkedKeys(
   access: AccessDecision,
 ): Promise<ModelTemplateSyncResponse> {
   const linked = await config.apiKeyStore.listByModelTemplate(tenantId, template.id);
-  const updatedKeys: { id: string; label: string }[] = [];
-  let skippedCount = 0;
-  for (const key of linked) {
-    if (
-      key.revokedAt !== undefined ||
-      key.parentKeyId !== undefined ||
-      key.keyMode !== "personal" ||
-      isSyncExcludedLabel(key.label)
-    ) {
-      skippedCount += 1;
-      continue;
-    }
+  const eligible = linked.filter(
+    (key) =>
+      key.revokedAt === undefined &&
+      key.parentKeyId === undefined &&
+      key.keyMode === "personal" &&
+      !isSyncExcludedLabel(key.label),
+  );
+  const results = await mapWithConcurrency(eligible, TEMPLATE_SYNC_CONCURRENCY, async (key) => {
     const updated = await config.apiKeyStore.update(tenantId, key.id, {
       modelAccessMode: "whitelist",
       modelList: [...template.models],
     });
-    if (!updated) {
-      skippedCount += 1;
-      continue;
-    }
+    if (!updated) return undefined;
     // The model list is an auth-snapshot field: drop the cached snapshot
     // so the new list governs the key's very next request.
     invalidateApiKeyCache(key.id);
-    updatedKeys.push({ id: key.id, label: key.label });
-  }
+    return { id: key.id, label: key.label };
+  });
+  const updatedKeys = results.filter(
+    (result): result is { id: string; label: string } => result !== undefined,
+  );
+  const skippedCount = linked.length - updatedKeys.length;
   await config.auditSink?.record({
     access,
     action: "model_template.synced",
