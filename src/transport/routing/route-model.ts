@@ -415,6 +415,12 @@ function deepFreeze<T>(obj: T): T {
   return obj;
 }
 
+// Debounce for snapshot rebuilds (flap-storm guard, 2026-10-26): trailing
+// window after the last invalidation, with a staleness cap for storms that
+// never quiet down. See markDirtyAndSchedule().
+const DEBOUNCE_MS = 5_000;
+const MAX_DIRTY_MS = 30_000;
+
 export class InMemoryRouteSnapshotService implements RouteSnapshotService {
   private revision: RoutingRevision = 0;
   private snapshot: RouteSnapshot | undefined;
@@ -431,13 +437,19 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
    * only populate the cache if no mutation happened while it ran.
    */
   private building: { revision: RoutingRevision; promise: Promise<RouteSnapshot> } | undefined;
+  /**
+   * Debounce state. dirtySince marks the start of the current dirty streak
+   * (for the staleness cap); debounceTimer is the pending trailing rebuild.
+   */
+  private debounceTimer: ReturnType<typeof setTimeout> | undefined;
+  private dirtySince: number | undefined;
 
   constructor(private readonly builder: SnapshotBuilder) {
     // Peers' mutations arrive once per process, not per instance: the handler
     // drops this instance's copy, which is the only one there is.
     this.unsubscribe = subscribeRoutingInvalidation(() => {
       this.revision += 1;
-      this.snapshot = undefined;
+      this.markDirtyAndSchedule();
     });
   }
 
@@ -462,19 +474,21 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
 
   async invalidate(): Promise<RoutingRevision> {
     this.revision += 1;
-    this.snapshot = undefined;
-    // Background warm-up: rebuild eagerly off the request path so the next
-    // routing request does not pay the full catalog build (a dozen Postgres
-    // queries plus candidate compilation). Fire-and-forget: invalidate()
-    // still returns the revision token immediately and the mutating request
-    // never waits for the build. A failed warm-up is swallowed here — the
-    // lazy rebuild on the next getSnapshot() still applies exactly as before.
-    // getSnapshot() dedups against an in-flight build for this revision, so
-    // concurrent invalidations and requests never start duplicate builds.
-    void this.getSnapshot().catch(() => {});
-    // Lazy: the next getSnapshot() rebuilds. Dashboard mutations only need
-    // the new revision token — they must not pay seven Postgres round-trips
-    // inside the mutating request while holding no pool pressure budget.
+    // Debounced warm-up (replaces the old immediate eager rebuild): under a
+    // health flap storm, invalidations arrive several times a minute and each
+    // one used to start a full catalog build that the next invalidation then
+    // discarded. Coalescing them keeps the data plane serving the previous
+    // snapshot for at most DEBOUNCE_MS (MAX_DIRTY_MS worst case under a
+    // continuous storm) instead of rebuilding per invalidation. Routing
+    // staleness of seconds is already tolerated: a stale candidate costs one
+    // failed attempt and the retry picks a fresh one, and peers historically
+    // rebuilt lazily anyway. Fire-and-forget: invalidate() still returns the
+    // revision token immediately and the mutating request never waits.
+    this.markDirtyAndSchedule();
+    // Stale-serving: requests during the debounce window keep serving the
+    // previous snapshot; the scheduled rebuild replaces it. Dashboard
+    // mutations only need the new revision token — they must not pay a dozen
+    // Postgres round-trips inside the mutating request.
     //
     // Broadcast, because `reusePort` runs several gateway processes and each
     // holds its own snapshot: a console write handled by one of them left the
@@ -483,6 +497,49 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
     // notice carries no data, so there is nothing to deserialize.
     publishRoutingInvalidation();
     return this.revision;
+  }
+
+  /**
+   * Coalesce rapid invalidations into a single rebuild. Trailing debounce:
+   * each invalidation restarts the window, so a burst yields one rebuild
+   * after the burst quiets. MAX_DIRTY_MS caps staleness: if invalidations
+   * never quiet down, a rebuild is forced anyway. A build already in flight
+   * for an older revision defers the rebuild instead of stacking a second
+   * concurrent build on top of it.
+   */
+  private markDirtyAndSchedule(): void {
+    const now = Date.now();
+    if (this.dirtySince === undefined) this.dirtySince = now;
+    if (this.debounceTimer !== undefined) clearTimeout(this.debounceTimer);
+    if (now - this.dirtySince >= MAX_DIRTY_MS) {
+      this.debounceTimer = undefined;
+      this.dirtySince = undefined;
+      this.runDebouncedRebuild();
+      return;
+    }
+    this.debounceTimer = setTimeout(() => {
+      this.debounceTimer = undefined;
+      this.dirtySince = undefined;
+      this.runDebouncedRebuild();
+    }, DEBOUNCE_MS);
+  }
+
+  private runDebouncedRebuild(): void {
+    // An older build still running means a newer revision is already
+    // pending; stacking a second build wastes a dozen Postgres queries.
+    // Defer until it settles — the re-armed timer below rebuilds for the
+    // latest revision even if no further invalidation arrives.
+    if (this.building && this.building.revision !== this.revision) {
+      this.dirtySince = Date.now();
+      this.debounceTimer = setTimeout(() => {
+        this.debounceTimer = undefined;
+        this.dirtySince = undefined;
+        this.runDebouncedRebuild();
+      }, DEBOUNCE_MS);
+      return;
+    }
+    this.snapshot = undefined;
+    void this.getSnapshot().catch(() => {});
   }
 
   private async build(revision: RoutingRevision): Promise<RouteSnapshot> {
