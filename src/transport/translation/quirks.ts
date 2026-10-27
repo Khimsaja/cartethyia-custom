@@ -29,6 +29,14 @@ export interface ParamQuirk {
   readonly stripControls?: readonly (keyof GenerationControls)[];
   /** Upper bound applied to `generation_controls.max_tokens` when exceeded. */
   readonly clampMaxOutput?: number;
+  /**
+   * When true, drop the client's `stream_options` (canonical
+   * `extension:include_usage` / `extension:include_obfuscation`) unless the
+   * request actually streams. Some upstreams reject `stream_options` on a
+   * non-streaming call outright, while clients that always send it (agent
+   * harnesses) must keep it on real streams for usage accounting.
+   */
+  readonly stripStreamOptionsWhenNotStreaming?: boolean;
 }
 
 /** Per-wire output-token policy, in one table instead of per-builder branches. */
@@ -154,6 +162,20 @@ const PARAM_QUIRKS: readonly ParamQuirk[] = [
     matchModel: rejectsSamplingParams,
     stripControls: ["temperature", "top_p", "top_k"],
   },
+  {
+    provider: "inferhub",
+    // DeepSeek behind InferHub rejects two shapes with a 400, both proven
+    // from captured upstream errors (2026-10-27): `stream_options` on a
+    // non-streaming call ("'stream' and 'stream_options' must be set
+    // together as explicitly required") and `logprobs` at all ("The
+    // parameters `logprobs` is not supported"). Hermes always sends
+    // `stream_options`, so that strip is gated on stream !== true to keep
+    // `include_usage` on real streams; `logprobs` has no legitimate use on
+    // this provider/model pair, so it is stripped unconditionally.
+    matchModel: (modelId) => modelId.toLowerCase().includes("deepseek"),
+    stripControls: ["logprobs", "top_logprobs"],
+    stripStreamOptionsWhenNotStreaming: true,
+  },
 ];
 
 /** Finds the first quirk matching the provider/model pair, or undefined. */
@@ -203,6 +225,16 @@ export function applyParamQuirks(
   // keeps only its declarative temperature row.
   if (isThinkingEnabled(request)) {
     for (const key of THINKING_STRIPPED_SAMPLING_CONTROLS) {
+      if (key in controls) {
+        if (!changed) controls = { ...controls };
+        delete controls[key];
+        changed = true;
+      }
+    }
+  }
+
+  if (quirk?.stripStreamOptionsWhenNotStreaming === true && request.stream !== true) {
+    for (const key of ["extension:include_usage", "extension:include_obfuscation"] as const) {
       if (key in controls) {
         if (!changed) controls = { ...controls };
         delete controls[key];

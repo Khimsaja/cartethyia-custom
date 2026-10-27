@@ -405,9 +405,14 @@ class InferhubAdapter implements ProviderAdapter {
     const effective =
       translated.cache_hint === undefined ? { ...translated, cache_hint: "stable_prefix" as const } : translated;
     const leg = candidate.wire_family === "messages" ? this.messages : this.chat;
+    // The messages leg applies quirks itself, but the chat leg (a generic
+    // createApiKeyAdapter) never does — so quirks are applied here, once,
+    // for both legs. Re-applying inside the messages leg is idempotent:
+    // already-stripped controls leave the request reference unchanged.
+    const quirked = applyParamQuirks(effective, candidate.provider_id);
     yield* extractInferhubTextToolCalls(
       request,
-      leg.dispatch(effective, candidate, context),
+      leg.dispatch(quirked, candidate, context),
       textMode !== undefined,
     );
   }
