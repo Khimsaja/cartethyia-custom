@@ -336,6 +336,11 @@ export function sanitizePoolResponse(pool: unknown): NetworkPoolResponse {
     // Organisational tag; an empty string reads as untagged rather than as a
     // family literally named "".
     ...(typeof p.family === "string" && p.family.length > 0 ? { family: p.family } : {}),
+    // Exclusive provider assignment; dropped here, the section "Pool khusus
+    // CodeBuddy" could never match it and every pool read as shared.
+    ...(typeof p.dedicatedProviderId === "string" && p.dedicatedProviderId.length > 0
+      ? { dedicatedProviderId: p.dedicatedProviderId }
+      : {}),
     ...(config ? { config } : {}),
     ...(p.hasCredential === true ? { hasCredential: true } : {}),
     // An observed address, not a secret: it is the pool's public egress.
