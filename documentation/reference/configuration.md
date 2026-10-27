@@ -89,10 +89,6 @@ Variables read outside the spec are therefore **not** listed below:
 | Variable | Kind | Default | Bounds |
 | --- | --- | --- | --- |
 | `IP_RATE_MAX_PER_WINDOW` | integer | 240 | 1 – 9007199254740991 |
-| `CARTETHYIA_MODEL_STRIKE_THRESHOLD` | integer | 10 | 1 – 100 |
-| `CARTETHYIA_MODEL_STRIKE_WINDOW_MS` | integer | 1800000 | 1000 – 86400000 |
-| `CARTETHYIA_MODEL_BAN_TTL_MS` | integer | 21600000 | 1000 – 604800000 |
-| `CARTETHYIA_MODEL_BAN_MAX_TTL_MS` | integer | 604800000 | 1000 – 604800000 |
 | `CARTETHYIA_ENCRYPTION_KEY` | string, required | — (unset throws at startup) | — |
 | `CARTETHYIA_PUBLIC_ORIGIN` | string, required | — (unset throws at startup) | — |
 
@@ -112,7 +108,6 @@ Variables read outside the spec are therefore **not** listed below:
 | `CARTETHYIA_API_KEY` | string, optional | unset | — |
 | `CARTETHYIA_SERVER_MAX_BODY_BYTES` | integer | 4194304 | 1024 – 9007199254740991 |
 | `CARTETHYIA_SERVER_IDLE_TIMEOUT` | integer | 60 | 0 – 86400 |
-| `CARTETHYIA_PROCESS_CONCURRENCY_LIMIT` | integer, optional | unset | 1 – 64 when set |
 | `CARTETHYIA_CONCURRENCY_TOLERANCE` | integer, optional | unset | 0 – 1024 when set |
 | `CARTETHYIA_PROCESS_COUNT` | integer | 1 | 1 – 16 |
 | `CARTETHYIA_PROCESS_INDEX` | integer | 0 | 0 – 15 |

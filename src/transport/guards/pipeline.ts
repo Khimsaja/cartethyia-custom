@@ -10,7 +10,6 @@ import type { CanonicalAdapter, ShutdownDrainSource } from "../contracts";
 import { createApiKeyAuthenticationMiddleware } from "./auth-guard";
 import { createDependencyReadinessMiddleware } from "./readiness-guard";
 import { createIpAbuseProtectionMiddleware } from "./abuse-guard";
-import { createProcessConcurrencyMiddleware } from "./concurrency-guard";
 import { createHeadroomGuard } from "./headroom-guard";
 import {
   createErrorNormalizationMiddleware,
@@ -27,7 +26,6 @@ import type { TrustedProxyBoundary } from "../../config/network";
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import type { RedisClient } from "../../persistence/redis";
 import type { TelemetryBatchBuffer } from "../../observability/telemetry-buffer";
-import type { ModelStrikeService } from "../../security/model-abuse";
 import type { RuntimeMemorySnapshot } from "../../observability/runtime-metrics";
 import {
   TelemetryPayloadCapture,
@@ -51,7 +49,6 @@ export interface TransportPipelineContext {
   readonly requestDeadlineMs?: number;
   readonly verifiedHttps?: boolean;
   /** Graduated strikes for repeated invalid-model requests. */
-  readonly modelStrikes?: ModelStrikeService;
   readonly shutdownCoordinator?: ShutdownDrainSource;
   readonly telemetry?: TelemetryBatchBuffer;
   /**
@@ -96,7 +93,6 @@ export interface TransportPipeline {
  */
 export function createTransportPipeline(context: TransportPipelineContext): TransportPipeline {
   const stages: Elysia[] = [
-    createProcessConcurrencyMiddleware(),
     createHeadroomGuard({
       store: context.stateStore,
       ...(context.memorySnapshot === undefined ? {} : { memorySnapshot: context.memorySnapshot }),
@@ -118,7 +114,6 @@ export function createTransportPipeline(context: TransportPipelineContext): Tran
     createApiKeyAuthenticationMiddleware({
       db: context.db,
       stateStore: context.stateStore,
-      ...(context.modelStrikes ? { modelStrikes: context.modelStrikes } : {}),
       ...(context.isInvokeDisabled
         ? { isInvokeDisabled: context.isInvokeDisabled }
         : {}),
@@ -132,7 +127,6 @@ export function createTransportPipeline(context: TransportPipelineContext): Tran
     createProxyRoutePreparationMiddleware({
       stateStore: context.stateStore,
       preparer: context.preparer,
-      ...(context.modelStrikes ? { modelStrikes: context.modelStrikes } : {}),
     }),
   ];
   const mountRoot = (app: Elysia<any, any, any, any, any, any, any, any>): void => {

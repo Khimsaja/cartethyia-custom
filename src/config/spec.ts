@@ -90,10 +90,9 @@ export const CONFIG_SPEC = {
   CARTETHYIA_SERVER_MAX_BODY_BYTES: {
     kind: "int",
     // A 500K-token context is roughly 2 MB of text, so 4 MB admits every real
-    // request while halving the worst-case hold. Worst-case retained bytes
-    // across the process is `PROCESS_CONCURRENCY_CAP × this`, so on a 1 GB box
-    // the product should stay within about 40% of the limit; an operator with
-    // larger payloads raises this.
+    // request while halving the worst-case hold. How many may be in flight is
+    // admission's job, so an operator with larger payloads raises this and
+    // sets the ceiling in Settings.
     default: 4 * 1024 * 1024,
     min: 1024,
     max: Number.MAX_SAFE_INTEGER,
@@ -119,7 +118,6 @@ export const CONFIG_SPEC = {
   // Optional-int, not int-with-a-zero-default: "unset" and "explicitly zero"
   // must not be the same thing. Zero is not a valid ceiling, so a default of 0
   // would need a second sentinel to mean "derive".
-  CARTETHYIA_PROCESS_CONCURRENCY_LIMIT: { kind: "optional-int", min: 1, max: 64 },
   // Slack above each key's concurrency limit. Effective ceiling is
   // limit + tolerance; only requests past it are refused.
   CARTETHYIA_CONCURRENCY_TOLERANCE: { kind: "optional-int", min: 0, max: 1024 },
@@ -252,24 +250,6 @@ export const CONFIG_SPEC = {
 
   // Security (encryption key, public origin, abuse ceiling)
   IP_RATE_MAX_PER_WINDOW: { kind: "int", default: 240, min: 1, max: Number.MAX_SAFE_INTEGER },
-  // Invalid-model attempts inside the sliding window that ban the client
-  // address, how long an attempt stays countable, and how long the ban lasts.
-  // A valid request does not reset the window.
-  CARTETHYIA_MODEL_STRIKE_THRESHOLD: { kind: "int", default: 10, min: 1, max: 100 },
-  CARTETHYIA_MODEL_STRIKE_WINDOW_MS: { kind: "int", default: 1_800_000, min: 1_000, max: 86_400_000 },
-  CARTETHYIA_MODEL_BAN_TTL_MS: { kind: "int", default: 21_600_000, min: 1_000, max: 604_800_000 },
-  /**
-   * The longest ban the console will record, however long a request asks for.
-   * The "Permanent" choice is a very long TTL rather than an unbounded one,
-   * and this is what keeps a typo in a duration from parking a caller for a
-   * decade.
-   */
-  CARTETHYIA_MODEL_BAN_MAX_TTL_MS: {
-    kind: "int",
-    default: 604_800_000,
-    min: 1_000,
-    max: 604_800_000,
-  },
   CARTETHYIA_ENCRYPTION_KEY: {
     kind: "required",
     error:

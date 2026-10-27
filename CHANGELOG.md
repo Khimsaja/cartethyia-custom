@@ -8,6 +8,118 @@ current baseline; an existing one applies the numbered files that followed it.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.7.0] - 2026-10-27
+
+### Removed
+
+- **The process-wide concurrency cap.** The gateway bounded in-flight
+  requests twice: admission bounded the tenant and each key from Settings,
+  and a second ceiling derived from the memory limit refused beyond it. The
+  second one was never a number an operator set, and it was the smaller of
+  the two — 64, raised to 502, still below what Settings allows — so a
+  tenant configured to 100 was refused by a constant the Settings page never
+  mentions. The 503 named the gateway rather than any configured limit,
+  which read as a broken setting when the constant was. Removed: the guard
+  middleware, its controller, the derivation and its ceiling constant, the
+  `CARTETHYIA_PROCESS_CONCURRENCY_LIMIT` override, and the gauge. What
+  governs admission now is the tenant ceiling and each key's own limit, both
+  set in Settings, which is where an operator already looks. An install that
+  had set the removed variable can drop it; it is no longer read.
+
+- **The model-abuse strike and ban layer.** A request naming a model the key
+  may not use collected a strike, and ten strikes inside thirty minutes
+  banned the client address *and* the key for six hours with
+  `403 model_abuse_banned`. No setting exposes it and the request-rate
+  ceiling does not interact with it, so an operator who set rate limits to
+  unlimited still had callers banned by a counter they could not see. A
+  model the key may not use is already refused with 404; escalating that
+  refusal into a ban answered the same question twice. Removed: the strike
+  service and its stores, the ban check on the request path, the console's
+  ban list and lift, the four `CARTETHYIA_MODEL_STRIKE_*` /
+  `CARTETHYIA_MODEL_BAN_*` knobs, and the error code.
+
+### Fixed
+
+- **The memory limit no longer pretends every host is a 512 MiB container.**
+  Where no cgroup limit is discoverable — native installs, macOS, Windows —
+  the fallback was a fixed 512 MiB. On a desktop that described nothing: the
+  pressure check logged "RSS 430 MiB exceeds 80% of the 512 MiB limit" with
+  gigabytes free, and the process concurrency derived from the same number
+  admitted 16 requests. The fallback is the host's real memory now.
+
+- **Qoder tool calls carry their arguments.** A call came back correct in
+  name with an empty `arguments`, so it could not run, and the emptiness
+  read as a translation defect. The causes were on the request side. Tool
+  history was sent as structured turns on a realm that does not read them,
+  so a past call was dropped and the model had no record of what it had
+  asked for; it now goes into the turn's text, with the marker and JSON
+  shape the upstream has been trained to read back. Each message also
+  carried a `contents` array alongside `content`, describing every turn
+  twice in two shapes; the reference sends `{role, content}` and nothing
+  else. `model_config` now declares `format: "openai"`, and a named
+  `tool_choice` is sent as a bare string because the object form is ignored.
+
+- **Qoder recovers a call written into its thinking.** Tool-call markup that
+  reached the thinking channel was passed through as visible tags, and
+  leftover closing tags — often without the `DSML` marker at all — survived
+  because the parser keys on that marker. Both channels are now buffered and
+  parsed, and a turn whose thinking carried the call reports `tool_calls`
+  rather than the upstream's own `stop`. A call echoed back with its inner
+  quotes unescaped is salvaged rather than rejected, since that is not valid
+  JSON at either level.
+
+### Added
+
+- **The in-flight snapshot reports how long the oldest flight has been
+  open.** A count cannot tell a healthy queue from a leak: six flights are
+  six requests in progress or six that never finished. The age separates
+  them — a flight far past its own deadline is the backstop's worklist, so
+  an age that grows beside a flat count shows a sweep that is not running.
+
+- **The abuse layer records why it refuses.** Rejections are counted under
+  `cartethyia_ip_abuse_refusals_total` with a `reason` label, because
+  rate-limited and banned are different problems with different remedies and
+  must not be one number.
+
+### Changed
+
+- **Tailscale reports a live serve, and names the address.** Stopping the
+  tunnel emptied `serve status` while the node stayed online, so the toggle
+  stayed on and the link kept pointing at an address that no longer
+  resolves. Active now requires both halves. Where there is no address, the
+  console says why — the auth URL, the backend state — instead of showing an
+  empty field.
+
+## [2.6.8] - 2026-10-27
+
+### Fixed
+
+- **CommandCode generates on the CLI surface.** Every completion was posted
+  to `https://api.commandcode.ai/provider/v1/<wire>` — the catalog surface,
+  which answers `GET /models`. The reference client generates on
+  `/alpha/generate` for every model and does not vary the path by the wire a
+  row declares, so requests were reaching a surface the CLI never calls to
+  generate. All catalog and discovered rows now dispatch there; the wire
+  family still decides how the body is shaped, so no body translation
+  changed. Each request also sends `x-session-id`, which the upstream
+  expects on every generate call.
+
+- **Qoder sends assistant tool calls.** A request with tools failed
+  upstream with "Messages with role 'tool' must be a response to a preceding
+  message with 'tool_calls'": the translator emitted every assistant turn as
+  text only, so the calls were dropped while their results were still sent.
+  Replaying the recorded request showed 862 calls in and 0 out; they are now
+  sent as `tool_calls` and as `tool_use` blocks, using the block shape the
+  upstream reference bridge produces.
+
+- **Qoder replays `reasoning_content` for the DeepSeek family.** Those models
+  tie multi-turn consistency to the field: an assistant turn that thought has
+  to be replayed with it or the upstream refuses the whole history, showing
+  up as occasional failures that sometimes pass on retry. The translator
+  flattened assistant turns to text only, dropping it from all 919. Matched
+  on the upstream key as well as the display name, and kept it only for these
+  models, as the reference bridge does.
+
 ## [2.6.7] - 2026-10-27
 
 ### Fixed
