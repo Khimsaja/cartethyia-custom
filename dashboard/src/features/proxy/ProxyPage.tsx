@@ -476,6 +476,8 @@ export function ProxyBulkForm({
   actionsRef,
   onProbeResult,
   onHealthResult,
+  dedicatedProviderId,
+  dedicatedProviderLabel,
 }: {
   readonly onClose: () => void;
   readonly actionsRef?: (actions: ReactNode) => void;
@@ -483,6 +485,11 @@ export function ProxyBulkForm({
   readonly onProbeResult?: (poolId: string, result: PoolProviderProbeResult) => void;
   /** Hands the URL test's verdict along with it, so both survive the save. */
   readonly onHealthResult?: (poolId: string, result: HealthCheckResult) => void;
+  /** When set, every pool created here is assigned exclusively to this
+   * provider (see the Dedicated column). Absent means shared. */
+  readonly dedicatedProviderId?: string;
+  /** Display label for the note above the form; falls back to the id. */
+  readonly dedicatedProviderLabel?: string;
 }): ReactNode {
   const createPool = useCreateNetworkPool();
   const probeBatch = useProbeNetworkPoolBatch();
@@ -633,6 +640,7 @@ export function ProxyBulkForm({
               endpoint: line,
               ...(perRowQuota.has(index) ? { quotaBytes: perRowQuota.get(index) } : {}),
               ...(family.trim() !== "" ? { family: family.trim() } : {}),
+              ...(dedicatedProviderId ? { dedicatedProviderId } : {}),
             });
             // Carry both verdicts the operator already paid for onto the row
             // that now exists, so the table shows them without a re-test.
@@ -697,6 +705,11 @@ export function ProxyBulkForm({
   }, [actionsRef, batchSubmitting, lines.length, onClose]);
   return (
     <form id="add-proxy-form" onSubmit={submit} className="flex flex-col gap-4">
+      {dedicatedProviderId ? (
+        <p className="m-0 text-badge font-semibold text-text-secondary">
+          Pools added here will be dedicated exclusively to {dedicatedProviderLabel ?? dedicatedProviderId} — other providers will never use them.
+        </p>
+      ) : null}
       <div className="flex items-center justify-between gap-3">
         <label htmlFor="proxy-endpoints" className="text-caption font-semibold text-text-primary">
           Proxy endpoints
@@ -1579,7 +1592,11 @@ export default function Proxy(): ReactNode {
   const updatePool = useUpdateNetworkPool();
   const healthCheck = useHealthCheckNetworkPool();
   const [showProxyForm, setShowProxyForm] = useState(false);
-  const closeAddProxy = useCallback(() => setShowProxyForm(false), []);
+  const [addProxyDedicated, setAddProxyDedicated] = useState<string | null>(null);
+  const closeAddProxy = useCallback(() => {
+    setShowProxyForm(false);
+    setAddProxyDedicated(null);
+  }, []);
   const [addProxyActions, setAddProxyActions] = useState<ReactNode>(null);
   const [editProxyActions, setEditProxyActions] = useState<ReactNode>(null);
   const [showRelayDeploy, setShowRelayDeploy] = useState(false);
@@ -1997,6 +2014,8 @@ export default function Proxy(): ReactNode {
         <ProxyBulkForm
           onClose={closeAddProxy}
           actionsRef={setAddProxyActions}
+          dedicatedProviderId={addProxyDedicated ?? undefined}
+          dedicatedProviderLabel={addProxyDedicated === "cb" ? "CodeBuddy" : undefined}
           onProbeResult={(poolId, result) => {
             // The row may not exist in this list yet (the add form reports
             // before the refetch lands), so the endpoint is read from the
@@ -2035,9 +2054,22 @@ export default function Proxy(): ReactNode {
           subtitle="Exclusive pools serve CodeBuddy only — other providers never use them, and CodeBuddy stops using shared pools once any exclusive pool is assigned."
         />
         <CardBody>
+          <div>
+            <Button
+              variant="primary"
+              size="sm"
+              icon={<Plus size={13} />}
+              onClick={() => {
+                setAddProxyDedicated("cb");
+                setShowProxyForm(true);
+              }}
+            >
+              Add pool khusus CodeBuddy
+            </Button>
+          </div>
           {codebuddyPools.length === 0 ? (
             <p className="text-badge text-text-secondary">
-              No exclusive pool yet — CodeBuddy still uses shared pools. Assign one from a pool&apos;s Edit form.
+              No exclusive pool yet — CodeBuddy still uses shared pools. Add one with the button above, or assign an existing pool from its Edit form.
             </p>
           ) : (
             <Stack gap="8px">
@@ -2085,7 +2117,10 @@ export default function Proxy(): ReactNode {
                 variant="primary"
                 size="sm"
                 icon={<Plus size={13} />}
-                onClick={() => setShowProxyForm(true)}
+                onClick={() => {
+                  setAddProxyDedicated(null);
+                  setShowProxyForm(true);
+                }}
               >
                 Add proxies
               </Button>
