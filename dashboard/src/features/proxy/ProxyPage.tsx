@@ -57,6 +57,7 @@ import {
   useClearNetworkPoolCooldown,
 } from "../../hooks/network";
 import { usePoolUsage, type PoolUsageRow } from "../../hooks/live";
+import { useProviders } from "../../hooks/providers";
 import {
   MAX_BATCH_PROBE_TARGETS,
   sortPools,
@@ -205,6 +206,8 @@ function PoolEditForm({
   const healthCheck = useHealthCheckNetworkPool();
   const [label, setLabel] = useState(pool.label ?? "");
   const [family, setFamily] = useState(pool.family ?? "");
+  const providersQuery = useProviders();
+  const [dedicated, setDedicated] = useState(pool.dedicatedProviderId ?? "");
   const [endpoint, setEndpoint] = useState(pool.endpoint ?? "");
   const [cap, setCap] = useState(String(pool.maxInflight ?? 10));
   const [weight, setWeight] = useState(String(pool.weight ?? 100));
@@ -291,6 +294,11 @@ function PoolEditForm({
         // An emptied box clears the tag, so compare against the raw stored
         // value rather than a trimmed one.
         ...(family.trim() !== (pool.family ?? "") ? { family: family.trim() || null } : {}),
+        // An exclusive assignment: the pool serves only this provider, and
+        // that provider stops using shared pools. Empty means shared.
+        ...(dedicated !== (pool.dedicatedProviderId ?? "")
+          ? { dedicatedProviderId: dedicated || null }
+          : {}),
         ...(endpoint.trim() !== pool.endpoint && endpoint.trim() !== ""
           ? { endpoint: endpoint.trim() }
           : {}),
@@ -327,6 +335,24 @@ function PoolEditForm({
           placeholder="e.g. residential-id"
           onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFamily(e.target.value)}
         />
+      </div>
+      <div>
+        <div className="text-micro text-text-tertiary mb-2">Dedicated provider</div>
+        <Select
+          aria-label="Dedicated provider"
+          value={dedicated}
+          onValueChange={(value) => setDedicated(value)}
+          options={[
+            { value: "", label: "Shared (all providers)" },
+            ...(providersQuery.data ?? []).map((provider) => ({
+              value: provider.providerId,
+              label: provider.displayName,
+            })),
+          ]}
+        />
+        <div className="text-micro text-text-tertiary mt-2">
+          Exclusive: this pool serves only the chosen provider, and that provider stops using shared pools.
+        </div>
       </div>
       <div>
         <Input
@@ -1391,6 +1417,18 @@ const PoolRow = memo(function PoolRow({
           <span className="text-badge text-text-tertiary">—</span>
         )}
       </td>
+      <td className="min-w-0 max-w-90">
+        {pool.dedicatedProviderId ? (
+          <span
+            className="truncate text-caption font-semibold text-text-secondary"
+            title={pool.dedicatedProviderId}
+          >
+            {pool.dedicatedProviderId}
+          </span>
+        ) : (
+          <span className="text-badge text-text-tertiary">Shared</span>
+        )}
+      </td>
       <td className="max-w-110">
         <PoolAddressBlock
           pool={pool}
@@ -1942,6 +1980,11 @@ export default function Proxy(): ReactNode {
     setDeleteTargets(null);
   };
 
+  // Exclusive CodeBuddy pools: these serve CodeBuddy only, and CodeBuddy
+  // stops using shared pools once any of them exists. Assignment happens
+  // in a pool's Edit form; this section is the overview plus release.
+  const codebuddyPools = pools.filter((pool) => pool.dedicatedProviderId === "cb");
+
   return (
     <ProxyLiveProvider>
       <Stack gap="16px">
@@ -1985,6 +2028,41 @@ export default function Proxy(): ReactNode {
           />
         )}
       </Dialog>
+
+      <Card>
+        <CardHeader
+          title="Pool khusus CodeBuddy"
+          subtitle="Exclusive pools serve CodeBuddy only — other providers never use them, and CodeBuddy stops using shared pools once any exclusive pool is assigned."
+        />
+        <CardBody>
+          {codebuddyPools.length === 0 ? (
+            <p className="text-badge text-text-secondary">
+              No exclusive pool yet — CodeBuddy still uses shared pools. Assign one from a pool&apos;s Edit form.
+            </p>
+          ) : (
+            <Stack gap="8px">
+              {codebuddyPools.map((pool) => (
+                <div key={pool.id} className="flex items-center gap-8">
+                  <span className="min-w-0 flex-1 truncate text-badge font-semibold">{poolName(pool)}</span>
+                  <Badge tone={pool.status === "active" ? "ok" : pool.status === "disabled" ? "disabled" : "warn"}>
+                    {pool.status}
+                  </Badge>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={updatePool.isPending}
+                    onClick={() =>
+                      void updatePool.mutateAsync({ poolId: pool.id, request: { dedicatedProviderId: null } })
+                    }
+                  >
+                    Release to shared
+                  </Button>
+                </div>
+              ))}
+            </Stack>
+          )}
+        </CardBody>
+      </Card>
 
       <Card
         style={pools.length === 0 && !isPending && !isError ? { minHeight: "min(78dvh, calc(100dvh - 160px))", display: "flex", flexDirection: "column" } : undefined}
@@ -2212,6 +2290,7 @@ export default function Proxy(): ReactNode {
                   "",
                   { key: "name", label: "Proxy", sortable: true },
                   { key: "family", label: "Family", sortable: true },
+                  "Dedicated",
                   { key: "address", label: "Address", sortable: true },
                   { key: "load", label: "Load", sortable: true },
                   "Actions",

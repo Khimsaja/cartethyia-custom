@@ -223,6 +223,9 @@ export function createNetworkPoolOperations(config: NetworkPoolConfig) {
           // allowance. The body schema already rejects zero and negatives.
           ...(typeof request.quotaBytes === "number" ? { quotaBytes: request.quotaBytes } : {}),
           ...(request.family === undefined ? {} : { family: request.family }),
+          ...(request.dedicatedProviderId === undefined
+            ? {}
+            : { dedicatedProviderId: request.dedicatedProviderId }),
         };
         await config.store.create(record);
         await config.auditSink?.record({

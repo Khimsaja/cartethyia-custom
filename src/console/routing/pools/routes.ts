@@ -31,6 +31,8 @@ const createPoolBody = t.Object({
   quotaBytes: t.Optional(t.Union([t.Number({ minimum: 1 }), t.Null()])),
   /** Operator-set family/tag naming which family this node belongs to. */
   family: t.Optional(t.Union([t.String(), t.Null()])),
+  /** Exclusive provider assignment; `null` clears it back to shared. */
+  dedicatedProviderId: t.Optional(t.Union([t.String(), t.Null()])),
 });
 const deployRelayBody = t.Object({
   target: literalUnion(RELAY_TARGETS),

@@ -440,6 +440,17 @@ export const networkPools = pgTable("network_pools", {
    * operator has not tagged the pool.
    */
   family: text("family"),
+  /**
+   * Exclusive provider assignment: when set, this pool serves ONLY this
+   * provider, and that provider stops using shared pools (see
+   * `resolveNetworkPools` in `src/transport/routing/route-catalog.ts`).
+   * Null means a shared pool, available to every provider without an
+   * exclusive assignment. The reference clears itself when the provider
+   * row is deleted, so a removed provider never strands pools.
+   */
+  dedicatedProviderId: text("dedicated_provider_id").references(() => providers.id, {
+    onDelete: "set null",
+  }),
   endpointConfig: jsonb("endpoint_config").notNull(),
   credentialCiphertext: bytea("credential_ciphertext"),
   maxInflight: integer("max_inflight"),
@@ -500,6 +511,7 @@ export const networkPools = pgTable("network_pools", {
     index("network_pools_tenant_id_idx").on(table.tenantId),
     index("network_pools_status_cooldown_idx").on(table.status, table.cooldownUntil),
     index("network_pools_family_idx").on(table.family),
+    index("network_pools_dedicated_provider_id_idx").on(table.dedicatedProviderId),
   ],
 );
 

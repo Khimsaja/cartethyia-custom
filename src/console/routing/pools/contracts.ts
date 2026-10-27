@@ -27,6 +27,10 @@ export interface CreateNetworkPoolRequest {
   /** Operator-set family/tag naming which family this node belongs to.
    * Purely organisational; `null` clears the tag. */
   family?: string | null;
+  /** Exclusive provider assignment: when set, this pool serves ONLY this
+   * provider, and that provider stops using shared pools. `null` (or
+   * absent) means a shared pool. */
+  dedicatedProviderId?: string | null;
 }
 export interface NetworkPoolResponse {
   id: string;
@@ -50,6 +54,8 @@ export interface NetworkPoolResponse {
   tenantId: string;
   /** Operator-set family/tag; absent or null when untagged. */
   family?: string | null;
+  /** Exclusive provider assignment; absent or null when shared. */
+  dedicatedProviderId?: string | null;
   /** Non-secret transport settings (e.g. timeout); never contains credential material. */
   config?: Record<string, unknown>;
   /** True when an encrypted credential is stored for this pool; never the credential itself. */
