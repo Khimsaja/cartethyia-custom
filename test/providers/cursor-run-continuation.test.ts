@@ -252,6 +252,15 @@ const BASH_TOOL = {
   },
 } as const;
 
+// The canonical Cursor-native name. A native `shell` frame only relays when
+// something declared a tool of exactly that name — variants stay separate, so
+// `shell` here is not `_bash` above and not `pi_bash`.
+const SHELL_TOOL = {
+  name: "shell",
+  description: "Run a shell command.",
+  jsonSchema: { type: "object", properties: {} },
+} as const;
+
 /** The client's own file-write surface. */
 const WRITE_TOOL = {
   name: "_write",
@@ -265,7 +274,9 @@ const WRITE_TOOL = {
 } as const;
 
 /** One request declaring exactly the given tools. */
-function requestWithTools(tools: readonly (typeof LOOKUP_TOOL | typeof BASH_TOOL | typeof WRITE_TOOL)[]): CanonicalRequest {
+function requestWithTools(
+  tools: readonly (typeof LOOKUP_TOOL | typeof BASH_TOOL | typeof WRITE_TOOL | typeof SHELL_TOOL)[],
+): CanonicalRequest {
   return {
     model: "cursor-model",
     messages: [{ role: "user", content: [{ kind: "text", text: "what is the weather?" }] }],
@@ -284,25 +295,6 @@ function shellExecFrame(execId: number, command: string): Uint8Array {
       shell_args: { command, working_directory: "C:/project" },
     },
   });
-}
-
-/** `ExecServerMessage{write_args}` — Cursor's native file-write request. */
-function writeExecFrame(execId: number, path: string, content: string): Uint8Array {
-  return serverFrame({
-    exec_server_message: { id: execId, write_args: { path, file_text: content } },
-  });
-}
-
-/** The typed exec results the adapter wrote under one field, decoded. */
-function execResultsOf(stream: FakeStream, field: string): Record<string, unknown>[] {
-  const out: Record<string, unknown>[] = [];
-  for (const message of stream.messages()) {
-    const exec = message["exec_client_message"];
-    if (exec === null || typeof exec !== "object") continue;
-    const result = (exec as Record<string, unknown>)[field];
-    if (result !== null && typeof result === "object") out.push(result as Record<string, unknown>);
-  }
-  return out;
 }
 
 /** One request that declares `lookup` and asks a question. */
@@ -781,62 +773,6 @@ describe("Cursor Run idle expiry", () => {
 });
 
 describe("Cursor host tool forwarding", () => {
-  test("a Cursor shell exec is forwarded to the client's `_bash` and answers shell_result", async () => {
-    const adapter = createCursorAdapter();
-    const stream = new FakeStream([shellExecFrame(9, "echo hi")]);
-    stream.endBody();
-    const opened = await collect(adapter, requestWithTools([BASH_TOOL]), harnessWith([], scopeOf(), undefined, stream));
-    expect(opened.error).toBeUndefined();
-    const call = opened.events.find((event) => event.type === "tool_call_delta");
-    expect(call).toMatchObject({ name: "_bash" });
-    if (call?.type !== "tool_call_delta") return;
-    const args = JSON.parse(call.arguments_delta ?? "{}") as Record<string, string>;
-    expect(args.command).toBe("echo hi");
-    expect(args.cwd).toBe("C:/project");
-    expect(typeof args.i).toBe("string");
-    expect(cursorRunSessions.size).toBe(1);
-
-    // The live Run reuses its socket: the result lands back on the same
-    // stream, ending the turn the queued `turn_ended` moved into view.
-    stream.push(turnEndedFrame());
-    const resumed = await collect(
-      adapter,
-      continuationRequest(toolCallIdOf(opened.events), "hi"),
-      continuationHarness(scopeOf(), stream),
-    );
-    expect(resumed.error).toBeUndefined();
-    expect(cursorRunSessions.size).toBe(0);
-    const [shell] = execResultsOf(stream, "shell_result");
-    expect(shell).toMatchObject({
-      success: { command: "echo hi", working_directory: "C:/project", exit_code: 0, stdout: "hi" },
-    });
-    const closed = stream.messages().find((message) => message["exec_client_control_message"] !== undefined);
-    expect(closed).toMatchObject({ exec_client_control_message: { stream_close: { id: 9 } } });
-  });
-
-  test("a Cursor write exec is forwarded to `_write` and answers write_result", async () => {
-    const adapter = createCursorAdapter();
-    const stream = new FakeStream([writeExecFrame(11, "C:/notes.txt", "a\nb")]);
-    stream.endBody();
-    const opened = await collect(adapter, requestWithTools([WRITE_TOOL]), harnessWith([], scopeOf(), undefined, stream));
-    expect(opened.error).toBeUndefined();
-    const call = opened.events.find((event) => event.type === "tool_call_delta");
-    expect(call).toMatchObject({ name: "_write" });
-    if (call?.type !== "tool_call_delta") return;
-    const args = JSON.parse(call.arguments_delta ?? "{}") as Record<string, string>;
-    expect(args).toMatchObject({ path: "C:/notes.txt", content: "a\nb" });
-
-    stream.push(turnEndedFrame());
-    const resumed = await collect(
-      adapter,
-      continuationRequest(toolCallIdOf(opened.events), "ok"),
-      continuationHarness(scopeOf(), stream),
-    );
-    expect(resumed.error).toBeUndefined();
-    const [write] = execResultsOf(stream, "write_result");
-    expect(write).toMatchObject({ success: { path: "C:/notes.txt", lines_created: 2, file_size: 3 } });
-  });
-
   test("a shell exec whose client declared no shell tool keeps the refusal", async () => {
     const adapter = createCursorAdapter();
     const stream = new FakeStream([shellExecFrame(5, "echo hi")]);
@@ -846,6 +782,22 @@ describe("Cursor host tool forwarding", () => {
     expect(opened.events.some((event) => event.type === "tool_call_delta")).toBe(false);
     expect(cursorRunSessions.size).toBe(0);
     const thrown = stream.messages().find((message) => message["exec_client_control_message"] !== undefined);
-    expect(JSON.stringify(thrown)).toContain("Cursor host tools are not executed by this gateway");
+    // The refusal stands; the stated reason moved. Host tools are no longer
+    // refused for being host tools — they are relayed when the request declared
+    // them. This one is refused because nothing declared it.
+    expect(JSON.stringify(thrown)).toContain("this tool is not one the request declared");
+  });
+
+  test("a shell exec whose client declared a shell tool is relayed", async () => {
+    // The behaviour the old refusal could not express: the same frame, with the
+    // tool declared, becomes an ordinary tool call for the client to answer.
+    const adapter = createCursorAdapter();
+    const stream = new FakeStream([shellExecFrame(5, "echo hi")]);
+    stream.endBody();
+    // The descriptor set comes from the request's own tools, so declaring
+    // `shell` is all it takes for the native arm to be recognised as declared.
+    const opened = await collect(adapter, requestWithTools([SHELL_TOOL]), harnessWith([], scopeOf(), undefined, stream));
+    expect(opened.error).toBeUndefined();
+    expect(opened.events.some((event) => event.type === "tool_call_delta")).toBe(true);
   });
 });

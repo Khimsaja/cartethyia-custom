@@ -2,6 +2,11 @@
 import { and, asc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import { ConsoleDomainError } from "../../shared/errors";
 import { parseCustomProviderId, isBundledProviderId } from "../../../providers/provider-contracts";
+import {
+  asRecord,
+  firstNonEmptyString as firstString,
+  tryParseJson as safeParseJson,
+} from "../../../shared/coerce";
 import type { ModelDefinition } from "../../../providers/provider-model-definition";
 import type { ProviderRegistry } from "../../../providers/provider-registry";
 import { BUNDLED_PROVIDER_MODULES } from "../../../providers/default-registry";
@@ -10,8 +15,7 @@ import { globalOrOwnedBy, ownedByOnly } from "../../../persistence/tenant-scope"
 import { nextSortIndex, reorderSortIndex } from "../../../persistence/sort-order";
 import type { CartethyiaDatabase } from "../../../persistence/db-handle";
 import { buddyTaskLedger, models, providerAccounts, providerOauthStates, providers, telemetryUsageTotals, tenantDisabledModels } from "../../../persistence/schema";
-import { queryTelemetryEvents } from "../../../observability/event-log";
-import { isGatewayError } from "../../../observability/telemetry-status";
+import { breakdownTelemetry } from "../../../observability/event-query";
 import type { WireFamily } from "../../../protocol/canonical-model";
 import { listAccountHealthEvents, recoverAccount, deleteAccountHealthEvents, type AccountHealthEventRecord } from "../../../providers/operations/account-health-service";
 import { invalidateCredentialCache } from "../../../providers/operations/provider-credential-service";
@@ -39,14 +43,6 @@ const OAUTH_ACCESS_FIELDS = ["accessToken", "access_token", "access", "token"] a
 /** Field names a pasted OAuth credential may carry its refresh token under. */
 const OAUTH_REFRESH_FIELDS = ["refreshToken", "refresh_token", "refresh"] as const;
 
-function firstString(record: Record<string, unknown>, fields: readonly string[]): string | undefined {
-  for (const field of fields) {
-    const value = record[field];
-    if (typeof value === "string" && value.trim().length > 0) return value.trim();
-  }
-  return undefined;
-}
-
 /** Parses an expiry field that may be an ISO string, an epoch ms, or epoch seconds. */
 function parseExpiry(value: unknown): Date | undefined {
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -63,11 +59,26 @@ function parseExpiry(value: unknown): Date | undefined {
   }
   return undefined;
 }
-function parseJwtCredential(raw: string): { readonly expiresAt?: Date } | undefined {
+/**
+ * Reads the two claims a static token's own payload can answer: when it stops
+ * working, and who issued it.
+ *
+ * The issuer is kept because a static JWT carries no other hint of its origin:
+ * an operator who pasted one from the wrong surface has nothing in the console
+ * to check it against, and several issuers accept the same token shape.
+ */
+function parseJwtCredential(
+  raw: string,
+): { readonly expiresAt?: Date; readonly issuer?: string } | undefined {
   const payload = decodeJwtPayload(raw.trim());
   if (payload === undefined) return undefined;
   const expiresAt = parseExpiry(payload["exp"]);
-  return expiresAt === undefined ? {} : { expiresAt };
+  const iss = payload["iss"];
+  const issuer = typeof iss === "string" && iss.trim().length > 0 ? iss.trim() : undefined;
+  return {
+    ...(expiresAt === undefined ? {} : { expiresAt }),
+    ...(issuer === undefined ? {} : { issuer }),
+  };
 }
 
 /**
@@ -184,8 +195,8 @@ export function parsePastedOAuthCredential(raw: string): {
  * The account configuration a pasted export carries beside its tokens.
  *
  * Kiro refuses a generation request that omits the profile the account is bound
- * to, and legacy exports carry that profile under a different key. Reading
- * neither is how an imported account probes with no
+ * to, and exports from older installs carry that profile under a different key.
+ * Reading neither is how an imported account probes with no
  * profile and is answered `400 profileArn is required`.
  */
 function pastedAuthState(
@@ -201,12 +212,6 @@ function pastedAuthState(
     ...(authMethod === undefined ? {} : { authMethod }),
     ...(region === undefined ? {} : { region }),
   };
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
 }
 
 /**
@@ -235,15 +240,6 @@ export function withImageModality(stored: string | null | undefined, image: bool
   });
 }
 
-function safeParseJson(value: string | null | undefined): unknown {
-  if (typeof value !== "string" || value.length === 0) return undefined;
-  try {
-    return JSON.parse(value) as unknown;
-  } catch {
-    return undefined;
-  }
-}
-
 /** Normalizes a text column read as `unknown` back to a string or null. */
 function asStoredText(value: unknown): string | null {
   return typeof value === "string" ? value : null;
@@ -266,7 +262,7 @@ function firstStringFrom(
  *
  * Expired entries are dropped rather than returned: the sweep that clears them
  * runs on a timer, so between the deadline passing and the sweep a raw read
- * would report a cooldown that no longer applies.
+ * would report a cooldown that is not in force.
  */
 function liveModelCooldowns(
   raw: unknown,
@@ -494,9 +490,9 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
       .returning({ id: providers.id });
     if (deleted.length === 0) return false;
     this.providerRegistry.unregister(providerId);
-    // The provider left the registry, so the compiled catalog no longer
-    // contains it — the snapshot's re-seed is gated on that revision, and a
-    // delete that did not bump it would leave the provider's model rows behind.
+    // The provider left the registry, so the compiled catalog is now missing it
+    // — the snapshot's re-seed is gated on that revision, and a delete that did
+    // not bump it would leave the provider's model rows behind.
     bumpCatalogRevision();
     return true;
   }
@@ -641,12 +637,12 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
       staticEndpoint === undefined ? undefined : { [family]: staticEndpoint },
     );
     if (modelIds.length === 0) return;
-    // Single multi-row insert (was N sequential round-trips) and upsert the
-    // capability flags so a re-registration repairs a row whose `tool_call`
-    // (and `reasoning`) was seeded false — a manual add previously persisted
-    // schema defaults, which capability preflight reads as "route cannot use
-    // tools" and silently strips `tools` from every request. `enabled` stays
-    // operator-owned; `source` is refreshed to `manual`.
+    // Single multi-row insert and upsert of the capability flags so a
+    // re-registration repairs a row whose `tool_call` (and `reasoning`) was
+    // seeded false — a manual add persists schema defaults, which capability
+    // preflight reads as "route cannot use tools" and silently strips `tools`
+    // from every request. `enabled` stays operator-owned; `source` is refreshed
+    // to `manual`.
     await this.db
       .insert(models)
       .values(
@@ -957,17 +953,23 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
     const todayStart = new Date();
     todayStart.setUTCHours(0, 0, 0, 0);
     const accountIds = rows.map((row) => row.id);
-    const todayEvents = await queryTelemetryEvents({ tenantId, accountIds, since: todayStart });
-    const todayByAccount = new Map<string, { requests: number; errors: number; inputTokens: number; outputTokens: number }>();
-    for (const event of todayEvents) {
-      if (!event.accountId) continue;
-      const bucket = todayByAccount.get(event.accountId) ?? { requests: 0, errors: 0, inputTokens: 0, outputTokens: 0 };
-      bucket.requests += 1;
-      if (isGatewayError(event.status, event.httpStatus)) bucket.errors += 1;
-      bucket.inputTokens += event.inputTokens ?? 0;
-      bucket.outputTokens += event.outputTokens ?? 0;
-      todayByAccount.set(event.accountId, bucket);
-    }
+    // Today's per-account usage is one GROUP BY, not a read of every event
+    // since midnight. `breakdownTelemetry("account")` is capped at 100 groups;
+    // a page of accounts never exceeds it, and the lookup below is by id, so a
+    // group that fell outside the cap simply reads as "no usage today" — the
+    // same value an account with no traffic gets.
+    const todayGroups = await breakdownTelemetry(this.db, tenantId, "account", todayStart);
+    const todayByAccount = new Map(
+      todayGroups.map((group) => [
+        group.key,
+        {
+          requests: group.requests,
+          errors: group.errors,
+          inputTokens: group.inputTokens,
+          outputTokens: group.outputTokens,
+        },
+      ]),
+    );
     const [lifetimeRows] = await Promise.all([
       this.db
         .select()
@@ -1170,6 +1172,7 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
         const requestedCredentialMode: CredentialMode = request.credentialMode ?? "auto";
         let effectiveCredentialMode: CredentialMode = requestedCredentialMode;
         let tokenExpiresAt: Date | undefined;
+        let jwtIssuer: string | undefined;
         let oauthRefreshCiphertext: Buffer | undefined;
         let oauthExpiresAt: Date | undefined;
         let oauthHasRefreshToken = false;
@@ -1206,6 +1209,9 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
             effectiveCredentialKind = "api_key";
             effectiveCredentialMode = "jwt";
             tokenExpiresAt = parsedJwt.expiresAt;
+            // Kept alongside the expiry: the console shows who issued a static
+            // token, and the secret itself is never readable after this point.
+            jwtIssuer = parsedJwt.issuer;
           } else if (request.credentialKind === "oauth" || hasRefreshToken) {
             effectiveSecret = parts.accessToken;
             effectiveCredentialKind = hasRefreshToken ? "oauth" : "api_key";
@@ -1231,6 +1237,7 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
           ...(request.authState ?? {}),
           credentialMode: effectiveCredentialMode,
           ...(tokenExpiresAt === undefined ? {} : { tokenExpiresAt: tokenExpiresAt.toISOString() }),
+          ...(jwtIssuer === undefined ? {} : { jwtIssuer }),
         };
         const nextSortIndex =
           sortIndexOverride ?? (await this.nextAccountSortIndex(tx, providerId, tenantId));
@@ -1455,6 +1462,8 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
         : undefined;
     const tokenExpiresAt =
       typeof authState?.["tokenExpiresAt"] === "string" ? authState["tokenExpiresAt"] : undefined;
+    const jwtIssuer =
+      typeof authState?.["jwtIssuer"] === "string" ? authState["jwtIssuer"] : undefined;
     return {
       id: row.id,
       providerId: row.providerId,
@@ -1463,6 +1472,7 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
       credentialKind: row.credentialKind,
       ...(credentialMode === undefined ? {} : { credentialMode }),
       ...(tokenExpiresAt === undefined ? {} : { tokenExpiresAt }),
+      ...(jwtIssuer === undefined ? {} : { jwtIssuer }),
       status: row.status,
       ...(usage.inflight === undefined ? {} : { inflight: usage.inflight }),
       usageToday: usage.today,

@@ -151,7 +151,14 @@ export class FirstBootSetupService {
           // that no longer matches the key the operator was shown.
           keyPrefix: defaultApiKey === undefined ? generated.prefix : secret.slice(0, 3),
           keyEncrypted: encryptCredential(secret),
-          requestsPerMinute: 240,
+          // Unset, not a number: a rate limit the operator never chose is a
+          // refusal they will meet without knowing where it came from. The
+          // gateway key is created at first boot and is the one every early
+          // request rides on, so seeding it with 240 made a ceiling out of a
+          // value nobody picked. Unset reads as unlimited in the UI and in
+          // admission, which is what an operator expects from a key they have
+          // not configured.
+          requestsPerMinute: null,
           isDefault: true,
         });
       }
@@ -160,8 +167,8 @@ export class FirstBootSetupService {
     // First boot creates the default tenant, the platform-admin user, and the
     // gateway key. The advisory lock is what stops two concurrent boots from
     // both passing the "no admin yet" check and racing to create them, so a
-    // handle that cannot take the lock must fail closed — the previous
-    // `typeof` probe skipped the lock and ran the setup unserialized.
+    // handle that cannot take the lock must fail closed — running the setup
+    // unserialized lets two boots both pass the check.
     await this.db.transaction(async (transaction) => {
       await transaction.execute(firstBootSetupLock());
       await create(transaction as unknown as CartethyiaDatabase);

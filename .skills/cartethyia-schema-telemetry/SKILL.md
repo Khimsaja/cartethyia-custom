@@ -7,6 +7,25 @@ description: "Schema and telemetry changes: update the canonical schema and gene
 
 Use for a schema change, a baseline update, or a new usage/telemetry field.
 
+## Telemetry tests must not touch real data
+
+`TELEMETRY_EVENT_DIR` resolves from the data dir when `event-log` is first
+imported (`src/observability/event-log.ts`). Setting `CARTETHYIA_DATA_DIR`
+after that import is too late; leaving it unset can write to—and let cleanup
+delete—the machine's real telemetry.
+
+Create a temporary data directory and set it **before any dynamic telemetry
+import**:
+
+```ts
+const sandbox = await mkdtemp(join(tmpdir(), "carte-telemetry-test-"));
+process.env.CARTETHYIA_DATA_DIR = sandbox;
+const telemetry = await import("../../src/observability/event-log");
+```
+
+Use `test/observability/raw-event-retention.test.ts` as the reference. Keep every
+telemetry test and cleanup inside its own sandbox.
+
 ## Schema changes
 
 The repository ships one baseline per backend plus the numbered files after it.
@@ -33,11 +52,12 @@ buys nothing and costs every existing deployment.
    and then every later file. `0008_add_models_route_unique_index.sql` is the
    shape: the bundled model seed upserts on an index a pre-baseline database
    does not have, and boot dies without it.
-3. Regenerate the SQLite baseline with `bun scripts/generate/sqlite-ddl.ts`
-   **only** when the canonical schema itself changed in a way the SQLite
-   derivation has to follow (a new table or column). `test/persistence/sqlite-baseline.test.ts`
-   fails when the two disagree. Do not edit the SQLite baseline by hand.
-   Do not touch `0000_baseline.sql` for a forward-only change.
+3. Do not regenerate either baseline for an ordinary schema change. The SQLite
+   baseline is generated from the pinned PostgreSQL baseline, not from
+   `schema.ts` or the accumulated forward migrations. Regenerate it only for a
+   deliberate baseline/generator change that preserves released schema
+   semantics and accepted hash compatibility; do not edit it by hand.
+   `test/persistence/sqlite-baseline.test.ts` checks the current contract.
 4. Update backup validation and restore mapping for old column names, enum
    values, defaults, or required data that must survive recreation.
 5. Test the fresh schema, the numbered file against a database created before
@@ -62,38 +82,27 @@ ledger; report them separately.
 
 ## Persisted telemetry fields
 
-Per-request events are appended to one file per UTC day,
-`<YYYY-MM-DD>.events.jsonl`, under the data dir's `telemetry-events/`
-(`src/observability/event-log.ts`). The day's file is append-only and is never
-rewritten while the day is open.
+Per-request events are appended to one raw JSONL file per UTC hour under the
+data dir's `telemetry-events/` (`src/observability/event-log.ts`). Usage,
+breakdown, chart, request detail, and per-key spend read these events. No
+compaction worker, summary index, or watermark replaces the individual rows.
+Legacy `<YYYY-MM-DD>.events.jsonl` files remain readable until retention;
+`.compacted.jsonl` and `.index.json` are never read as requests.
 
-Beside it sits `<YYYY-MM-DD>.index.json`, written by
-`src/observability/event-day-index.ts`. It carries running totals per
-tenant/key, the per-name breakdown sums, per-hour slots for the traffic chart,
-and a byte watermark of how much of the event file has been folded in. Usage,
-breakdown and chart reads go to the index — **not** to the event files — so a
-usage query does not parse the period's requests. Only the request list and the
-detail drawer read the events, and they read backwards from the tail.
-
-Folding is incremental and idempotent: bytes below the watermark are counted,
-bytes above are not, and an unterminated line is left for the next pass rather
-than counted as an event. The watermark is the whole point — deciding which file
-was still open by comparing file *names* is what let the previous scheme fold
-and unlink a file the writer was still appending to.
-
-Retention deletes whole days: the event file and its index together. Never one
-without the other.
+Retention deletes whole expired raw files and never replaces them with a
+summary. The query path still applies the retention floor and can read the
+newest unfiltered page backwards from a file's tail.
 
 The database keeps aggregates in `telemetry_usage_totals` only; do not add a
 reader back onto `telemetry_events`. Payload capture stays a separate
 append-only file under `data/telemetry-payloads/`.
 
 A new usage field must pass through canonical usage, normalization, the file
-writer, **the day index bucket**, console contract/store, dashboard validator,
+writer, event query/aggregation, console contract/store, dashboard validator,
 and Usage UI. Reject invalid upstream values; do not silently clamp them.
-An aggregate that must survive retention needs the schema and both baselines.
-Update restore mapping when old backups do not carry the field or use a retired
-representation.
+An aggregate that must survive retention needs the canonical schema and a
+forward migration in both backend directories. Update restore mapping when old
+backups do not carry the field or use a retired representation.
 
 Costs arrive as strings from `numeric` columns and from restored rows. Coerce
 before summing: `0 + "0.000966"` concatenates instead of adding.
@@ -101,8 +110,8 @@ before summing: `0 + "0.000966"` concatenates instead of adding.
 ## Renames and strategy removal
 
 Change the canonical enum/model, router, console contract/store, validation,
-catalog snapshot, schema, both baselines, backup mapping, dashboard
-contract/hook/card, and docs. No alias fields.
+catalog snapshot, schema, forward migrations in both backend directories,
+backup mapping, dashboard contract/hook/card, and docs. No alias fields.
 
 Combo strategies are `fallback` and `round_robin`. There is no fusion strategy
 and no minimum-balance floor: do not reintroduce

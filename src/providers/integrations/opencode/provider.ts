@@ -79,7 +79,7 @@ const UNAVAILABLE_FREE_ZEN_IDS: readonly string[] = [
  * `CARTETHYIA_OPENCODE_UNAVAILABLE_FREE` lets an operator correct that
  * immediately: a comma-separated list that *replaces* the bundled one, or the
  * single token `none` to trust the listing completely. The bundled ids remain
- * the default so an unconfigured install behaves exactly as it does today.
+ * the default so an unconfigured install keeps these refusals.
  */
 function unavailableFreeZenIds(): readonly string[] {
   const override = resolveOpenCodeUnavailableFree();
@@ -163,11 +163,11 @@ function opencodeDesktopHeaders(
     // The free-tier gate refuses non-streaming dispatches with 403
     // FreeTierError, so free models always advertise SSE regardless of the
     // client's own Accept; billed models keep the JSON default. The value is
-    // what OpenCode 2.x's AI SDK sends, not the narrower
-    // `text/event-stream` we used to claim — the gate always accepted the
-    // narrow one, so this is alignment with the real client rather than a
-    // fix for a live failure. It costs nothing: `stream: true` is forced on
-    // the body either way, so the upstream answers SSE regardless.
+    // what OpenCode 2.x's AI SDK sends — a broader Accept than the narrower
+    // `text/event-stream` the gate is known to accept, so this is alignment
+    // with the real client rather than a fix for a live failure. It costs
+    // nothing: `stream: true` is forced on the body either way, so the upstream
+    // answers SSE regardless.
     ...(freeModel ? { accept: FREE_TIER_ACCEPT } : {}),
   };
 }
@@ -230,7 +230,6 @@ const FREE_AGENT_TOOL_SCHEMA = {
   required: [] as string[],
 } as const;
 
-
 function ensureFreeAgentRequest(request: CanonicalRequest): CanonicalRequest {
   const present: Record<string, true> = {};
   for (const tool of request.tools ?? []) present[tool.name] = true;
@@ -250,8 +249,6 @@ function ensureFreeAgentRequest(request: CanonicalRequest): CanonicalRequest {
     tools: [...(request.tools ?? []), ...missing],
   };
 }
-
-
 
 function completeOpenCodeToolSchemas(payload: Record<string, unknown>): void {
   if (!Array.isArray(payload.tools)) return;
@@ -404,6 +401,8 @@ export async function discoverOpenCodeFreeModels(options: {
   readonly baseUrl: string;
   readonly fetcher?: typeof fetch;
 }): Promise<readonly ModelDefinition[] | null> {
+  // dynamic-import: cycle break -- the discovery helper imports this file's
+  // OPENCODE_FREE_SPEC to decide its request shape.
   const { fetchOpenAICompatibleModels } = await import("../../discovery/openai-model-discovery");
   const listed = await fetchOpenAICompatibleModels({
     baseUrl: options.baseUrl,
@@ -498,7 +497,7 @@ export function systemoneLimits(): Pick<ModelDefinition, "contextLimit" | "outpu
 export const OPENCODE_FREE_MODELS: readonly ModelDefinition[] = [
   ...sharedZenChat,
   // `nemotron-3-ultra-free`, `nemotron-3.5-lightning-free` and
-  // `longcat-2.5-preview-free` are gone: the live Zen roster no longer lists
+  // `longcat-2.5-preview-free` are excluded: the live Zen roster does not list
   // them. A row the provider's own roster dropped can disappear from the wire
   // without notice, which makes it a stale row — one that routes to a 404 at
   // dispatch time rather than failing at catalog load. `big-pickle` and the
@@ -514,7 +513,7 @@ export const OPENCODE_ZEN_MODELS: readonly ModelDefinition[] = [
 ];
 
 export const OPENCODE_GO_MODELS: readonly ModelDefinition[] = [
-  // `muse-spark-1.2` is retired upstream; the catalog files
+  // `muse-spark-1.2` is not served upstream; the catalog files
   // `muse-spark-1.2-contributor` at 1048576/131072, which is what this row
   // serves.
   defineModel({ id: "muse-spark-1.2-contributor", providerId: "opencode-go", wireFamily: "responses", endpoint: `${GO_PATH_PREFIX}/responses`, ctx: 1048576, out: 131072, vision: true, reasoning: true }),

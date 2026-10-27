@@ -28,17 +28,15 @@ const HERMES_PROVIDER_ID = "hermes" as const;
  * (`agent/portal_tags.py` in `NousResearch/hermes-agent`). Neither is required
  * for dispatch — a request carrying only `user=` answers 200 — but they are
  * sent because they are the client's real attribution and cost nothing. The
- * client version tracks the released tag `v2026.9.24`, which is date-based:
- * Hermes does not publish a semver, so the `0.13.0` this used to claim was not
- * a version Hermes ever had.
+ * client version is read from `getHermesVersion()` and sent in the shape the
+ * released tags use (`v<version>`): Hermes does not publish a semver, so its
+ * versions are date-based release tags.
  */
 /**
  * Builds the portal tags for one dispatch.
  *
- * `client=` carries the version in the shape the released tag used
- * (`v<version>`), but the version itself is now the resolved one: the previous
- * constant named a date tag (`v2026.9.24`) that was neither a release nor the
- * version the project publishes. `getHermesVersion()` tracks the real release.
+ * `client=` carries the resolved version in the shape the released tags use
+ * (`v<version>`); `getHermesVersion()` tracks the real release.
  */
 function hermesPortalTags(): readonly string[] {
   return [
@@ -66,25 +64,23 @@ import type { ModelDefinition } from "../provider-model-definition";
  *
  * `loadModelDiscovery` supersedes this list whenever `/v1/models` answers, so
  * these numbers are only read by a fetch that failed. They are the upstream's
- * own `context_length` and `top_provider.max_completion_tokens` — the previous
- * values were a uniform `8192` output for every row, which understated every
- * one of them.
+ * own `context_length` and `top_provider.max_completion_tokens`, stated per row
+ * because they differ per row.
  *
- * Two ids that used to live here are gone because upstream no longer carries
- * them: `tencent/hy3:free` (absent from the catalog entirely) and
- * `upstage/solar-pro4:free` (only the billed `upstage/solar-pro4` and the free
- * `upstage/solar-mini4:free` exist).
+ * Two ids upstream no longer carries are absent: `tencent/hy3:free` (missing
+ * from the catalog entirely) and `upstage/solar-pro4:free` (only the billed
+ * `upstage/solar-pro4` and the free `upstage/solar-mini4:free` exist).
  */
 export const HERMES_MODELS: readonly ModelDefinition[] = [
   // The live `/models` free rows, with the limits the catalog states. Verified
   // against the API: every id here answers 200.
   //
-  // `meituan/longcat-2.0:free` is gone: the catalog still lists the id, but
-  // dispatching it answers 404 "This model is no longer free", so keeping it
+  // `meituan/longcat-2.0:free` is excluded: the catalog still lists the id, but
+  // dispatching it answers 404 "This model is no longer free", so listing it
   // would be a card that can only ever fail. `meituan/longcat-2.5-preview:free`
-  // replaces it and answers 200.
+  // is listed instead and answers 200.
   //
-  // `stepfun/step-5-preview:free` is gone: it is absent from the live catalog
+  // `stepfun/step-5-preview:free` is excluded: it is absent from the live catalog
   // entirely and dispatching it answers 404 "This model's free period has
   // ended" — a retired row, not a capacity blip, so it cannot be left in.
   //
@@ -96,7 +92,13 @@ export const HERMES_MODELS: readonly ModelDefinition[] = [
   defineModel({ id: "stepfun/step-3.7-flash:free", ctx: 262144, out: 256000, vision: true, reasoning: true, free: true, freeTier: true }),
   defineModel({ id: "upstage/solar-mini4:free", ctx: 524288, out: 131072, reasoning: true, free: true, freeTier: true }),
   defineModel({ id: "reflection/beam-1.0-501b-a23b:free", ctx: 262144, out: 131072, reasoning: true, free: true, freeTier: true }),
-  defineModel({ id: "meituan/longcat-2.5-preview:free", ctx: 1048576, out: 131072, reasoning: true, free: true, freeTier: true }),
+  // Vision-corrected against the live catalog: `architecture.input_modalities`
+  // lists `image` for this row, so it was published without vision it has.
+  defineModel({ id: "meituan/longcat-2.5-preview:free", ctx: 1048576, out: 131072, vision: true, reasoning: true, free: true, freeTier: true }),
+  // Added after a live read: the catalog carries it, it is free, and a dispatch
+  // answers 200 — it was simply absent from this list, so a client asking for
+  // it resolved to nothing. 262144 out is the catalog's own cap.
+  defineModel({ id: "ornith/ornith-1.5-122b:free", ctx: 262144, out: 262144, vision: true, reasoning: true, free: true, freeTier: true }),
 ];
 
 

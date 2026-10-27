@@ -1,3 +1,7 @@
+// dynamic-import-ok: lazy provider registry. Every entry is a
+// `() => await import("./integrations/<name>/...")` so loading a provider
+// pays only when the first request routes to it. Static imports here would
+// drag every integration into memory at process start.
 import {
   GENERIC_API_KEY_SPECS,
 } from "./configured-openai-providers";
@@ -234,6 +238,11 @@ export const PROVIDER_CAPABILITIES = {
     loadModels: async () => (await import("./integrations/codex/codex")).CODEX_MODELS,
     loadAuthentication: oauthCapability(() => import("./integrations/codex/codex-oauth"), "codexOAuthClient", { withRefresher: true }),
     loadQuotaCollector: quotaCapability(() => import("./integrations/codex/codex-quota"), "fetchCodexQuota"),
+    loadModelDiscovery: async () => async ({ credential, fetcher }) =>
+      (await import("./integrations/codex/codex")).discoverCodexModels({
+        credential,
+        ...(fetcher === undefined ? {} : { fetcher }),
+      }),
   },
   grok: {
     loadAdapter: async () => (await import("./integrations/grok/grok")).grokAdapter,
@@ -523,7 +532,12 @@ export const PROVIDER_CAPABILITIES = {
   },
   inferhub: {
     loadAdapter: async () => (await import("./integrations/inferhub")).createInferhubAdapter(),
+    // Live `/v1/models` is the primary source: the marketplace republishes its
+    // whole roster and it moves faster than a committed array can. The static
+    // list stays as the offline fallback when the fetch fails.
     loadModels: async () => (await import("./integrations/inferhub")).INFERHUB_MODELS,
+    loadModelDiscovery: async () =>
+      (await import("./integrations/inferhub")).inferhubModelDiscovery()(),
     loadQuotaCollector: quotaCapability(() => import("./integrations/inferhub"), "fetchInferhubQuota"),
   },
   hermes: {

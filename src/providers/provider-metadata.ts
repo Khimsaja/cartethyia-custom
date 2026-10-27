@@ -130,6 +130,12 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
     requiresAccount: true,
     bespokeWire: true,
     hasAdapterUserAgent: true,
+    // Always direct. Cursor's upstream is reached over its own HTTP/2 path and
+    // an egress proxy in front of it breaks the connection shape the upstream
+    // expects, so proxying is not a discovery an operator should have to make
+    // after the first failures. Only the initial value: an explicit `skipProxy`
+    // patch still wins.
+    defaultSkipProxy: true,
     credentialUrl: "https://cursor.com",
     credentialHint: "Sign in with Cursor or import a Cursor API key.",
   },
@@ -383,7 +389,12 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
     credentialUrl: `${QODER_REALMS.cn.website}/account/integrations`,
     credentialHint: "Paste a Personal Access Token (pt-...) from the Qoder CN integrations page, or sign in with your Qoder China account.",
   },
-  { id: "trae", displayName: "Trae", baseUrl: `${TRAE_REALMS.intl.core}${TRAE_CHAT_PATH}`, hasAdapterUserAgent: true, defaultSkipProxy: true, credentialUrl: "https://www.trae.ai/", credentialHint: "Paste a Trae account export (accessToken + refreshToken) or the raw access token from an international Trae account." },
+  // Proxied by default, unlike most providers here. Trae applies account-level
+  // ban/detection heuristics to the request origin, and a direct egress makes
+  // every account in the pool share one identifiable address — the proxy is
+  // what keeps a pool from being flagged as a whole. Direct remains available
+  // as an explicit `skipProxy` patch for an operator who wants it.
+  { id: "trae", displayName: "Trae", baseUrl: `${TRAE_REALMS.intl.core}${TRAE_CHAT_PATH}`, hasAdapterUserAgent: true, credentialUrl: "https://www.trae.ai/", credentialHint: "Paste a Trae account export (accessToken + refreshToken) or the raw access token from an international Trae account." },
   // A separate provider, not a region flag on `trae`: the China deployment has
   // its own core host, authorization scheme, and model roster, and a CN account
   // dispatched to the intl host is refused rather than degraded.
@@ -421,18 +432,14 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
 /**
  * Web search is a route of its own, never a model capability.
  *
- * There used to be a manual list of providers "whose hosted search had been
- * proven", and a `providerSupportsWebSearch` helper that consulted it. Both are
- * gone. A model row no longer advertises search, and a provider serves search
+ * A model row does not advertise search, and a provider serves search
  * purely by declaring a `serviceKind: "websearch"` catalog row — which is what
  * Exa, Parallel, and Gemini do. Those rows answer `POST /v1/search` and are
  * never reached from a chat turn.
  *
- * The reason is that the flag was never a capability gate: `deriveRequiredCapabilities`
- * deliberately does not derive `web_search`, so no chat request was ever
- * filtered or degraded by it. Its only real effect was to smuggle `llm` rows
- * (Codex, Antigravity) into the fallback candidate list as if they were search
- * routes, and to show a badge in the console. The fallback is gone too: a chat
+ * A search flag is not a capability gate: `deriveRequiredCapabilities`
+ * deliberately does not derive `web_search`, so no chat request is
+ * filtered or degraded by it. A chat
  * turn is dispatched once to the route its model selects, and a hosted search
  * declaration is answered by that upstream, not executed by the gateway.
  */

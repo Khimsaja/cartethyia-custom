@@ -36,24 +36,19 @@ const USAGE = {
   totalBytes: 3 * 1024 * 1024,
   retentionDays: 30,
   payloadRetentionMs: 15 * 60_000,
+  // Bucket ids are the backend's own (`src/console/data-management/operations.ts`),
+  // not the labels: `telemetry_hourly`/`telemetry_compacted` were the names from
+  // before compaction was removed, and a fixture keyed on a name the server no
+  // longer sends asserts against a panel that cannot render.
   buckets: [
     {
-      id: "telemetry_hourly",
-      label: "Hourly request files",
+      id: "telemetry_events",
+      label: "Request event files",
       bytes: 2 * 1024 * 1024,
       files: 24,
-      note: "Per-request records.",
+      note: "Feeds the request list and detail drawer.",
       reclaimableBytes: null,
       reclaimableFiles: null,
-    },
-    {
-      id: "telemetry_compacted",
-      label: "Daily summaries",
-      bytes: 1024 * 1024,
-      files: 30,
-      note: "Already folded up.",
-      reclaimableBytes: 512 * 1024,
-      reclaimableFiles: 5,
     },
     {
       id: "payload_frames",
@@ -84,27 +79,23 @@ describe("DataManagementPanel", () => {
       const text = container.textContent ?? "";
       // 2 MiB and 1 MiB are the two large buckets; formatting comes from the
       // shared helper, so assert on the rendered figure rather than raw bytes.
-      expect(text).toContain("Hourly request files");
-      expect(text).toContain("Daily summaries");
+      expect(text).toContain("Request event files");
       expect(text).toContain("Payload frames");
       // `formatBytes` scales to KB/MB with one decimal, not MiB.
       expect(text).toContain("2.0 MB");
-      expect(text).toContain("1.0 MB");
     } finally {
       unmount();
       restore();
     }
   });
 
-  test("hourly files get no reclaim button", async () => {
-    // The safety boundary. An hourly file is the only copy of its requests
-    // until compaction folds it up, so the panel must not offer to delete it.
+  test("event files offer retention reclaim without a fabricated byte count", async () => {
     const { container, unmount, restore } = await mountPanel();
     try {
-      const row = container.querySelector('[data-bucket="telemetry_hourly"]');
+      const row = container.querySelector('[data-bucket="telemetry_events"]');
       expect(row).not.toBeNull();
-      expect(row?.querySelectorAll("button")).toHaveLength(0);
-      expect(row?.textContent).toContain("no other copy");
+      expect(row?.textContent).toContain("Expired events only");
+      expect(row?.querySelectorAll("button")).toHaveLength(1);
     } finally {
       unmount();
       restore();
@@ -128,8 +119,8 @@ describe("DataManagementPanel", () => {
   test("a bucket with something reclaimable offers it", async () => {
     const { container, unmount, restore } = await mountPanel();
     try {
-      const row = container.querySelector('[data-bucket="telemetry_compacted"]');
-      expect(row?.textContent).toContain("512.0 KB");
+      const row = container.querySelector('[data-bucket="telemetry_events"]');
+      expect(row?.textContent).toContain("Expired events only");
       const button = Array.from(row?.querySelectorAll("button") ?? []).find(
         (b) => (b.textContent ?? "").includes("Reclaim"),
       ) as HTMLButtonElement | undefined;
@@ -160,13 +151,43 @@ describe("DataManagementPanel", () => {
     const { container, unmount, restore } = await mountPanel();
     try {
       const cards = container.querySelectorAll("[data-bucket]");
-      expect(cards).toHaveLength(3);
+      expect(cards).toHaveLength(2);
       const parents = new Set(Array.from(cards).map((c) => c.parentElement));
       expect(parents.size).toBe(1);
       const grid = cards[0]?.parentElement;
-      expect(grid?.className).toContain("grid-cols-3");
-      // Collapses on narrow screens, where three columns would be unreadable.
-      expect(grid?.className).toContain("max-medium:grid-cols-1");
+      // `auto-fit` with a floor, not a fixed column count: the panel renders
+      // a variable number of cards — the health log is absent in a reduced
+      // composition — and a fixed count left an empty slot whenever one was
+      // missing. The floor is what collapses it on narrow screens.
+      expect(grid?.className).toContain("settings-bucket-grid");
+      // The four cards share the grid, so the actions are comparable with the
+      // sizes rather than sitting at a different width below them.
+      const panels = container.querySelectorAll("[data-panel]");
+      expect(panels).toHaveLength(2);
+      for (const panel of panels) {
+        expect(panel.parentElement ?? null).toBe(grid ?? null);
+      }
+    } finally {
+      unmount();
+      restore();
+    }
+  });
+
+  test("every card's action sits bottom-right", async () => {
+    // The cards are read column-wise as much as row-wise, so the buttons share
+    // one corner: the eye finds the next action by following the diagonal
+    // instead of hunting each card for its own. Buttons are pinned to the
+    // bottom regardless, so notes wrapping to different heights do not move
+    // them. Asserted on the wrapper's classes, since a test DOM has no layout.
+    const { container, unmount, restore } = await mountPanel();
+    try {
+      const cards = container.querySelectorAll("[data-panel]");
+      expect(cards.length).toBeGreaterThan(1);
+      for (const card of cards) {
+        const footer = card.lastElementChild;
+        expect(footer?.className).toContain("mt-auto");
+        expect(footer?.className).toContain("justify-end");
+      }
     } finally {
       unmount();
       restore();

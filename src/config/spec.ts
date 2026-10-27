@@ -110,6 +110,28 @@ export const CONFIG_SPEC = {
     min: 0,
     max: 600_000,
   },
+  // Optional ceiling on in-flight requests per process. Left unset, the limit
+  // is derived from the memory limit and the body ceiling (see
+  // config/resources.ts): 2 GiB/4 MiB → 64, 512 MiB/4 MiB → 16, 256 MiB/16 MiB
+  // → 2. Set it to admit more than memory alone would allow — which is the
+  // operator's call, and is reported rather than corrected — or less, to keep
+  // a slow upstream from being handed more concurrency than it can serve.
+  // Optional-int, not int-with-a-zero-default: "unset" and "explicitly zero"
+  // must not be the same thing. Zero is not a valid ceiling, so a default of 0
+  // would need a second sentinel to mean "derive".
+  CARTETHYIA_PROCESS_CONCURRENCY_LIMIT: { kind: "optional-int", min: 1, max: 64 },
+  // Slack above each key's concurrency limit. Effective ceiling is
+  // limit + tolerance; only requests past it are refused.
+  CARTETHYIA_CONCURRENCY_TOLERANCE: { kind: "optional-int", min: 0, max: 1024 },
+  // How many gateway processes serve this deployment, and which one this is.
+  // Count > 1 requires Linux, CARTETHYIA_DB_MODE=full, and a REACHABLE Redis —
+  // checked at boot, because a half-configured multi-process deploy starts
+  // fine and then enforces every per-key limit N times over. Lite stays
+  // single-process: two processes on one SQLite file corrupt it.
+  CARTETHYIA_PROCESS_COUNT: { kind: "int", default: 1, min: 1, max: 16 },
+  // Which process this is (0 – count-1). Mandatory when count > 1: a process
+  // that does not know its index cannot own a shard of anything.
+  CARTETHYIA_PROCESS_INDEX: { kind: "int", default: 0, min: 0, max: 15 },
   // Optional secret for the operator drain endpoint (`POST /admin/drain`). When
   // set, a process can be stopped gracefully on platforms where a catchable
   // signal cannot be delivered to it (notably Windows, where `process.kill` of
@@ -130,9 +152,12 @@ export const CONFIG_SPEC = {
     min: 1,
     max: Number.MAX_SAFE_INTEGER,
   },
-  // Opt-in forced garbage collection. Off by default: see
-  // `observability/runtime-metrics.ts` — a forced collection is not
-  // reclamation, and the synchronous form stalls concurrent requests.
+  // Opt-in forced garbage collection under memory pressure. Off by default:
+  // see `observability/runtime-metrics.ts` — a forced collection is not
+  // reclamation, and a collection that runs while requests are in flight adds
+  // a latency spike. This gates the pressure path only; idle reclaim runs
+  // unconditionally, because reclaiming when nothing is in flight stalls
+  // nothing.
   CARTETHYIA_FORCED_GC: { kind: "flag" },
   // How often runtime gauges (memory + bounded-collection sizes) are sampled.
   CARTETHYIA_RUNTIME_METRICS_INTERVAL_MS: {
@@ -151,59 +176,13 @@ export const CONFIG_SPEC = {
   /**
    * How long a day's telemetry is kept, in days.
    *
-   * The retention unit is the whole day: a day's event file and its index are
-   * deleted together, and the current day is never touched. Past this age an
-   * individual request no longer exists anywhere, so its detail is gone —
-   * totals, breakdowns and spend are unaffected, because the index keeps
-   * running sums rather than the rows.
+   * Whole raw event files past this age are removed. No summary or compacted
+   * form replaces the individual requests.
    *
    * This is the knob that decides how long the request list, per-request
    * filters, and the detail drawer stay complete.
    */
   CARTETHYIA_TELEMETRY_RETENTION_DAYS: { kind: "int", default: 30, min: 3, max: 365 },
-  /**
-   * Age at which a request's detail is described as no longer stored.
-   *
-   * Retention itself is `CARTETHYIA_TELEMETRY_RETENTION_DAYS`; this only words
-   * the message shown when a request that old is asked for. Kept because the
-   * message is operator-facing and was written against this knob.
-   */
-  CARTETHYIA_TELEMETRY_COMPACT_AFTER_DAYS: { kind: "int", default: 7, min: 1, max: 365 },
-  /**
-   * How often each day's index is brought up to date, in minutes.
-   *
-   * Bringing an index up to date means folding the bytes appended since the
-   * last pass — not re-reading the day. Reads fold before they answer too, so
-   * raising this does not make the numbers stale; it only leaves the on-disk
-   * index further behind, and the next read pays for the remainder.
-   */
-  CARTETHYIA_TELEMETRY_COMPACT_INTERVAL_MINUTES: {
-    kind: "int",
-    default: 60,
-    min: 5,
-    max: 1440,
-  },
-  /**
-   * Inert. Accepted so existing deployments keep booting; nothing reads it.
-   *
-   * It sized the one-file-per-window scheme — events were written to a file
-   * per this many minutes, 96 a day at the default. Events now append to one
-   * file per UTC day, so there is no window left to size.
-   */
-  CARTETHYIA_TELEMETRY_WINDOW_MINUTES: {
-    kind: "int",
-    default: 15,
-    min: 1,
-    max: 1440,
-  },
-  /**
-   * Inert. Accepted so existing deployments keep booting; nothing reads it.
-   *
-   * It capped how many window files one pass could fold. Folding is driven by
-   * a byte offset into the day file now and never deletes the file, so there
-   * is no per-pass batch to bound.
-   */
-  CARTETHYIA_TELEMETRY_COMPACT_MAX_FILES: { kind: "int", default: 48, min: 1, max: 10_000 },
   CARTETHYIA_TELEMETRY_PAYLOAD_MAX_BYTES: {
     kind: "int",
     default: 16 * 1024 * 1024,
@@ -246,10 +225,10 @@ export const CONFIG_SPEC = {
   /**
    * An unmapped upstream failure cools the account down for 15 minutes.
    *
-   * It used to be 60s, which put the account straight back into rotation and
-   * re-dialled an upstream that had just answered something this gateway does
-   * not understand — so the same unknown error was retried every minute, and
-   * an account that was actually broken contributed a steady stream of failed
+   * A shorter window puts the account straight back into rotation and re-dials
+   * an upstream that has just answered something this gateway does not
+   * understand — so the same unknown error is retried every minute, and an
+   * account that is actually broken contributes a steady stream of failed
    * attempts instead of one. Fifteen minutes is long enough for a transient
    * provider condition to clear on its own and short enough that no operator
    * action is needed to recover it. It is still a cooldown with a deadline,
@@ -279,6 +258,18 @@ export const CONFIG_SPEC = {
   CARTETHYIA_MODEL_STRIKE_THRESHOLD: { kind: "int", default: 10, min: 1, max: 100 },
   CARTETHYIA_MODEL_STRIKE_WINDOW_MS: { kind: "int", default: 1_800_000, min: 1_000, max: 86_400_000 },
   CARTETHYIA_MODEL_BAN_TTL_MS: { kind: "int", default: 21_600_000, min: 1_000, max: 604_800_000 },
+  /**
+   * The longest ban the console will record, however long a request asks for.
+   * The "Permanent" choice is a very long TTL rather than an unbounded one,
+   * and this is what keeps a typo in a duration from parking a caller for a
+   * decade.
+   */
+  CARTETHYIA_MODEL_BAN_MAX_TTL_MS: {
+    kind: "int",
+    default: 604_800_000,
+    min: 1_000,
+    max: 604_800_000,
+  },
   CARTETHYIA_ENCRYPTION_KEY: {
     kind: "required",
     error:
@@ -295,9 +286,9 @@ export const CONFIG_SPEC = {
   /**
    * Loopback port the browser-OAuth callback listener binds.
    *
-   * Configurable because the default is a fixed number and a busy port used to
-   * strand the operator: the login could not start and there was no way to move
-   * it. Codex's authorization server still expects 59653, so changing this
+   * Configurable because the default is a fixed number: a busy port would strand
+   * the operator, since the login could not start and there would be no way to
+   * move it. Codex's authorization server still expects 59653, so changing this
    * only helps the providers whose redirect URI is not allowlisted upstream.
    */
   CARTETHYIA_OAUTH_CALLBACK_PORT: { kind: "int", default: 59_653, min: 1_024, max: 65_535 },

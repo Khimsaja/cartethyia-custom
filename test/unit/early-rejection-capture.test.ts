@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { captureEarlyRejectionPayload, type EarlyRejectionCapture } from "../../src/transport/guards/early-rejection-capture";
 
 /** Records what a capture received, so no database is involved. */
-function recorder(): { captured: EarlyRejectionCapture[]; capture: (input: EarlyRejectionCapture) => Promise<unknown> } {
+function recorder(): { captured: EarlyRejectionCapture[]; capture: (input: EarlyRejectionCapture) => Promise<{ id: string; expiresAt: Date; payloadCaptureState?: string }> } {
   const captured: EarlyRejectionCapture[] = [];
   return {
     captured,
@@ -22,6 +22,8 @@ describe("early rejection payload capture", () => {
         ingressBody: { model: "bansos/x", messages: [] },
         clientResponseText: JSON.stringify({ error: { code: "invalid_request" } }),
         payloadCapture: { capture: rec.capture },
+        // The tenant's resolved preference: `full` mode keeps bodies.
+        payloadCapturePreference: { ok: true, mode: "full", depth: "minimum", retentionMs: 60_000 },
       },
       { tenantId: "tenant-1" },
     );
@@ -57,9 +59,24 @@ describe("early rejection payload capture", () => {
           requestId: "req-4",
           ingressBody: { model: "x" },
           payloadCapture: { capture: async () => { throw new Error("db down"); } },
+          payloadCapturePreference: { ok: true, mode: "full", depth: "minimum", retentionMs: 60_000 },
         },
         { tenantId: "tenant-1" },
       ),
     ).resolves.toBeUndefined();
+  });
+
+  test("a tenant in metadata mode writes no frame", async () => {
+    const rec = recorder();
+    await captureEarlyRejectionPayload(
+      {
+        requestId: "req-5",
+        ingressBody: { model: "x" },
+        payloadCapture: { capture: rec.capture },
+        payloadCapturePreference: { ok: true, mode: "metadata", depth: "minimum", retentionMs: 60_000 },
+      },
+      { tenantId: "tenant-1" },
+    );
+    expect(rec.captured).toHaveLength(0);
   });
 });

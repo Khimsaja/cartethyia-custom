@@ -1,7 +1,6 @@
 // Cross-process cache coordination: a shared L2 in front of Postgres.
 //
-// Every hot read in the request path is cached in-process (see
-// `documentation/research/iomemory/01-request-path-census.md`). That is correct
+// Every hot read in the request path is cached in-process. That is correct
 // for one process and wrong for several: `main.ts` sets `reusePort: true`, so N
 // gateway processes each hold their own copy. With no shared layer, a key
 // revoked through the console stays valid for up to a full TTL in every other
@@ -34,12 +33,16 @@ const INVALIDATION_CHANNEL = "cartethyia:cache:invalidate";
  * collide, and so a `FLUSHDB`-free deploy can drop one namespace without
  * touching another.
  */
-export type SharedCacheNamespace = "auth" | "preferences" | "credential" | "routing";
+export type SharedCacheNamespace = "auth" | "preferences" | "credential" | "routing" | "public-models";
 
 const NAMESPACE_PREFIX: Readonly<Record<SharedCacheNamespace, string>> = {
   auth: "cartethyia:cache:auth:",
   preferences: "cartethyia:cache:prefs:",
   credential: "cartethyia:cache:cred:",
+  // Never read or written as a value either — the model listing is cached
+  // in-process and rebuilt from the catalog. Only the invalidation notice
+  // uses this namespace.
+  "public-models": "cartethyia:cache:pubmodels:",
   // Never read or written as a value — the routing snapshot is 11 SELECTs of
   // derived data and is far too large to round-trip through Redis. This prefix
   // exists only so the namespace is a closed union.

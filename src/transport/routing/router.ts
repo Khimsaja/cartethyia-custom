@@ -25,23 +25,16 @@ import {
 import { planAllowsCandidate } from "./plan-gate";
 import { InMemoryAdmissionController, admissionKey } from "./admission";
 import { ReservationManager } from "./reservations";
-import { getOrCreateRoundRobin, RoundRobinState } from "./round-robin";
+import { createRoundRobinMap, RoundRobinState } from "./round-robin";
+import {
+  lookupRouteCandidates,
+  parseModelReference,
+  routeCandidateIndex,
+} from "./candidate-index";
 import { totalRemainingCredit, totalRemainingPercent, type ProviderQuotaWindow } from "../../providers/quota/quota-contracts";
 import { getCachedQuotaEntry, quotaLens } from "../../console/quota/cache";
 import type { RedisClient } from "../../persistence/redis";
 import { sharedClaudeSlowLanes } from "../../providers/integrations/claude/claude-slow-lane";
-
-function parseModel(model: string): { providerId: string | null; bare: string } {
-  const slash = model.indexOf("/");
-  if (slash === -1) return { providerId: null, bare: model };
-  return { providerId: model.slice(0, slash), bare: model.slice(slash + 1) };
-}
-
-function candidateMatches(candidate: RouteCandidate, model: string): boolean {
-  const parsed = parseModel(model);
-  if (parsed.providerId === null) return candidate.model_id === parsed.bare;
-  return candidate.model_id === parsed.bare && candidate.provider_id === parsed.providerId;
-}
 
 /**
  * True when the account's remaining allowance is at or below its provider's
@@ -226,10 +219,10 @@ function spreadDeadline(cooldownUntil: number | undefined): { cooldown_until?: n
  * The soonest moment a quota window the caller is blocked on refills.
  *
  * A usage-floor exclusion is time-bounded by construction — the floor compares
- * the *remaining* allowance, and the window states when that allowance resets —
- * but the exclusion used to carry no deadline, so `plan()` could not tell a
- * client how long to wait and `earliestResetMs` reported nothing. The minimum
- * across windows, for the same reason `earliestResetMs` takes it: the account
+ * the *remaining* allowance, and the window states when that allowance resets.
+ * The exclusion carries a deadline so `plan()` can tell a client how long to
+ * wait and `earliestResetMs` reports a value. The minimum across windows, for
+ * the same reason `earliestResetMs` takes it: the account
  * can serve again as soon as its first window refills, so quoting the slowest
  * would hold the client off longer than necessary.
  *
@@ -317,9 +310,8 @@ export class EligibilityEvaluator {
       return { eligible: false, reason: "model_cooldown", candidate, ...spreadDeadline(state.cooldown_until) };
     if (state.health_status === "cooldown" && state.cooldown_kind === "hard")
       return { eligible: false, reason: "cooldown_hard", candidate, ...spreadDeadline(state.cooldown_until) };
-    // The floor is checked here, not after selection: the old minimum-balance
-    // feature computed the number and never consulted it, so an account below
-    // its floor still won the route. An account with no reading is left
+    // The floor is checked here, not after selection: an account below its
+    // floor must not win the route. An account with no reading is left
     // eligible — a missing quota fetch is not proof the allowance is gone.
     if (belowUsageFloor(state))
       return {
@@ -353,8 +345,8 @@ export class EligibilityEvaluator {
 }
 
 export class RoutingEngine {
-  private readonly _roundRobinByCombo = new Map<string, RoundRobinState>();
-  private readonly _roundRobinByProvider = new Map<string, RoundRobinState>();
+  private readonly _roundRobinByCombo = createRoundRobinMap();
+  private readonly _roundRobinByProvider = createRoundRobinMap();
   private readonly eligibility = new EligibilityEvaluator();
   private readonly reservations = new ReservationManager();
 
@@ -364,11 +356,19 @@ export class RoutingEngine {
   ) {}
 
   private getRoundRobin(key: string): RoundRobinState {
-    return getOrCreateRoundRobin(this._roundRobinByCombo, key);
+    const existing = this._roundRobinByCombo.get(key);
+    if (existing) return existing;
+    const created = new RoundRobinState();
+    this._roundRobinByCombo.set(key, created);
+    return created;
   }
 
   private getProviderRoundRobin(key: string): RoundRobinState {
-    return getOrCreateRoundRobin(this._roundRobinByProvider, key);
+    const existing = this._roundRobinByProvider.get(key);
+    if (existing) return existing;
+    const created = new RoundRobinState();
+    this._roundRobinByProvider.set(key, created);
+    return created;
   }
 
   /** Observable bounded-collection sizes for the runtime metrics sampler. */
@@ -376,11 +376,20 @@ export class RoutingEngine {
     return { combo: this._roundRobinByCombo.size, provider: this._roundRobinByProvider.size };
   }
 
-  /** Live admission counters by `provider:model[:account]` bucket. */
-  async accountInflightSnapshot(): Promise<ReadonlyMap<string, number>> {
-    // Both controllers hand back a fresh map, so no defensive copy here —
-    // this feeds an admin read, not a mutation site.
-    return (await this.admission.snapshotAccountInflight?.()) ?? new Map();
+  /**
+   * Live admission counters for the buckets the given candidates draw from.
+   *
+   * Takes candidates rather than returning a fleet-wide snapshot: the scoped
+   * read is what keeps `plan()` off Redis `KEYS` (the fleet-wide read had no
+   * other implementation) and bounds the console's per-provider read to the
+   * accounts it will actually report on. Both controllers hand back a fresh
+   * map, so no defensive copy here — this feeds an admin read, not a mutation
+   * site.
+   */
+  async accountInflightSnapshot(
+    candidates: readonly RouteCandidate[],
+  ): Promise<ReadonlyMap<string, number>> {
+    return this.admission.readAccountInflight(candidates);
   }
 
   /**
@@ -403,7 +412,12 @@ export class RoutingEngine {
       (candidate) => typeof candidate.max_inflight === "number" && candidate.max_inflight > 0,
     );
     if (bounded.length === 0) return new Set();
-    const snapshot = await this.accountInflightSnapshot().catch(() => new Map<string, number>());
+    // Only the bounded candidates can be saturated, so only their buckets are
+    // read. A failed ordering read must never fail routing — the admission
+    // attempt itself is the real gate; this read only optimizes attempt order.
+    const snapshot = await this.accountInflightSnapshot(bounded).catch(
+      () => new Map<string, number>(),
+    );
     if (snapshot.size === 0) return new Set();
     const saturated = new Set<RouteCandidate>();
     for (const candidate of bounded) {
@@ -487,8 +501,8 @@ export class RoutingEngine {
    * Stamps each account with its provider's usage floor and the quota reading
    * the console last fetched, so eligibility can reject an account that has
    * spent down to the floor. The reading is the live cache, not the route
-   * snapshot: a snapshot rebuilt every few minutes would route on a stale
-   * balance, which is how the old floor let a spent account through.
+   * snapshot: a snapshot rebuilt every few minutes routes on a stale balance
+   * and lets a spent account through.
    */
   private async applyUsageFloor(
     candidates: readonly RouteCandidate[],
@@ -598,10 +612,10 @@ export class RoutingEngine {
           d.reason === "model_cooldown" ||
           // A usage-floor exclusion whose window states a reset is the same
           // shape as the two above: the account is resting until a named
-          // instant, not broken. It used to fall through to 503, which told
-          // the client the model was down while every account serving it was
-          // merely waiting for its window to refill — the "503 DOWN while the
-          // model is allowed" report again. Only a floor with *no* stated
+          // instant, not broken. Falling through to 503 tells the client the
+          // model is down while every account serving it is merely waiting for
+          // its window to refill — the "503 DOWN while the model is allowed"
+          // report again. Only a floor with *no* stated
           // reset stays unavailable: there is nothing to retry against yet.
           (d.reason === "quota_exhausted" && typeof d.cooldown_until === "number"),
       );
@@ -793,16 +807,23 @@ export class RoutingEngine {
       ? combo.members.flatMap((name) => expandMember(name, new Set([resolved.model])))
       : [resolved.model];
     const modelIds = [...new Set(rawModelIds)];
-    let matching = snapshot.candidates.filter(
-      (candidate) =>
-        modelIds.some((id) => candidateMatches(candidate, id)) &&
-        (candidate.tenant_id == null || candidate.tenant_id === tid),
-    );
+    // One index build per snapshot (cached on the immutable snapshot), one
+    // lookup per unique resolved model. The previous shape rescanned every
+    // candidate per model — O(C×K) string parses per plan — which was the
+    // quadratic cost the catalog rebuild had already paid once and the request
+    // path was paying again on every plan.
+    const index = routeCandidateIndex(snapshot);
+    const parsedModels = modelIds.map((id) => ({ id, parsed: parseModelReference(id) }));
+    let matching = parsedModels.flatMap((entry) => lookupRouteCandidates(index, entry.parsed, tid));
+    // Preserve the resolver's flatten-then-dedupe contract: one candidate can
+    // serve two member groups only via a combo listing the same model twice,
+    // and the plan must not dial it twice.
+    matching = [...new Set(matching)];
     let unmatchedMembers: readonly string[] = [];
     if (combo) {
-      const perId = modelIds.map((id) => ({
-        id,
-        group: matching.filter((c) => candidateMatches(c, id)),
+      const perId = parsedModels.map((entry) => ({
+        id: entry.id,
+        group: lookupRouteCandidates(index, entry.parsed, tid),
       }));
       unmatchedMembers = perId.filter((entry) => entry.group.length === 0).map((entry) => entry.id);
       const groups = perId.map((entry) => entry.group).filter((g) => g.length > 0);
@@ -828,7 +849,15 @@ export class RoutingEngine {
       const admitted = await this.admission.admit(candidate);
       if (admitted.admitted) return this.reservations.acquire(candidate, plan.revision);
     }
-    throw capacityExhaustedError();
+    // Last candidate's identity names the provider the plan was actually for;
+    // every candidate shares it, so any one of them is representative.
+    const last = plan.candidates[plan.candidates.length - 1];
+    throw capacityExhaustedError({
+      ...(last?.provider_id !== undefined ? { providerId: last.provider_id } : {}),
+      ...(plan.resolved_model !== undefined ? { model: plan.resolved_model } : {}),
+      candidateCount: plan.candidates.length,
+      ...(last?.max_inflight !== undefined ? { maxInflight: last.max_inflight } : {}),
+    });
   }
   async release(reservation: Reservation): Promise<void> {
     await this.admission.release(reservation);

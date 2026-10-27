@@ -46,6 +46,7 @@ import {
 import { createTokenCountHandler } from "../transport/dispatch/token-count";
 
 import { createTransportPipeline } from "../transport/guards/pipeline";
+import { defaultProcessConcurrencyController } from "../transport/guards/concurrency-guard";
 import { createDrainHandler, isLoopbackPeer, tokenMatches } from "../transport/drain-endpoint";
 import { createConsoleAccountResetHandler } from "../console/auth/account-reset";
 import { resetConsoleAuthState } from "../console/auth/account-reset-store";
@@ -81,7 +82,7 @@ import type { ShutdownDrainSource } from "../transport/contracts";
  * discriminant narrows `deps` to `ProductionAppDeps`. Listing them here would
  * let a caller pass a value the shell silently ignores.
  */
-export interface GatewayShellDeps {
+interface GatewayShellDeps {
   readonly mode: "route-only";
   readonly dashboardDist?: string;
   readonly checkDb?: () => Promise<void>;
@@ -160,7 +161,7 @@ export interface ProductionAppDeps {
 }
 
 /** Either app mode. The discriminant decides which builder path runs. */
-export type GatewayAppDeps = GatewayShellDeps | ProductionAppDeps;
+type GatewayAppDeps = GatewayShellDeps | ProductionAppDeps;
 
 function checkDatabaseConnection(): Promise<void> {
   return getDbHandle()
@@ -245,6 +246,10 @@ export function createGatewayApp(deps: GatewayAppDeps) {
     deps.mode === "production" ? deps.shutdownCoordinator : undefined,
   );
   deps.runtimeMetricsSampler?.bindInFlight(() => requestStateStore.inFlightCount());
+  // The concurrency ceiling is derived (memory limit ÷ body budget), so it is
+  // published as a gauge: an operator reading "shedding at 16 in flight" needs
+  // to see that 16 IS the limit on this box, not that the process is broken.
+  deps.runtimeMetricsSampler?.bindConcurrencyLimit(defaultProcessConcurrencyController.limit());
   // Shutdown ordering: abort in-flight proxy controllers first so the
   // bounded drain observes cancellation and finalizers run before
   // telemetry flush and pool close. The reason is threaded through so the
@@ -265,7 +270,17 @@ export function createGatewayApp(deps: GatewayAppDeps) {
   const INFLIGHT_BACKSTOP_INTERVAL_MS = 30_000;
   const INFLIGHT_BACKSTOP_GRACE_MS = 30_000;
   const INFLIGHT_BACKSTOP_HARD_GRACE_MS = 120_000;
-  if (deps.mode === "production") deps.scheduledTasks?.register({
+  // Registered in every mode, not just production. The gauge is the operator's
+  // concurrency signal, and a cancelled request that never ran a finalizer
+  // leaves its flight behind — gating the only thing that reaps those on
+  // production made a permanently wrong count depend on how the gateway was
+  // started. The registry exists in every mode, so there is no mode where
+  // running this is wrong.
+  // `scheduledTasks` is declared on the production shape only, so it is
+  // narrowed rather than reached through the union — a shell composition
+  // without the registry simply skips the backstop, exactly as before.
+  const backstopTasks = "scheduledTasks" in deps ? deps.scheduledTasks : undefined;
+  backstopTasks?.register({
     name: "inflight-backstop",
     intervalMs: INFLIGHT_BACKSTOP_INTERVAL_MS,
     run: () => {
@@ -426,6 +441,16 @@ export function createGatewayApp(deps: GatewayAppDeps) {
       telemetry: deps.telemetryBuffer,
       ...(deps.modelStrikes ? { modelStrikes: deps.modelStrikes } : {}),
       ...(deps.consoleApi?.redis ? { redis: deps.consoleApi.redis } : {}),
+      // Bound at construction so the guard holds the sampler's live snapshot
+      // rather than a value captured at boot.
+      ...(deps.runtimeMetricsSampler
+        ? { memorySnapshot: () => deps.runtimeMetricsSampler?.memorySnapshot() }
+        : {}),
+      // Reads the cached route snapshot, which the settings route invalidates
+      // when the switch is saved — so flipping it takes effect on the next
+      // request and adds no query to the proxy path.
+      isInvokeDisabled: async (tenantId) =>
+        (await deps.snapshotService.getSnapshot())?.invokeDisabledTenants?.has(tenantId),
     });
     transportPipeline.mountRoot(app);
     const proxyDeps: ProviderProxyHandlerDeps = {
@@ -661,10 +686,14 @@ export function createGatewayApp(deps: GatewayAppDeps) {
       const tasks = deps.scheduledTasks;
       const token = deps.drainToken;
       app.post("/admin/tasks/:name/run", async ({ request, params }) => {
+        // `policy_rejected`, not `invalid_request`: the request may be perfectly
+        // well-formed. What refused it is where it came from — the client asked
+        // for something only the local host may ask. `invalid_request` told an
+        // operator to fix the body, when the body was never the problem.
         if (!isLoopbackPeer(peerAddresses.get(request) ?? null))
-          throw new GatewayError("invalid_request", 403, "task trigger is only available from loopback");
+          throw new GatewayError("policy_rejected", 403, "task trigger is only available from loopback");
         if (!tokenMatches(request.headers.get("x-drain-token"), token))
-          throw new GatewayError("invalid_request", 401, "invalid drain token");
+          throw new GatewayError("authentication_failed", 401, "invalid drain token");
         const name = params.name;
         if (!tasks.names().includes(name))
           throw new GatewayError("invalid_request", 404, `no such task: ${name}`);
@@ -700,7 +729,7 @@ export function createGatewayApp(deps: GatewayAppDeps) {
       createShareRouter({
         db: deps.db,
         shareStore: new DrizzleShareLinkStore(deps.db),
-        stats: createShareStatsPort({ redis: deps.consoleApi?.redis }),
+        stats: createShareStatsPort({ db: deps.db, redis: deps.consoleApi?.redis }),
         resolveClientIp: (request) => {
           const peer = peerAddresses.get(request);
           return peer

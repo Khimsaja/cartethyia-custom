@@ -72,6 +72,9 @@ export const queryKeys = {
     /** On-disk telemetry and payload sizes, and the reclaim actions. */
     diskUsage: ["console", "settings", "disk-usage"] as const,
   },
+  remoteSupport: {
+    status: ["console", "remote-support", "status"] as const,
+  },
   cliTools: {
     registry: ["console", "cli-tools", "registry"] as const,
     statuses: ["console", "cli-tools", "statuses"] as const,
@@ -85,5 +88,14 @@ export const queryKeys = {
     all: ["console", "quota"] as const,
     account: (accountId: string) => ["console", "quota", "account", accountId] as const,
     resets: (accountId: string) => ["console", "quota", "account", accountId, "resets"] as const,
+  },
+  /**
+   * InferHub market data. Deliberately has **no** `refetchInterval` anywhere it
+   * is used: price and availability are read when an operator opens a page, not
+   * polled in the background.
+   */
+  inferhub: {
+    summary: ["console", "inferhub", "summary"] as const,
+    models: (prefix?: string) => ["console", "inferhub", "models", prefix ?? "all"] as const,
   },
 } as const;

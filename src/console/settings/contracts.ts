@@ -7,6 +7,10 @@ import { t } from "elysia";
 import type { AccessDecision } from "../../security/access-control";
 import type { RedisBackend } from "../../persistence/redis";
 import type { ConsoleSettingsPreferences } from "../../persistence/schema";
+import { RTK_LEVELS } from "../../transport/request/rtk/rtk-constants";
+import { PONYTAIL_LEVELS } from "../../transport/request/rtk/ponytail-prompt";
+
+export { RTK_LEVELS, PONYTAIL_LEVELS };
 
 export interface RuntimeSettingsResponse {
   readonly redisBackendActual: RedisBackend;
@@ -33,13 +37,45 @@ export interface RuntimeSettingsResponse {
    * cooldown is still recorded and still recovered by the sweep.
    */
   readonly forceDisableCooldown: boolean;
+  /**
+   * Stops every invoke and route for this tenant while on. The console stays
+   * reachable so the switch can be turned back off from the UI that set it.
+   */
+  readonly invokeDisabled: boolean;
+  /**
+   * Slack above every key's concurrency limit; `null` means none. The
+   * effective ceiling is `maxConcurrentRequests + concurrencyTolerance`.
+   */
+  readonly concurrencyTolerance: number | null;
   /** Per-tenant upstream request timeout in seconds; null means deployment default. */
   readonly upstreamTimeoutSeconds: number | null;
-  /** Per-tenant telemetry compaction age in days; null means deployment default. */
+  /** Captured payload detail lifetime in minutes; null means deployment default. */
   readonly telemetryWindowMinutes: number | null;
   /** Per-tenant inline attachment ceiling in bytes; null means deployment default. */
   readonly imageClampMaxBytes: number | null;
   readonly updatedAt: string;
+  /*
+   * What each `null` actually resolves to, in the same units the row stores.
+   *
+   * A row that says "Deployment default" without the number makes the operator
+   * guess, and the guess is the one thing they cannot check from here: the
+   * value lives in an env var on a server they are not looking at. Sent in the
+   * same response rather than mirrored in the client, because a copied number
+   * is right until someone changes the deployment — then it lies quietly.
+   */
+  readonly defaults: RuntimeSettingsDefaults;
+}
+
+/** The deployment-level values a `null` runtime setting falls back to. */
+export interface RuntimeSettingsDefaults {
+  /** Seconds; from `CARTETHYIA_UPSTREAM_TIMEOUT_MS`. */
+  readonly upstreamTimeoutSeconds: number;
+  /** Minutes; what the payload store expires frames after. */
+  readonly telemetryWindowMinutes: number;
+  /** Bytes; the inline attachment ceiling. */
+  readonly imageClampMaxBytes: number;
+  /** Days; how long raw event files are kept. */
+  readonly telemetryRetentionDays: number;
 }
 
 /**
@@ -63,6 +99,17 @@ export interface RuntimeSettingsConfig {
   readonly store: RuntimeSettingsStore;
   readonly accessResolver: ConsoleAccessResolver;
   readonly auditSink?: AuditSink;
+  /**
+   * Structurally satisfied by `InMemoryRouteSnapshotService`.
+   *
+   * Two preferences here are read on the request path, not per request: the
+   * route snapshot reads `forceDisableCooldown` when it builds candidates, and
+   * the admission path reads `tenantConcurrencyLimit`. The snapshot is cached
+   * until something invalidates it, so without this a saved setting stays
+   * invisible to `/v1/*` until some unrelated console write happens to
+   * invalidate — the toggle looks broken while the row is already correct.
+   */
+  readonly snapshotInvalidator?: { invalidate(): unknown };
 }
 
 
@@ -78,10 +125,8 @@ export type TelemetryPayloadDepth = (typeof TELEMETRY_PAYLOAD_DEPTHS)[number];
 export const PRIVACY_MODES = ["masked", "full"] as const;
 /** Provider/model label privacy accepted by the runtime-settings PATCH. */
 export type PrivacyMode = (typeof PRIVACY_MODES)[number];
-export const PONYTAIL_LEVELS = ["lite", "full", "ultra"] as const;
 /** PonyTail directive intensity accepted by the runtime-settings PATCH. */
 export type PonyTailLevel = (typeof PONYTAIL_LEVELS)[number];
-export const RTK_LEVELS = ["lite", "full", "ultra"] as const;
 /** RTK prune strength accepted by the runtime-settings PATCH. */
 export type RtkLevel = (typeof RTK_LEVELS)[number];
 
@@ -140,6 +185,15 @@ export function createRuntimeSettingsOperations(deps: RuntimeSettingsConfig) {
           target: a.tenantId,
           detail: patch as Record<string, unknown>,
         });
+        // Saved preferences are routing changes: `forceDisableCooldown` decides
+        // candidate eligibility, `tenantConcurrencyLimit` decides admission, and
+        // `invokeDisabled` decides whether the request is refused at all — all
+        // three read from the cached route snapshot. Invalidate after the write
+        // commits so the next `/v1/*` request uses them instead of the revision
+        // that was built before the save. A failure here must not fail
+        // the save — the row is already correct, and the snapshot rebuilds on
+        // the next read anyway.
+        await Promise.resolve(deps.snapshotInvalidator?.invalidate()).catch(() => undefined);
         return updated;
       },
   };
@@ -178,6 +232,10 @@ export const runtimeUpdateBody = t.Object({
    * rejected here rather than silently clamped on the way in.
    */
   forceDisableCooldown: t.Optional(t.Boolean()),
+  invokeDisabled: t.Optional(t.Boolean()),
+  concurrencyTolerance: t.Optional(
+    t.Union([t.Null(), t.Number({ minimum: 0, maximum: 1024 })]),
+  ),
   upstreamTimeoutSeconds: t.Optional(
     t.Union([t.Null(), t.Number({ minimum: 5, maximum: 600 })]),
   ),

@@ -13,6 +13,23 @@ import { trackMemoryUsage } from "./performance-metrics";
 import { log } from "./logger";
 import { resolveMemoryLimitOverrideBytes } from "../config/timeouts";
 import { CONFIG_SPEC, readFlag } from "../config/spec";
+import type { TelemetryBacklogSnapshot } from "./telemetry-buffer";
+/**
+ * The memory figures a shed decision needs.
+ *
+ * Published once per sample instead of re-measured per request:
+ * `process.memoryUsage()` is not free, and the headroom guard runs on every
+ * request. A snapshot up to one sample interval old is the right trade — the
+ * guard is protecting against a spike that arrives over seconds, not one
+ * request's worth of allocation.
+ */
+export interface RuntimeMemorySnapshot {
+  readonly rssBytes: number;
+  /** The resolved limit; `undefined` when none could be discovered. */
+  readonly limitBytes: number | undefined;
+  readonly sampledAtMs: number;
+}
+
 /** Live collection sizes sampled alongside process memory. */
 export interface RuntimeMetricSources {
   readonly routingRoundRobinEntries: () => { readonly combo: number; readonly provider: number };
@@ -22,6 +39,11 @@ export interface RuntimeMetricSources {
    * identities, so its size is the leak signal to watch.
    */
   readonly ipAbuseKeys: () => number;
+  /**
+   * The telemetry backlog's current shape, or `undefined` when no buffer is
+   * wired (tests, and the console-only shell).
+   */
+  readonly telemetryBacklog?: () => TelemetryBacklogSnapshot | undefined;
   /** Tracked keys in the in-process quota cache tier (0 when Redis-only paths are idle). */
   readonly quotaCacheEntries: () => number;
 
@@ -93,6 +115,13 @@ export class RuntimeMetricsSampler {
   private lastIdleGcAt = 0;
   private rssAtLastGc = 0;
   private inFlightSource: () => number = () => 0;
+  /**
+   * The latest snapshot, published once per sample. Stays undefined until the
+   * first sample runs; consumers must treat that as "unknown", not as zero.
+   */
+  private snapshot: RuntimeMemorySnapshot | undefined;
+  /** The effective concurrency ceiling, published alongside the gauges. */
+  private concurrencyLimit: number | undefined;
 
   /**
    * Binds the live in-flight count after the request state store exists. The
@@ -100,6 +129,28 @@ export class RuntimeMetricsSampler {
    */
   bindInFlight(source: () => number): void {
     this.inFlightSource = source;
+  }
+
+  /**
+   * The last sampled memory state, for consumers on a hot path.
+   *
+   * Undefined before the first sample: a guard that read zero as "plenty of
+   * room" would disable itself exactly when it matters, so callers must fall
+   * back to their own judgement when this is absent.
+   */
+  memorySnapshot(): RuntimeMemorySnapshot | undefined {
+    return this.snapshot;
+  }
+
+  /**
+   * Publishes the effective concurrency ceiling.
+   *
+   * Late-bound like `bindInFlight`: the ceiling is derived from the memory
+   * limit, which is known here, but the guard that owns it is constructed in
+   * the transport layer.
+   */
+  bindConcurrencyLimit(limit: number): void {
+    this.concurrencyLimit = limit;
   }
 
   constructor(
@@ -125,6 +176,11 @@ export class RuntimeMetricsSampler {
     metrics.cartethyia_memory_heap_used_bytes.set(memory.heapUsed);
     metrics.cartethyia_memory_heap_total_bytes.set(memory.heapTotal);
     metrics.cartethyia_memory_limit_bytes.set(this.limitBytes ?? 0);
+    this.snapshot = {
+      rssBytes: memory.rss,
+      limitBytes: this.limitBytes,
+      sampledAtMs: Date.now(),
+    };
     trackMemoryUsage("rss", memory.rss);
     trackMemoryUsage("heap_used", memory.heapUsed);
     trackMemoryUsage("heap_total", memory.heapTotal);
@@ -136,6 +192,15 @@ export class RuntimeMetricsSampler {
     metrics.cartethyia_ip_abuse_keys.set(this.sources.ipAbuseKeys());
     metrics.cartethyia_quota_cache_entries.set(this.sources.quotaCacheEntries());
     metrics.cartethyia_model_catalog_entries.set(this.sources.modelCatalogEntries());
+    metrics.cartethyia_process_in_flight.set(this.inFlightSource());
+    const backlog = this.sources.telemetryBacklog?.();
+    if (backlog !== undefined) {
+      metrics.cartethyia_telemetry_backlog_items.set(backlog.items);
+      metrics.cartethyia_telemetry_backlog_bytes.set(backlog.bytes);
+    }
+    if (this.concurrencyLimit !== undefined) {
+      metrics.cartethyia_process_concurrency_limit.set(this.concurrencyLimit);
+    }
 
     this.checkPressure(memory.rss);
     this.checkIdleReclaim(memory.rss);
@@ -170,9 +235,14 @@ export class RuntimeMetricsSampler {
    * A synchronous full collection is safe here because no request is in flight to
    * stall, and it is the only form that actually returns pages to the OS; the
    * async form used under pressure does not.
+   *
+   * Not gated on `gcOnPressure` the way `checkPressure` is. The opt-in exists
+   * because a synchronous collection stalls concurrent requests, and this path
+   * only runs when there is nothing in flight to stall — so the reason the flag
+   * is off does not apply to it. Gating it meant a gateway with no traffic at
+   * all never reclaimed anything and held its startup peak for hours.
    */
   private checkIdleReclaim(rss: number): void {
-    if (!this.gcOnPressure) return;
     if (this.inFlightSource() > 0) return;
     const now = Date.now();
     if (now - this.lastIdleGcAt < IDLE_GC_WINDOW_MS) return;

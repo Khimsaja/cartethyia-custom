@@ -12,6 +12,7 @@
  * because a second list is the thing that drifts.
  */
 import { describe, expect, test } from "bun:test";
+import { Value } from "typebox/value";
 import { runtimeUpdateBody } from "../../src/console/settings/contracts";
 import type { UpdateRuntimeSettingsRequest } from "../../src/console/settings/contracts";
 
@@ -33,6 +34,8 @@ const REQUEST_KEYS: readonly (keyof UpdateRuntimeSettingsRequest)[] = [
   "ponyTailEnabled",
   "ponyTailLevel",
   "forceDisableCooldown",
+  "invokeDisabled",
+  "concurrencyTolerance",
   "upstreamTimeoutSeconds",
   "telemetryWindowMinutes",
   "imageClampMaxBytes",
@@ -69,10 +72,20 @@ describe("runtimeUpdateBody", () => {
   test("null is accepted for the numeric overrides", () => {
     // "Deployment default" is sent as null. Rejecting it would make clearing an
     // override impossible, which is a different bug with the same symptom.
-    const nullable = ["upstreamTimeoutSeconds", "telemetryWindowMinutes", "imageClampMaxBytes"];
+    const nullable = [
+      "upstreamTimeoutSeconds",
+      "telemetryWindowMinutes",
+      "imageClampMaxBytes",
+    ];
     for (const key of nullable) {
-      const schema = (runtimeUpdateBody.properties as Record<string, { anyOf?: unknown[] }>)[key];
-      expect(schema).toBeDefined();
+      expect(Value.Check(runtimeUpdateBody, { [key]: null })).toBe(true);
+      const value = key === "imageClampMaxBytes" ? 64 * 1024 : 60;
+      expect(Value.Check(runtimeUpdateBody, { [key]: value })).toBe(true);
+      expect(Value.Check(runtimeUpdateBody, { [key]: "60" })).toBe(false);
     }
+  });
+
+  test("the separate payload retention override is no longer accepted", () => {
+    expect(SCHEMA_KEYS).not.toContain("telemetryPayloadRetentionMinutes");
   });
 });

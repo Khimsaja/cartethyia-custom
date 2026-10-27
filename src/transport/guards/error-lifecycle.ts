@@ -6,12 +6,14 @@ import { GATEWAY_SECURITY_HEADERS } from "../../security/outbound-headers";
 import type { TelemetryBatchBuffer, TelemetryEventInput } from "../../observability/telemetry-buffer";
 import type { TelemetryPayloadCapture } from "../../observability/payload-capture";
 import { captureEarlyRejectionPayload } from "./early-rejection-capture";
+import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import { reasoningEffortFromIntent } from "../../providers/provider-reasoning";
 import { metrics } from "../../observability/metrics";
 import { computeTokensPerSec } from "../../observability/token-speed";
 import { pushStructuredConsoleLog } from "../../observability/log-ring";
 import type { ConsoleLogLevel, ConsoleLogMetadata } from "../../observability/log-ring";
 import { isProxyDispatchRoute } from "./body-policy";
+import { notifyRequestCompleted } from "../../observability/request-notify";
 
 interface ElysiaBuiltinError {
   readonly status?: number;
@@ -168,6 +170,7 @@ export interface AfterResponseApp {
 export function finalizeRequestTelemetry(
   state: ProxyRequestState,
   telemetryBuffer: TelemetryBatchBuffer,
+  db?: CartethyiaDatabase,
 ): void {
   // Discovery/surface routes under `/v1` (e.g. `/v1/models`) are authenticated
   // gateway routes that never dispatch upstream. They hold request state but
@@ -218,14 +221,18 @@ export function finalizeRequestTelemetry(
     return;
   }
 
-  // An early rejection never reaches `completeAttempt`, which is the only
-  // caller that used to write a payload frame — so a 400 from ingress, auth,
-  // parse, or the preparer produced a request row whose four capture panels
-  // were all empty, and the one case an operator most wants to read (what did
-  // the client actually send?) had nothing to read. Capture the ingress body
-  // and the error the client saw, keyed to the same request id as the row.
+  // An early rejection never reaches `completeAttempt`, the caller that writes
+  // a payload frame — so a 400 from ingress, auth, parse, or the preparer would
+  // produce a request row whose four capture panels were all empty, and the one
+  // case an operator most wants to read (what did the client actually send?)
+  // would have nothing to read. Capture the ingress body and the error the
+  // client saw, keyed to the same request id as the row.
   if (requestData === undefined && state.ingressBody !== undefined) {
-    void captureEarlyRejectionPayload(state, authorization);
+    // `deps.db` so the helper resolves the tenant's capture mode through the
+    // same preference path every dispatched request uses — without it, an
+    // early rejection captured bodies with the deployment default regardless
+    // of the tenant's `none`/`metadata` choice.
+    void captureEarlyRejectionPayload(state, authorization, db);
   }
 
   telemetryBuffer.enqueue(
@@ -236,6 +243,12 @@ export function finalizeRequestTelemetry(
       tokensPerSec,
     }),
   );
+  notifyRequestCompleted({
+    tenantId: authorization.tenantId,
+    requestId: state.requestId,
+    status,
+    httpStatus: requestStatus,
+  });
 }
 
 /** Console-log severity for a terminal request status. */
@@ -380,6 +393,8 @@ export function registerTelemetryLifecycle(
      * telemetry row without a payload frame rather than failing.
      */
     readonly payloadCapture?: TelemetryPayloadCapture;
+    /** Database handle for early-rejection capture-mode resolution. */
+    readonly db?: CartethyiaDatabase;
   },
 ): void {
   app.afterResponse(async ({ request }) => {
@@ -399,7 +414,7 @@ export function registerTelemetryLifecycle(
       // finalizer for requests that never reached completion (early
       // rejections). Cleanup below must still run for completed requests:
       // skipping it leaks one in-flight count per request, forever.
-      if (!state.completed) finalizeRequestTelemetry(state, deps.telemetryBuffer);
+      if (!state.completed) finalizeRequestTelemetry(state, deps.telemetryBuffer, deps.db);
     } finally {
       state.cleanup();
     }

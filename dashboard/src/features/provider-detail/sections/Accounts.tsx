@@ -1,6 +1,5 @@
 import {
   Activity,
-  ChevronDown,
   Download,
   FlaskConical,
   KeyRound,
@@ -11,8 +10,9 @@ import {
   RotateCcw,
   Search,
   Trash2,
+  X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { consoleRequest, getErrorMessage } from "../../../data/api";
 import { accountErrorLabel, authInvalidatedLabel, showsErrorPill } from "../../../lib/format/labels";
@@ -41,6 +41,7 @@ import { queryKeys } from "../../../data/query-keys";
 import {
   assignAccountNames,
   chunkCredentials,
+  detectCrossChannelCredential,
   jwtExpiresAt,
   MAX_ACCOUNTS_PER_BATCH_REQUEST,
   parseCredentialBatch,
@@ -77,9 +78,9 @@ function credentialExpiryLabel(expiresAt: string | undefined): string | undefine
  *
  * A model-scoped throttle excludes only the (account, model) pair in the
  * routing catalog, so it is independent of the account-wide status: it can be
- * in force while the account reads `active`, `cooldown`, or `disabled`. Each
- * arm used to render its own chip list, which is how the `disabled` arm lost
- * the operator's last known health of the account.
+ * in force while the account reads `active`, `cooldown`, or `disabled`, so it
+ * is shared by every arm — including `disabled`, where it is the operator's
+ * last known health of the account.
  */
 function ModelCooldownChip({
   cooldowns,
@@ -512,7 +513,7 @@ function AccountRow({
             <QuotaPill windows={quota} />
             <span
               className="inline-flex items-center gap-2.5 max-w-full px-3.5 py-1 border border-inner-border rounded-chip bg-surface-1 text-text-secondary text-badge leading-normal whitespace-nowrap"
-              title="Concurrency comes from this provider’s Routing Strategy; accounts no longer carry manual ceilings."
+              title="Concurrency comes from this provider’s Routing Strategy; accounts carry no manual ceilings."
             >
               <span className="text-text-tertiary text-micro font-semibold uppercase tracking-label">In flight</span>
               {inflight?.toLocaleString() ?? "—"}
@@ -601,6 +602,7 @@ function AccountRow({
             staticToken: account.staticToken === true,
             credentialKind: account.credentialKind,
             credentialMode: account.credentialMode,
+            jwtIssuer: account.jwtIssuer,
           }}
           onClose={() => setShowHistory(false)}
         />
@@ -700,26 +702,6 @@ export function AccountsList({
    */
   const [testAllProgress, setTestAllProgress] = useState<{ done: number; total: number } | null>(null);
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
-  const [bulkMenuOpen, setBulkMenuOpen] = useState(false);
-  const bulkMenuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!bulkMenuOpen) return;
-    const onDown = (event: MouseEvent) => {
-      if (bulkMenuRef.current && !bulkMenuRef.current.contains(event.target as Node)) {
-        setBulkMenuOpen(false);
-      }
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setBulkMenuOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [bulkMenuOpen]);
 
   const normalizedQuery = query.trim().toLowerCase();
   const filtered = useMemo(() => {
@@ -895,8 +877,13 @@ const TEST_ALL_CONCURRENCY = 3;
 
   return (
     <Stack gap="8px">
-      <div className="flex min-w-0 flex-wrap items-center gap-2 p-3 border border-inner-border rounded-control bg-surface-2">
-          <label className="relative min-w-20 flex-[1_1_10rem]">
+      {/* Flat toolbar: every action is a persistent button that greys out when
+          it does not apply, instead of hiding behind a dropdown. A control that
+          appears only once you have selected accounts hides what the toolbar
+          can do, and moves the remaining buttons sideways every time the
+          selection changes. */}
+      <div className="flex min-w-0 flex-col gap-2 p-3 border border-inner-border rounded-control bg-surface-2">
+        <label className="relative w-full">
             <Search
               size={13}
               aria-hidden="true"
@@ -911,6 +898,7 @@ const TEST_ALL_CONCURRENCY = 3;
               className="pl-9"
             />
           </label>
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <Button
             size="sm"
             variant="primary"
@@ -928,115 +916,101 @@ const TEST_ALL_CONCURRENCY = 3;
               ? "Test all"
               : `Tested ${testAllProgress.done}/${testAllProgress.total}`}
           </Button>
-          <div ref={bulkMenuRef} className="relative">
-              <Button
-                size="sm"
-                variant="secondary"
-                disabled={bulkBusy || nothingSelected}
-                aria-expanded={bulkMenuOpen}
-                aria-haspopup="menu"
-                aria-label={nothingSelected ? "Select accounts to enable bulk actions" : `Bulk actions for ${selectedAccounts.length} selected accounts`}
-                onClick={() => setBulkMenuOpen((open) => !open)}
-              >
-                Actions{nothingSelected ? "" : ` (${selectedAccounts.length})`}
-                <ChevronDown size={12} aria-hidden="true" className={`transition-transform ${bulkMenuOpen ? "rotate-180" : ""}`} />
-              </Button>
-              {bulkMenuOpen && !nothingSelected ? (
-                <div
-                  role="menu"
-                  aria-label="Selected account actions"
-                  className="absolute left-0 top-full z-50 mt-1 flex w-64 popover-max flex-col gap-1 rounded-control border border-inner-border bg-popover-bg p-2 shadow-popout sm:left-auto sm:right-0"
-                >
-                  <Button
-                    role="menuitem"
-                    size="sm"
-                    variant="ghost"
-                    className="w-full justify-start"
-                    icon={<RotateCcw size={12} />}
-                    disabled={bulkBusy}
-                    onClick={() => {
-                      setBulkMenuOpen(false);
-                      void bulkRecover();
-                    }}
-                  >
-                    Recover
-                  </Button>
-                  {selectionHasDisabled ? (
-                    <Button
-                      role="menuitem"
-                      size="sm"
-                      variant="ghost"
-                      className="w-full justify-start"
-                      icon={<LockOpen size={12} />}
-                      disabled={bulkBusy}
-                      onClick={() => {
-                        setBulkMenuOpen(false);
-                        void bulkSetActive(true);
-                      }}
-                    >
-                      Enable
-                    </Button>
-                  ) : null}
-                  {selectionHasEnabled ? (
-                    <Button
-                      role="menuitem"
-                      size="sm"
-                      variant="ghost"
-                      className="w-full justify-start"
-                      icon={<PowerOff size={12} />}
-                      disabled={bulkBusy}
-                      onClick={() => {
-                        setBulkMenuOpen(false);
-                        void bulkSetActive(false);
-                      }}
-                    >
-                      Disable
-                    </Button>
-                  ) : null}
-                  <Button
-                    role="menuitem"
-                    size="sm"
-                    variant="ghost"
-                    className="w-full justify-start"
-                    icon={<Download size={12} />}
-                    disabled={bulkBusy}
-                    onClick={() => {
-                      setBulkMenuOpen(false);
-                      void bulkExport();
-                    }}
-                  >
-                    Export JSON
-                  </Button>
-                  <Button
-                    role="menuitem"
-                    size="sm"
-                    variant="danger"
-                    className="w-full justify-start"
-                    icon={<Trash2 size={12} />}
-                    disabled={bulkBusy}
-                    onClick={() => {
-                      setBulkMenuOpen(false);
-                      setBulkDeleteOpen(true);
-                    }}
-                  >
-                    Delete
-                  </Button>
-                  <Button
-                    role="menuitem"
-                    size="sm"
-                    variant="ghost"
-                    className="w-full justify-start"
-                    disabled={bulkBusy}
-                    onClick={() => {
-                      setSelected(new Set());
-                      setBulkMenuOpen(false);
-                    }}
-                  >
-                    Clear selection
-                  </Button>
-                </div>
-              ) : null}
-          </div>
+          {/* Selection-scoped actions. Each stays mounted and greys out when it
+              does not apply — `nothingSelected` and `bulkBusy` disable, they do
+              not remove — so the toolbar's shape never depends on what happens
+              to be selected. */}
+          <Button
+            size="sm"
+            variant="secondary"
+            icon={<RotateCcw size={12} />}
+            disabled={bulkBusy || nothingSelected}
+            title={
+              nothingSelected
+                ? "Select at least one account to recover it"
+                : "Clear cooldowns and retry-wait states on the selected accounts"
+            }
+            onClick={() => void bulkRecover()}
+          >
+            Recover
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            icon={<LockOpen size={12} />}
+            disabled={bulkBusy || !selectionHasDisabled}
+            title={
+              nothingSelected
+                ? "Select at least one disabled account to enable it"
+                : selectionHasDisabled
+                  ? "Enable the selected accounts"
+                  : "No selected account is currently disabled"
+            }
+            onClick={() => void bulkSetActive(true)}
+          >
+            Enable
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            icon={<PowerOff size={12} />}
+            disabled={bulkBusy || !selectionHasEnabled}
+            title={
+              nothingSelected
+                ? "Select at least one enabled account to disable it"
+                : selectionHasEnabled
+                  ? "Disable the selected accounts"
+                  : "No selected account is currently enabled"
+            }
+            onClick={() => void bulkSetActive(false)}
+          >
+            Disable
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            icon={<Download size={12} />}
+            disabled={bulkBusy || nothingSelected}
+            title={
+              nothingSelected
+                ? "Select at least one account to export"
+                : "Download the selected accounts as JSON"
+            }
+            onClick={() => void bulkExport()}
+          >
+            Export
+          </Button>
+          <Button
+            size="sm"
+            variant="danger"
+            icon={<Trash2 size={12} />}
+            disabled={bulkBusy || nothingSelected}
+            title={
+              nothingSelected
+                ? "Select at least one account to delete"
+                : `Delete ${selectedAccounts.length} selected account${selectedAccounts.length === 1 ? "" : "s"}`
+            }
+            onClick={() => setBulkDeleteOpen(true)}
+          >
+            Delete
+          </Button>
+          {/* Grok-only: the 407 streaming probe is meaningless on any other
+              provider, so it is not merely greyed out elsewhere — it is absent.
+              The actions above stay mounted because they are always meaningful
+              operations that only need a selection; this one is not an
+              operation a non-Grok provider has at all. */}
+          {showGrokProbe ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              icon={<FlaskConical size={12} className={grokProbePending ? "animate-spin" : ""} />}
+              disabled={grokProbePending || accounts.length === 0}
+              onClick={onGrokProbe}
+              title="Probe every Grok account with the live 407 streaming request"
+            >
+              {grokProbePending ? "Testing…" : "Test 407"}
+            </Button>
+          ) : null}
           <label className="inline-flex h-15 shrink-0 items-center gap-2 text-caption font-semibold text-text-secondary [&_.radix-select-trigger]:font-semibold [&_.radix-select-trigger]:bg-hover [&_.radix-select-trigger]:text-text-primary">
             <Select
               size="sm"
@@ -1055,24 +1029,25 @@ const TEST_ALL_CONCURRENCY = 3;
             />
             <span>Select</span>
           </label>
-          {showGrokProbe ? (
-            <Button
-              size="sm"
-              variant="secondary"
-              icon={<FlaskConical size={12} className={grokProbePending ? "animate-spin" : ""} />}
-              disabled={grokProbePending || accounts.length === 0}
-              onClick={onGrokProbe}
-              title="Probe every Grok account with the live 407 streaming request"
+          {/* The selection count doubles as the clear affordance, so clearing
+              does not cost a toolbar slot on every row width. */}
+          {nothingSelected ? null : (
+            <button
+              type="button"
+              onClick={() => setSelected(new Set())}
+              className="inline-flex h-15 shrink-0 items-center gap-1 rounded-control border border-inner-border px-3 text-badge font-semibold text-text-secondary hover:bg-hover"
+              title="Clear selection"
             >
-              {grokProbePending ? "Testing…" : "Test 407"}
-            </Button>
-          ) : null}
+              {selectedAccounts.length} selected
+              <X size={11} aria-hidden="true" />
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="account-list flex flex-col gap-3 max-h-230 overflow-y-auto pr-1 [container-type:inline-size] [container-name:account-list]" role="list" aria-label="Provider accounts">
-        {/* A filter that matches nothing used to render zero rows with only
-            the footer counter to explain why. Say it in the space the rows
-            would have occupied. */}
+        {/* Say why nothing matched in the space the rows would have occupied,
+            rather than leaving only the footer counter to explain it. */}
         {sorted.length === 0 ? (
           <EmptyState
             compact
@@ -1142,6 +1117,10 @@ export function AddAccountModal({
   const [secret, setSecret] = useState("");
   const [batchSubmitting, setBatchSubmitting] = useState(false);
   const [credentialMode, setCredentialMode] = useState<CredentialMode>("auto");
+  // The warning is acknowledged once per paste, not once per dialog: changing
+  // the credential after acknowledging must ask again, or the operator would
+  // confirm a token they never saw the warning for.
+  const [crossChannelAckFor, setCrossChannelAckFor] = useState<string | undefined>(undefined);
 
   const entries = parseCredentialBatch(secret);
   const isBatch = entries.length > 1;
@@ -1149,6 +1128,10 @@ export function AddAccountModal({
   const detectedKind = credentialMode === "auto" ? singleEntry?.kind : credentialMode;
   const detectedExpiry =
     singleEntry && detectedKind === "jwt" ? jwtExpiresAt(singleEntry.value) : undefined;
+  const crossChannel = entries.length > 0
+    ? detectCrossChannelCredential(providerId, secret)
+    : undefined;
+  const crossChannelPending = crossChannel !== undefined && crossChannelAckFor !== secret;
   const existingNames = accounts.map((account) => account.label);
   const batchNames = isBatch ? assignAccountNames(entries, providerId, existingNames) : [];
   const requestForEntry = (entry: ParsedCredentialEntry) => {
@@ -1218,6 +1201,10 @@ export function AddAccountModal({
 
   const handleSubmit = async () => {
     if (entries.length === 0) return;
+    // A cross-channel token must be acknowledged first: submitting is blocked,
+    // not merely warned about, because the risk is a ban the operator cannot
+    // undo and the warning is the only thing standing between them and it.
+    if (crossChannelPending) return;
     if (entries.length === 1) {
       const entry = entries[0] as ParsedCredentialEntry;
       create.mutate(
@@ -1318,7 +1305,13 @@ export function AddAccountModal({
       <>
         <Button variant="secondary" size="sm" onClick={onClose} disabled={submitting}>Cancel</Button>
         <Button size="sm" variant="primary" disabled={submitting || entries.length === 0} onClick={() => void handleSubmit()}>
-          {submitting ? "Connecting..." : isBatch ? `Add ${entries.length} Accounts` : "Add Account"}
+          {submitting
+            ? "Connecting..."
+            : crossChannelPending
+              ? "Confirm below"
+              : isBatch
+                ? `Add ${entries.length} Accounts`
+                : "Add Account"}
         </Button>
       </>
     }>
@@ -1431,6 +1424,55 @@ export function AddAccountModal({
                 </Badge>
               </div>
             ))}
+          </div>
+        )}
+        {/* Interchangeable token warning. Shown before the operator commits,
+            because the gateway cannot tell which channel issued a token — only
+            the operator knows, and using one outside its channel raises the
+            ban risk on an account they may depend on. */}
+        {crossChannel && (
+          <div
+            className="flex flex-col gap-3 rounded-control border border-warning-line bg-surface-2 px-4 py-5"
+            role="alert"
+          >
+            <div className="flex items-start gap-3">
+              <span className="inline-flex items-center flex-none px-3.5 py-px border rounded-md bg-surface-2 text-badge tabular-nums border-warning-line text-status-warning">
+                Cross-channel credential
+              </span>
+            </div>
+            <p className="text-caption text-text-primary">
+              This looks like a {crossChannel.provider} credential.{" "}
+              {crossChannel.provider} and {crossChannel.counterpart} tokens are
+              interchangeable — one works in the other — but using a token on a
+              channel it was not issued for can raise the risk of the account
+              being banned, because it appears active somewhere it never
+              authenticated. The same applies in reverse.
+            </p>
+            {crossChannelPending ? (
+              <Inline gap="8px" className="justify-end">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    setSecret("");
+                    onClose();
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  onClick={() => setCrossChannelAckFor(secret)}
+                >
+                  Add anyway
+                </Button>
+              </Inline>
+            ) : (
+              <p className="text-micro text-text-tertiary">
+                Acknowledged — you can add this account now.
+              </p>
+            )}
           </div>
         )}
       </div>

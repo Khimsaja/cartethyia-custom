@@ -1,6 +1,7 @@
 import { readdir, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { payloadDirectory, prunePayloadFrames } from "../../observability/payload-store";
+import { payloadPruneBound } from "../../observability/payload-capture";
 import type {
   DiskUsageBucket,
   DiskUsageResponse,
@@ -9,6 +10,7 @@ import type {
   ReclaimResponse,
 } from "./contracts";
 import { PurgeNotWiredError, ReclaimNotAllowedError } from "./contracts";
+import { hourStamp } from "../../shared/time";
 
 /**
  * Reads and reclaims the on-disk telemetry and payload directories, and
@@ -33,13 +35,16 @@ import { PurgeNotWiredError, ReclaimNotAllowedError } from "./contracts";
 export interface DataManagementConfig {
   readonly telemetryDir: string;
   readonly retentionDays: number;
-  readonly payloadRetentionMs: number;
   /**
-   * Whether hourly files may be dropped from the console. Off unless a caller
-   * opts in: an hourly file still inside the compaction window is the only
-   * copy of its requests, so removing one loses real history.
+   * How long a payload frame lives, for one tenant.
+   *
+   * A function of the tenant, not a number: the Request detail window in
+   * Settings is per tenant, and a single deployment-level number made this
+   * panel report the deployment default while the gateway applied the tenant's
+   * own window. The same panel then offered to reclaim frames the gateway
+   * still considered live, and left alone ones it had already expired.
    */
-  readonly allowHourlyReclaim: boolean;
+  readonly payloadRetentionMs: (tenantId: string | null) => Promise<number>;
   /**
    * The health & error log store, backing the console's only row-level purge.
    * Absent (a reduced console composition) means the purge is not offered
@@ -77,61 +82,85 @@ async function scan(
   return { bytes, files };
 }
 
-const isIndex = (name: string): boolean => name.endsWith(".index.json");
-const isHourly = (name: string): boolean => name.endsWith(".events.jsonl");
-// Both extensions: old `.jsonb` files are still on disk and still counted.
+const isEventLog = (name: string): boolean =>
+  name.endsWith(".jsonl") && !name.endsWith(".compacted.jsonl");
 const isFrame = (name: string): boolean =>
-  name.endsWith(".jsonl") || name.endsWith(".jsonb");
+  name.endsWith(".jsonl");
+
+/**
+ * A duration in minutes as the operator's own units, not raw milliseconds.
+ *
+ * An hour is "1 hour" rather than "60 min" because that is how the window was
+ * chosen — the dropdown they picked it from says "1 hour", and a note that
+ * renders the same choice as "60 min" makes the two screens disagree about
+ * what was set.
+ */
+function formatMinutes(ms: number): string {
+  const minutes = Math.round(ms / 60_000);
+  if (minutes % 1440 === 0) {
+    const days = minutes / 1440;
+    return `${days} day${days === 1 ? "" : "s"}`;
+  }
+  if (minutes % 60 === 0) {
+    const hours = minutes / 60;
+    return `${hours} hour${hours === 1 ? "" : "s"}`;
+  }
+  return `${minutes} min`;
+}
 
 /** The UTC day a telemetry file name starts with, compared to a cutoff. */
-function dayBefore(name: string, cutoff: number): boolean {
+function eventBefore(name: string, cutoff: number): boolean {
+  if (!name.endsWith(".events.jsonl")) {
+    return name.slice(0, 13) < hourStamp(new Date(cutoff));
+  }
   const at = Date.parse(`${name.slice(0, 10)}T00:00:00Z`);
   return Number.isFinite(at) && at < cutoff;
 }
 
 export function createDataManagementOperations(config: DataManagementConfig) {
   const payloadDir = (): string => payloadDirectory();
+  /**
+   * Disk usage for one tenant.
+   *
+   * `tenantId` is required because the payload window is a per-tenant setting:
+   * counting "stale" frames against the deployment default declared frames
+   * stale while the gateway still held them as live, and under-counted them
+   * for a tenant that had shortened its window.
+   */
+  async function usage(tenantId: string | null): Promise<DiskUsageResponse> {
+    const retentionMs = await config.payloadRetentionMs(tenantId);
+    const payloadCutoff = Date.now() - retentionMs;
 
-  async function usage(): Promise<DiskUsageResponse> {
-    const retentionCutoff = Date.now() - config.retentionDays * 24 * 60 * 60_000;
-    const payloadCutoff = Date.now() - config.payloadRetentionMs;
-
-    const [hourly, compacted, staleCompacted, frames, staleFrames, healthEventCount] = await Promise.all([
-      scan(config.telemetryDir, isHourly),
-      scan(config.telemetryDir, isIndex),
-      scan(config.telemetryDir, (name) => isIndex(name) && dayBefore(name, retentionCutoff)),
+    const [events, frames, staleFrames, healthEventCount] = await Promise.all([
+      scan(config.telemetryDir, isEventLog),
       scan(payloadDir(), isFrame),
       scan(payloadDir(), isFrame, payloadCutoff),
       config.healthEvents?.count(),
     ]);
 
+    /*
+     * The notes name the same knobs Operations exposes, read at request time
+     * rather than written into the copy. A fixed "15 min" was wrong the moment
+     * an operator changed the tenant's window: the panel kept quoting the
+     * deployment default while the gateway applied their number, so the one
+     * place that could correct the assumption repeated it.
+     */
     const buckets: DiskUsageBucket[] = [
       {
-        id: "telemetry_hourly",
-        label: "Daily request files",
-        bytes: hourly.bytes,
-        files: hourly.files,
-        note: "Feeds the request list and detail drawer.",
+        id: "telemetry_events",
+        label: "Request event files",
+        bytes: events.bytes,
+        files: events.files,
+        note: `Feeds the request list and detail drawer. Kept ${config.retentionDays} days.`,
         reclaimableBytes: null,
         reclaimableFiles: null,
-      },
-      {
-        id: "telemetry_compacted",
-        label: "Day indexes",
-        bytes: compacted.bytes,
-        files: compacted.files,
-        note: "Feeds usage totals, breakdowns and the chart.",
-        reclaimableBytes: staleCompacted.bytes,
-        reclaimableFiles: staleCompacted.files,
       },
       {
         id: "payload_frames",
         label: "Payload frames",
         bytes: frames.bytes,
         files: frames.files,
-        note: `Captured bodies, expiring ${Math.round(
-          config.payloadRetentionMs / 60_000,
-        )} min after write.`,
+        note: `Captured bodies, expiring ${formatMinutes(retentionMs)} after write.`,
         reclaimableBytes: staleFrames.bytes,
         reclaimableFiles: staleFrames.files,
       },
@@ -141,7 +170,7 @@ export function createDataManagementOperations(config: DataManagementConfig) {
       buckets,
       totalBytes: buckets.reduce((sum, bucket) => sum + bucket.bytes, 0),
       retentionDays: config.retentionDays,
-      payloadRetentionMs: config.payloadRetentionMs,
+      payloadRetentionMs: retentionMs,
       ...(healthEventCount === undefined ? {} : { healthEventCount }),
     };
   }
@@ -158,10 +187,7 @@ export function createDataManagementOperations(config: DataManagementConfig) {
       // written after that bound might still hold a live frame in the part
       // that failed to parse, so it is left for a later pass.
       const now = new Date();
-      const deletedFiles = await prunePayloadFrames(
-        now,
-        new Date(now.getTime() - config.payloadRetentionMs),
-      );
+      const deletedFiles = await prunePayloadFrames(now, payloadPruneBound(now));
       const after = await scan(payloadDir(), isFrame);
       return {
         action,
@@ -170,20 +196,12 @@ export function createDataManagementOperations(config: DataManagementConfig) {
       };
     }
     if (action === "telemetry_retention") {
-      // Only day indexes past retention, and only together with their events.
-      // Deleting one without the other is the failure this avoids: an index
-      // with no events reports totals for requests that are gone.
       const cutoff = Date.now() - config.retentionDays * 24 * 60 * 60_000;
       return unlinkWhere(action, config.telemetryDir, (name) =>
-        (isIndex(name) || isHourly(name)) && dayBefore(name, cutoff),
+        isEventLog(name) && eventBefore(name, cutoff),
       );
     }
-    if (!config.allowHourlyReclaim) {
-      throw new ReclaimNotAllowedError(
-        "Hourly files are the only copy of their requests until compaction folds them up, so the console will not delete them.",
-      );
-    }
-    return unlinkWhere(action, config.telemetryDir, isHourly);
+    throw new ReclaimNotAllowedError(`Unknown reclaim action: ${action}`);
   }
 
   /** The one row-level deletion the console offers. */

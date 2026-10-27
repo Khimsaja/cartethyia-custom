@@ -6,6 +6,8 @@ import { createApiKeyRoutes } from "./api-keys/routes";
 import { createModelTemplateRoutes } from "./model-templates/routes";
 import { familyBucketSpend } from "./api-keys/bucket-spend";
 import { createProviderCatalogRoutes } from "./providers/catalog/routes";
+import { createInferhubRoutes } from "./inferhub/routes";
+import { createInferhubKeyStore } from "./inferhub/key-store";
 import {
   createProviderDetailRoutes,
 } from "./providers/detail/routes";
@@ -37,11 +39,14 @@ import { createModelAbuseRoutes } from "./admin/model-abuse/routes";
 import { DrizzleAuditReadStore } from "./audit/store";
 import { createPerformanceRoutes } from "./observability/performance";
 import { createUpdateRoutes } from "./updates/routes";
+import { createRemoteSupportRoutes } from "./remote-support/routes";
+import { createRemoteSupportService } from "./remote-support/service";
+import { resolvePort } from "../config/runtime";
 import { createBackupRoutes } from "./backup/routes";
 import { BackupService } from "./backup/service";
 import type { ConsoleCredentialService } from "./auth/credentials";
 import { resolveTelemetryRetentionDays } from "../config/telemetry";
-import { payloadRetentionMs } from "../observability/payload-capture";
+import { payloadRetentionMs, resolvePayloadCapture } from "../observability/payload-capture";
 import { TELEMETRY_EVENT_DIR } from "../observability/event-log";
 
 import { InMemoryOAuthFlowStore, OAuthFlowStore } from "../providers/authentication/oauth-flow-store";
@@ -244,7 +249,19 @@ export function registerConsoleDomains(
     accessResolver: ctx.accessResolver,
     observabilityStore,
   }));
+  console.use(createRemoteSupportRoutes({
+    accessResolver: ctx.accessResolver,
+    service: createRemoteSupportService({ port: resolvePort() }),
+  }));
   console.use(createAuditRoutes({ store: auditReadStore, accessResolver: ctx.accessResolver }));
+  // InferHub market data. On demand only: a route fetches when its snapshot is
+  // past its freshness window, so a page nobody opens causes no upstream calls.
+  const inferhubKeys = createInferhubKeyStore(ctx.db);
+  console.use(createInferhubRoutes({
+    accessResolver: ctx.accessResolver,
+    resolveConfigKey: () => inferhubKeys.read(),
+    keyStore: inferhubKeys,
+  }));
   if (ctx.modelStrikes) {
     console.use(createModelAbuseRoutes({
       strikes: ctx.modelStrikes,
@@ -284,15 +301,25 @@ export function registerConsoleDomains(
     // same SSRF-validated fetch as every other egress.
     relayFetch: createValidatedFetch({ policy: resolveSsrfPolicy() }),
   }));
-  console.use(createRuntimeSettingsRoutes({ store: runtimeSettingsStore, accessResolver: ctx.accessResolver, auditSink: ctx.auditRecorder }));
+  console.use(createRuntimeSettingsRoutes({ store: runtimeSettingsStore, accessResolver: ctx.accessResolver, auditSink: ctx.auditRecorder, snapshotInvalidator: ctx.routeSnapshotService }));
   console.use(
     createDataManagementRoutes({
       telemetryDir: TELEMETRY_EVENT_DIR,
       retentionDays: resolveTelemetryRetentionDays(),
-      payloadRetentionMs: payloadRetentionMs(),
-      // Hourly files are the only copy of their requests until compaction
-      // folds them up, so the console does not delete them on request.
-      allowHourlyReclaim: false,
+      /*
+       * Resolved per tenant, not once at boot: the Request detail window is a
+       * per-tenant setting, and this panel is the only place that reports the
+       * number back. A deployment-level value made it show the default while
+       * the gateway applied the tenant's own window.
+       *
+       * It goes through the same `resolvePayloadCapture` the dispatch path
+       * uses, so the panel and the gateway cannot disagree about how long a
+       * frame lives.
+       */
+      payloadRetentionMs: async (tenantId) => {
+        const resolved = await resolvePayloadCapture(ctx.db, tenantId);
+        return resolved.ok ? resolved.retentionMs : payloadRetentionMs();
+      },
       accessResolver: ctx.accessResolver,
       auditSink: ctx.auditRecorder,
       flusher: ctx.flushBuffers,

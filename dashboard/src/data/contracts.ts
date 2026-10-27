@@ -1,5 +1,13 @@
 import type { healthStatus } from "../../../src/persistence/schema";
 import type { SessionStatusResponse } from "../../../src/console/auth/session";
+// Remote-support tunnel types come from the backend contract module, which is
+// free of Elysia and Node imports and therefore safe in the browser bundle.
+export type {
+  RemoteSupportStatus,
+  RemoteSupportStartResponse,
+  RemoteSupportTool,
+} from "../../../src/console/remote-support/contracts";
+export { REMOTE_SUPPORT_TOOLS } from "../../../src/console/remote-support/contracts";
 /**
  * Type-only projections of the console API contracts.
  *
@@ -137,7 +145,8 @@ export type {
 export type { BackupPayload as BackupExportResponse } from "../../../src/console/backup/contracts";
 export type { ImportResult as BackupImportResponse } from "../../../src/console/backup/service";
 export type { ImportReport as BackupImportReport } from "../../../src/console/backup/nine-router";
-
+import type { DeleteAllScope } from "../../../src/console/backup/store";
+export type { DeleteAllScope };
 export type { AuditEntry, AuditListPage } from "../../../src/console/audit/contracts";
 
 export type {

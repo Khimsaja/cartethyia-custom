@@ -17,6 +17,7 @@
 // `rejected` so the model can continue without the gateway ever touching a
 // filesystem or a shell on the caller's behalf.
 import { GatewayError } from "../../../protocol/gateway-error";
+import { asRecord as recordOf } from "../../../shared/coerce";
 import type {
   CanonicalEvent,
   CanonicalRequest,
@@ -37,7 +38,6 @@ import {
   buildCancelAction,
   buildExecStreamClose,
   buildExecThrow,
-  buildHostExecResult,
   buildInteractionResponse,
   buildKvGetBlobResult,
   buildKvSetBlobResult,
@@ -56,11 +56,12 @@ import {
 } from "./cursor-request";
 import { cursorRunTerminationError, decodeServerMessages, openCursorRun } from "./cursor-http2";
 import { cursorRunSessions } from "./cursor-session-manager";
-import type { CursorContinuationScope, CursorHostExecDetail, CursorRunSession } from "./cursor-session-manager";
+import type { CursorContinuationScope, CursorRunSession } from "./cursor-session-manager";
 import { fetchCursorRunOrigin } from "./cursor-catalog";
 import { defaultParameterValues, fetchCursorModels } from "./cursor-catalog";
 import type { CursorModelInfo } from "./cursor-catalog";
 import { decodeValueToJson, decodeStructEntriesToJson } from "./protocol/struct";
+import { cursorVariantForExecArgs } from "./protocol/tool-canonical";
 
 /**
  * Client-heartbeat cadence for every Cursor Run.
@@ -260,12 +261,6 @@ function usageFromTurnEnded(turnEnded: Record<string, unknown>): UsageRecord {
   };
 }
 
-function recordOf(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
 function nonEmptyStringOf(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
@@ -287,126 +282,6 @@ function readExecutableMcpCall(
   if (toolName === undefined) return undefined;
   if (!descriptors.some((descriptor) => descriptor.toolName === toolName)) return undefined;
   return { toolName, arguments: decodeMcpArguments(mcpArgs) };
-}
-
-/** Host exec variants this gateway can forward to the client's own tools. */
-const HOST_TOOL_ALIASES: Record<CursorHostExecDetail["variant"], readonly string[]> = {
-  shell: ["bash", "shell", "sh"],
-  write: ["write", "file_write", "create_file"],
-  read: ["read", "read_file", "view", "cat"],
-};
-
-/** Canonical exec value → property names a client tool schema may declare. */
-const HOST_ARG_ALIASES: Readonly<Record<string, readonly string[]>> = {
-  intent: ["i", "intent", "description"],
-  command: ["command", "cmd"],
-  workingDirectory: ["working_directory", "cwd", "workdir"],
-  path: ["path", "file_path", "filename"],
-  content: ["content", "text", "file_text", "contents"],
-};
-
-function fileBytesToText(value: unknown): string {
-  return value instanceof Uint8Array ? new TextDecoder().decode(value) : "";
-}
-
-function byteLengthOf(text: string): number {
-  return new TextEncoder().encode(text).length;
-}
-
-/**
- * Projects one host exec request onto a client-declared tool descriptor.
- *
- * The argument keys are taken from the schema the tool itself declared, so a
- * strict schema (`additionalProperties: false`) never rejects the call; a
- * property the schema demands but no exec value fills refuses the forward —
- * calling the tool with a half-built record would strand the model on an
- * error it can only work around by circling.
- */
-function hostCallFor(
-  descriptors: readonly CursorToolDescriptor[],
-  variant: CursorHostExecDetail["variant"],
-  values: Readonly<Record<string, string | undefined>>,
-  detail: CursorHostExecDetail,
-): { toolName: string; arguments: string; detail: CursorHostExecDetail } | undefined {
-  const descriptor = descriptors.find((entry) =>
-    HOST_TOOL_ALIASES[variant].includes(entry.toolName.toLowerCase().replace(/^_+/, "")),
-  );
-  if (descriptor === undefined) return undefined;
-  const schema = recordOf(descriptor.inputSchema);
-  const properties = recordOf(schema?.["properties"]);
-  const required = Array.isArray(schema?.["required"])
-    ? (schema?.["required"] as unknown[]).filter((value): value is string => typeof value === "string")
-    : [];
-  const subject =
-    values.command !== undefined
-      ? values.command
-      : `${variant} ${values.path ?? ""}`.trim();
-  const filled: Record<string, string> = {};
-  for (const [key, value] of Object.entries(values)) {
-    if (value === undefined) continue;
-    const target = HOST_ARG_ALIASES[key]?.find((alias) => properties?.[alias] !== undefined)
-      ?? (properties === undefined ? key : undefined);
-    if (target !== undefined) filled[target] = value;
-  }
-  // The client surfaces carry a concise-intent property the exec frame has no
-  // counterpart for: derive it from the subject and project it like the rest.
-  const intentTarget = HOST_ARG_ALIASES["intent"]?.find((alias) => properties?.[alias] !== undefined);
-  const intent = subject.length > 80 ? `${subject.slice(0, 79)}…` : subject;
-  if (intentTarget !== undefined) filled[intentTarget] = intent;
-  else if (properties === undefined) filled.intent = intent;
-  if (required.some((name) => !(name in filled))) return undefined;
-  return { toolName: descriptor.toolName, arguments: JSON.stringify(filled), detail };
-}
-
-/**
- * Reads one Cursor host exec request the canonical client executes locally.
- *
- * Cursor's edge asks its executor for a native host tool (shell, write, read);
- * the canonical client declared the same surfaces as its own tools, so the
- * gateway forwards the work instead of refusing it. Exec variants without a
- * faithful typed result frame (grep, ls, subagent, …) return `undefined` and
- * keep the throw-refusal path.
- */
-function readHostExecCall(
-  execServer: Record<string, unknown>,
-  descriptors: readonly CursorToolDescriptor[],
-): { toolName: string; arguments: string; detail: CursorHostExecDetail } | undefined {
-  const shell = recordOf(execServer["shell_args"]) ?? recordOf(execServer["shell_stream_args"]);
-  if (shell !== undefined) {
-    const command = nonEmptyStringOf(shell["command"]);
-    if (command === undefined) return undefined;
-    const workingDirectory = nonEmptyStringOf(shell["working_directory"]);
-    return hostCallFor(
-      descriptors,
-      "shell",
-      { command, workingDirectory },
-      {
-        variant: "shell",
-        command,
-        ...(workingDirectory === undefined ? {} : { workingDirectory }),
-      },
-    );
-  }
-  const write = recordOf(execServer["write_args"]);
-  if (write !== undefined) {
-    const path = nonEmptyStringOf(write["path"]);
-    if (path === undefined) return undefined;
-    const content =
-      typeof write["file_text"] === "string" ? write["file_text"] : fileBytesToText(write["file_bytes"]);
-    return hostCallFor(descriptors, "write", { path, content }, {
-      variant: "write",
-      path,
-      lines: content.split("\n").length,
-      fileSize: byteLengthOf(content),
-    });
-  }
-  const read = recordOf(execServer["read_args"]);
-  if (read !== undefined) {
-    const path = nonEmptyStringOf(read["path"]);
-    if (path === undefined) return undefined;
-    return hostCallFor(descriptors, "read", { path }, { variant: "read", path });
-  }
-  return undefined;
 }
 
 /**
@@ -685,10 +560,6 @@ class CursorAdapter implements ProviderAdapter {
       for (const item of pending) {
         const entry = cursorRunSessions.resolveCall(item.callId, scope);
         if (entry === undefined) continue;
-        // A forwarded host exec answers the variant's typed result frame (an
-        // mcp_result leaves the server unmatched on a frame it did rank);
-        // MCP-channel calls answer the generic mcp_result.
-        if (entry.call.host === undefined) {
           await handle.write(
             buildMcpResult({
               execId: entry.call.execId,
@@ -698,18 +569,6 @@ class CursorAdapter implements ProviderAdapter {
               ...(item.images.length > 0 ? { images: item.images } : {}),
             }),
           );
-        } else {
-          for (const frame of buildHostExecResult({
-            execId: entry.call.execId,
-            ...(entry.call.execIdString === undefined ? {} : { execIdString: entry.call.execIdString }),
-            variant: entry.call.host.variant,
-            text: item.text,
-            isError: item.isError,
-            host: entry.call.host,
-          })) {
-            await handle.write(frame);
-          }
-        }
         cursorRunSessions.clearPendingCall(runId, item.callId);
       }
       yield* this.#pump({
@@ -1051,7 +910,6 @@ class CursorAdapter implements ProviderAdapter {
             execId: handled.execId,
             ...(handled.execIdString === undefined ? {} : { execIdString: handled.execIdString }),
             toolName: handled.toolName,
-            ...(handled.host === undefined ? {} : { host: handled.host }),
           })) {
             await handle.write(buildMcpRejected(handled.execId, "tool call is not answerable", handled.execIdString));
             continue;
@@ -1201,7 +1059,6 @@ class CursorAdapter implements ProviderAdapter {
         execIdString: string | undefined;
         toolName: string;
         arguments: string;
-        host?: CursorHostExecDetail;
       }
   > {
     const execId = typeof execServer["id"] === "number" ? execServer["id"] : 0;
@@ -1232,6 +1089,32 @@ class CursorAdapter implements ProviderAdapter {
       await handle.write(buildAllowlistPrecheckResult(execId, precheckKind, execIdString));
       return { kind: "handled" };
     }
+    // Native first. A Cursor host-exec frame (`read_args`, `shell_args`,
+    // `pi_read_args`, …) is relayed to the client as an ordinary tool call
+    // instead of being refused. This is the half the earlier direct-forward
+    // attempt got wrong: it built typed result frames by hand per variant and
+    // they were not matched by the server. The canonical layer owns that
+    // mapping now, keyed by the originating variant, so a result can only ever
+    // come back in the arm it arrived on.
+    const nativeCall = cursorVariantForExecArgs(execServer);
+    // Only a tool the request actually declared may be relayed. A host frame
+    // for something the client never advertised is an undeclared tool like any
+    // other and keeps the refusal — forwarding it would hand the client a call
+    // it has no handler for and nowhere to send the result.
+    const declaredNative = nativeCall !== undefined &&
+      session.descriptors.some((d) => d.toolName === nativeCall.variant.name);
+    if (nativeCall !== undefined && declaredNative) {
+      return {
+        kind: "tool_call",
+        execId,
+        execIdString,
+        toolName: nativeCall.variant.name,
+        arguments: JSON.stringify(nativeCall.args),
+      };
+    }
+    // MCP is the fallback, not the first stop: client-declared tools have no
+    // native slot in `agent.proto`, so they are the ones that must travel this
+    // channel. An arm neither path claims falls through to the refusal below.
     const mcpArgs = recordOf(execServer["mcp_args"]);
     if (mcpArgs !== undefined) {
       const call = readExecutableMcpCall(mcpArgs, session.descriptors);
@@ -1249,30 +1132,7 @@ class CursorAdapter implements ProviderAdapter {
         arguments: call.arguments,
       };
     }
-    // Host exec variants the canonical client declares as its own tools are
-    // forwarded as tool calls — the client executes them locally and the
-    // result leg answers the variant's typed result frame. This is Cursor's
-    // own architecture: its executor is the local CLI, and silencing a host
-    // tool the client could have run just makes the model circle before
-    // falling back to the MCP channel.
-    const host = readHostExecCall(execServer, session.descriptors);
-    if (host !== undefined) {
-      return {
-        kind: "tool_call",
-        execId,
-        execIdString,
-        toolName: host.toolName,
-        arguments: host.arguments,
-        host: host.detail,
-      };
-    }
-    // Every other exec variant is a Cursor host tool (shell, read, edit, glob,
-    // subagent, …) or a frame this gateway has no handler for. Stranding the
-    // exec id stalled the turn forever, and answering it as an mcp_result left
-    // the server unmatched on a frame it did rank — the protocol's failure
-    // channel (throw + stream_close, exactly what Cursor's own executor sends
-    // for an unclaimed frame) surfaces the refusal to the model instead.
-    const refusal = "Cursor host tools are not executed by this gateway";
+    const refusal = "this tool is not one the request declared";
     await handle.write(buildExecThrow(execId, refusal, execIdString));
     await handle.write(buildExecStreamClose(execId, execIdString));
     return { kind: "handled" };

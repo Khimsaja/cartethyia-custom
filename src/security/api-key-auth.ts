@@ -5,6 +5,7 @@ import { deleteShared, publishInvalidation, readShared, writeShared } from "../p
 import { DrizzleApiKeyStore } from "../persistence/stores/api-key-store";
 import { GatewayError } from "../protocol/gateway-error";
 import { hashSecret } from "./crypto";
+import { AUTH_CACHE_TTL_MS, createApiKeyAuthorizationCache } from "./api-key-auth-cache";
 import type { AccessScope } from "./access-control";
 import type { ApiKeyModelAccessMode } from "../persistence/schema";
 
@@ -23,37 +24,8 @@ import type { ApiKeyModelAccessMode } from "../persistence/schema";
  * Negative results (unknown/revoked tokens) are deliberately NOT cached, so
  * a newly minted key is usable immediately.
  */
-const AUTH_CACHE_TTL_MS = 3_000;
-const AUTH_CACHE_MAX_ENTRIES = 10_000;
-/** Negative-result TTL: unknown/revoked tokens miss the DB at most this often. */
-const AUTH_NEGATIVE_CACHE_TTL_MS = 1_500;
+const authorizationCache = createApiKeyAuthorizationCache<ResolvedApiKey>();
 
-interface AuthCacheEntry {
-  readonly at: number;
-  readonly value: ResolvedApiKey;
-  /** Owner of `value`; the reverse-index key this entry is registered under. */
-  readonly keyId: string;
-}
-
-const authCache = new Map<string, AuthCacheEntry>();
-/** Reverse index: keyId → set of token hashes that resolved to it. */
-const authCacheByKeyId = new Map<string, Set<string>>();
-/** Unknown/revoked token HMACs with their miss time; cleared on any key mutation. */
-const authNegativeCache = new Map<string, number>();
-
-/**
- * Short circuit after a credential-store failure.
- *
- * An overloaded or down database fails every lookup, and each failure costs a
- * connection attempt. Without this, a saturated backend received one query per
- * inbound request — load the operator sees as traffic, on top of the load that
- * caused the outage. For the window, lookups answer "unavailable" instead.
- *
- * Deliberately short: this is an auth path, and a brief outage must not lock
- * out valid keys for long.
- */
-const AUTH_FAILURE_COOLDOWN_MS = 1_000;
-let authFailureUntil = 0;
 // Consecutive top-level lookup failures with no success between them. The
 // cooldown below exists to protect a dead store from request-rate hammering
 // — but arming it on the FIRST blip turned every transient fault (one
@@ -103,7 +75,7 @@ export class ApiKeyStoreUnavailableError extends Error {
  * Injected rather than imported: this module is on the auth path and must not
  * depend on the persistence/write layer it would otherwise pull in. Set once at
  * boot (`boot/dependencies.ts`); until then it reads as zero, which is the
- * value the code has always used.
+ * value the code uses when no source is installed.
  */
 let pendingUsage: (apiKeyId: string) => number = () => 0;
 
@@ -119,71 +91,18 @@ export function setPendingUsageSource(source: (apiKeyId: string) => number): voi
   pendingUsage = source;
 }
 /**
- * Negative-result fast path. Unknown/revoked tokens previously hit the DB on
- * every request; now a repeat miss within 1.5 s costs one HMAC + one map
- * lookup and no query. Keyed by the full HMAC: a cheap pre-hash would let a
- * crafted collision reject someone else's valid key, while the HMAC key can
- * only match its own token. Bound below beside the positive cache.
- */
-
-/**
- * Drops the oldest entries until `authCache` is within budget. Every removal
- * must also unregister the hash from `authCacheByKeyId`, otherwise the reverse
- * index keeps referencing hashes that no longer exist and grows without bound
- * (one dead hash per eviction, forever).
- */
-function evictAuthCacheOldest(): void {
-  while (authCache.size > AUTH_CACHE_MAX_ENTRIES) {
-    const oldest = authCache.keys().next().value;
-    if (oldest === undefined) return;
-    const entry = authCache.get(oldest);
-    authCache.delete(oldest);
-    if (entry === undefined) continue;
-    const hashes = authCacheByKeyId.get(entry.keyId);
-    if (hashes === undefined) continue;
-    hashes.delete(oldest);
-    if (hashes.size === 0) authCacheByKeyId.delete(entry.keyId);
-  }
-}
-
-/** Registers a resolved hash in both the cache and the keyId reverse index. */
-function indexAuthCache(hash: string, entry: AuthCacheEntry): void {
-  authCache.set(hash, entry);
-  authNegativeCache.delete(hash);
-  const hashes = authCacheByKeyId.get(entry.keyId) ?? new Set<string>();
-  hashes.add(hash);
-  authCacheByKeyId.set(entry.keyId, hashes);
-}
-
-/** Bounds the negative cache; same oldest-first rule as the positive cache. */
-function evictAuthNegativeOldest(): void {
-  while (authNegativeCache.size > AUTH_CACHE_MAX_ENTRIES) {
-    const oldest = authNegativeCache.keys().next().value;
-    if (oldest === undefined) return;
-    authNegativeCache.delete(oldest);
-  }
-}
-
-/**
  * Invalidates every cached authorization entry for one API key (or the entire
  * cache when `keyId` is omitted). Called by the API-key domain after any
  * mutation that changes a key's scopes, limits, or revoked state.
  */
 export function invalidateApiKeyCache(keyId?: string): void {
-  // A mutation may mint the previously-unknown token, so negative entries
-  // must go with the positive ones.
-  authNegativeCache.clear();
+  // A mutation may mint a token the negative cache has already rejected, so
+  // negative entries must go with the positive ones.
+  authorizationCache.invalidate(keyId);
   if (keyId === undefined) {
-    authCache.clear();
-    authCacheByKeyId.clear();
     void deleteShared("auth");
     publishInvalidation({ namespace: "auth" });
     return;
-  }
-  const hashes = authCacheByKeyId.get(keyId);
-  if (hashes) {
-    for (const hash of hashes) authCache.delete(hash);
-    authCacheByKeyId.delete(keyId);
   }
   // Peer processes hold their own copy, and `reusePort` means the console
   // write may have landed on a different one entirely. Dropping only locally
@@ -422,13 +341,9 @@ export async function resolveApiKeyAuthorization(
 ): Promise<ResolvedApiKey | undefined> {
   const now = Date.now();
   const hash = hashSecret(token);
-  const negativeAt = authNegativeCache.get(hash);
-  if (negativeAt !== undefined) {
-    if (now - negativeAt < AUTH_NEGATIVE_CACHE_TTL_MS) return undefined;
-    authNegativeCache.delete(hash);
-  }
-  const cached = authCache.get(hash);
-  if (cached && now - cached.at < AUTH_CACHE_TTL_MS) return cached.value;
+  const cached = authorizationCache.lookup(hash, now);
+  if (cached.kind === "negative") return undefined;
+  if (cached.kind === "positive") return cached.value;
   // L2: a peer process may have resolved this token already. Reachable only
   // after the L1 entry lapsed, so Redis is never consulted on a warm hit.
   //
@@ -439,8 +354,7 @@ export async function resolveApiKeyAuthorization(
     try {
       const parsed = JSON.parse(shared) as ResolvedApiKey;
       if (typeof parsed?.id === "string") {
-        indexAuthCache(hash, { at: now, value: parsed, keyId: parsed.id });
-        evictAuthCacheOldest();
+        authorizationCache.rememberPositive(hash, parsed.id, parsed, now);
         return parsed;
       }
     } catch {
@@ -449,7 +363,7 @@ export async function resolveApiKeyAuthorization(
   }
   // Answered from the cooldown before any I/O: during a store outage the
   // query is the expensive part, and it is also the part that fails.
-  if (now < authFailureUntil) throw new ApiKeyStoreUnavailableError();
+  if (authorizationCache.isStoreUnavailable(now)) throw new ApiKeyStoreUnavailableError();
   const store = new DrizzleApiKeyStore(db);
   let row: Awaited<ReturnType<typeof store.findActiveByHash>>;
   try {
@@ -459,7 +373,7 @@ export async function resolveApiKeyAuthorization(
     // normal empty result, so this only runs on a real fault.
     authConsecutiveFailures += 1;
     if (authConsecutiveFailures >= 2) {
-      authFailureUntil = Date.now() + AUTH_FAILURE_COOLDOWN_MS;
+      authorizationCache.markStoreUnavailable(Date.now());
     }
     throw error;
   }
@@ -467,8 +381,7 @@ export async function resolveApiKeyAuthorization(
   // itself exists or not.
   authConsecutiveFailures = 0;
   if (!row) {
-    authNegativeCache.set(hash, now);
-    evictAuthNegativeOldest();
+    authorizationCache.rememberNegative(hash, now);
     return undefined;
   }
   // A child (shared) key consumes against its parent's quota, not just its
@@ -480,9 +393,9 @@ export async function resolveApiKeyAuthorization(
     row.parentKeyId !== null ? await store.findActiveById(row.parentKeyId) : undefined;
   // Share children authenticate as themselves but inherit the template's live
   if (row.parentKeyId !== null && parent === undefined) return undefined;
-  // policy. Copy-on-issue alone went stale the moment an operator tightened a
-  // limit or blocked a client router on the parent — existing recipients kept
-  // the old row values forever. Reading the parent here makes denylist /
+  // policy. Copy-on-issue alone goes stale the moment an operator tightens a
+  // limit or blocks a client router on the parent — existing recipients would
+  // keep the issued row values forever. Reading the parent here makes denylist /
   // one-time / recurring edits apply on the next cache miss.
   const policy = parent ?? row;
   // Only a `share` parent can have children, and children are the only thing
@@ -527,8 +440,7 @@ export async function resolveApiKeyAuthorization(
     ...(policy.modelPrefix ? { modelPrefix: policy.modelPrefix } : {}),
     ...(parent?.keyMode === "share" ? { cliMappingOwnerId: parent.id } : {}),
   };
-  indexAuthCache(hash, { at: Date.now(), value, keyId: value.id });
-  evictAuthCacheOldest();
+  authorizationCache.rememberPositive(hash, value.id, value, Date.now());
   // Shared copy for peer processes, keyed by the token hash so a lookup can
   // find it without resolving the key first. Invalidation travels by broadcast,
   // since a console mutation names a key id and cannot enumerate the hashes
@@ -538,7 +450,7 @@ export async function resolveApiKeyAuthorization(
   // That figure moves constantly, and the module already documents the snapshot
   // as advisory on that axis (spending is enforced by the admission counter),
   // so a peer serving it stale for up to the TTL is the same tradeoff the
-  // in-process cache has always made.
+  // in-process cache makes.
   void writeShared("auth", hash, JSON.stringify(value), AUTH_CACHE_TTL_MS);
   return value;
 }

@@ -153,6 +153,7 @@ export function jwtExpiresAt(raw: string): string | undefined {
   return Number.isFinite(date.getTime()) ? date.toISOString() : undefined;
 }
 
+
 function parseKeyValueLines(text: string): Record<string, unknown> | undefined {
   const result: Record<string, unknown> = {};
   let matches = 0;
@@ -190,6 +191,53 @@ export function extractCredentialFromPaste(raw: string): ExtractedCredential {
 }
 
 export type DetectedCredentialKind = "api_key" | "oauth" | "jwt";
+
+/**
+ * Providers whose credential is accepted by more than one channel.
+ *
+ * CodeBuddy and WorkBuddy issue interchangeable tokens: one works in the
+ * other. But a token used outside the channel it was issued for carries a
+ * higher ban risk — the account is seen as active on a surface it never
+ * authenticated against. The gateway cannot tell which channel a token came
+ * from, so it warns and lets the operator decide instead of silently
+ * accepting what looks like a valid credential.
+ *
+ * Ids are already normalized to match the compacted haystack below.
+ */
+const CROSS_CHANNEL_PROVIDERS = [
+  { id: "codebuddy", counterpart: "WorkBuddy" },
+  { id: "workbuddy", counterpart: "CodeBuddy" },
+] as const;
+
+export interface CrossChannelWarning {
+  /** The provider this credential was recognised as. */
+  readonly provider: string;
+  /** The other channel that also accepts this token. */
+  readonly counterpart: string;
+}
+
+/**
+ * Recognises a credential whose token is interchangeable between two channels.
+ *
+ * Matching is deliberately loose on casing and separators (`code-buddy`,
+ * `code_buddy`) because provider ids and pasted exports are not canonical, and
+ * a missed match here means the warning that protects the account never shows.
+ * The provider id is what the dialog is opened for, so it is checked first;
+ * the raw paste is checked too because a token often names its own issuer.
+ */
+export function detectCrossChannelCredential(
+  providerId: string,
+  raw: string,
+): CrossChannelWarning | undefined {
+  // Loose on casing and separators: `code-buddy`, `code_buddy`, `CodeBuddy`
+  // are all one provider here. A missed match means the warning that protects
+  // the account never shows, which is worse than warning once too often.
+  const compact = `${providerId} ${raw}`.toLowerCase().replace(/[^a-z]/g, "");
+  for (const entry of CROSS_CHANNEL_PROVIDERS) {
+    if (compact.includes(entry.id)) return { provider: entry.id, counterpart: entry.counterpart };
+  }
+  return undefined;
+}
 
 /**
  * Auto-detects OAuth exports, JWTs, or opaque API keys. Refresh-token fields
@@ -379,30 +427,30 @@ export function parseCredentialBatch(raw: string): ParsedCredentialEntry[] {
   if (lines.length === 1) {
     // A single `key: value` line is a structured credential, not an opaque
     // token. `parseSingleLine` cannot parse `apiKey: sk-...` as JSON, so it
-    // returned the line's literal text as the secret — the operator got an
-    // account whose stored credential was the string `"apiKey: sk-..."`, and
-    // the real key was gone. The multi-line path already consulted
+    // would store the line's literal text as the secret — the operator would
+    // get an account whose stored credential was the string `"apiKey: sk-..."`,
+    // and the real key would be gone. The multi-line path consults
     // `parseKeyValueLines` first; the single-line path has to agree with it.
     const asKeyValue = parseKeyValueLines(lines[0] as string);
     // Any parseable `key: value` line is structured, not an opaque token —
     // including one whose only field is a refresh token. Falling through to
-    // `parseSingleLine` there stored the literal line text as the secret.
+    // `parseSingleLine` there would store the literal line text as the secret.
     if (asKeyValue) return [entryFromObject(asKeyValue)];
     return parseSingleLine(lines[0] as string);
   }
 
   // A `key: value` block is ONE structured credential, not a batch — and that
   // holds even when some of its lines do not parse as `key: value`. A comment
-  // header, an indented continuation, or a repeated key all made the old
-  // `keys.length === lines.length` guard fail, which dropped the whole block into
+  // header, an indented continuation, or a repeated key all defeat a
+  // `keys.length === lines.length` guard, which would drop the whole block into
   // the per-line path. There, `parseSingleLine` cannot parse `apiKey: sk-...` as
-  // JSON, so it returned the LINE'S LITERAL TEXT as the secret: the operator got
-  // an account whose stored credential was the string `"apiKey: sk-..."`, and the
-  // real key was discarded or demoted to a sibling entry.
+  // JSON, so it stores the LINE'S LITERAL TEXT as the secret: the operator gets
+  // an account whose stored credential is the string `"apiKey: sk-..."`, and the
+  // real key is discarded or demoted to a sibling entry.
   //
-  // The single-credential path (`extractCredentialFromPaste`) already resolved
-  // these inputs correctly by consulting `parseKeyValueLines` first. Matching it
-  // here is what makes the two exported parsers agree.
+  // The single-credential path (`extractCredentialFromPaste`) resolves these
+  // inputs correctly by consulting `parseKeyValueLines` first. Matching it here
+  // is what makes the two exported parsers agree.
   const asKeyValue = parseKeyValueLines(trimmed);
   if (asKeyValue) {
     // A block that names a credential field is one credential, however many of

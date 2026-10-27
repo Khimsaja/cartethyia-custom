@@ -1,24 +1,17 @@
 /**
  * On-disk payload frame format.
  *
- * Frames are stored as newline-terminated base64 lines of gzipped JSON. The
- * old shape was a 4-byte binary length header followed by gzip bytes, which
- * made a frame opaque: reading one meant decoding a big-endian length and
- * gunzipping exactly that many bytes, and the file could not be inspected as
- * text at all.
- *
- * What must hold is that the old shape is still readable. Files written before
- * the change are on disk right now and their rows point at them; they expire
- * on their own within the retention window, so both shapes are tolerated
- * temporarily by construction rather than migrated.
+ * Frames are stored as newline-terminated base64 lines of gzipped JSON
+ * (jsonl-file). The only valid storage type is jsonl-file; the old binary
+ * header shape (jsonb-file) has been fully retired.
  */
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gzipSync } from "node:zlib";
 
 const DIR = await mkdtemp(join(tmpdir(), "carte-payload-format-"));
+const previousPayloadDir = process.env.CARTETHYIA_TELEMETRY_PAYLOAD_DIR;
 process.env.CARTETHYIA_TELEMETRY_PAYLOAD_DIR = DIR;
 
 const store = await import("../../src/observability/payload-store");
@@ -29,25 +22,14 @@ beforeEach(async () => {
   }
 });
 
-afterEach(async () => {
+afterAll(async () => {
   for (const name of await readdir(DIR).catch(() => [])) {
     await rm(join(DIR, name), { force: true });
   }
+  await rm(DIR, { recursive: true, force: true });
+  if (previousPayloadDir === undefined) delete process.env.CARTETHYIA_TELEMETRY_PAYLOAD_DIR;
+  else process.env.CARTETHYIA_TELEMETRY_PAYLOAD_DIR = previousPayloadDir;
 });
-
-/** A frame in the old shape: 4-byte length header, then gzip bytes. */
-function legacyBytes(payload: unknown, expiresAt: Date): Buffer {
-  const frame = {
-    version: 1,
-    id: "legacy",
-    expiresAt: expiresAt.toISOString(),
-    payload,
-  };
-  const gz = gzipSync(Buffer.from(JSON.stringify(frame), "utf8"));
-  const header = Buffer.alloc(4);
-  header.writeUInt32BE(gz.byteLength, 0);
-  return Buffer.concat([header, gz]);
-}
 
 describe("new frames", () => {
   test("a written frame is a printable text line", async () => {
@@ -84,52 +66,65 @@ describe("new frames", () => {
   });
 });
 
-describe("frames written before the format change", () => {
-  test("a binary-header frame still reads", async () => {
-    const bytes = legacyBytes({ tag: "old" }, new Date(Date.now() + 60_000));
-    await writeFile(join(DIR, "legacy.jsonb"), bytes);
-    const ref = {
-      storage: "jsonl-file" as const,
-      file: "legacy.jsonb",
-      offset: 0,
-      length: bytes.byteLength,
-      checksum: "",
-      version: 1 as const,
-    };
-    expect(await store.readPayloadFrame(ref)).toEqual({ tag: "old" });
-  });
 
-  test("an expired legacy file is pruned, a live one is kept", async () => {
-    const expired = legacyBytes({}, new Date(Date.now() - 1_000));
-    const live = legacyBytes({ tag: "live" }, new Date(Date.now() + 60 * 60_000));
-    await writeFile(join(DIR, "old-expired.jsonb"), expired);
-    await writeFile(join(DIR, "old-live.jsonb"), live);
 
-    // Recognising only the new extension would abandon these on disk forever,
-    // since nothing else removes them.
-    const deleted = await store.prunePayloadFrames(
-      new Date(),
-      new Date(Date.now() - 15 * 60_000),
+/**
+ * Async compression + single-copy frames.
+ *
+ * Compression moved off the event loop to one worker per process (max 2 jobs
+ * in flight) with a sync fallback when the worker is unavailable, and the
+ * frame is assembled exactly once (the prebuilt parts go straight to the
+ * compressor). These tests pin the observable contract: many concurrent
+ * writes all round-trip, the frame bytes on disk are unchanged in shape, and
+ * the reference fields describe the bytes actually stored.
+ */
+describe("async compression and frame assembly", () => {
+  test("many concurrent writes all round-trip through the worker", async () => {
+    const refs = await Promise.all(
+      Array.from({ length: 12 }, (_, i) =>
+        store.writePayloadFrame({ index: i, pad: "z".repeat(64 * 1024) }, new Date(Date.now() + 60_000)),
+      ),
     );
-    expect(deleted).toBe(1);
-    expect(await readdir(DIR)).toEqual(["old-live.jsonb"]);
+    expect(refs).toHaveLength(12);
+    for (const [i, ref] of refs.entries()) {
+      const payload = await store.readPayloadFrame(ref);
+      expect(payload).toEqual({ index: i, pad: "z".repeat(64 * 1024) });
+    }
   });
-});
 
-describe("a mixed file", () => {
-  test("liveness walks both shapes without stopping early", async () => {
-    // A file appended-to across the change holds both. The walk must not
-    // declare it unreadable, which would leave it on disk forever.
-    const bytes = legacyBytes({ tag: "old" }, new Date(Date.now() - 1_000));
-    await writeFile(join(DIR, "mixed.jsonb"), bytes);
-    const fresh = await store.writePayloadFrame({ tag: "new" }, new Date(Date.now() + 60_000));
-    // The new frame lands in its own file, so assert the old one still prunes
-    // while the new one is still readable.
-    expect(fresh.file.endsWith(".jsonl")).toBe(true);
-    await store.prunePayloadFrames(new Date(), new Date(Date.now() - 15 * 60_000));
-    const remaining = await readdir(DIR);
-    expect(remaining).toContain(fresh.file);
-    expect(remaining).not.toContain("mixed.jsonb");
-    expect(await store.readPayloadFrame(fresh)).toEqual({ tag: "new" });
+  test("the reference describes the exact stored line bytes", async () => {
+    const ref = await store.writePayloadFrame({ a: 1 }, new Date(Date.now() + 60_000));
+    const raw = await readFile(join(DIR, ref.file));
+    const line = raw.subarray(ref.offset, ref.offset + ref.length);
+    // The line is the newline-terminated base64 of gzip: printable and
+    // newline-terminated, and its length matches the reference exactly.
+    expect(line[line.length - 1]).toBe(0x0a);
+    expect(/^[\x20-\x7e\n]+$/.test(line.toString("utf8"))).toBe(true);
+  });
+
+  test("prebuilt-part frames keep every body under its own key", async () => {
+    const ref = await store.writePayloadFrame(
+      { opaque: "not used when prebuilt is provided" },
+      new Date(Date.now() + 60_000),
+      {
+        requestId: "req-1",
+        capturedAt: "2026-01-01T00:00:00.000Z",
+        signals: { toolCalls: 1, images: 0, attachments: 2 },
+        bodies: [
+          JSON.stringify({ request: true }),
+          JSON.stringify({ providerRequest: true }),
+          JSON.stringify({ providerResponse: true }),
+          JSON.stringify({ clientResponse: true }),
+          "null",
+        ],
+      },
+    );
+    const payload = (await store.readPayloadFrame(ref)) as Record<string, unknown>;
+    expect(payload["request_body"]).toEqual({ request: true });
+    expect(payload["provider_request_body"]).toEqual({ providerRequest: true });
+    expect(payload["provider_response_body"]).toEqual({ providerResponse: true });
+    expect(payload["client_response_body"]).toEqual({ clientResponse: true });
+    expect(payload["response_body"]).toBeNull();
+    expect(payload["signals"]).toEqual({ toolCalls: 1, images: 0, attachments: 2 });
   });
 });

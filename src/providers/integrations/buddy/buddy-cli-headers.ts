@@ -2,43 +2,47 @@
  * The header family only the CLI identity sends.
  *
  * Everything here comes from the two reference gateways, which agree: the
- * desktop product sends conversation/tracing headers and browser transport,
- * while the CLI sends the agent envelope plus the OpenAI Node SDK fingerprint
- * and no browser headers at all. A request carrying both halves is a hybrid no
- * real client produces, which is what risk control keys on.
+ * desktop product sends conversation/tracing headers and a device token, while
+ * the CLI sends the agent envelope plus the OpenAI Node SDK fingerprint. The
+ * CLI still drops the browser *transport* headers (`origin`, `referer`,
+ * `accept-language`) and the device token, but keeps the request-shape markers
+ * (`x-requested-with`, `x-codebuddy-request`) the reference sends on every call
+ * regardless of transport — see the CLI branches in each provider's
+ * `*-shared.ts`.
  *
- * Two references, two fingerprints: the hub derives OS/arch and a Node version
- * from its own host, and codebuddy2api pins a fixed Linux/x64/v24.21.0 set.
- * Neither can be right for every deployment, so the values here follow the
- * host this gateway actually runs on — they are a fingerprint of the process,
- * not a claim about a remote machine.
+ * The SDK fingerprint is pinned, not host-derived. Both references pin a fixed
+ * set (codebuddy2api pins Linux/x64/v24.21.0); this gateway pins the macOS set
+ * instead, so every CLI dispatch presents one consistent client fingerprint no
+ * matter which machine the gateway runs on. A host-derived fingerprint would
+ * advertise whatever OS the process happens to run under — a value no upstream
+ * risk model has seen for this client brand, and an easy outlier to key on.
  */
 
 /** OpenAI Node SDK 6.25.0 `x-stainless-*` fingerprint; both references agree. */
 const STAINLESS_PACKAGE_VERSION = "6.25.0";
 
-function hostOs(): string {
-  return process.platform === "win32" ? "Windows" : process.platform === "darwin" ? "MacOS" : "Linux";
-}
-
-function hostArch(): string {
-  return process.arch === "arm64" || process.arch === "ia32" ? process.arch : "x64";
-}
+/**
+ * The pinned Node runtime the fingerprint claims. Held constant across
+ * dispatches: a drifting `process.version` would advertise a different Node
+ * build per deployment, which is not what one installed client looks like.
+ */
+const STAINLESS_RUNTIME_VERSION = "v24.21.0";
 
 /**
  * The SDK fingerprint headers.
  *
  * `x-stainless-timeout` is in the hub only and `x-stainless-retry-count` is in
- * both; the SDK sends both, so both go out.
+ * both; the SDK sends both, so both go out. The OS/arch pair is the pinned
+ * macOS fingerprint rather than this process's host.
  */
 export function buddyStainlessHeaders(): Record<string, string> {
   return {
     "x-stainless-lang": "js",
     "x-stainless-package-version": STAINLESS_PACKAGE_VERSION,
-    "x-stainless-os": hostOs(),
-    "x-stainless-arch": hostArch(),
+    "x-stainless-os": "MacOS",
+    "x-stainless-arch": "x64",
     "x-stainless-runtime": "node",
-    "x-stainless-runtime-version": process.version,
+    "x-stainless-runtime-version": STAINLESS_RUNTIME_VERSION,
     "x-stainless-retry-count": "0",
     "x-stainless-timeout": "1200",
   };
@@ -69,7 +73,14 @@ export function buddyCliTraceHeaders(
  * conversation family, because those vary by provider and realm: only the
  * headers that are the same for every CLI dispatch are built here.
  */
-export function buddyCliHeaders(args: { readonly userId: string }): Record<string, string> {
+export function buddyCliHeaders(args: {
+  readonly userId: string;
+  readonly enterpriseId?: string | undefined;
+}): Record<string, string> {
+  const enterpriseId =
+    args.enterpriseId !== undefined && args.enterpriseId.trim().length > 0
+      ? args.enterpriseId.trim()
+      : undefined;
   return {
     "X-Agent-Intent": "craft",
     "X-Agent-Type": "main",
@@ -78,11 +89,21 @@ export function buddyCliHeaders(args: { readonly userId: string }): Record<strin
     // of the three, so "other" is the honest value rather than a guess.
     "X-Agent-Runtime": "other",
     "X-User-Id": args.userId,
-    // Personal accounts are not an enterprise and the reference sends the flag
-    // either way (`true` only for an enterprise id), so the non-enterprise
-    // default goes out here. Step 3 replaces this with the account's real
-    // enterprise id once discovery carries one.
-    "X-Private-Data": "false",
+    // The reference sends the flag either way, `true` only for an enterprise
+    // id. A personal account stays `false`; an enterprise account flips to
+    // `true` and names the enterprise, because the two travel together — a
+    // `true` with no id, or an id under `false`, is a combination no real
+    // client produces.
+    "X-Private-Data": enterpriseId === undefined ? "false" : "true",
+    ...(enterpriseId === undefined
+      ? {}
+      : {
+          "X-Enterprise-Id": enterpriseId,
+          // The tenant falls back to the enterprise: the two are the same value
+          // for an account that belongs to one enterprise, and the upstream
+          // reads both.
+          "X-Tenant-Id": enterpriseId,
+        }),
     ...buddyStainlessHeaders(),
   };
 }

@@ -91,7 +91,7 @@ on the next request, not at the next process start.
 | `search/` | Hosted search tools and grounding |
 
 Per-account quota thresholds are applied during route eligibility; they are not
-account health state. See [Usage floor](../../../documentation/features/usage-floor.md).
+account health state. See [Usage floor](../../../documentation/features/04-usage-floor.md).
 `base-adapter.ts` and `compatible-adapter.ts` cover standard-wire providers; a
 bespoke provider frames its own bytes in its adapter — that fact lives on
 provider metadata, not in `wire_family`. Details:
@@ -103,8 +103,8 @@ provider metadata, not in `wire_family`. Details:
 types and `InMemoryRouteSnapshotService`; `admission.ts`/`reservations.ts`
 hold slots and leases; `round-robin.ts` keeps the per-provider cursor. Three
 independently configured strategies: provider, pool, and combo (all `fallback`
-or `round_robin`) — see [network pools](../../../documentation/features/network-pools.md) and
-[routing aliases and combos](../../../documentation/features/routing-aliases-combos.md).
+or `round_robin`) — see [network pools](../../../documentation/features/03-network-pools.md) and
+[routing aliases and combos](../../../documentation/features/02-routing-aliases-combos.md).
 
 `src/network/` is the egress half: `pool/` selects a pool and accounts bytes,
 `ssrf.ts` rejects disallowed destinations, `retry.ts` is the outbound retry
@@ -147,36 +147,30 @@ counters: one update per key per flush.
 ## Observability
 
 `src/observability/event-log.ts` appends one JSON object per request to a
-single file per UTC day, `data/telemetry-events/<YYYY-MM-DD>.events.jsonl`.
-`src/observability/event-day-index.ts` maintains `<YYYY-MM-DD>.index.json`
-beside it: running totals, per-name breakdown sums, per-hour slots, and a byte
-watermark of how much of the event file has been folded in.
+raw hourly file in the configured data dir's `telemetry-events/`. Legacy daily
+raw files remain readable until retention; there is no compaction or day-index
+module.
 
 Readers split by what they need:
 
-- **Usage, breakdown, traffic chart, per-key spend** — read the index
-  (`queryIndexedBuckets`, `periodBuckets`). They do not parse the events, so
-  their cost does not grow with traffic.
-- **Request list and detail drawer** — read the event file, backwards from the
-  tail in blocks (`readEventFileTail`), via `queryTelemetryEvents`. Health and
-  share stats also read events.
+- **Usage, breakdown, traffic chart, per-key spend** — aggregate raw events via
+  `queryTelemetryEvents` and the short-lived period memo.
+- **Request list and detail drawer** — read raw events via
+  `queryTelemetryEvents`; an unfiltered newest page can use
+  `readEventFileTail`. Health and share stats also read events.
 
 Lifetime totals stay in `telemetry_usage_totals`.
 `isGatewayError(status, httpStatus)` is the only error predicate — 4xx, 499,
 503, 529 are recorded but not gateway errors.
 
-Folding is incremental and idempotent from the watermark; an unterminated line
-is not an event. Retention deletes whole days — event file and index together.
-Do not reinfer which file is open from its name; that is what let the previous
-fold-and-delete scheme unlink a file the writer was still appending to.
+Retention deletes whole expired raw files. No summary replaces their requests.
 
 `telemetry-buffer.ts` batches inserts; the file appends after the aggregate
 transaction commits, a rejected batch is not rewritten per retry, and a
 non-UUID `tenantId` drops the batch. `payload-capture.ts` writes gzipped JSON
 frame files, indexed by `telemetry_payloads` rows naming their encoding
 (`jsonl-file` gzipped, `jsonb-file` pre-compression). Telemetry retention
-prunes by whole day and never touches the current day; a day's event file and
-its index are removed together.
+prunes expired raw event files without touching the current hour.
 
 ## Console API
 
@@ -220,4 +214,4 @@ benchmarks. Client version refresh is deferred until after startup.
 | New provider | a spec in `configured-provider.ts` (standard OpenAI shape) or a family under `integrations/`, then the registry and discovery catalog |
 | Routing rule | `router.ts` and `route-model.ts`, then the snapshot builder |
 | Console resource | the domain under `src/console/`, then the dashboard hook that calls it |
-| Schema | `schema.ts`, then a numbered file in both `migrations/` directories for an existing database, and `migrations/full-postgres/0000_baseline.sql` for a fresh one. Regenerate SQLite with `scripts/generate/sqlite-ddl.ts` |
+| Schema | `schema.ts`, then the next numbered migration in both `migrations/` directories. Fresh and existing databases both apply the forward files. Do not edit either pinned baseline for an ordinary schema change; the SQLite generator derives from the pinned PostgreSQL baseline, not the accumulated forward migrations |

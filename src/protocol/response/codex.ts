@@ -84,7 +84,10 @@ export function reasoningEvent(
       payload: null,
       ...(summary === undefined ? {} : { summary }),
       ...(typeof encrypted === "string"
-        ? { encrypted_content: encrypted }
+        ? {
+            encrypted_content: encrypted,
+            ...(typeof item["id"] === "string" ? { item_id: item["id"] } : {}),
+          }
         : {}),
       ...(summary === undefined && typeof encrypted === "string"
         ? { opaque: true as const }
@@ -235,9 +238,9 @@ export function parseCodexResponsesJsonToEvents(
       | undefined);
   // An incomplete response that produced a tool call is always a tool-use
   // stop; every other incomplete response is a length stop. There is no
-  // separate executability gate — the branch that used to scan tool arguments
-  // for parseable JSON returned `tool_use` on both outcomes, so the scan and
-  // the `incomplete_details.reason` read could not change the result.
+  // separate executability gate — scanning tool arguments for parseable JSON
+  // returns `tool_use` on both outcomes, so the scan and the
+  // `incomplete_details.reason` read could not change the result.
   const stopReason = mapCodexStopReason(status, hasToolCall, endTurn);
   let finalStopReason = stopReason;
   if (endTurn === false && stopReason === "stop") {
@@ -626,11 +629,23 @@ export class CodexStreamFrameProcessor {
       if (streamError !== undefined) throw streamError;
       this.terminalStatus = "failed";
     } else if (typeof json["delta"] === "string" && json["delta"].length > 0) {
+      // An unrecognized frame carrying a bare `delta` used to be forwarded as
+      // answer text. Reasoning frames that fall through the chain above — the
+      // last `else if` is the catch-all for every type this decoder does not
+      // name — then leaked into the answer verbatim. Keeping the payload
+      // visible as an extension part is the unknown-event convention the
+      // Responses stream already uses (`responses:<type>`), so the frame stays
+      // in telemetry without ever reaching the answer. Dropping it instead
+      // would silently discard real content.
       events.push({
         type: "content_delta",
         sequence_number: this.#seq++,
-        content: { kind: "text", text: json["delta"] as string },
-      } as unknown as CanonicalEvent);
+        content: {
+          kind: "extension",
+          name: "codex:untyped_delta",
+          payload: json["delta"] as string,
+        },
+      } as CanonicalEvent);
     } else {
       const choices = json["choices"] as
         | Array<Record<string, unknown>>

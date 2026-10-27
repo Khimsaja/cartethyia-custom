@@ -7,10 +7,9 @@ import type { UsageRecord } from "../../protocol/canonical-model";
 import { classifyUpstreamFailure } from "../failure-policy";
 import type { AdmissionLease } from "../../security/admission/contracts";
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
-import { TelemetryPayloadCapture } from "../../observability/payload-capture";
+import { resolvePayloadCapture, TelemetryPayloadCapture, truncateUtf8 } from "../../observability/payload-capture";
 import { payloadDirectory } from "../../observability/payload-store";
 import type { TelemetryBatchBuffer } from "../../observability/telemetry-buffer";
-import type { TelemetryPayloadDepth } from "../../console/settings/contracts";
 import type { ProxyRequestOutcome, ProxyRequestState } from "../request/state";
 import { responseHasVisibleContent } from "../surface/visible-content";
 import type { PayloadCaptureState } from "../../observability/payload-capture";
@@ -23,109 +22,14 @@ import {
   recordPoolDispatchOutcome,
 } from "../../network/pool-health-machine";
 import { ProxyConnectRefusalError } from "../../network/pool/agent";
-import {
-  payloadCaptureKeepsBodies,
-  resolvePayloadCapture,
-} from "../../observability/payload-capture";
-
-/**
- * True when the tenant keeps response bodies (mode `full`). The dispatch
- * path calls this once per attempt to decide whether the provider-response
- * tee is worth its clone + bounded read; `none`/`metadata` skip the body.
- */
-export async function shouldCaptureProviderBody(
-  db: CartethyiaDatabase,
-  tenantId: string | null,
-): Promise<boolean> {
-  return payloadCaptureKeepsBodies(db, tenantId);
-}
-
-/**
- * Per-stage cap for the provider request/response tee at one capture depth.
- *
- * The tee is what the drawer's "Provider Request" and "Provider Response"
- * panels read, so its cap is the most a provider panel can ever show. It used
- * to be a flat 256 KiB at every depth: on a large request the translated
- * provider body was clipped to 256 KiB before the shared record budget ever
- * ran, so a tenant who raised the depth to Maximum — 16 MiB — still saw a
- * quarter-megabyte provider request and an empty provider response. Derived
- * from the same depth tiers as the record budget, so raising the depth now
- * raises both.
- *
- * Capped at a quarter of the depth's total budget: four panels share it, and
- * one of them must never be able to spend the whole thing.
- */
-export function providerCaptureMaxBytes(depth?: TelemetryPayloadDepth): number {
-  if (depth === "moderate") return 2 * 1024 * 1024;
-  if (depth === "maximum") return 4 * 1024 * 1024;
-  return 256 * 1024;
-}
-
-/**
- * Same answer as {@link shouldCaptureProviderBody}, memoized on the request.
- *
- * The preference is a tenant setting, so it cannot change between attempts of
- * one request. Resolving it per attempt meant a request with several attempts
- * paid for it repeatedly, and the per-attempt answer could in principle differ
- * from the one the terminal capture then acted on. Passing `state` lets every
- * attempt of a request share one resolution.
- */
-export async function shouldCaptureProviderBodyForRequest(
-  db: CartethyiaDatabase,
-  tenantId: string | null,
-  state: { payloadCapturePreference?: unknown },
-): Promise<boolean> {
-  if (state.payloadCapturePreference === undefined) {
-    state.payloadCapturePreference = await resolvePayloadCapture(db, tenantId);
-  }
-  const resolved = state.payloadCapturePreference as
-    | { readonly ok: true; readonly mode: string }
-    | { readonly ok: false };
-  return resolved.ok === true && resolved.mode === "full";
-}
-
-/**
- * The tenant's capture depth, memoized on the request like the mode above.
- *
- * Read *after* {@link shouldCaptureProviderBodyForRequest} has populated the
- * memo, so the two answers come from one preference read. It sizes the
- * provider tee: a tenant who raised the depth is asking for more of every
- * panel, and a flat cap would answer with the same clipped body regardless.
- */
-export async function resolveCaptureDepthForRequest(
-  db: CartethyiaDatabase,
-  tenantId: string | null,
-  state: { payloadCapturePreference?: unknown },
-): Promise<TelemetryPayloadDepth> {
-  if (state.payloadCapturePreference === undefined) {
-    state.payloadCapturePreference = await resolvePayloadCapture(db, tenantId);
-  }
-  const resolved = state.payloadCapturePreference as
-    | { readonly ok: true; readonly depth: TelemetryPayloadDepth }
-    | { readonly ok: false };
-  return resolved.ok === true ? resolved.depth : "minimum";
-}
-
-/**
- * Combined body cap for one capture depth. Fixed size tiers: every depth
- * stores all four drawer panels (client request, translated provider
- * request, raw provider response, final client response) — only the cap
- * changes, so raising the depth never changes *what* is visible, only how
- * much of large bodies survives. Moderate and maximum spike CPU/memory while
- * active; minimum is light enough to leave on.
- */
-function captureDepthMaxBytes(depth: TelemetryPayloadDepth): number {
-  if (depth === "moderate") return 8 * 1024 * 1024;
-  if (depth === "maximum") return 16 * 1024 * 1024;
-  return 1 * 1024 * 1024;
-}
+import { captureDepthMaxBytes, providerCaptureMaxBytes } from "./capture-policy";
 
 /**
  * What the client received for a failed terminal attempt, in the same public
  * envelope the error middleware sends on the wire (`{ error: { origin, code,
  * message, details } }`). Stored so Request Detail's "Client Response"
- * panel can trace an error exactly as the client saw it — failures used to
- * leave that panel empty.
+ * panel can trace an error exactly as the client saw it, including for failures
+ * that never produced a response body.
  */
 export function errorClientResponseBody(error: unknown): string {
   if (error instanceof GatewayError) {
@@ -163,21 +67,24 @@ async function readBoundedBody(response: Response, maxBytes: number): Promise<st
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   // Collect decoded chunks and join once: `+=` per chunk reallocates the
-  // prefix (O(n^2)). Truncation stays at the same decoded-char boundary.
+  // prefix (O(n^2)). The budget is UTF-8 **bytes** — the same basis the record
+  // budget and the request-line slice use — measured per decoded chunk, with
+  // the final chunk trimmed by truncateUtf8 so a code point is never split.
   const parts: string[] = [];
-  let total = 0;
+  let totalBytes = 0;
   try {
-    while (total < maxBytes) {
+    while (totalBytes < maxBytes) {
       const { done, value } = await reader.read();
       if (done) break;
       const chunk = decoder.decode(value, { stream: true });
-      if (total + chunk.length > maxBytes) {
-        parts.push(chunk.slice(0, maxBytes - total));
-        total = maxBytes;
+      const chunkBytes = Buffer.byteLength(chunk, "utf8");
+      if (totalBytes + chunkBytes > maxBytes) {
+        parts.push(truncateUtf8(chunk, maxBytes - totalBytes));
+        totalBytes = maxBytes;
         break;
       }
       parts.push(chunk);
-      total += chunk.length;
+      totalBytes += chunkBytes;
     }
   } catch {
     // Best-effort capture must never fail the request path.
@@ -316,11 +223,16 @@ export function captureProviderExchange(
       method: init?.method ?? "GET",
       url,
       ...(headers === undefined ? {} : { headers }),
-      // Capped the same way the response is. A capture is a diagnostic, and an
-      // unbounded translated request body per attempt — up to `maxAttempts` of
-      // them, all alive until the loop returns — costs more than it can tell
-      // an operator.
-      ...(rawBody === null ? {} : { body: parseCapturedBody(rawBody.slice(0, maxBytes)) }),
+      // `captureBody=false` is the `none`/`metadata` path: record that a body
+      // was sent and how big it was, without slicing or parsing it. The old
+      // shape sliced up to `maxBytes` of the translated body and ran it through
+      // `JSON.parse` for every attempt — content a metadata-mode tenant had
+      // explicitly declined to retain, paid on every dispatch.
+      ...(rawBody === null
+        ? {}
+        : captureBody
+          ? { body: parseCapturedBody(truncateUtf8(rawBody, maxBytes)) }
+          : { body_present: true, body_bytes: Buffer.byteLength(rawBody, "utf8") }),
     };
     const response = await inner(input, init);
     sink.response =
@@ -345,7 +257,8 @@ async function resolvedProviderResponse(
     new Promise<null>((resolve) => setTimeout(() => { timedOut = true; resolve(null); }, PROVIDER_CAPTURE_AWAIT_MS)),
   ]);
   if (settled === null || settled === undefined) {
-    // Distinguish "slow payload" from "no payload": a null used to mean both.
+    // Distinguish "slow payload" from "no payload": a bare null cannot tell the
+    // two apart, so the timeout is reported explicitly.
     return timedOut ? { _truncated: true, _reason: "provider_capture_timeout" } : null;
   }
   return settled;
@@ -391,7 +304,7 @@ async function captureTerminalPayload(
       note("skipped_preference_read_failed");
       return;
     }
-    const { mode, depth } = resolved;
+    const { mode, depth, retentionMs } = resolved;
     if (mode === "none") {
       note("skipped_mode_none");
       return;
@@ -402,22 +315,23 @@ async function captureTerminalPayload(
         note("captured_metadata");
         return;
       }
-      await new TelemetryPayloadCapture(db).capture({
+      const metadataCapture = await new TelemetryPayloadCapture(db).capture({
         tenantId,
         requestId,
         requestBody: null,
         responseBody: null,
         providerRequestBody: providerRequest,
+        retentionMs,
         scope: "tenant",
         tenantOptIn: true,
       });
-      note("captured_metadata");
+      note(metadataCapture.payloadCaptureState ?? "captured_metadata");
       return;
     }
     const maxBytes = captureDepthMaxBytes(depth);
     const providerRequest = providerCapture?.request ?? null;
     const providerResponse = await resolvedProviderResponse(providerCapture);
-    await new TelemetryPayloadCapture(db).capture({
+    const terminalCapture = await new TelemetryPayloadCapture(db).capture({
       tenantId,
       requestId,
       requestBody: requestBody ?? null,
@@ -426,10 +340,11 @@ async function captureTerminalPayload(
       ...(providerRequest === null ? {} : { providerRequestBody: providerRequest }),
       ...(providerResponse === null ? {} : { providerResponseBody: providerResponse }),
       maxBytes,
+      retentionMs,
       scope: "tenant",
       tenantOptIn: true,
     });
-    note("captured");
+    note(terminalCapture.payloadCaptureState ?? "captured");
   } catch (error) {
     note("failed_write");
     reportCaptureFailure(error);
@@ -487,7 +402,22 @@ export function terminalFailure(
     if (terminal.provider_stop_reason) details["provider_code"] = terminal.provider_stop_reason;
     if (terminal.stop_details) Object.assign(details, terminal.stop_details);
     const message = typeof details["message"] === "string" ? details["message"] : "upstream request failed";
-    return new GatewayError("transport_unavailable", 502, message, details, "upstream");
+   // Preserve the upstream's error code when the provider embedded it in
+   // `stop_details` (Cursor writes `quota_exceeded` and `authentication_failed`
+   // there). Wrapping every terminal failure as `transport_unavailable` discarded
+   // those codes, so `quota_exceeded` was never seen by the classifier and the
+   // exhausted account was never cooled.
+   const code = typeof details["code"] === "string" ? details["code"] : undefined;
+   const status = typeof details["status"] === "number" ? details["status"] : 502;
+   const gatewayCode =
+     code === "quota_exceeded" ? "quota_exceeded" :
+     code === "authentication_failed" ? "authentication_failed" :
+     "transport_unavailable";
+   const gatewayStatus =
+     gatewayCode === "quota_exceeded" ? 429 :
+     gatewayCode === "authentication_failed" ? 401 :
+     status;
+   return new GatewayError(gatewayCode, gatewayStatus, message, details, "upstream");
   }
   if (terminal.state === "aborted") {
     // A client-initiated cancellation is not an upstream fault; the stream path

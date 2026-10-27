@@ -10,7 +10,7 @@ import { mergeResponsesUsage } from "./responses";
 import { usageFromProvider, readReasoningText } from "../../providers/provider-usage";
 import { createToolEmitLedger } from "../tool-identity";
 import { MimoThinkSplitter, stripThinkingTags } from "../../providers/integrations/xiaomi-mimo/think-stream";
-import { parseDsmlToolCalls } from "./dsml";
+import { DsmlToolCallParser, parseDsmlToolCalls } from "./dsml";
 import {
   OmpToolCallMarkupParser,
   parseOmpToolCallMarkup,
@@ -83,7 +83,7 @@ export function parseChatResponseToEvents(
     const contentWithoutMarkup = recoveredMarkup?.text ?? content;
     const recovered =
       typeof contentWithoutMarkup === "string"
-        ? parseDsmlToolCalls(contentWithoutMarkup)
+        ? parseDsmlToolCalls(contentWithoutMarkup, declaredToolNames)
         : undefined;
     const visible = recovered === undefined ? contentWithoutMarkup : recovered.text;
     if (typeof visible === "string" && visible.includes("<think")) {
@@ -144,6 +144,13 @@ export function parseChatResponseToEvents(
               : undefined;
         return callId && name !== undefined && name.length > 0;
       });
+    // A request that declared no tools carries no allowlist to enforce, so a
+    // recovered block is honoured as-is exactly as before; a request that did
+    // declare them must never execute a name it did not offer.
+    const recoveredCalls =
+      declaredToolNames.size > 0
+        ? (recovered?.calls ?? []).filter((call) => callableToolNames.has(call.name))
+        : (recovered?.calls ?? []);
     const toolCalls = hasStructuredCalls
       ? structuredCalls
       : recoveredMarkup?.calls.some((call) => callableToolNames.has(call.name))
@@ -153,7 +160,7 @@ export function parseChatResponseToEvents(
               id: call.id,
               function: { name: call.name, arguments: call.arguments },
             }))
-        : recovered?.calls ?? [];
+        : recoveredCalls;
     if (!hasStructuredCalls && recoveredMarkup !== undefined) {
       recoveredToolCalls = recoveredMarkup.calls.filter((call) =>
         callableToolNames.has(call.name),
@@ -251,12 +258,18 @@ export async function* decodeChatSseStream(
   // Single emission ledger: one entry per logical call.
   const ledger = createToolEmitLedger();
   const think = new MimoThinkSplitter();
+  // Separate splitter for the reasoning channel: `reasoning_content` is its own
+  // stream, and interleaving it into the answer splitter would let a tag in one
+  // channel swallow the other's text.
+  const reasoningThink = new MimoThinkSplitter();
   const declaredToolNames = declaredToolNamesForRequest(request);
   const callableToolNames = callableToolNamesForRequest(request);
   const contentMarkup =
     (request.tools?.length ?? 0) > 0 ? new OmpToolCallMarkupParser(declaredToolNames) : undefined;
   const reasoningMarkup =
     (request.tools?.length ?? 0) > 0 ? new OmpToolCallMarkupParser(declaredToolNames) : undefined;
+  const dsmlMarkup =
+    (request.tools?.length ?? 0) > 0 ? new DsmlToolCallParser(declaredToolNames) : undefined;
   yield {
     type: "response_start",
     sequence_number: seq++,
@@ -302,7 +315,7 @@ export async function* decodeChatSseStream(
           const raw = delta["content"] as string;
           const markup = contentMarkup?.push(raw);
           if (markup !== undefined) recoveredMarkupCalls.push(...markup.calls);
-          const recovered = parseDsmlToolCalls(markup?.text ?? raw);
+          const recovered = dsmlMarkup?.push(markup?.text ?? raw);
           const visible = recovered?.text ?? markup?.text ?? raw;
           const split = think.push(visible);
           if (split.reasoning.length > 0) {
@@ -335,13 +348,22 @@ export async function* decodeChatSseStream(
         const reasoningMarkupResult =
           typeof reasoningRaw === "string" ? reasoningMarkup?.push(reasoningRaw) : undefined;
         // Strip stray `<think>` tags the upstream double-wrapped inside its own
-        // reasoning stream (buddy's hy4-preview-f leaks them per-delta). Done
-        // per delta rather than once at the end because an open-ended tag that
-        // spans multiple deltas is a splitter job, not this one.
-        const reasoningText =
+        // reasoning stream (buddy's hy4-preview-f leaks them per-delta). This
+        // is the splitter's job, not `stripThinkingTags`'s: a stateless strip
+        // cannot see a tag split across two deltas, so `"<thi"` was emitted
+        // verbatim and only the following `</think>` removed.
+        const reasoningSplit =
           typeof reasoningRaw === "string"
-            ? stripThinkingTags(reasoningMarkupResult?.text ?? reasoningRaw)
-            : reasoningRaw;
+            ? reasoningThink.push(reasoningMarkupResult?.text ?? reasoningRaw)
+            : undefined;
+        // Both sides are reasoning. The splitter routes text outside a
+        // `<think>` span to its `.text` side, but this field is the reasoning
+        // stream in its entirety: untagged prose here is still thought, not
+        // answer. Taking only `.reasoning` dropped every un-tagged delta.
+        const reasoningText =
+          reasoningSplit === undefined
+            ? undefined
+            : `${reasoningSplit.reasoning}${reasoningSplit.text}`;
         if (typeof reasoningText === "string" && reasoningText.length > 0) {
           yield {
             type: "content_delta",
@@ -478,9 +500,32 @@ export async function* decodeChatSseStream(
       }
     }
   }
+  const dsmlMarkupTail = dsmlMarkup?.flush();
+  if (dsmlMarkupTail !== undefined) {
+    if (dsmlMarkupTail.text.length > 0) {
+      const split = think.push(dsmlMarkupTail.text);
+      if (split.reasoning.length > 0) {
+        yield {
+          type: "content_delta",
+          sequence_number: seq++,
+          content: { kind: "reasoning", payload: null, summary: split.reasoning },
+        } as CanonicalEvent;
+      }
+      if (split.text.length > 0) {
+        yield {
+          type: "content_delta",
+          sequence_number: seq++,
+          content: { kind: "text", text: split.text },
+        } as CanonicalEvent;
+      }
+    }
+    for (const call of dsmlMarkupTail.calls) recoveredMarkupCalls.push(call);
+  }
   const reasoningMarkupTail = reasoningMarkup?.flush();
   if (reasoningMarkupTail?.text) {
-    const reasoningText = stripThinkingTags(reasoningMarkupTail.text);
+    const split = reasoningThink.push(reasoningMarkupTail.text);
+    // Both sides are reasoning: see the per-delta branch above.
+    const reasoningText = `${split.reasoning}${split.text}`;
     if (reasoningText.length > 0) {
       yield {
         type: "content_delta",
@@ -488,6 +533,17 @@ export async function* decodeChatSseStream(
         content: { kind: "reasoning", payload: null, summary: reasoningText },
       } as CanonicalEvent;
     }
+  }
+  // Release anything the reasoning splitter held for a tag that never
+  // completed, before `think.flush()` and the terminal.
+  const reasoningRest = reasoningThink.flush();
+  const reasoningTail = `${reasoningRest.reasoning}${reasoningRest.text}`;
+  if (reasoningTail.length > 0) {
+    yield {
+      type: "content_delta",
+      sequence_number: seq++,
+      content: { kind: "reasoning", payload: null, summary: reasoningTail },
+    } as CanonicalEvent;
   }
   const rest = think.flush();
   if (rest.reasoning.length > 0) {
