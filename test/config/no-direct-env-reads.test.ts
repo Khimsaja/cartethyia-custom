@@ -94,6 +94,17 @@ const ALLOW_LIST: Readonly<Record<string, Readonly<Record<string, string>>>> = {
     // operator is debugging the cursor transport.
     CARTETHYIA_CURSOR_HEARTBEAT_MS: "cursor transport heartbeat override",
   },
+  "src/transport/dispatch/leases.ts": {
+    // TipRouter pool-affinity override; custom list semantics the generic
+    // reader cannot express: unset defaults to cb, explicitly empty
+    // disables affinity entirely, and readList maps both to undefined.
+    CARTETHYIA_POOL_AFFINITY_PROVIDERS: "custom list semantics beyond generic reader",
+  },
+  "src/transport/routing/auto-model.ts": {
+    // TipRouter auto-model gate; default-off flag: only "1"/"true" enables,
+    // while the generic flag reader enables unless the literal "false".
+    CARTETHYIA_AUTO_MODEL_ENABLED: "default-off flag semantics beyond generic reader",
+  },
 };
 
 /** Walk a directory, yielding every .ts/.tsx file path relative to repo root. */
