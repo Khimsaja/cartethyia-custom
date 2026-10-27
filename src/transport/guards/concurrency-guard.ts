@@ -17,7 +17,7 @@ import { GatewayError } from "../../protocol/gateway-error";
 import { fastPathname } from "../pathname";
 
 /** In-flight `/v1` requests one process will carry before refusing. */
-export const PROCESS_CONCURRENCY_CAP = 256;
+export const PROCESS_CONCURRENCY_CAP = 400;
 const PROCESS_CONCURRENCY_RETRY_MS = 3_000;
 
 let inFlight = 0;
@@ -67,6 +67,13 @@ export function createProcessConcurrencyMiddleware(): Elysia {
       // see why it is refusing.
       if (!path.startsWith("/v1/")) return;
       if (isConcurrencyExempt(request)) return;
+      // A client that vanishes mid-flight never reaches `afterResponse`
+      // (Elysia does not fire it for a vanished client), so a counted
+      // request would hold its slot for the life of the process. Skip a
+      // request that is already dead, and arm the abort listener as the
+      // second decrement path; the WeakSet makes it idempotent with
+      // `afterResponse` -- whichever runs first frees the slot.
+      if (request.signal.aborted) return;
       if (inFlight >= PROCESS_CONCURRENCY_CAP) {
         throw new GatewayError(
           "platform_unavailable",
@@ -77,6 +84,15 @@ export function createProcessConcurrencyMiddleware(): Elysia {
       }
       inFlight += 1;
       counted.add(request);
+      request.signal.addEventListener(
+        "abort",
+        () => {
+          if (!counted.has(request)) return;
+          counted.delete(request);
+          if (inFlight > 0) inFlight -= 1;
+        },
+        { once: true },
+      );
     })
     .afterResponse(({ request }: { request: Request }) => {
       const path = fastPathname(request.url);

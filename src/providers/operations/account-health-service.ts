@@ -20,6 +20,43 @@ import {
   resolveAccountTransientCooldownMs,
   resolveAccountUnclassifiedCooldownMs,
 } from "../../config/cooldowns";
+// ===== lock-timeout retry (account-health contention patch) =====
+/**
+ * True when a Postgres error is a row-lock wait cancelled by `lock_timeout`
+ * (SQLSTATE 55P03). Health writes are bookkeeping: losing one to a lock
+ * wait must not drop the update, and retrying it is safe — a cancelled
+ * statement never committed, so the retry executes exactly once.
+ */
+function isLockTimeoutError(error: unknown): boolean {
+  const code =
+    (error as { code?: unknown } | null)?.code ??
+    (error as { cause?: { code?: unknown } } | null)?.cause?.code;
+  if (code === "55P03") return true;
+  const message = error instanceof Error ? error.message : "";
+  return message.includes("lock timeout");
+}
+
+/**
+ * Runs a health write, retrying it when Postgres cancels it on a lock wait.
+ * Concurrent status writes to one hot account serialize on the row lock; the
+ * 5s `lock_timeout` turns the losers into errors. A short retry lets the
+ * winner commit first and the loser land right after, instead of dropping
+ * the update and logging a PG ERROR.
+ */
+export async function withHealthWriteRetry<T>(fn: () => Promise<T>): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (!isLockTimeoutError(error) || attempt === 2) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
+
 // ===== health/constants.ts =====
 /**
  * Account status is authoritative for routing: `disabled` is a hard exclusion
@@ -1182,10 +1219,12 @@ export async function recordAccountFailure(
     // reachable with a partially-implemented database handle (the dispatch
     // tests pass a narrow double), and a transaction is an optimization here,
     // not a requirement — the same writes are correct without one.
-    if (typeof db.transaction === "function") {
-      return await db.transaction((tx) => persist(tx as CartethyiaDatabase));
-    }
-    return await persist(db);
+    return await withHealthWriteRetry(async () => {
+      if (typeof db.transaction === "function") {
+        return await db.transaction((tx) => persist(tx as CartethyiaDatabase));
+      }
+      return await persist(db);
+    });
   } catch {
     return null;
   }
@@ -1208,6 +1247,10 @@ export async function recordAccountSuccess(
         // Read only to decide whether there is anything to clear: the common
         // case (no unsupported-model hit ever recorded) must not write.
         modelBlockHits: providerAccounts.modelBlockHits,
+        // Also read to decide the no-op skip below: a row that already holds
+        // the values the UPDATE would write must not be rewritten.
+        cooldownUntil: providerAccounts.cooldownUntil,
+        lastSuccessAt: providerAccounts.lastSuccessAt,
       })
       .from(providerAccounts)
       .where(eq(providerAccounts.id, accountId))
@@ -1225,6 +1268,26 @@ export async function recordAccountSuccess(
     // the reference gateways' too.
     const blockHits = account.modelBlockHits as Record<string, number> | null;
     const hasBlockHits = blockHits !== null && Object.keys(blockHits).length > 0;
+    // Skip the write when it would change nothing. This runs on EVERY
+    // successful dispatch, so an unconditional UPDATE turned every success
+    // into a row-lock write on the account: under concurrency to one hot
+    // account those writes serialized on the row lock, tripped the 5s
+    // lock_timeout in clusters, and the resulting pool pressure fed the
+    // key-lookup bursts. The only value this UPDATE refreshes on a healthy
+    // account is lastSuccessAt, so it is throttled to one write per minute
+    // instead of one per request; the console "last success" column stays
+    // fresh to within a minute.
+    const lastSuccessFresh =
+      account.lastSuccessAt !== null &&
+      now.getTime() - account.lastSuccessAt.getTime() < 60_000;
+    if (
+      !hadFailures &&
+      !hasBlockHits &&
+      account.cooldownUntil === null &&
+      lastSuccessFresh
+    ) {
+      return false;
+    }
     await client
       .update(providerAccounts)
       .set({
@@ -1250,10 +1313,12 @@ export async function recordAccountSuccess(
     return hadFailures;
   };
   try {
-    if (typeof db.transaction === "function") {
-      return await db.transaction((tx) => mutate(tx as CartethyiaDatabase));
-    }
-    return await mutate(db);
+    return await withHealthWriteRetry(async () => {
+      if (typeof db.transaction === "function") {
+        return await db.transaction((tx) => mutate(tx as CartethyiaDatabase));
+      }
+      return await mutate(db);
+    });
   } catch {
     return false;
   }

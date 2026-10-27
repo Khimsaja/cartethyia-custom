@@ -54,6 +54,40 @@ const authNegativeCache = new Map<string, number>();
  */
 const AUTH_FAILURE_COOLDOWN_MS = 1_000;
 let authFailureUntil = 0;
+// Consecutive top-level lookup failures with no success between them. The
+// cooldown below exists to protect a dead store from request-rate hammering
+// — but arming it on the FIRST blip turned every transient fault (one
+// lock-wait cluster, one dropped connection) into a full second where every
+// key lookup failed, which is how the key-lookup bursts grew. The cooldown
+// now arms only after two consecutive failures; a lone blip costs a retry,
+// not a blackout. During a real outage failures are consecutive anyway, so
+// the protection still engages after two failures instead of one.
+let authConsecutiveFailures = 0;
+
+/**
+ * Runs a credential-store lookup, retrying it on transient failure. The
+ * lookup is a read-only idempotent query, so retrying it is always safe.
+ * Delays are [150ms, 1100ms]: the second attempt tests fast recovery, the
+ * third runs after the 1s failure cooldown above has expired, so a
+ * recovered store is actually reached. A genuinely dead store still fails
+ * exactly as before, ~1.25s later.
+ */
+export async function withLookupRetry<T>(fn: () => Promise<T>): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, attempt === 0 ? 150 : 1100),
+        );
+      }
+    }
+  }
+  throw lastError;
+}
 
 /** Thrown when the credential store could not be reached at all. */
 export class ApiKeyStoreUnavailableError extends Error {
@@ -419,13 +453,19 @@ export async function resolveApiKeyAuthorization(
   const store = new DrizzleApiKeyStore(db);
   let row: Awaited<ReturnType<typeof store.findActiveByHash>>;
   try {
-    row = await store.findActiveByHash(hash);
+    row = await withLookupRetry(() => store.findActiveByHash(hash));
   } catch (error) {
     // Any failure here is the store's, not the key's — a revoked key is a
     // normal empty result, so this only runs on a real fault.
-    authFailureUntil = Date.now() + AUTH_FAILURE_COOLDOWN_MS;
+    authConsecutiveFailures += 1;
+    if (authConsecutiveFailures >= 2) {
+      authFailureUntil = Date.now() + AUTH_FAILURE_COOLDOWN_MS;
+    }
     throw error;
   }
+  // The store answered, so the failure streak is over — whether the key
+  // itself exists or not.
+  authConsecutiveFailures = 0;
   if (!row) {
     authNegativeCache.set(hash, now);
     evictAuthNegativeOldest();
