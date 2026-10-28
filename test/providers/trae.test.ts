@@ -17,6 +17,7 @@ import {
   toTraeAgentBody,
 } from "../../src/providers/integrations/trae/trae-protocol";
 import type { CanonicalRequest } from "../../src/protocol/canonical-model";
+import { GatewayError } from "../../src/protocol/gateway-error";
 import { createTraeAdapter } from "../../src/providers/integrations/trae/trae";
 import type {
   ProviderDispatchContext,
@@ -358,6 +359,26 @@ describe("buildTraeChatBody", () => {
   test("an empty model name is refused", () => {
     expect(() => buildTraeChatBody("", request(), "intl")).toThrow();
   });
+
+  test("a resolved session id is carried as session_id", () => {
+    const body = buildTraeChatBody("gpt-5.5", request(), "intl", "ses_abc123");
+    expect(body.session_id).toBe("ses_abc123");
+  });
+
+  test("the caller's session id wins over the resolved one", () => {
+    const body = buildTraeChatBody(
+      "gpt-5.5",
+      request({ session_id: "caller-ses" }),
+      "intl",
+      "resolved-ses",
+    );
+    expect(body.session_id).toBe("caller-ses");
+  });
+
+  test("no session id means no session_id field", () => {
+    const body = buildTraeChatBody("gpt-5.5", request(), "intl");
+    expect("session_id" in body).toBe(false);
+  });
 });
 
 describe("toTraeAgentBody", () => {
@@ -505,6 +526,62 @@ describe("trae Agent tool streams", () => {
       .rejects.toThrow("Trae stream error (upstream code 4015)");
   });
 
+  test("an upstream 1001 is classified as auth failure, not platform_unavailable", async () => {
+    // Trae answers an unauthenticated account with `1001 "we are not able to
+    // authenticate you"`. That is a credential verdict: it must surface as
+    // account-scoped `authentication_failed` (parking the account for
+    // re-login, failover to a sibling) — never as a 502 platform error that
+    // could drag the proxy pool into the story.
+    let thrown: unknown;
+    try {
+      await agentEvents([
+        { event: "error", data: { code: 1001, message: "We're sorry, but we are not able to authenticate you." } },
+      ]);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(GatewayError);
+    const g = thrown as GatewayError;
+    expect(g.code).toBe("authentication_failed");
+    expect(g.status).toBe(401);
+    expect(g.details.credentialEvidence).toBe(true);
+    expect(g.details.providerCode).toBe("1001");
+  });
+
+  test("an upstream 4008 is classified as quota_exceeded", async () => {
+    // Free-tier quota exhausted: `4008 "Your requests have exceeded the quota."`
+    // must surface as a 429 `quota_exceeded` — not a 502 platform error.
+    let thrown: unknown;
+    try {
+      await agentEvents([
+        { event: "error", data: { code: 4008, message: "Your requests have exceeded the quota." } },
+      ]);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(GatewayError);
+    const g = thrown as GatewayError;
+    expect(g.code).toBe("quota_exceeded");
+    expect(g.status).toBe(429);
+  });
+
+  test("an error object in a frame body is classified too", async () => {
+    // HTTP 200 frames can carry `{"code":1001,"message":"…"}` directly in the
+    // body instead of a named `error` event — same verdict required.
+    let thrown: unknown;
+    try {
+      await agentEvents([
+        { event: "message", data: { code: 1001, message: "We're sorry, but we are not able to authenticate you." } },
+      ]);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(GatewayError);
+    const g = thrown as GatewayError;
+    expect(g.code).toBe("authentication_failed");
+    expect(g.status).toBe(401);
+  });
+
   test("an opening tool frame keeps arguments delivered beside the id", async () => {
     const events = await agentEvents([
       { event: "output", data: { tool_calls: [{ id: "call-1", index: 0, function_call: { name: "read", arguments: '{"path":"a.ts"}' } }] } },
@@ -520,6 +597,44 @@ describe("trae Agent tool streams", () => {
       { event: "output", data: { chunk: { tool_calls: [{ id: "call-1", index: 0, function_call: { name: "read", arguments: "{}" } }] } } },
     ]);
     expect(events.some((event) => event.type === "tool_call_delta")).toBe(true);
+  });
+
+  test("the terminal event carries the assessed usage", async () => {
+    // Non-streaming dispatch reads usage off the terminal event; without it the
+    // request is reconciled to the estimate. The same session must hit the
+    // cache estimator, so a repeated prefix reports cached tokens.
+    const adapter = createTraeAdapter();
+    const frames = (usage: Record<string, unknown>) => [
+      { event: "output", data: { response: "hai" } },
+      { event: "token_usage", data: usage },
+    ];
+    const session = "ses-terminal-usage";
+    const requestWithSession = (content: string) =>
+      request({ session_id: session, messages: [{ role: "user", content: [{ kind: "text", text: content }] }] });
+
+    // First call: no history yet → cached unavailable, terminal usage present.
+    const first = [];
+    for await (const event of adapter.dispatch(
+      requestWithSession("halo"),
+      AGENT_TARGET,
+      dispatchContext(frames({ prompt_tokens: 45, completion_tokens: 10, total_tokens: 55 })),
+    )) first.push(event);
+    const t1 = first.find((e) => e.type === "terminal") as { usage?: { input_tokens: number } };
+    expect(t1?.usage?.input_tokens).toBe(45);
+    expect((t1?.usage as { cached_input_tokens?: number | string })?.cached_input_tokens).toBe("unavailable");
+
+    // Second call, identical prefix → cached estimate applies on the terminal.
+    const second = [];
+    for await (const event of adapter.dispatch(
+      requestWithSession("halo"),
+      AGENT_TARGET,
+      dispatchContext(frames({ prompt_tokens: 45, completion_tokens: 12, total_tokens: 57 })),
+    )) second.push(event);
+    const t2 = second.find((e) => e.type === "terminal") as {
+      usage?: { input_tokens: number; cached_input_tokens: number; uncached_input_tokens: number };
+    };
+    expect(t2?.usage?.cached_input_tokens).toBe(45);
+    expect(t2?.usage?.uncached_input_tokens).toBe(0);
   });
 
   test("tool ids from one request never resolve fragments in the next request", async () => {

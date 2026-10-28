@@ -47,6 +47,7 @@ import type { ConsoleCredentialService } from "./auth/credentials";
 import { resolveTelemetryRetentionDays } from "../config/telemetry";
 import { payloadRetentionMs, resolvePayloadCapture } from "../observability/payload-capture";
 import { TELEMETRY_EVENT_DIR } from "../observability/event-log";
+import { providerUsageMatrix } from "../observability/event-query";
 
 import { InMemoryOAuthFlowStore, OAuthFlowStore } from "../providers/authentication/oauth-flow-store";
 import { OAuthCallbackListener } from "./providers/oauth/callback-listener";
@@ -57,7 +58,10 @@ import {
 import { syncByokProvider } from "../providers/operations/provider-catalog-service";
 import { DrizzleApiKeyStore } from "../persistence/stores/api-key-store";
 import { DrizzleModelTemplateStore } from "../persistence/stores/model-template-store";
-import { DrizzleShareLinkStore } from "../persistence/stores/share-store";
+import {
+  DrizzleShareLinkStore,
+  type ShareLinkStore,
+} from "../persistence/stores/share-store";
 import { createShareUsagePort } from "./share/share-usage";
 import { resolveSsrfPolicy } from "../config/network";
 import { createValidatedFetch } from "../network/outbound-fetch";
@@ -101,6 +105,12 @@ export interface ConsoleDomainContext {
   };
   /** Owns the live in-flight gauge the console surfaces. */
   readonly stateStore?: LiveInFlightSource;
+  /**
+   * Share-link store shared with the public share router, so both surfaces
+   * wrap the same table through one instance. Falls back to a fresh store
+   * when absent (reduced compositions, tests).
+   */
+  readonly shareStore?: ShareLinkStore;
   readonly admissionService: Pick<ApiKeyAdmissionService, "purgeKey">;
   readonly readRoutingAccountInflight?:
     | ((
@@ -228,7 +238,7 @@ export function registerConsoleDomains(
   const modelRoutingStore = new DrizzleModelRoutingStore(ctx.db);
   const apiKeyStore = new DrizzleApiKeyStore(ctx.db);
   const modelTemplateStore = new DrizzleModelTemplateStore(ctx.db);
-  const shareStore = new DrizzleShareLinkStore(ctx.db);
+  const shareStore = ctx.shareStore ?? new DrizzleShareLinkStore(ctx.db);
   const shareActivity = createShareUsagePort({ db: ctx.db, redis: ctx.redis });
 
 
@@ -273,6 +283,13 @@ export function registerConsoleDomains(
       aliases: await modelRoutingStore.listAliases(tenantId),
       combos: await modelRoutingStore.listCombos(tenantId),
     }),
+    providerUsageMatrix: (tenantId, providerId, days) =>
+      providerUsageMatrix(
+        ctx.db,
+        tenantId,
+        providerId,
+        new Date(Date.now() - days * 86_400_000),
+      ),
   }));
   console.use(createProviderDetailRoutes({
     store: providerDetailStore,

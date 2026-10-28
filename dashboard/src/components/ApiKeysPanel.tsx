@@ -88,6 +88,9 @@ export function ApiKeysPanel(): ReactNode {
   const templateNames = new Map(
     (templatesQuery.data ?? []).map((template) => [template.id, template.name] as const),
   );
+  // Bans are keyed on the client address, so they are cross-tenant: only a
+  // platform admin may see or lift one, and the entry point is hidden for
+  // everyone else. The endpoint enforces this too — the gate here is UX.
 
   const openShare = (key: ApiKeyResponse) => {
     setRevealedSecret(null);

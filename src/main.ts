@@ -118,6 +118,16 @@ function shutdown(signal: "SIGINT" | "SIGTERM", reason: "SIGINT" | "SIGTERM" | "
 }
 
 if (boot) {
+  // `bun --hot` re-runs this module against the cached boot object; stop the
+  // previous listener before rebinding so a reload does not stack two servers
+  // on the same port.
+  if (boot.server && typeof boot.server.stop === "function") {
+    try {
+      boot.server.stop();
+    } catch {
+      // Best-effort on reload; the bind below would fail loudly if it stuck.
+    }
+  }
   boot.server = app.listen(
     {
       port,
@@ -149,6 +159,12 @@ if (boot) {
   // the lease sweep and the health sweep should not run before the listener
   // exists to serve traffic.
   boot.deps.scheduledTasks.start();
+  // Warm the route snapshot before the first request lands: the first /v1/*
+  // request otherwise pays the full catalog build synchronously (ten+ SELECTs).
+  // A failure here is a soft miss — the next request rebuilds as before.
+  void boot.deps.snapshotService.getSnapshot().catch((error: unknown) => {
+    log.warn("[startup] initial route snapshot warm failed", error as Error);
+  });
   if (!globalThis.__cartethyiaSignalsRegistered) {
     globalThis.__cartethyiaSignalsRegistered = true;
     process.on("SIGINT", () => shutdown("SIGINT"));

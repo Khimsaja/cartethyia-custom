@@ -10,14 +10,14 @@ import {
   isAutoModelEnabled,
   type AutoModelScorer,
 } from "../routing/auto-model";
-import { projectForRoute, routeCapabilitiesFor } from "../translation/capabilities";
-import type { RequiredCapability } from "../translation/capabilities";
+import { projectForRoute, routeCapabilitiesFor } from "../../protocol/translation/capabilities";
+import type { RequiredCapability } from "../../protocol/translation/capabilities";
 import { isModelAllowed, type ResolvedApiKey } from "../../security/api-key-auth";
 import { allowsCliToolMappings } from "../../security/cli-client-fingerprint";
-import { dropIncompleteToolRounds, repairRequestToolCalls } from "../translation/tool-repair";
-import { sanitizeRequestToolIds } from "../translation/tool-id";
-import { dropCorruptAttachments } from "../translation/attachment-integrity";
-import { parseThinkingSuffix, withThinkingSuffixIntent } from "../translation/thinking";
+import { dropIncompleteToolRounds, repairRequestToolCalls } from "../../protocol/translation/tool-repair";
+import { sanitizeRequestToolIds } from "../../protocol/translation/tool-id";
+import { dropCorruptAttachments } from "../../protocol/translation/attachment-integrity";
+import { parseThinkingSuffix, withThinkingSuffixIntent } from "../../protocol/translation/thinking";
 import { nativeServicePathFor } from "../contracts";
 import { log } from "../../observability/logger";
 import { BUDDY_PROVIDER_IDS } from "../../providers/provider-metadata";

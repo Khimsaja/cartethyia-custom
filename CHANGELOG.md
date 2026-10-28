@@ -8,6 +8,292 @@ current baseline; an existing one applies the numbered files that followed it.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.7.1] - 2026-10-28
+
+### Fixed
+
+- **Qoder: index-less continuation fragments and plain-text leak markers keep
+  their arguments.** Two upstream shapes still dropped tool arguments after
+  the first fix: continuation chunks that omit `index` entirely (no pinned id
+  to join, so encoders dropped the nameless fragment), and the INTL leak
+  marker `[assistant 请求调用工具] …` when it arrives as plain text rather than
+  DSML markup (it was never buffered, so it never reached recovery). The
+  translator now falls back to the most recently seen call id for index-less
+  fragments (mirroring the generic chat parser), and accumulates non-DSML
+  text so the leak marker is recovered at end of stream with full arguments —
+  the "assistant talks, then calls a tool with {} arguments" reports.
+
+- **Routing no longer redials an account whose cooldown deadline has elapsed
+  but has not been swept yet.** A row still in `cooldown` status used to read
+  as healthy the moment its `cooldown_until` passed, so requests landing in
+  the window between the deadline and the next 30s recovery sweep reproduced
+  the refusal that cooled the account — logging a fresh `cooldown →
+  cooldown` health row for each one (the "still hit a cooled-down account"
+  report). The snapshot builder now stamps a `cooldown` row regardless of
+  whether its deadline is expired; the sweeper remains the only exit, so the
+  account is not served again until it is genuinely recovered.
+
+- **Qoder billing-limit refusals no longer invalidate the credential.** Qoder
+  answers an exhausted daily billing allowance with
+  `{"code":"110","message":"Billing daily count exceeded"}` on a 403 wrapper.
+  The status-only fallback read the 403 as a credential fault, so a healthy
+  account was parked as `auth_invalidated` — the console's "Re-login
+  required" — and operators were sent to re-authenticate a credential that was
+  never rejected. The `110` code and the "Billing daily count exceeded" phrase
+  now classify as quota (an account cooldown), and unknown numeric provider
+  codes are never treated as credential evidence — the safe unclassified
+  cooldown is the default for a code we do not recognise.
+
+- **Qoder streaming tool calls no longer lose their arguments.** The upstream
+  identifies one streamed call by OpenAI chunk shape — `id` + `name` in the
+  first chunk, then only the wire `index` on every continuation fragment. The
+  qoder translator synthesized a fresh `call_<index>` id per chunk instead of
+  pinning the first id, so every continuation arrived nameless under an
+  unestablished identity and was dropped by the encoders. Clients saw tool
+  calls whose `arguments` were always `{}` (agent harnesses rejected every
+  native bash/write/read call as "missing required field"). The translator now
+  pins the first id per wire index and hands retries the same behavior as the
+  generic chat parser.
+
+- **Capability degradation no longer strips tools as collateral.** When the
+  only capability a route cannot serve was ordered after `tools` in the
+  degradation chain (an image attached to a text-only model such as Mercury
+  3), the surviving cumulative variant had already lost the tool catalog — the
+  tool-capable model then received a transcript of `[tool:<name>]` text
+  placeholders with no tool definitions and imitated them instead of
+  structurally calling tools. Degradation now tries each single-capability
+  loss against the pristine request first, so the smallest surviving
+  degradation wins (e.g. drop only the image, keep tools) before the
+  cumulative chain runs as fallback.
+
+- **Trae stream refusals are classified, not blanket-routed.** Upstream
+  `1001 "we are not able to authenticate you"` now surfaces as an account-scoped
+  `authentication_failed` (401 + credential evidence) instead of a generic 502
+  platform fault, and `4008 "exceeded the quota"` as `quota_exceeded` (429).
+  Error objects carried in frame bodies (HTTP 200 with `{"code":…,"message":…}`)
+  are detected too, not only named `error` events — the wrong classification was
+  hiding the real cause and could drag the proxy pool into the story.
+
+- **The health classifier recognizes Trae's 1001 verdict.** A numeric upstream
+  code was previously excluded from the credential arm, so `1001` fell through
+  to the `unknown` fallback that never mutates — the account stayed in rotation
+  and was re-dialled on every request despite the upstream's auth verdict. Trae
+  `1001` is now `auth_invalidated` (account-scoped, routing-visible), so the
+  account cools/excludes and failover moves to a sibling.
+
+- **Trae prompt-cache estimation is re-adopted and scoped per (session,
+  model).** Trae's agent surface never reports cache usage, so repeated
+  prefixes are estimated locally from per-session history; two models sharing a
+  conversation id cannot cross-hit, and the assessed usage rides the terminal
+  event so non-streaming telemetry records real counts.
+
+- **Buddy desktop device-token follows the official `token || error`
+  contract.** The desktop client sends `X-Device-Token` on every realm (Intl
+  included) and never omits both it and the error header: when no real token
+  exists it sends `X-Device-Token-Error: sdk_not_initialized`. The buddy
+  providers now do the same instead of dropping the header (or sending it only
+  on CN).
+
+- **A first-event timeout is a deadline, not a client cancel.** The
+  empty-stream watchdog used to classify a silent upstream (e.g. a provider
+  holding the request in a queue) as `transport_closed` 499 — "cancelled by
+  client" — hiding a real upstream wait behind a cancellation. It is now
+  `deadline_exceeded` 504 with upstream origin, matching the streaming
+  stall/first-chunk watchdogs.
+
+- **Qoder recovers single-object leak echoes.** The INTL leak marker could be
+  followed by one JSON object (`{"name":…,"arguments":…}`) instead of an array;
+  that shape was rejected, so the whole block was released as prose and the
+  marker leaked to the client as visible text. `parseLeakedToolCalls` now
+  normalizes a single object into a one-entry array.
+
+### Added
+
+- **Provider Detail "Activity Matrix" usage card.** A collapsible card at the
+  top of the provider page condenses the last 1–366 days of usage into a
+  calendar heatmap (Mon–Sun weeks, `GET
+  /console/api/providers/:providerId/usage/matrix?days=N`, aggregated directly
+  from `telemetry_events` — no migration). Summary strip totals requests,
+  tokens, cached tokens, and estimated cost. Cells are tinted by the day's
+  dominant model with a stable per-model color (hashed hue), hover shows a
+  native day tooltip broken down per model, and an expandable "Usage by model"
+  list ranks models by tokens with colored share bars.
+- **Inception Labs (Mercury 3) as a bundled free-tier provider.** `inception`
+  ships with `mercury-3` pinned to the free tier — one million token context,
+  131072 max output, reasoning and tool calling, zero price. It appears under
+  Free Limited Providers in the console. A 429 from the per-minute window
+  cools the account for one minute (upstream `Retry-After` still wins) instead
+  of the generic fifteen-minute guess, so a throttled account recovers as soon
+  as the window resets.
+
+- **A `random` pool-group selection strategy.** Pool selection previously only
+  knew the ordered scans, so a burst always hit the same first pools and
+  burned them one by one while siblings sat idle — the "all pools cooling,
+  fresh ones unused" pattern. `random` shuffles the eligible pools per request
+  (still skipping cooldown/blocked pools and falling through full ones). Set
+  it per tenant via the pools strategy endpoint; migration `0025` ships for
+  both backends.
+
+- **Pool cooldown and probe verdicts survive refresh and restart.** A probe
+  429 now writes a cooldown marker the console shows, markers persist across
+  restarts, and blocked egress verdicts are restored at boot — a spent or
+  retired egress is not re-picked after a restart.
+
+- **Qoder daily check-in (streak / 100 Credits per day).** Qoder accounts now
+  ride the same daily check-in machinery as the Buddy family: the quota sweep
+  claims the grant once per day, and a manual trigger is available through the
+  account quota surface. Legacy `/sash/.../daily-check-in` status/claim is
+  tried first; when the international realm does not expose it (404), the
+  CREDITS-kind activity campaign is claimed instead. Streak days and the 100
+  credit grant are reported in the sweep log.
+
+- **OpenCode free tier aligned 1:1 with the reference bridge (v2).** Flat
+  `/inference` dispatch paths, the minimal free-tier prompt, native proxy
+  egress, and pool bulk actions in the console.
+
+- **Validated direct egress uses native fetch by default**, with per-provider
+  opt-in and opt-out.
+
+- **The TuringShield SDK is bundled** under `vendor/turing-sdk/` (WorkBuddy
+  desktop 5.8.4 extract) so buddy providers generate real `X-Device-Token`
+  values without any environment setup — `CARTETHYIA_TURING_SDK_PATH` remains
+  an override. Per-provider payload profiles (WorkBuddy vs CodeBuddy product
+  identity on channel 400111) make tokens differ between providers, and the
+  Dockerfile ships the vendor directory into both builder and runtime stages.
+
+- **Per-account device binding (`qimei36`).** Buddy desktop chat now sends
+  `X-Device-Id-List: {"qimei36":"…"}` resolved per account — explicit
+  `auth_state.qimei36` wins, otherwise a deterministic sha256 of the account id
+  (32 hex, stable across restarts, no DB write). Every pooled account presents
+  a distinct device alongside the machine-bound Turing token.
+
+- **Mistral catalog expanded to models verified live.** The static roster was
+  re-checked against a live key: `codestral-2508/latest`,
+  `mistral-code-latest`, the ministral family, `voxtral-small-2507/latest`,
+  the `mistral-medium-latest` aliases, `mistral-vibe-cli-*`, and
+  `magistral-*` now ship, while rows that answer 403
+  (`tier_not_allowed` — e.g. `mistral-large*`) or 400 (`invalid_model` —
+  Labs, embed/OCR/transcribe/TTS/realtime) are excluded, so every model the
+  catalog offers can actually serve.
+
+### Fixed
+
+- **Qoder (INTL) tool calls and structured output are more robust.** Adapted
+  from the reference bridge: DeepSeek multi-turn replays `reasoning_content`
+  on every assistant turn once the conversation has a reasoning trace (absent
+  is refused upstream — the source of occasional failures that passed on
+  retry); tool-call echoes are recovered in every marker variant the model
+  emits, with trailing DSML tags stripped; structured tool turns fall back to
+  prose when a call lacks an id; and image parts are sent as structured
+  `image_url` parts instead of being silently dropped (the upstream reads
+  message content, not the top-level field). Verified live on
+  `qoder/deepseek-v4.1-flash` and `qoder/qwen3.8-flash` only.
+
+- **Health events no longer depend on database defaults.** SQLite lacks
+  `gen_random_uuid()`/`now()`, so ids and timestamps are now supplied in code
+  — event rows survive and the activity panel stays truthful in Lite mode.
+
+- **`bun run dev` stays quiet while the backend restarts.** A refused Vite
+  proxy connect answers a graceful 502 JSON instead of a wall of
+  `ECONNREFUSED` logs; `VITE_NO_BACKEND_PROXY=1` removes the proxy entirely
+  for pure dashboard work.
+
+- **Egress blocks are scoped to IP-limited providers.** A free-tier refusal
+  only retires the egress address for providers whose limits follow the
+  address; for everyone else the refusal belongs to the account dialed, so a
+  shared proxy is never sidelined for an account-keyed refusal.
+
+- **OpenCode registry wire-path maps synced to the v2 family segment**, and
+  the system-one surface stays on the flat `/inference` path (verified live).
+
+- **Upstream 429 free-limit probes are labelled as rate limits**, not generic
+  failures, so the health panel draws them correctly.
+
+- **DSML tool-call recovery matches the reference bridge's edge semantics**
+  with parity tests.
+
+- **Boot path hardening.** The 30s task cadence is staggered and the prior
+  listener stops on hot reload; task registration is idempotent, shutdown
+  flush bypasses backoff, the install-id knob is governed, a single share
+  store is used, and the inflight catalog store is cached.
+
+- **Buddy providers no longer hit load-time import cycles** (leaf CN catalog
+  module).
+
+- **The gateway surfaces the upstream's full error prose** instead of
+  truncating it to 500 bytes, and an upstream socket drop is classified as
+  `502/upstream` — not `500/cartethyia`.
+
+- **Vercel relay deployments are public again.** The deploy flow left the
+  project under Vercel's SSO Protection, so a deployed relay answered 401 for
+  anonymous traffic — "deploynya sukses tapi gak public". Deploys now set
+  `ssoProtection: null` (via the project settings PATCH) so the front door
+  serves any caller.
+
+- **Hosted relay dials are direct fetches, not CONNECT.** A relay front door
+  (Vercel/Workers/Deno) answers application HTTP and refuses CONNECT, but the
+  validated egress handed the relay URL to the runtime fetch as its `proxy`
+  option, so every relay dial failed with "Proxy refused to open a tunnel:
+  400 Bad Request" — including pool health checks and the Add Proxy "Test
+  URL" probe. Relay dials now fetch the relay directly, carrying the target
+  origin/path in `x-relay-target`/`x-relay-path`, and the relay worker strips
+  `content-encoding`/`content-length` from the upstream response — Vercel
+  Edge already decodes the stream it hands back, so re-sending gzip headers
+  made callers decompress twice (ZlibError on gzip targets). Verified live:
+  the canary probe reports healthy and gzip/OpenCode targets return 200
+  through a deployed relay.
+
+### Changed
+
+- **Network egress unified on one native-fetch path** — the node dialer is
+  gone; validated direct egress and proxy egress share the same transport.
+
+- **Transport wiring consolidated.** One `GatewayHandlerDeps` and one
+  `nativeCompletionBase`; dead dispatch fields and an unused
+  `providerAdapters` fallback were removed.
+
+- **Quota shared cache and refresh moved to the providers layer**; transport
+  and workers no longer reach into console code.
+
+- **Protocol layer now owns translation, reasoning, and upstream parsing** —
+  the protocol-to-transport/provider inversions are gone.
+
+- **Backend monoliths split**: pure classification and catalog helpers were
+  extracted from the large services.
+
+- **Dashboard monoliths split**: Proxy, Usage, and Accounts pages are section
+  components; the dead toolbar and EffortPicker were dropped and usage periods
+  are single-sourced.
+
+- **Test layout aligned with the `src` module tree.**
+
+### Removed
+
+- **Buddy redeem, travel, lottery, and trial-claim worker tasks.**
+- **The request-lifecycle-derived in-flight gauge.**
+- **The model-abuse ban surfaces the strike layer owned.**
+- **Orphaned start and watch-traffic scripting.**
+- **The `reports/` artifact directory.**
+
+### Performance
+
+- **Client identity is resolved once per request**, and the route snapshot is
+  warmed at boot instead of on first request.
+- **The worker scheduler injects a lease-acquire timeout.**
+
+### Tests
+
+- Dropped heavy e2e gateway suites, low-value suites with sibling coverage,
+  duplicated assertions, a stale unit bucket, and donor-referencing provider
+  suites; CLI port-startup moved to integration scope.
+
+### Documentation
+
+- README polished with a development/testing section; skill pages point the
+  engineering completion section at the verification owner; stale test
+  references and architecture wording fixed; references refreshed for the
+  relocated translation, quota, and governance paths.
+
 ## [2.7.0] - 2026-10-27
 
 ### Removed

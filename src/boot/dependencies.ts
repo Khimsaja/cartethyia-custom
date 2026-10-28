@@ -49,6 +49,7 @@ import {
   ValidatedNetworkBindingFactory,
 } from "../network/pool/resolver";
 import { NetworkPoolSelector } from "../network/pool/selector";
+import { restorePoolProbeVerdicts, restoreProviderCooldownMarkers } from "../network/pool-cooldown-store";
 import { ScheduledTaskRegistry } from "../workers/scheduler";
 import { quotaRefreshSweep } from "../workers/quota-refresh-sweep";
 import { markProviderApiKeyCredential } from "../console/quota/account-quota-shared";
@@ -56,15 +57,11 @@ import { dailyCheckinEgressForPass } from "../workers/daily-checkin";
 import {
   buddyAdoptTask,
   buddyActivityReportTask,
-  buddyLotteryTask,
-  buddyRedeemTask,
   buddyStreakTask,
-  buddyTravelTask,
-  buddyTrialTask,
   syncBuddyUsage,
 } from "../workers/buddy-growth-tasks";
 import { createAccountSecretResolver } from "../providers/operations/provider-credential-service";
-import { quotaCacheSize } from "../console/quota/cache";
+import { quotaCacheSize } from "../providers/quota/cache";
 import { modelCatalogCacheSize } from "../providers/operations/model-catalog-cache";
 import { preferencesReaderFor } from "../persistence/tenant-preferences";
 import { sweepExpiredCooldowns } from "../providers/operations/account-health-service";
@@ -261,39 +258,6 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
     redis ? new RedisAdmissionController(redis) : undefined,
     redis,
   );
-  const readRoutingAccountInflight = async (
-    providerId: string,
-    tenantId: string | null,
-  ): Promise<readonly { accountId: string; inflight: number }[]> => {
-    if (providerId === "" || tenantId === null) return [];
-    const accounts = await new DrizzleProviderCatalogStore(db, {
-      telemetryBuffer,
-      bundledModelCatalog: bundledCatalog,
-      providerRegistry: registry,
-      outboundFetchFor: async () => ({ fetch: networkBindingFactory.fetch(undefined, tenantId) }),
-      snapshotInvalidator: snapshotService,
-    }).listAccounts(tenantId, providerId);
-    const owned = new Set(accounts.map((account) => account.id));
-    // Scoped read: only the provider's own candidates for this tenant are
-    // queried, so the console read costs one exact MGET over the accounts it
-    // is about to report on — not a fleet-wide `KEYS` scan whose cost is the
-    // size of every bucket every process ever wrote.
-    const routeSnapshot = await snapshotService.getSnapshot();
-    const ownedCandidates = routeSnapshot.candidates.filter(
-      (candidate) =>
-        candidate.provider_id === providerId &&
-        candidate.provider_account_id !== undefined &&
-        owned.has(candidate.provider_account_id),
-    );
-    const snapshot = await routingEngine.accountInflightSnapshot(ownedCandidates);
-    const totals = new Map<string, number>();
-    for (const [bucket, count] of snapshot) {
-      const accountId = bucket.slice(bucket.lastIndexOf(":") + 1);
-      if (!owned.has(accountId)) continue;
-      totals.set(accountId, (totals.get(accountId) ?? 0) + count);
-    }
-    return [...totals].map(([accountId, inflight]) => ({ accountId, inflight }));
-  };
   // Peer processes' settings mutations arrive here. Subscribed once for the
   // process: the revision counter is process-global, and the handler only
   // moves it forward.
@@ -398,6 +362,10 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
   scheduledTasks.register({
     name: "account-health-sweep",
     intervalMs: 30_000,
+    // Offsets the pass from lease-sweep and runtime-metrics, which share the
+    // same cadence: under the registry's single-flight gate, aligned ticks
+    // make the 30s tasks skip each other when one runs long.
+    initialDelayMs: 5_000,
     // Recovers cooldowns deployment-wide and invalidates the shared snapshot.
     shared: true,
     run: async () => {
@@ -439,6 +407,22 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
   });
   const telemetryBuffer = new TelemetryBatchBuffer(db);
   const poolSelector = new NetworkPoolSelector(redis);
+  // Replay the provider cooldown markers the previous process recorded
+  // (`network_pools.provider_cooldowns`). Without this a restart made dispatch
+  // forget every egress the upstream was still refusing: the flags are
+  // process-local otherwise, so the pool re-entered rotation and took 429s the
+  // first request after boot re-discovered. Expired entries are dropped by the
+  // restore itself. Best-effort: a failed read leaves selection matching what
+  // a fresh deployment would do.
+  try {
+    const restored = await restoreProviderCooldownMarkers(poolSelector, db);
+    const replayed = await restorePoolProbeVerdicts(poolSelector, db);
+    if (restored > 0 || replayed > 0) {
+      log.info("[pool-selector] restored provider cooldown state", { mirrored: restored, probeVerdictsApplied: replayed });
+    }
+  } catch (error) {
+    log.warn("[pool-selector] provider cooldown restore failed", { error: String(error) });
+  }
   const poolAgentResolver = new PoolAgentResolver(
     new DrizzleNetworkPoolLoader(db),
     { ssrfPolicy, db },
@@ -448,6 +432,49 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
     undefined,
     poolAgentResolver,
   );
+  // The account-inflight reader the console queries. It lives after the deps
+  // it closes over (telemetry buffer, binding factory), so the closure never
+  // touches a TDZ binding; it also reuses one catalog store per tenant instead
+  // of constructing a fresh store object on every console read.
+  let lastInflightTenant = "";
+  let lastInflightStore: DrizzleProviderCatalogStore | undefined;
+  const readRoutingAccountInflight = async (
+    providerId: string,
+    tenantId: string | null,
+  ): Promise<readonly { accountId: string; inflight: number }[]> => {
+    if (providerId === "" || tenantId === null) return [];
+    if (tenantId !== lastInflightTenant || lastInflightStore === undefined) {
+      lastInflightStore = new DrizzleProviderCatalogStore(db, {
+        telemetryBuffer,
+        bundledModelCatalog: bundledCatalog,
+        providerRegistry: registry,
+        outboundFetchFor: async () => ({ fetch: networkBindingFactory.fetch(undefined, tenantId) }),
+        snapshotInvalidator: snapshotService,
+      });
+      lastInflightTenant = tenantId;
+    }
+    const accounts = await lastInflightStore.listAccounts(tenantId, providerId);
+    const owned = new Set(accounts.map((account) => account.id));
+    // Scoped read: only the provider's own candidates for this tenant are
+    // queried, so the console read costs one exact MGET over the accounts it
+    // is about to report on — not a fleet-wide `KEYS` scan whose cost is the
+    // size of every bucket every process ever wrote.
+    const routeSnapshot = await snapshotService.getSnapshot();
+    const ownedCandidates = routeSnapshot.candidates.filter(
+      (candidate) =>
+        candidate.provider_id === providerId &&
+        candidate.provider_account_id !== undefined &&
+        owned.has(candidate.provider_account_id),
+    );
+    const snapshot = await routingEngine.accountInflightSnapshot(ownedCandidates);
+    const totals = new Map<string, number>();
+    for (const [bucket, count] of snapshot) {
+      const accountId = bucket.slice(bucket.lastIndexOf(":") + 1);
+      if (!owned.has(accountId)) continue;
+      totals.set(accountId, (totals.get(accountId) ?? 0) + count);
+    }
+    return [...totals].map(([accountId, inflight]) => ({ accountId, inflight }));
+  };
   // Runtime gauges (memory + bounded-collection sizes) sampled on the shared
   // maintenance cadence. The sampler reads live sizes through closures so the
   // observability layer never holds direct references to routing/pool state.
@@ -626,34 +653,10 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
     run: () => buddyStreakTask(buddyTaskDeps),
   });
   scheduledTasks.register({
-    name: "buddy-redeem",
-    intervalMs: 24 * 60 * 60_000,
-    initialDelayMs: 8 * 60_000,
-    run: () => buddyRedeemTask(buddyTaskDeps),
-  });
-  scheduledTasks.register({
-    name: "buddy-lottery",
-    intervalMs: 24 * 60 * 60_000,
-    initialDelayMs: 11 * 60_000,
-    run: () => buddyLotteryTask(buddyTaskDeps),
-  });
-  scheduledTasks.register({
-    name: "buddy-travel",
-    intervalMs: 24 * 60 * 60_000,
-    initialDelayMs: 14 * 60_000,
-    run: () => buddyTravelTask(buddyTaskDeps),
-  });
-  scheduledTasks.register({
     name: "buddy-adopt",
     intervalMs: 24 * 60 * 60_000,
     initialDelayMs: 17 * 60_000,
     run: () => buddyAdoptTask(buddyTaskDeps),
-  });
-  scheduledTasks.register({
-    name: "buddy-trial",
-    intervalMs: 24 * 60 * 60_000,
-    initialDelayMs: 20 * 60_000,
-    run: () => buddyTrialTask(buddyTaskDeps),
   });
   // Growth-activity report: the `/v2/report` batch that lights the login streak
   // and scores the daily growth event. Once a day with its own ledger — it used
