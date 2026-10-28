@@ -100,19 +100,29 @@ async function dial(
   proxyUrl: string | undefined,
 ): Promise<Response> {
   const headers = new Headers(init.headers);
-  const rawBody = init.body;
-  if (rawBody !== undefined && rawBody !== null && !headers.has("content-length")) {
-    const bytes =
-      typeof rawBody === "string"
-        ? Buffer.byteLength(rawBody, "utf8")
-        : Buffer.isBuffer(rawBody) || rawBody instanceof Uint8Array
-          ? rawBody.byteLength
-          : (await new Response(rawBody).arrayBuffer()).byteLength;
-    headers.set("content-length", String(bytes));
+  let body: BodyInit | null | undefined = init.body;
+  if (body !== undefined && body !== null && !headers.has("content-length")) {
+    if (typeof body === "string") {
+      headers.set("content-length", String(Buffer.byteLength(body, "utf8")));
+    } else if (Buffer.isBuffer(body) || body instanceof Uint8Array) {
+      headers.set("content-length", String(body.byteLength));
+    } else {
+      // Stream bodies (ReadableStream, Blob, FormData, ...): measuring the
+      // length consumes the body, so the measured bytes must become the body
+      // sent. Passing the drained original to fetch throws "Body object
+      // should not be disturbed or locked" (Bun) and the request never
+      // leaves — every streamed chat-wire dispatch failed this way.
+      const bytes = await new Response(body).arrayBuffer();
+      headers.set("content-length", String(bytes.byteLength));
+      body = bytes;
+    }
   }
   return await fetchFn(url, {
     ...init,
     headers,
+    // `body` is only overridden when it was buffered above; spreading an
+    // explicit `undefined` would trip `exactOptionalPropertyTypes`.
+    ...(body === undefined ? {} : { body }),
     ...(proxyUrl === undefined ? {} : { proxy: proxyUrl }),
   });
 }
