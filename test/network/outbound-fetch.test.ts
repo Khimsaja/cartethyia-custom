@@ -5,20 +5,14 @@
  * assertions possible offline. They pin the parts that fail silently: an SSRF
  * check that only runs on the first hop would let a redirect walk a request
  * into private address space, and a non-http scheme reaching the dial is a
- * TypeError from deep inside node rather than a typed refusal.
+ * TypeError from deep inside the stack rather than a typed refusal.
+ *
+ * `fetchFn` is the seam for every dial now, so these assertions cover the real
+ * chokepoint rather than a path that only ran without an injected dialer.
  */
 import { describe, expect, test } from "bun:test";
 import { createValidatedFetch } from "../../src/network/outbound-fetch";
-
-/**
- * Scope note for anyone refactoring this egress: injecting `fetchFn` bypasses
- * `pinnedFetch` entirely (`outbound-fetch.ts:347`), so header stripping and
- * `content-encoding` decoding — both applied inside `pinnedFetch` — do NOT run
- * on that path. Everything asserted below therefore sticks to behaviour that
- * happens *around* the dial: scheme and SSRF gating, redirect revalidation, and
- * body pass-through. The pinned-dial half needs a real socket and is not
- * covered here.
- */
+import { createHttpProxyAgent } from "../../src/network/pool/agent";
 
 /** Resolver that answers every hostname with one fixed address. */
 function resolver(address: string): (hostname: string) => Promise<readonly string[]> {
@@ -102,8 +96,8 @@ describe("createValidatedFetch", () => {
   });
 
   test("a GET carrying a body reaches the wire", async () => {
-    // `fetch` itself refuses GET + body; this egress is the node:http path
-    // that allows it, which Qoder's model list requires.
+    // A GET with a body must survive the chokepoint unchanged: some model
+    // listings send one. The egress adds `content-length` and forwards it.
     let body: string | undefined;
     const fetcher = createValidatedFetch({
       policy: {},
@@ -115,6 +109,51 @@ describe("createValidatedFetch", () => {
     });
     await fetcher("https://example.test/list", { method: "GET", body: "{}" });
     expect(body).toBe("{}");
+  });
+
+  test("a relay endpoint is dialed directly with relay headers, not as a CONNECT proxy", async () => {
+    // A hosted relay front door (Vercel/Workers/Deno) refuses CONNECT. The
+    // egress must fetch the relay URL directly (no `proxy` option) and hand
+    // the target origin/path to it via x-relay-target / x-relay-path.
+    const seen: Array<{ url: string; init: RequestInit }> = [];
+    const agent = createHttpProxyAgent("https://relay.example.vercel.app/", undefined, {});
+    const fetcher = createValidatedFetch({
+      policy: {},
+      resolveFn: resolver("93.184.216.34"),
+      agent,
+      fetchFn: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        seen.push({ url: String(input), init: init ?? {} });
+        return new Response("{}", { status: 200 });
+      }) as unknown as typeof fetch,
+    });
+    await fetcher("https://api.target.test/v1/models", { method: "GET" });
+    expect(seen).toHaveLength(1);
+    // The dial must target the relay, not the original target…
+    expect(seen[0]!.url).toBe("https://relay.example.vercel.app/");
+    // …and it must not ask the runtime to CONNECT through the relay.
+    expect((seen[0]!.init as unknown as { proxy?: string }).proxy).toBeUndefined();
+    // The relay reads the target from these headers.
+    const h = new Headers(seen[0]!.init.headers);
+    expect(h.get("x-relay-target")).toBe("https://api.target.test");
+    expect(h.get("x-relay-path")).toBe("/v1/models");
+  });
+
+  test("a relay forward strips content-encoding so the caller does not double-decompress", async () => {
+    // The relay's own runtime already decodes the body it hands back; if it
+    // also forwarded the original gzip headers the caller would decompress
+    // twice. The relay worker source strips content-encoding/content-length —
+    // this pins that the egress itself never re-adds them either.
+    const fetcher = createValidatedFetch({
+      policy: {},
+      resolveFn: resolver("93.184.216.34"),
+      agent: createHttpProxyAgent("https://relay.example.vercel.app/", undefined, {}),
+      fetchFn: (async () => {
+        return new Response("plain bytes", { status: 200 });
+      }) as unknown as typeof fetch,
+    });
+    const response = await fetcher("https://httpbin.example/gzip");
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("plain bytes");
   });
 
 });

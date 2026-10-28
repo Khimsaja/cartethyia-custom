@@ -16,6 +16,15 @@ export interface CompatibilityProfile {
   /** Whether requests to OpenAI/Anthropic-compatible upstream should send official CLI headers. Defaults to true. */
   readonly cli_identity?: boolean;
   /**
+   * Direct egress for this provider uses the runtime-native fetch instead of
+   * the Node-stack pinned agent. Some upstreams meter per client transport
+   * fingerprint — OpenCode's anonymous free tier refuses the Node agent with
+   * 429 FreeUsageLimitError while accepting the native fetch byte-for-byte
+   * (verified live). The SSRF resolve/validate pass still runs for every hop;
+   * only the socket-level address pin is traded away.
+   */
+  readonly preferNativeFetch?: boolean;
+  /**
    * Opts this provider into the gateway identity (`user-agent:
    * `Cartethyia/<version>`) instead of official CLI cloaking. Explicit only:
    * Codex/Claude-Code-shaped traffic can never take this path, and unsetting
@@ -329,6 +338,14 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
   },
   { id: "bai", displayName: "B.AI", baseUrl: "https://api.b.ai/v1", credentialUrl: "https://b.ai" },
   {
+    id: "inception",
+    displayName: "Inception Labs",
+    // Version-rooted: the chat wire lives below the `/v1` root, so the
+    // declared path is `/chat/completions` (same rule as Groq/DeepInfra).
+    baseUrl: "https://api.inceptionlabs.ai/v1",
+    credentialUrl: "https://platform.inceptionlabs.ai/dashboard/api-keys",
+  },
+  {
     id: "larprouter",
     displayName: "LarRouter",
     baseUrl: "https://larprouter.com/v1",
@@ -636,16 +653,20 @@ export function providerBaseUrl(providerId: string): string {
 export const PROVIDER_COMPATIBILITY_PROFILES: Record<string, CompatibilityProfile> = {
   opencode: {
     endpoint_paths_by_wire_family: {
-      chat: "/inference/v1/chat/completions",
-      responses: "/inference/v1/responses",
+      chat: "/inference/openai/v1/chat/completions",
+      responses: "/inference/openai/v1/responses",
     },
+    // Direct egress must use the native fetch: the anonymous free tier refuses
+    // the Node-stack agent with 429 FreeUsageLimitError (verified live).
+    preferNativeFetch: true,
     model_wire_families: [{ pattern: "^muse-spark", wire_family: "responses" }],
   },
   "opencode-zen": {
     endpoint_paths_by_wire_family: {
-      chat: "/inference/v1/chat/completions",
-      responses: "/inference/v1/responses",
+      chat: "/inference/openai/v1/chat/completions",
+      responses: "/inference/openai/v1/responses",
     },
+    preferNativeFetch: true,
     model_wire_families: [{ pattern: "^muse-spark", wire_family: "responses" }],
   },
   "opencode-go": {

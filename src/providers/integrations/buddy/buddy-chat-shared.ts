@@ -21,14 +21,14 @@ import { createHash } from "node:crypto";
 import { completeRequiredSchema } from "../../../protocol/codecs";
 import type { CanonicalRequest } from "../../../protocol/canonical-model";
 import { isRecord } from "../../../protocol/codecs";
-import { applyDeepSeekReasoning, applyOpenAIReasoning, backfillDeepSeekReasoningContent, clampedEffortOutputFloor } from "../../provider-reasoning";
+import { applyDeepSeekReasoning, applyOpenAIReasoning, backfillDeepSeekReasoningContent, clampedEffortOutputFloor } from "../../../protocol/reasoning";
 import { BUDDY_CN_EFFORTS, BUDDY_INTL_EFFORTS, BUDDY_SHARED_RAW } from "./buddy-catalog-shared";
 // Imported for the CN roster only: a CN-only id has no row in the shared
 // table, and without one `raiseOutputForRaisedEffort` silently no-ops, so a
 // raised effort still answers inside a budget sized for the lower one. It is
 // read inside the function below — never at module init — so the cycle with
 // cn-provider (which imports this module) resolves before any call.
-import { CODEBUDDY_CN_RAW } from "./codebuddy/cn-provider";
+import { CODEBUDDY_CN_RAW } from "./codebuddy/cn-catalog";
 import { buddyAccountUid } from "./buddy-oauth-shared";
 import type { ProviderDispatchContext } from "../../provider-contracts";
 
@@ -987,13 +987,146 @@ export function ensureBuddyLeadingSystem(
  * (`11151`), then guarantee a leading system turn (`11128`). The system text
  * is the variant's own prompt, so each pre-payload hook passes its prompt in.
  */
-function finalizeBuddyMessages(
-  messages: Array<Record<string, unknown>>,
-  systemPrompt: string,
+/**
+ * Longest message text that gets an automatic ephemeral prompt-cache marker,
+ * mirroring the reference gateway (`MIN_AUTO_CACHE_TEXT_LENGTH`).
+ */
+const MIN_AUTO_CACHE_TEXT_LENGTH = 1024;
+
+/**
+ * Marks one message's text content cacheable in place: the system turn and the
+ * last user turn are the long, stable ones a prefix cache serves best. A
+ * string message becomes a typed text block; a text part inside an array gets
+ * `cache_control: {type: "ephemeral"}`. Only the first qualifying text part of
+ * a message is marked, like the reference.
+ */
+function markCacheableTextContent(message: Record<string, unknown>): void {
+  const content = message["content"];
+  if (typeof content === "string") {
+    if (content.trim().length >= MIN_AUTO_CACHE_TEXT_LENGTH) {
+      message["content"] = [
+        { type: "text", text: content, cache_control: { type: "ephemeral" } },
+      ];
+    }
+    return;
+  }
+  if (!Array.isArray(content)) return;
+  for (let index = 0; index < content.length; index += 1) {
+    const part = content[index];
+    if (!isRecord(part) || part["type"] !== "text") continue;
+    const text = typeof part["text"] === "string" ? part["text"] : "";
+    if (text.trim().length >= MIN_AUTO_CACHE_TEXT_LENGTH && part["cache_control"] === undefined) {
+      content[index] = { ...part, cache_control: { type: "ephemeral" } };
+      return;
+    }
+  }
+}
+
+/**
+ * Auto-injects ephemeral prompt-cache markers on the system turn and the last
+ * user turn when the caller declared none. Mirrors `applyPromptCacheControl` in
+ * the reference gateway: an explicit `cache_control` anywhere is respected and
+ * disables the auto-pass so the caller's own caching strategy wins.
+ */
+export function applyBuddyAutoPromptCache(messages: Array<Record<string, unknown>>): void {
+  const hasExplicit = messages.some((message) =>
+    Array.isArray(message["content"]) &&
+    (message["content"] as Array<Record<string, unknown>>).some(
+      (part) => isRecord(part) && part["cache_control"] !== undefined,
+    ),
+  );
+  if (hasExplicit) return;
+  if (messages.length === 0) return;
+  const first = messages[0];
+  if (isRecord(first) && first["role"] === "system") markCacheableTextContent(first);
+  let lastUser = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (isRecord(messages[index]) && messages[index]!["role"] === "user") {
+      lastUser = index;
+      break;
+    }
+  }
+  if (lastUser >= 0) markCacheableTextContent(messages[lastUser]!);
+}
+
+/**
+ * Strips the `content` key from assistant tool_calls-only turns.
+ *
+ * Mirrors the reference gateway's OpenAI transcript: an assistant turn that
+ * only asks for tools carries `tool_calls` and no content at all (Go's
+ * `omitzero`-style SDKs omit the key rather than send `null`/`""`). Keeping
+ * an empty string content invites the upstream to fall back to its prose/DSML
+ * channel; omitting the key keeps it on the structured `tool_calls` channel.
+ */
+export function omitBuddyAssistantToolCallContent(messages: Array<Record<string, unknown>>): void {
+  for (const message of messages) {
+    if (!isRecord(message) || message["role"] !== "assistant") continue;
+    const calls = message["tool_calls"];
+    if (!Array.isArray(calls) || calls.length === 0) continue;
+    const content = message["content"];
+    if (typeof content === "string" && content.trim().length === 0) {
+      delete message["content"];
+    } else if (Array.isArray(content) && content.length === 0) {
+      delete message["content"];
+    }
+  }
+}
+
+/**
+ * Forwards the caller's parallel tool-call intent onto the buddy wire.
+ *
+ * The canonical control is `generation_controls.parallel_tool_calls`; the
+ * reference gateway always passes it through so upstream keeps the structured
+ * tool channel, and the same is applied here.
+ */
+export function injectBuddyParallelToolCalls(
+  payload: Record<string, unknown>,
+  request: CanonicalRequest,
 ): void {
-  coalesceConsecutiveUserMessages(messages);
-  dropEmptyBuddyMessages(messages);
-  ensureBuddyLeadingSystem(messages, systemPrompt);
+  const parallel = request.generation_controls?.parallel_tool_calls;
+  if (parallel !== undefined) payload["parallel_tool_calls"] = parallel;
+}
+
+export interface BuddyMessageFinalizeOptions {
+  /** The fixed leading system prompt installed on the wire. */
+  readonly leadPrompt: string;
+  /** Coalesce consecutive user turns (default true). */
+  readonly coalesceConsecutiveUser?: boolean;
+  /** Drop empty-content turns the upstream rejects (default true). */
+  readonly dropEmpty?: boolean;
+  /** Guarantee the wire opens with a system turn (default true). */
+  readonly ensureLeadingSystem?: boolean;
+  /** Omit content on assistant tool_calls-only turns (default true). */
+  readonly omitToolCallContent?: boolean;
+  /** Auto-inject ephemeral prompt-cache markers (default true). */
+  readonly autoPromptCache?: boolean;
+}
+
+/**
+ * The single authoritative buddy message-shape pipeline. Every variant runs
+ * the same sequence — coalesce, drop empty turns, guarantee the leading system
+ * turn, omit content on tool_calls-only assistant turns, then auto-cache — so
+ * the wire shape cannot drift between CodeBuddy intl, CN, and WorkBuddy.
+ */
+export function finalizeBuddyMessages(
+  messages: Array<Record<string, unknown>>,
+  options: BuddyMessageFinalizeOptions,
+): void {
+  if (options.coalesceConsecutiveUser !== false) {
+    coalesceConsecutiveUserMessages(messages);
+  }
+  if (options.dropEmpty !== false) {
+    dropEmptyBuddyMessages(messages);
+  }
+  if (options.ensureLeadingSystem !== false) {
+    ensureBuddyLeadingSystem(messages, options.leadPrompt);
+  }
+  if (options.omitToolCallContent !== false) {
+    omitBuddyAssistantToolCallContent(messages);
+  }
+  if (options.autoPromptCache !== false) {
+    applyBuddyAutoPromptCache(messages);
+  }
 }
 
 /**
@@ -1035,5 +1168,5 @@ export function applyBuddySystemPrompt(
       messages.push({ ...message });
     }
   }
-  finalizeBuddyMessages(messages, systemPrompt);
+  finalizeBuddyMessages(messages, { leadPrompt: systemPrompt });
 }

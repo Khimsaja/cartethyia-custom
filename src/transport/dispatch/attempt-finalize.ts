@@ -14,7 +14,7 @@ import type { ProxyRequestOutcome, ProxyRequestState } from "../request/state";
 import { responseHasVisibleContent } from "../surface/visible-content";
 import type { PayloadCaptureState } from "../../observability/payload-capture";
 import { finalizeRequestTelemetry } from "../guards/error-lifecycle";
-import { debitCachedQuota, quotaLens } from "../../console/quota/cache";
+import { debitCachedQuota, quotaLens } from "../../providers/quota/cache";
 import { BUDDY_PROVIDER_IDS } from "../../providers/provider-metadata";
 import { log } from "../../observability/logger";
 import {
@@ -197,6 +197,43 @@ export function providerRequestMetadataOnly(request: unknown): unknown {
 }
 
 /**
+ * Captures one provider request body into the stored provider-request panel.
+ *
+ * Providers send bodies in several shapes: a plain string (the common case), a
+ * `Uint8Array`/Buffer (Qoder's custom cosy encoding), or another BodyInit
+ * type (URLSearchParams, Blob, FormData) that cannot be sliced safely here.
+ * Strings and byte arrays are decoded and stored; anything else is recorded as
+ * present-but-opaque, same as the metadata path.
+ */
+function captureRequestBodyBody(
+  body: BodyInit,
+  maxBytes: number,
+): { body: unknown } | { body_present: true; body_bytes: number } {
+  if (typeof body === "string") {
+    return { body: parseCapturedBody(truncateUtf8(body, maxBytes)) };
+  }
+  if (body instanceof Uint8Array) {
+    return { body: parseCapturedBody(truncateUtf8(new TextDecoder().decode(body), maxBytes)) };
+  }
+  return { body_present: true, body_bytes: capturedBodyByteLength(body) };
+}
+
+/** Byte length of a request body in whatever shape the provider sent it. */
+function capturedBodyByteLength(body: BodyInit): number {
+  if (typeof body === "string") return Buffer.byteLength(body, "utf8");
+  if (body instanceof Uint8Array) return body.byteLength;
+  if (typeof body === "object" && body !== null && "size" in body) {
+    const size = (body as { size?: unknown }).size;
+    if (typeof size === "number" && Number.isFinite(size)) return Math.round(size);
+  }
+  if (typeof body === "object" && body !== null && "byteLength" in body) {
+    const byteLength = (body as { byteLength?: unknown }).byteLength;
+    if (typeof byteLength === "number" && Number.isFinite(byteLength)) return Math.round(byteLength);
+  }
+  return 0;
+}
+
+/**
  * Wraps a validated outbound fetch to tee the provider request/response.
  *
  * `captureBody=false` records the request line but skips the response
@@ -217,7 +254,7 @@ export function captureProviderExchange(
         : input instanceof URL
           ? input.toString()
           : input.url;
-    const rawBody = typeof init?.body === "string" ? init.body : null;
+    const rawBody = init?.body;
     const headers = selectCapturedHeaders(init);
     sink.request = {
       method: init?.method ?? "GET",
@@ -228,11 +265,11 @@ export function captureProviderExchange(
       // shape sliced up to `maxBytes` of the translated body and ran it through
       // `JSON.parse` for every attempt — content a metadata-mode tenant had
       // explicitly declined to retain, paid on every dispatch.
-      ...(rawBody === null
+      ...(rawBody === null || rawBody === undefined
         ? {}
         : captureBody
-          ? { body: parseCapturedBody(truncateUtf8(rawBody, maxBytes)) }
-          : { body_present: true, body_bytes: Buffer.byteLength(rawBody, "utf8") }),
+          ? captureRequestBodyBody(rawBody, maxBytes)
+          : { body_present: true, body_bytes: capturedBodyByteLength(rawBody) }),
     };
     const response = await inner(input, init);
     sink.response =
@@ -464,6 +501,13 @@ export function estimatedUsage(inputTokens: number, outputTokens: number): Usage
 export interface AttemptCompletion extends ProxyRequestOutcome {
   readonly modelId?: string;
   readonly error?: unknown;
+  /**
+   * The HTTP status the terminal classifier derived for a raw (non-GatewayError)
+   * failure — an upstream socket drop is 502, not the 500 the fallback implied.
+   * Only consulted when the error carries no status of its own and no wire
+   * response named one.
+   */
+  readonly terminalHttpStatus?: number;
   readonly lease?: AdmissionLease;
   /** Usage to reconcile, or undefined when this attempt consumed nothing billable. */
   readonly commitUsage?: UsageRecord;
@@ -543,6 +587,63 @@ export function completionContext(input: {
     ...(input.lease === undefined ? {} : { lease: input.lease }),
     ...(input.telemetryBuffer === undefined ? {} : { telemetryBuffer: input.telemetryBuffer }),
     ...(input.snapshotService === undefined ? {} : { snapshotService: input.snapshotService }),
+  };
+}
+
+/**
+ * The terminal-completion base the native routes (generation, responses
+ * compact, system one, web search, token count) all assemble. The proxy and
+ * streaming paths use `completionContext`; these routes previously spelled
+ * the same twelve fields by hand in six places. Callers spread this and add
+ * only what differs: status, response body, error classification.
+ */
+export function nativeCompletionBase(input: {
+  readonly providerId: string;
+  readonly modelId: string;
+  readonly tenantId: string | null;
+  readonly ingressBody: unknown;
+  readonly accountId?: string;
+  readonly accountLabel?: string;
+  readonly networkPoolId?: string;
+  readonly lease?: AdmissionLease;
+  readonly db: CartethyiaDatabase;
+  readonly telemetryBuffer?: TelemetryBatchBuffer;
+  readonly snapshotService?: { invalidate(): unknown };
+  readonly providerCapture?: ProviderExchangeCapture;
+  readonly usage?: AttemptCompletion["usage"];
+  readonly commitUsage?: AttemptCompletion["commitUsage"];
+}): Omit<
+  AttemptCompletion,
+  | "status"
+  | "responseBody"
+  | "httpStatus"
+  | "terminalHttpStatus"
+  | "error"
+  | "clientResponseText"
+  | "firstContentDeltaAtMs"
+  | "lastEventAtMs"
+  | "reportedModel"
+  | "errorCategory"
+  | "errorOrigin"
+  | "ttfbMs"
+  | "tokensPerSec"
+> {
+  return {
+    providerId: input.providerId,
+    modelId: input.modelId,
+    tenantId: input.tenantId,
+    ingressBody: input.ingressBody,
+    terminal: true,
+    ...(input.accountId === undefined ? {} : { accountId: input.accountId }),
+    ...(input.accountLabel === undefined ? {} : { accountLabel: input.accountLabel }),
+    ...(input.networkPoolId === undefined ? {} : { networkPoolId: input.networkPoolId }),
+    ...(input.lease === undefined ? {} : { lease: input.lease }),
+    db: input.db,
+    ...(input.telemetryBuffer === undefined ? {} : { telemetryBuffer: input.telemetryBuffer }),
+    ...(input.snapshotService === undefined ? {} : { snapshotService: input.snapshotService }),
+    ...(input.providerCapture === undefined ? {} : { providerCapture: input.providerCapture }),
+    ...(input.usage === undefined ? {} : { usage: input.usage }),
+    ...(input.commitUsage === undefined ? {} : { commitUsage: input.commitUsage }),
   };
 }
 
@@ -656,13 +757,14 @@ export async function completeAttempt(
       completion.httpStatus ??
       (completion.error instanceof GatewayError
         ? completion.error.status
-        : completion.status === "completed"
-          ? 200
-          : completion.status === "cancelled"
-            ? 499
-            : completion.status === "truncated"
-              ? 502
-              : 500),
+        : completion.terminalHttpStatus ??
+          (completion.status === "completed"
+            ? 200
+            : completion.status === "cancelled"
+              ? 499
+              : completion.status === "truncated"
+                ? 502
+                : 500)),
     ...(completion.providerId === undefined ? {} : { providerId: completion.providerId }),
     ...(completion.accountId === undefined ? {} : { accountId: completion.accountId }),
     ...(completion.accountLabel === undefined ? {} : { accountLabel: completion.accountLabel }),

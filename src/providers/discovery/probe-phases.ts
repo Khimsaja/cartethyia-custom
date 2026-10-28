@@ -168,6 +168,8 @@ export interface ProbeTarget {
    * so the probe tests the route, not an empty stand-in.
    */
   readonly capabilityProfile: Readonly<Record<string, boolean>>;
+  /** The model row's output ceiling, when it declares one. */
+  readonly outputLimit?: number | null;
 }
 
 /**
@@ -217,10 +219,11 @@ export async function resolveProbeTarget(args: {
   let serviceKind: ServiceKind = requestedServiceKind;
   // Capability columns for the row the probe lands on. Resolved alongside the
   // wire so the profile describes the same row the probe dispatches to.
-  let capabilitySource: { modalities: unknown; reasoning: boolean; toolCall: boolean } = {
+  let capabilitySource: { modalities: unknown; reasoning: boolean; toolCall: boolean; outputLimit: number | null } = {
     modalities: null,
     reasoning: false,
     toolCall: false,
+    outputLimit: null,
   };
   if (request.wireFamily) {
     wireFamily = request.wireFamily as WireFamily;
@@ -242,6 +245,7 @@ export async function resolveProbeTarget(args: {
         modalities: staticDef.modalities,
         reasoning: staticDef.reasoning,
         toolCall: staticDef.toolCall,
+        outputLimit: staticDef.outputLimit ?? null,
       };
     } else {
       const existing = await db
@@ -252,6 +256,7 @@ export async function resolveProbeTarget(args: {
           modalities: models.modalities,
           reasoning: models.reasoning,
           toolCall: models.toolCall,
+          outputLimit: models.outputLimit,
         })
         .from(models)
         .where(
@@ -277,6 +282,7 @@ export async function resolveProbeTarget(args: {
           modalities: existing[0].modalities,
           reasoning: existing[0].reasoning,
           toolCall: existing[0].toolCall,
+          outputLimit: existing[0].outputLimit ?? null,
         };
       } else {
         if (requestedServiceKind !== "llm") {
@@ -334,7 +340,7 @@ export async function resolveProbeTarget(args: {
     toolCall: capabilitySource.toolCall,
     providerId,
   });
-  return { wireFamily, serviceKind, endpointPath, sourceSurface, capabilityProfile };
+  return { wireFamily, serviceKind, endpointPath, sourceSurface, capabilityProfile, outputLimit: capabilitySource.outputLimit };
 }
 
 /** The account a probe selected, or the operator-facing reason it could not. */
@@ -752,12 +758,19 @@ export function computeProbeVerdict(args: {
           : status !== undefined
             ? `upstream ${status}`
             : undefined;
+    // A 429 that names a free-tier usage limit is upstream quota state, not a
+    // payload or egress defect — label it as the throttle it is instead of a
+    // generic probe failure.
+    const throttled =
+      status === 429 ||
+      providerStatus === 429 ||
+      /free usage limit|rate limit|throttl/i.test(base);
     // The toast title already names the model. Repeating `provider/model via
     // wire path` in the body made the operator read the same identity twice
     // and buried the upstream sentence. The wire family stays, because that is
     // the one fact the title does not carry; the path is noise next to it.
     const tagged = statusTag !== undefined ? `${pretty} (${statusTag})` : pretty;
-    errorMessage = `${wireFamily} — ${tagged}${upstreamReq ? ` [req ${upstreamReq}]` : ""}`;
+    errorMessage = `${wireFamily} — ${throttled ? "Upstream rate limit (HTTP 429): " : ""}${tagged}${upstreamReq ? ` [req ${upstreamReq}]` : ""}`;
 
   } else if (terminal?.type === "terminal" && terminal.state !== "complete") {
     // Read the terminal's own detail before falling back to the stop reason.

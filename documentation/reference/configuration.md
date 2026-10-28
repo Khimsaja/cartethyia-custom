@@ -111,8 +111,10 @@ Variables read outside the spec are therefore **not** listed below:
 | `CARTETHYIA_CONCURRENCY_TOLERANCE` | integer, optional | unset | 0 – 1024 when set |
 | `CARTETHYIA_PROCESS_COUNT` | integer | 1 | 1 – 16 |
 | `CARTETHYIA_PROCESS_INDEX` | integer | 0 | 0 – 15 |
+| `CARTETHYIA_INSTALL_ID_DIR` | string, optional | unset | — |
 | `CARTETHYIA_FORCED_GC` | flag | enabled (disabled only when literally `false`) | — |
 | `CARTETHYIA_RUNTIME_METRICS_INTERVAL_MS` | integer | 30000 | 1000 – 300000 |
 | `CARTETHYIA_DISABLED_TASKS` | comma-separated list | unset | — |
+| `CARTETHYIA_POOL_PROVIDER_RATE_LIMIT_COOLDOWN_MS` | integer | 3600000 | 0 – 86400000 |
 | `CARTETHYIA_OAUTH_CALLBACK_PORT` | integer | 59653 | 1024 – 65535 |
 | `CARTETHYIA_OPENCODE_UNAVAILABLE_FREE` | comma-separated list | unset | — |
