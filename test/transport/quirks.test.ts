@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { CanonicalRequest } from "../../src/protocol/canonical-model";
-import { applyParamQuirks } from "../../src/transport/translation/quirks";
+import { applyParamQuirks } from "../../src/protocol/translation/quirks";
 
 function request(
   provider: string,
