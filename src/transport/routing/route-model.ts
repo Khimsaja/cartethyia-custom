@@ -520,15 +520,23 @@ function deepFreeze<T>(obj: T): T {
   return obj;
 }
 
-// Debounce for snapshot rebuilds (flap-storm guard, 2026-10-26): trailing
-// window after the last invalidation, with a staleness cap for storms that
-// never quiet down. See markDirtyAndSchedule().
-const DEBOUNCE_MS = 5_000;
-const MAX_DIRTY_MS = 30_000;
-
 export class InMemoryRouteSnapshotService implements RouteSnapshotService {
   private revision: RoutingRevision = 0;
   private snapshot: RouteSnapshot | undefined;
+  /**
+   * Last successfully built snapshot, kept across invalidations. A lazy
+   * rebuild that fails (a minute-burst of 500 internal_error across all
+   * models on 2026-10-26, with nothing in the journal) falls back to it
+   * instead of throwing to the data plane; the next invalidation retries
+   * the build. This is the stale-serve half of the 2026-10-26 fix, kept
+   * while the debounce half is retired: upstream 2.7.3 requires an
+   * invalidation to be visible on the next request (cooldown eviction,
+   * route updates), which a debounced rebuild delays up to 5 s — and
+   * upstream's own tests lock that immediacy. The storm half is covered
+   * instead by the mutatesAccount invalidation gate (non-mutating reports
+   * never invalidate) plus the memoized rebuild.
+   */
+  private lastGood: RouteSnapshot | undefined;
   /**
    * The in-flight build, tagged with the revision it is building.
    *
@@ -542,19 +550,13 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
    * only populate the cache if no mutation happened while it ran.
    */
   private building: { revision: RoutingRevision; promise: Promise<RouteSnapshot> } | undefined;
-  /**
-   * Debounce state. dirtySince marks the start of the current dirty streak
-   * (for the staleness cap); debounceTimer is the pending trailing rebuild.
-   */
-  private debounceTimer: ReturnType<typeof setTimeout> | undefined;
-  private dirtySince: number | undefined;
 
   constructor(private readonly builder: SnapshotBuilder) {
     // Peers' mutations arrive once per process, not per instance: the handler
     // drops this instance's copy, which is the only one there is.
     this.unsubscribe = subscribeRoutingInvalidation(() => {
       this.revision += 1;
-      this.markDirtyAndSchedule();
+      this.snapshot = undefined;
     });
   }
 
@@ -569,6 +571,13 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
     this.building = { revision, promise };
     try {
       return await promise;
+    } catch (error) {
+      // A failed lazy rebuild must not 500 the data plane when a previous
+      // snapshot exists: serve it stale instead. Only a boot-time build
+      // with no snapshot yet can still reject to its waiters, and there is
+      // nothing else to serve there.
+      if (this.lastGood !== undefined) return this.lastGood;
+      throw error;
     } finally {
       // Only the build that is still current may clear the slot; a build
       // started after a mutation must not be dropped by an older one finishing.
@@ -579,21 +588,15 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
 
   async invalidate(): Promise<RoutingRevision> {
     this.revision += 1;
-    // Debounced warm-up (replaces the old immediate eager rebuild): under a
-    // health flap storm, invalidations arrive several times a minute and each
-    // one used to start a full catalog build that the next invalidation then
-    // discarded. Coalescing them keeps the data plane serving the previous
-    // snapshot for at most DEBOUNCE_MS (MAX_DIRTY_MS worst case under a
-    // continuous storm) instead of rebuilding per invalidation. Routing
-    // staleness of seconds is already tolerated: a stale candidate costs one
-    // failed attempt and the retry picks a fresh one, and peers historically
-    // rebuilt lazily anyway. Fire-and-forget: invalidate() still returns the
-    // revision token immediately and the mutating request never waits.
-    this.markDirtyAndSchedule();
-    // Stale-serving: requests during the debounce window keep serving the
-    // previous snapshot; the scheduled rebuild replaces it. Dashboard
-    // mutations only need the new revision token — they must not pay a dozen
-    // Postgres round-trips inside the mutating request.
+    // Upstream semantics (2.7.3): drop the cache so the next getSnapshot()
+    // rebuilds lazily. Dashboard mutations only need the new revision token
+    // — they must not pay a dozen Postgres round-trips inside the mutating
+    // request — but the rebuild itself is no longer deferred: a debounced
+    // rebuild delayed cooldown eviction and route updates up to 5 s, which
+    // breaks upstream's immediate-invalidation guarantee and its tests.
+    // Storm protection comes from the mutatesAccount gate plus the
+    // memoized rebuild, not from serving stale routing.
+    this.snapshot = undefined;
     //
     // Broadcast, because `reusePort` runs several gateway processes and each
     // holds its own snapshot: a console write handled by one of them left the
@@ -602,69 +605,6 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
     // notice carries no data, so there is nothing to deserialize.
     publishRoutingInvalidation();
     return this.revision;
-  }
-
-  /**
-   * Coalesce rapid invalidations into a single rebuild. Trailing debounce:
-   * each invalidation restarts the window, so a burst yields one rebuild
-   * after the burst quiets. MAX_DIRTY_MS caps staleness: if invalidations
-   * never quiet down, a rebuild is forced anyway. A build already in flight
-   * for an older revision defers the rebuild instead of stacking a second
-   * concurrent build on top of it.
-   */
-  private markDirtyAndSchedule(): void {
-    const now = Date.now();
-    if (this.dirtySince === undefined) this.dirtySince = now;
-    if (this.debounceTimer !== undefined) clearTimeout(this.debounceTimer);
-    if (now - this.dirtySince >= MAX_DIRTY_MS) {
-      this.debounceTimer = undefined;
-      this.dirtySince = undefined;
-      this.runDebouncedRebuild();
-      return;
-    }
-    this.debounceTimer = setTimeout(() => {
-      this.debounceTimer = undefined;
-      this.dirtySince = undefined;
-      this.runDebouncedRebuild();
-    }, DEBOUNCE_MS);
-  }
-
-  private runDebouncedRebuild(): void {
-    // An older build still running means a newer revision is already
-    // pending; stacking a second build wastes a dozen Postgres queries.
-    // Defer until it settles — the re-armed timer below rebuilds for the
-    // latest revision even if no further invalidation arrives.
-    if (this.building && this.building.revision !== this.revision) {
-      this.dirtySince = Date.now();
-      this.debounceTimer = setTimeout(() => {
-        this.debounceTimer = undefined;
-        this.dirtySince = undefined;
-        this.runDebouncedRebuild();
-      }, DEBOUNCE_MS);
-      return;
-    }
-    if (this.building) return; // A build for this revision is already in flight.
-    // Serve the previous snapshot while the rebuild runs; swap only on
-    // success (build() assigns this.snapshot itself when the revision still
-    // matches). Previously this cleared the snapshot first, so a failed
-    // build rejected every request waiting on it — a minute-burst of 500
-    // internal_error across all models, with nothing in the journal. A
-    // failed build now leaves the previous snapshot in place; the next
-    // invalidation rebuilds (invalidations arrive several times a minute
-    // under normal churn, so the lag is bounded in practice).
-    const revision = this.revision;
-    const promise = this.build(revision);
-    this.building = { revision, promise };
-    void promise
-      .catch(() => {
-        // Swallow: the old snapshot keeps serving. getSnapshot() never sees
-        // this rejection because it returns the cached snapshot while one
-        // exists; only a boot-time build with no snapshot yet can still
-        // reject to its waiters, and there is nothing else to serve there.
-      })
-      .finally(() => {
-        if (this.building?.promise === promise) this.building = undefined;
-      });
   }
 
   private async build(revision: RoutingRevision): Promise<RouteSnapshot> {
@@ -701,7 +641,10 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
     // has already been superseded. Returning it is fine — the caller asked
     // before the mutation — but caching it would strand the data plane on stale
     // routing until the next write.
-    if (revision === this.revision) this.snapshot = snapshot;
+    if (revision === this.revision) {
+      this.snapshot = snapshot;
+      this.lastGood = snapshot;
+    }
     return snapshot;
   }
 }

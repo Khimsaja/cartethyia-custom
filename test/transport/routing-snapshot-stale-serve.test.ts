@@ -1,11 +1,15 @@
 /**
- * A failed debounced snapshot rebuild must not 500 the data plane.
+ * A failed snapshot rebuild must not 500 the data plane.
  *
- * Regression lock for the 2026-10-26 internal_error bursts: runDebouncedRebuild
- * used to clear the snapshot first and then await a fresh build, so a failed
+ * Regression lock for the 2026-10-26 internal_error bursts: a rebuild used
+ * to clear the snapshot first and then await a fresh build, so a failed
  * build rejected every request waiting on it — a minute-burst of 500
- * internal_error across all models, with nothing in the journal. The rebuild
- * now serves the previous snapshot while building and swaps only on success.
+ * internal_error across all models, with nothing in the journal. The
+ * service now falls back to the last good snapshot when a lazy rebuild
+ * fails, while an invalidation still takes effect on the next request
+ * (upstream 2.7.3 immediacy): the debounced rebuild that delayed eviction
+ * up to 5 s was retired in the 2.7.3 merge, and the storm half is covered
+ * by the mutatesAccount invalidation gate plus the memoized rebuild.
  */
 import { describe, expect, test } from "bun:test";
 import { InMemoryRouteSnapshotService } from "../../src/transport/routing/route-model";

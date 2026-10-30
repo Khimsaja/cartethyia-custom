@@ -60,7 +60,13 @@ test("each backend has matching baseline and incremental migrations", () => {
     "0012_add_reported_model.sql",
     "0013_add_providers_tenant_id_index.sql",
     "0014_add_provider_accounts_tenant_id_index.sql",
+    // TipRouter local migrations (not upstream): model templates, key
+    // expiry, and dedicated-provider pools. They share numbers with
+    // upstream files (0015/0016/0024) and sort before them; both backends
+    // carry the same set, which is what this test pins.
+    "0015_add_model_templates.sql",
     "0015_add_payload_stages.sql",
+    "0016_add_api_keys_expires_at.sql",
     "0016_add_share_link_slug.sql",
     "0017_add_models_pro_only.sql",
     "0018_add_accounts_quota_plan.sql",
@@ -69,6 +75,7 @@ test("each backend has matching baseline and incremental migrations", () => {
     "0021_add_api_key_concurrency_tolerance.sql",
     "0022_add_inferhub_config_key.sql",
     "0023_drop_api_key_concurrency_tolerance.sql",
+    "0024_add_network_pools_dedicated_provider.sql",
     "0024_add_pool_provider_cooldowns.sql",
     "0025_add_pool_random_strategy.sql",
     "0026_add_qoder_native_identity.sql",
