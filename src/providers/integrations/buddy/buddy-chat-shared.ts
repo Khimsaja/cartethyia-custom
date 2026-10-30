@@ -21,7 +21,7 @@ import { createHash } from "node:crypto";
 import { completeRequiredSchema } from "../../../protocol/codecs";
 import type { CanonicalRequest } from "../../../protocol/canonical-model";
 import { isRecord } from "../../../protocol/codecs";
-import { applyDeepSeekReasoning, applyOpenAIReasoning, backfillDeepSeekReasoningContent, clampedEffortOutputFloor } from "../../../protocol/reasoning";
+import { applyDeepSeekReasoning, applyOpenAIReasoning, backfillDeepSeekReasoningContent, clampedEffortOutputFloor, ensureChatReasoningReplayPresence } from "../../../protocol/reasoning";
 import { BUDDY_CN_EFFORTS, BUDDY_INTL_EFFORTS, BUDDY_SHARED_RAW } from "./buddy-catalog-shared";
 // Imported for the CN roster only: a CN-only id has no row in the shared
 // table, and without one `raiseOutputForRaisedEffort` silently no-ops, so a
@@ -30,6 +30,7 @@ import { BUDDY_CN_EFFORTS, BUDDY_INTL_EFFORTS, BUDDY_SHARED_RAW } from "./buddy-
 // cn-provider (which imports this module) resolves before any call.
 import { CODEBUDDY_CN_RAW } from "./codebuddy/cn-catalog";
 import { buddyAccountUid } from "./buddy-oauth-shared";
+import { SYSTEM_PROMPT_WRAPPER_PREFIX, SYSTEM_PROMPT_WRAPPER_SUFFIX } from "../../../console/system-prompt/contracts";
 import type { ProviderDispatchContext } from "../../provider-contracts";
 
 const BUDDY_TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
@@ -408,6 +409,21 @@ export function scrubBuddyChannelIdentity(messages: Array<Record<string, unknown
     scrubBuddyMessageText(message, "reasoning_content");
   }
 }
+
+/**
+ * OpenAI-compatible adapters that need the DeepSeek reasoning-replay backfill
+ * on outbound chat payloads. The buddy family runs it inside
+ * `buddyPrePayloadCommon`; these adapters register here so the same rule
+ * reaches every reseller that serves a thinking model.
+ */
+export const clineReasoningReplayPrepares: readonly ((
+  payload: Record<string, unknown>,
+) => void)[] = [
+  (payload) => {
+    backfillDeepSeekReasoningContent(payload);
+    ensureChatReasoningReplayPresence(payload);
+  },
+];
 
 /**
  * Payload prefix shared by the buddy pre-payload hooks: force `stream=true`,
@@ -1152,12 +1168,24 @@ export function finalizeBuddyMessages(
 export function applyBuddySystemPrompt(
   messages: Array<Record<string, unknown>>,
   systemPrompt: string,
+  extraSystemText?: string,
 ): void {
+  // Tenant injection (Inject System Prompt) rides AFTER the fixed prompt,
+  // inside the same system turn, framed by the gateway's marker prefix/suffix:
+  // the upstream validates the identity prompt as the channel opener, so the
+  // fixed text must stay first and byte-identical; the wrapped tail carries
+  // the tenant's directive without touching the identity. An override-mode
+  // tenant prompt degrades to this wrapped append (the caller decides via
+  // `isWrappedInjectionProvider` before passing the text).
+  const effectivePrompt =
+    extraSystemText === undefined || extraSystemText.length === 0
+      ? systemPrompt
+      : `${systemPrompt}\n\n${SYSTEM_PROMPT_WRAPPER_PREFIX}\n${extraSystemText}\n${SYSTEM_PROMPT_WRAPPER_SUFFIX}`;
   const source = messages.filter(
     (message) => message["role"] !== "system" && message["role"] !== "developer",
   );
   messages.length = 0;
-  messages.push({ role: "system", content: systemPrompt });
+  messages.push({ role: "system", content: effectivePrompt });
   for (const message of source) {
     if (message["role"] === "user" && typeof message["content"] === "string") {
       messages.push({

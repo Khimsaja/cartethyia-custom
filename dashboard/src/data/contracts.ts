@@ -92,6 +92,11 @@ export type {
 
 export type { AccountHealthEventRecord } from "../../../src/providers/operations/account-health-service";
 
+// Qoder native machine identity (UMID) — the account's daily check-in slot.
+// The type lives in the schema (backend) and is re-exported here so the
+// provider-detail screen can render bound status without mirroring the shape.
+export type { NativeIdentityRecord } from "../../../src/persistence/schema";
+
 /**
  * Reasoning efforts the probe accepts, as the backend declares them. Re-exported
  * as a value (like `TENANT_KEY_SCOPES`) so the Thinking selector and the route
@@ -128,12 +133,26 @@ export type {
   ShareKeyResponse,
 } from "../../../src/console/api-keys/contracts";
 
+import type { SharedKeySummary } from "../../../src/console/share/share-usage";
+
 export type {
   SharedKeySummary,
   SharedKeyActivityDetail,
   SharedKeyModelUsage,
   SharedKeyRequestEvent,
 } from "../../../src/console/share/share-usage";
+
+/** Paged response of the share-child list endpoint. */
+export interface SharedKeyPage {
+  readonly rows: readonly SharedKeySummary[];
+  readonly total: number;
+  readonly active: number;
+  readonly revoked: number;
+  /** Family-wide lifetime tokens consumed, independent of the page. */
+  readonly consumed: number;
+}
+
+export type { SharedChildSortColumn } from "../../../src/persistence/stores/api-key-store";
 
 // Backup export returns the payload itself (it is the file the operator
 // downloads); import returns the per-table counts plus the router-import

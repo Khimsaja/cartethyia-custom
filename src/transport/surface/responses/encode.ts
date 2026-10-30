@@ -350,8 +350,7 @@ export class ResponsesEventEncoder extends SurfaceStreamEncoder<CanonicalEvent, 
       summary: [],
       content: [],
     };
-    if (content.encrypted_content !== undefined) item.encrypted_content = content.encrypted_content;
-    this.open = {
+    if (typeof content.encrypted_content === "string") item.encrypted_content = content.encrypted_content;    this.open = {
       kind: "reasoning",
       item,
       itemId,
@@ -512,7 +511,7 @@ export class ResponsesEventEncoder extends SurfaceStreamEncoder<CanonicalEvent, 
         );
         summaryChunks.push(delta);
       }
-      if (content.encrypted_content !== undefined)
+      if (typeof content.encrypted_content === "string")
         events.push(
           this.emit("response.reasoning.encrypted_content", {
             item_id: this.open?.itemId,

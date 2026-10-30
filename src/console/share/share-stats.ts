@@ -11,10 +11,15 @@
 // masked addresses. No request or response bodies cross this boundary.
 
 import { createHash } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { maskClientIp } from "../../observability/redaction";
 import { type TelemetryEventRecord } from "../../observability/event-log";
-import { queryTelemetryEvents as querySqlEvents } from "../../observability/event-query";
+import {
+  queryTelemetryEvents as querySqlEvents,
+  sumTelemetryTokens,
+} from "../../observability/event-query";
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
+import { apiKeys } from "../../persistence/schema";
 import { isGatewayError } from "../../observability/telemetry-status";
 import type { RedisClient } from "../../persistence/redis";
 import { cachedRead } from "../shared/read-through-cache";
@@ -81,6 +86,14 @@ export interface ShareFamilyStats {
 /** Read-only family rollup for one share link. */
 export interface ShareStatsPort {
   /**
+   * The family is addressed by its template key (`templateKeyId`) plus the
+   * number of keys it covers at call time (`memberCount`), not by an id list:
+   * a family grows with every key the link mints, and enumerating its ids to
+   * build a query — or a cache key — scaled both with the family instead of
+   * with the request. `memberCount` keeps the cache key sensitive to minting:
+   * a newly issued child starts a fresh entry rather than being folded into
+   * the previous one for a full TTL.
+   *
    * `allowedModels`, when supplied, restricts the top-models table to the names
    * the link actually grants. A rejected request still writes a telemetry row
    * (with the requested name), so without this the table would rank models the
@@ -90,7 +103,7 @@ export interface ShareStatsPort {
    */
   getFamilyStats(
     tenantId: string,
-    keyIds: readonly string[],
+    family: { readonly templateKeyId: string; readonly memberCount: number },
     recipients: { readonly total: number; readonly active: number },
     allowedModels?: readonly string[],
   ): Promise<ShareFamilyStats>;
@@ -244,19 +257,21 @@ const HOURS_WINDOW = 24;
 export const SHARE_STATS_CACHE_TTL_SECONDS = 10;
 
 /**
- * Cache key for one family's rollup. Both inputs change the payload — `keyIds`
- * selects the family and `allowedModels` filters the model table — so both are
- * hashed in; the key ids are sorted so key order cannot split one family across
- * two entries.
+ * Cache key for one family's rollup. The family is named by its template key
+ * and the number of keys it covers — both change the payload — and
+ * `allowedModels` filters the model table, so all three are hashed in.
+ * (The key used to hash the sorted list of every family id; on a family with
+ * tens of thousands of minted children that built and sorted a multi-megabyte
+ * string on every page view, before the cache could even answer.)
  */
 function shareFamilyStatsKey(
   tenantId: string,
-  keyIds: readonly string[],
+  family: { readonly templateKeyId: string; readonly memberCount: number },
   allowedModels: readonly string[] | undefined,
 ): string {
   const models = allowedModels === undefined ? "*" : [...allowedModels].sort().join(",");
   const hash = createHash("sha256")
-    .update([...keyIds].sort().join(",") + "|" + models)
+    .update(`${family.templateKeyId}#${family.memberCount}|${models}`)
     .digest("hex");
   return `share:v1:stats:${tenantId}:${hash}`;
 }
@@ -271,12 +286,12 @@ interface ShareStatsPortDeps {
 
 export function createShareStatsPort(deps: ShareStatsPortDeps): ShareStatsPort {
   return {
-    async getFamilyStats(tenantId, keyIds, recipients, allowedModels) {
-      if (keyIds.length === 0) return emptyStats(recipients);
+    async getFamilyStats(tenantId, family, recipients, allowedModels) {
+      if (family.templateKeyId.length === 0) return emptyStats(recipients);
       const cached = await cachedRead<Omit<ShareFamilyStats, "recipients">>(
         deps.redis,
-        shareFamilyStatsKey(tenantId, keyIds, allowedModels),
-        () => computeFamilyStatsBody(deps.db, tenantId, keyIds, allowedModels),
+        shareFamilyStatsKey(tenantId, family, allowedModels),
+        () => computeFamilyStatsBody(deps.db, tenantId, family.templateKeyId, allowedModels),
         SHARE_STATS_CACHE_TTL_SECONDS,
       );
       return { ...cached, recipients };
@@ -288,7 +303,7 @@ export function createShareStatsPort(deps: ShareStatsPortDeps): ShareStatsPort {
 async function computeFamilyStatsBody(
   db: CartethyiaDatabase,
   tenantId: string,
-  keyIds: readonly string[],
+  templateKeyId: string,
   allowedModels: readonly string[] | undefined,
 ): Promise<Omit<ShareFamilyStats, "recipients">> {
   // A share that grants a fixed set ranks only that set. Telemetry keeps the
@@ -304,20 +319,35 @@ async function computeFamilyStatsBody(
   const lastHourStart = new Date(now.getTime() - HOUR_MS);
   const windowStart = new Date(hourStart.getTime() - (HOURS_WINDOW - 1) * HOUR_MS);
 
-  // Rank only names the grant actually authorizes. Telemetry keeps the
-  // requested name even when the request was refused, so an unfiltered table
-  // would list exactly the invalid names an abuser probed. Filtering before
-  // the top-50 cut means refused names cannot hide a model the recipient may
-  // use.
-  //
-  // Bounded by the retention floor, not by the oldest counter: `totalTokens`
-  // is all-time, so cutting at `monthStart` would silently drop the rows that
-  // make it differ from `monthTokens`. Retention already caps the window, and
-  // the rows are read newest-first under a page cap, so a very large family
-  // cannot pull the whole table.
+  // All-time and today's/month's spend come from SQL aggregates, not from the
+  // bounded page below. The page is capped so a very large family cannot pull
+  // the whole table, which means it cannot carry the all-time total. Lifetime,
+  // daily, and monthly are therefore separate bounded sums over the retained
+  // SQL window (each is a single `SUM` aggregate, not a row materialization).
+  // The page's events feed only the hourly chart and the two ranked tables.
+  const [totalTokens, todayTokens, monthTokens, template] = await Promise.all([
+    sumTelemetryTokens(db, tenantId, { familyKeyId: templateKeyId, since: new Date(0) }),
+    sumTelemetryTokens(db, tenantId, { familyKeyId: templateKeyId, since: dayStart }),
+    sumTelemetryTokens(db, tenantId, { familyKeyId: templateKeyId, since: monthStart }),
+    db
+      .select({ lifetime: apiKeys.lifetimeTokensConsumed })
+      .from(apiKeys)
+      .where(eq(apiKeys.id, templateKeyId))
+      .limit(1),
+  ]);
+  // Cumulative family spend: the template's own counter plus the telemetry
+  // total. The counter is a manually-configured seed (an operator limit), not
+  // traffic, and it is never reset; azmetry rows for revoked/deleted children
+  // likewise stay counted, so the running total is monotonic and consistent
+  // across the overview, the share dialog, and this page.
+  const templateLifetime = Number(template[0]?.lifetime ?? 0);
+
+  // The hourly chart covers the last 24 hours, so the page only needs events
+  // in that window — not the whole retained history. Bounded and small.
   const page = await querySqlEvents(db, {
     tenantId,
-    apiKeyIds: [...keyIds],
+    familyApiKeyId: templateKeyId,
+    since: windowStart,
     limit: MAX_FAMILY_EVENTS,
   });
   const events = page.events;
@@ -328,6 +358,15 @@ async function computeFamilyStatsBody(
     windowStart: windowStart.getTime(),
     allowed: allowedSet,
   });
+  rollup.totals = {
+    ...rollup.totals,
+    // The template counter is the seed on the running total, not a distinct
+    // bucket: daily/monthly windows are telemetry-only (the counter has no
+    // time axis), so those keep their own sums.
+    totalTokens: templateLifetime + totalTokens,
+    todayTokens,
+    monthTokens,
+  };
 
   // Fill the 24 buckets in JS: only hours that saw traffic are present, and
   // a chart drawn from sparse rows would silently compress the axis.

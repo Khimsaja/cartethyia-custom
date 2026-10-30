@@ -20,6 +20,8 @@ import { eq } from "drizzle-orm";
 import { getDb } from "../../src/persistence/boot";
 import { consoleSettings, providerAccounts } from "../../src/persistence/schema";
 import { createDatabaseSnapshotBuilder } from "../../src/transport/routing/route-catalog";
+import { InMemoryRouteSnapshotService } from "../../src/transport/routing/route-model";
+import { RoutingEngine } from "../../src/transport/routing/router";
 import { dbDescribe, requireDatabase } from "../helpers/database";
 import { createWorld, type GatewayWorld } from "../helpers/fixtures";
 
@@ -118,6 +120,69 @@ dbDescribe("forceDisableCooldown", () => {
     expect(await candidateFor().then((c) => c?.["cooldown_until"])).toBe(FUTURE.getTime());
   });
 
+  test("continuation affinity refuses a hard-cooling account with 429", async () => {
+    await writePreferences({});
+    await cool("quota_exhausted");
+    const service = new InMemoryRouteSnapshotService(createDatabaseSnapshotBuilder(getDb()));
+    const snapshot = await service.getSnapshot();
+    const candidate = (snapshot.candidates ?? []).find(
+      (c) => c["provider_account_id"] === accountId,
+    ) as Record<string, unknown> | undefined;
+    expect(candidate).toBeDefined();
+    const engine = new RoutingEngine();
+    const run = () =>
+      engine.plan(
+        String(candidate?.["model_id"]),
+        snapshot,
+        world.tenantId,
+        undefined,
+        false,
+        undefined,
+        {
+          providerId: String(candidate?.["provider_id"]),
+          providerAccountId: accountId,
+          rebaseable: false,
+        },
+      );
+    let thrown: { code?: string; status?: number } | undefined;
+    try {
+      await run();
+    } catch (error) {
+      thrown = error as { code?: string; status?: number };
+    }
+    expect(thrown).toBeDefined();
+    expect(thrown?.code).toBe("accounts_rate_limited");
+    expect(thrown?.status).toBe(429);
+  });
+
+  test("continuation affinity keeps serving a healthy pinned account", async () => {
+    await getDb()
+      .update(providerAccounts)
+      .set({ status: "active", cooldownUntil: null, lastErrorCategory: null })
+      .where(eq(providerAccounts.id, accountId));
+    const service = new InMemoryRouteSnapshotService(createDatabaseSnapshotBuilder(getDb()));
+    const snapshot = await service.getSnapshot();
+    const candidate = (snapshot.candidates ?? []).find(
+      (c) => c["provider_account_id"] === accountId,
+    ) as Record<string, unknown> | undefined;
+    expect(candidate).toBeDefined();
+    const engine = new RoutingEngine();
+    const plan = await engine.plan(
+      String(candidate?.["model_id"]),
+      snapshot,
+      world.tenantId,
+      undefined,
+      false,
+      undefined,
+      {
+        providerId: String(candidate?.["provider_id"]),
+        providerAccountId: accountId,
+        rebaseable: false,
+      },
+    );
+    expect(plan.candidates.map((c) => c.provider_account_id)).toContain(accountId);
+  });
+
   test("a hard cooldown is excluded by default", async () => {
     await writePreferences({});
     await cool("quota_exhausted");
@@ -176,5 +241,41 @@ dbDescribe("forceDisableCooldown", () => {
     // No reset to quote: the window already closed, and the sweep is about to
     // recover the row.
     expect(candidate?.["cooldown_until"]).toBeUndefined();
+  });
+
+  test("a rebaseable continuation falls through to normal routing when the pin is absent", async () => {
+    // The conversation is complete (every tool result answered) and the pinned
+    // account is not a candidate for the requested model. The router must NOT
+    // refuse; it must fall through and pick whichever account serves the model,
+    // so a model switch across accounts starts a fresh Run with the recorded
+    // history.
+    await writePreferences({});
+    await getDb()
+      .update(providerAccounts)
+      .set({ status: "active", cooldownUntil: null })
+      .where(eq(providerAccounts.id, accountId));
+    const service = new InMemoryRouteSnapshotService(createDatabaseSnapshotBuilder(getDb()));
+    const snapshot = await service.getSnapshot();
+    const candidate = (snapshot.candidates ?? []).find(
+      (c) => c["provider_account_id"] === accountId,
+    ) as Record<string, unknown> | undefined;
+    expect(candidate).toBeDefined();
+    const engine = new RoutingEngine();
+    // Pin an account that is NOT in the candidate set (random UUID) with
+    // `rebaseable: true` → must not throw, must return a normal plan.
+    const plan = await engine.plan(
+      String(candidate?.["model_id"]),
+      snapshot,
+      world.tenantId,
+      undefined,
+      false,
+      undefined,
+      {
+        providerId: String(candidate?.["provider_id"]),
+        providerAccountId: "00000000-0000-0000-0000-000000000000",
+        rebaseable: true,
+      },
+    );
+    expect(plan.candidates.length).toBeGreaterThan(0);
   });
 });

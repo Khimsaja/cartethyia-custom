@@ -13,7 +13,12 @@ import { ConsoleDomainError, errorResponse, requireTenantScope } from "../shared
 import { literalUnion } from "../shared/elysia-schema";
 import { API_KEY_MODES, API_KEY_MODEL_ACCESS_MODES, type ShareLinkKind } from "../../persistence/schema";
 import type { ApiKeyConfig, ApiKeyResponse, UpdateApiKeyResponse } from "./contracts";
-import type { ApiKeyPatch, ApiKeyRecord } from "../../persistence/stores/api-key-store";
+import type {
+  ApiKeyPatch,
+  ApiKeyRecord,
+  SharedChildSortColumn,
+  SharedChildrenPageOptions,
+} from "../../persistence/stores/api-key-store";
 import {
   generateApiKeySecret,
   isDefaultGatewayApiKey,
@@ -125,6 +130,38 @@ async function assertKeyLabelAvailable(
       `A key named "${label.trim()}" already exists. Choose a different name.`,
     );
 }
+const SHARED_CHILD_SORT_COLUMNS = new Set<SharedChildSortColumn>([
+  "createdAt",
+  "label",
+  "keyPrefix",
+  "issuedClientIp",
+  "revokedAt",
+  "enabled",
+]);
+
+/** Parses and bounds the paginated share-child list query. */
+function parseSharedChildrenQuery(query: URLSearchParams): SharedChildrenPageOptions {
+  const limitRaw = query.get("limit");
+  const offsetRaw = query.get("offset");
+  const sortRaw = query.get("sort");
+  const orderRaw = query.get("order");
+  const statusRaw = query.get("status");
+  const limit = limitRaw === null ? 50 : Number(limitRaw);
+  const offset = offsetRaw === null ? 0 : Number(offsetRaw);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
+    throw new ConsoleDomainError("invalid_request", 400, "limit must be an integer between 1 and 500");
+  }
+  if (!Number.isInteger(offset) || offset < 0) {
+    throw new ConsoleDomainError("invalid_request", 400, "offset must be a non-negative integer");
+  }
+  const sortBy = (sortRaw ?? "createdAt") as SharedChildSortColumn;
+  if (!SHARED_CHILD_SORT_COLUMNS.has(sortBy)) {
+    throw new ConsoleDomainError("invalid_request", 400, `unsupported sort column: ${String(sortBy)}`);
+  }
+  const order = orderRaw === "asc" ? "asc" : "desc";
+  const status = statusRaw === "active" || statusRaw === "revoked" ? statusRaw : "all";
+  return { limit, offset, sortBy, order, status };
+}
 
 export function createApiKeyOperations(config: ApiKeyConfig) {
   const operations = {
@@ -136,18 +173,19 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
         );
         // A share template's own counter never moves for child traffic, so
         // reporting it raw would show a template as untouched while the gateway
-        // is refusing its recipients on the parent budget. Report the figure the
-        // gateway actually enforces: the template plus every recipient it has
-        // issued, revoked ones included (their spend is already spent).
-        const sumChildren = config.store.sumChildrenConsumed?.bind(config.store);
+        // is refusing its recipients on the parent budget. Report the figure
+        // the gateway actually enforces: the template's counter plus every
+        // telemetry total the family ever recorded — revoked/deleted children
+        // included (their spend is already spent), so the number survives
+        // cleanup and matches the share page.
         return Promise.all(
           topLevel.map(async (record) => {
             const response = sanitizeApiKeyResponse(record);
-            if (record.keyMode !== "share" || !sumChildren) return response;
-            const children = await sumChildren(record.id).catch(() => 0);
-            return children > 0
-              ? { ...response, tokensConsumed: response.tokensConsumed + children }
-              : response;
+            if (record.keyMode !== "share") return response;
+            const family = await config.store
+              .sumFamilyTelemetryConsumed(authorized.tenantId, record.id)
+              .catch(() => 0);
+            return { ...response, tokensConsumed: response.tokensConsumed + family };
           }),
         );
       },
@@ -274,6 +312,7 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
         ...(request.lifetimeTokenBudget == null ? {} : { lifetimeTokenBudget: request.lifetimeTokenBudget }),
         ...(request.maxConcurrentRequests == null ? {} : { maxConcurrentRequests: request.maxConcurrentRequests }),
         ...(createExpiresAt === undefined ? {} : { expiresAt: createExpiresAt }),
+        ...(request.maxChildren == null ? {} : { maxChildren: request.maxChildren }),
         ...(request.modelPrefix === undefined ? {} : { modelPrefix: request.modelPrefix }),
         ...(modelTemplateId === undefined || modelTemplateId === null
           ? {}
@@ -463,6 +502,7 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
         ...(patchRequest.monthlyTokenLimit === undefined ? {} : { monthlyTokenLimit: patchRequest.monthlyTokenLimit }),
         ...(patchRequest.lifetimeTokenBudget === undefined ? {} : { lifetimeTokenBudget: patchRequest.lifetimeTokenBudget }),
         ...(patchRequest.maxConcurrentRequests === undefined ? {} : { maxConcurrentRequests: patchRequest.maxConcurrentRequests }),
+        ...(patchRequest.maxChildren === undefined ? {} : { maxChildren: patchRequest.maxChildren }),
         ...(patchRequest.modelPrefix === undefined ? {} : { modelPrefix: patchRequest.modelPrefix }),
         ...(expiresAtPatch === undefined ? {} : { expiresAt: expiresAtPatch.expiresAt }),
         ...(modelTemplateId === undefined ? {} : { modelTemplateId }),
@@ -561,7 +601,7 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
       });
       return { ...sanitizeApiKeyResponse(updated), ...(secret === undefined ? {} : { secret }) };
     },
-    async revokeKey(access: AccessDecision | undefined, keyId: string): Promise<{ success: true }> {
+    async deleteKey(access: AccessDecision | undefined, keyId: string): Promise<{ success: true }> {
       const authorized = requireTenantScope(access, "dashboard:write");
       const target = await config.store.get(authorized.tenantId, keyId);
       if (!target)
@@ -586,7 +626,7 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
       ]);
       await config.auditSink?.record({
         access: authorized,
-        action: "api_key.revoked",
+        action: "api_key.deleted",
         target: keyId,
       });
       return { success: true };
@@ -828,7 +868,14 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
     async listSharedKeys(
       access: AccessDecision | undefined,
       parentKeyId: string,
-    ): Promise<readonly SharedKeySummary[]> {
+      query: URLSearchParams,
+    ): Promise<{
+      rows: readonly SharedKeySummary[];
+      total: number;
+      active: number;
+      revoked: number;
+      consumed: number;
+    }> {
       const authorized = requireTenantScope(access, "dashboard:read");
       const activity = config.shareActivity;
       if (!activity)
@@ -837,8 +884,14 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
       if (!parent || parent.revokedAt !== undefined ||
           parent.keyMode !== "share" || parent.parentKeyId !== undefined)
         throw new ConsoleDomainError("key_not_found", 404, "Share template not found");
-      const children = await config.store.listChildren(authorized.tenantId, parentKeyId);
-      return activity.getSharedKeySummaries(authorized.tenantId, children);
+      const options = parseSharedChildrenQuery(query);
+      const page = await config.store.listChildrenPage(authorized.tenantId, parentKeyId, options);
+      const rows = await activity.getSharedKeySummaries(
+        authorized.tenantId,
+        page.rows,
+        parentKeyId,
+      );
+      return { rows, total: page.total, active: page.active, revoked: page.revoked, consumed: page.consumed };
     },
     async getSharedKeyActivity(
       access: AccessDecision | undefined,
@@ -853,10 +906,36 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
       if (!parent || parent.revokedAt !== undefined ||
           parent.keyMode !== "share" || parent.parentKeyId !== undefined)
         throw new ConsoleDomainError("key_not_found", 404, "Share template not found");
-      const children = await config.store.listChildren(authorized.tenantId, parentKeyId);
-      if (!children.some((child) => child.id === childKeyId))
+      // Membership is one indexed row read, not a scan of the whole family.
+      const child = await config.store.get(authorized.tenantId, childKeyId);
+      if (!child || child.parentKeyId !== parentKeyId)
         throw new ConsoleDomainError("key_not_found", 404, "Shared API key not found");
       return activity.getSharedKeyDetail(authorized.tenantId, childKeyId);
+    },
+    async revokeSharedScope(
+      access: AccessDecision | undefined,
+      parentKeyId: string,
+      scope: "active" | "unused",
+    ): Promise<{ success: true; deleted: number }> {
+      const authorized = requireTenantScope(access, "dashboard:write");
+      const parent = await config.store.get(authorized.tenantId, parentKeyId);
+      if (!parent || parent.keyMode !== "share" || parent.parentKeyId !== undefined)
+        throw new ConsoleDomainError("key_not_found", 404, "Share template not found");
+      const deleted = await config.store.revokeChildrenByScope(
+        authorized.tenantId,
+        parentKeyId,
+        scope,
+      );
+      // Raw batched deletes bypass the per-key purge path; drop the whole auth
+      // cache so no resolved identity survives for a removed recipient.
+      invalidateApiKeyCache();
+      await config.auditSink?.record({
+        access: authorized,
+        action: "api_key.share_revoked_scope",
+        target: parentKeyId,
+        detail: { scope, deleted },
+      });
+      return { success: true, deleted };
     },
     async revokeShare(
       access: AccessDecision | undefined,
@@ -989,7 +1068,11 @@ export function createApiKeyRoutes(config: ApiKeyConfig): Elysia {
     })
     .get("/:keyId/shared-keys", async ({ request, params, set }) => {
       try {
-        return await factory.listSharedKeys(config.accessResolver(request), params.keyId);
+        return await factory.listSharedKeys(
+          config.accessResolver(request),
+          params.keyId,
+          new URL(request.url).searchParams,
+        );
       } catch (error) {
         return errorResponse(error, set, "API-key operation failed");
       }
@@ -1005,6 +1088,21 @@ export function createApiKeyRoutes(config: ApiKeyConfig): Elysia {
         return errorResponse(error, set, "API-key operation failed");
       }
     })
+    .post(
+      "/:keyId/shared-keys/revoke-scope",
+      { body: t.Object({ scope: t.Union([t.Literal("active"), t.Literal("unused")]) }) },
+      async ({ request, params, body, set }) => {
+        try {
+          return await factory.revokeSharedScope(
+            config.accessResolver(request),
+            params.keyId,
+            body.scope,
+          );
+        } catch (error) {
+          return errorResponse(error, set, "API-key operation failed");
+        }
+      },
+    )
     .delete("/:keyId/shares/:shareId", async ({ request, params, set }) => {
       try {
         return await factory.revokeShare(
@@ -1037,7 +1135,7 @@ export function createApiKeyRoutes(config: ApiKeyConfig): Elysia {
     })
     .delete("/:keyId", async ({ request, params, set }) => {
       try {
-        return await factory.revokeKey(config.accessResolver(request), params.keyId);
+        return await factory.deleteKey(config.accessResolver(request), params.keyId);
       } catch (error) {
         return errorResponse(error, set, "API-key operation failed");
       }

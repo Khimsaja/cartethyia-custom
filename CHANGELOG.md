@@ -8,6 +8,360 @@ current baseline; an existing one applies the numbered files that followed it.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.7.3] - 2026-10-30
+
+> **Instalasi ulang.** `2.7.3` di-registri npm telah diperbarui sekali setelah rilis
+> pertama (tarball baru memuat perbaikan qimei36 dan glass-blur). Jika instalasi
+> yang sudah ada bermasalah setelah `npm update` — terutama error integritas
+> (`shasum`/`integrity` mismatch) saat `npm install` — **uninstall dulu lalu
+> install ulang**:
+>
+> ```sh
+> npm uninstall -g cartethyia
+> npm install -g cartethyia
+> ```
+>
+> Data aman: konfigurasi, database, dan state tersimpan di direktori data
+> gateway (`~/.config/cartethyia` / `~/.cartethyia`), bukan di dalam paket,
+> sehingga uninstall/reinstall tidak menghapus apa pun.
+
+### Added
+
+- **Inject System Prompt — tenant-scoped, three precedence levels.** A new
+  Overview panel lets a tenant append (or override) a custom system prompt
+  globally, per provider, or per exact model, resolved most-specific-wins with
+  a follow-global/custom toggle on every provider. Append is idempotent and
+  lands after all existing system content; override replaces only the caller's
+  system content, never the provider's own mandatory identity prompt. Providers
+  whose upstream validates their fixed system prompt as a channel identity
+  (CodeBuddy, CodeBuddy CN, WorkBuddy) receive the tenant text wrapped in
+  `<cartethyia:system-prompt>` markers after their identity prompt — appended
+  in the same turn, which the upstream accepts. Settings persist in a dedicated
+  `tenant_system_prompts` table (migration `0031_tenant_system_prompts` for
+  both Postgres and SQLite; 5 MB text cap per scope), read through the
+  revision-keyed cache so edits are live on the next request, with console
+  routes (`GET/PUT/DELETE /system-prompt`) and per-scope append/override,
+  `.txt`/`.json` import, and search in the dashboard. Design record:
+  `documentation/proposals/inject-system-prompt.md`.
+- **Invoke kill switch moved into API Credentials.** The tenant-wide
+  "deny all keys" breaker is now a Disable/Enable Invoke button in the API
+  Credentials header instead of a standalone Overview card, confirm-gated:
+  disabling refuses every `/v1` request with 503 while the dashboard stays
+  reachable to re-enable.
+- **Content-derived dashboard build ID.** Every production build fingerprints
+  its emitted assets and embeds the ID as a `cartethyia-dashboard-build` meta
+  tag; the server echoes it as `X-Cartethyia-Dashboard-Build` on HTML
+  responses. Comparing that ID (plus the content-hashed CSS URL) tells you
+  exactly which build a deployment serves.
+- **GitHub Copilot Auto routes from the selection itself.** The `/auto`
+  selection response names the model *and* its supported endpoints, so the
+  adapter picks the Responses-vs-Chat wire from the selection and drops the
+  follow-up `/models` round trip on the hot path (older responders without
+  endpoints still fall back to the roster lookup).
+
+### Changed
+
+- **Adaptive Postgres pool.** The pool defaults to 8 connections with a
+  30-second shrinker that trims idle connections down to a configurable floor
+  (`DATABASE_POOL_IDLE_FLOOR`, default 2), so a burst of dashboard or proxy
+  load no longer leaves a hundred idle sockets pinned forever.
+- **Routing: one CallerIdentity, one RoutingDecision per candidate.** The
+  layered re-filtering in route planning (usage floor → slow lane → health →
+  plan gate → capability, each with its own re-sort) is merged into a single
+  per-candidate decision and one rank sort (fresh → slow → cooling →
+  saturated). Provider rotation now only reorders within the same rank, so a
+  cooling account can never float back to the front. Candidates carry the
+  account's owning tenant, and admission buckets scope shared accounts
+  globally while tenant-owned accounts are scoped per owner — two tenants can
+  no longer drain each other's concurrency ceiling on an account only one of
+  them owns.
+- **Overview polish.** The Compression panel's transforms render as contained
+  sub-cards with active/off badges and use the shared banner primitive for the
+  quality warning; the gateway-endpoint, remote-support, and status blurbs
+  read like an operator wrote them.
+
+### Fixed
+
+- **Cursor continuations survive a model switch.** A continuation pinned to an
+  account that no longer serves the (translated) model used to fail with a
+  strict 400. Pin-empty continuations that carry complete history are now
+  rebaseable: they fall through to normal routing and start a fresh Run, while
+  live pending calls stay hard-pinned so nothing leaks across accounts.
+- **A changed model cooldown invalidates the route snapshot.** Cooldown
+  overrides took effect on the next snapshot rebuild rather than the next
+  request; a cooldown mutation now invalidates the snapshot immediately.
+- **Share links can mint at most one child key per canonical client IP.**
+  Enrollment links are public and IP rotation previously let one attacker mint
+  unbounded children; dedupe now keys on the canonical client address.
+- **Share usage accounting survives key deletion.** Revoked or deleted child
+  keys kept their spend counted in family totals (template counter + telemetry
+  sums), quota windows render distinct resets, and a template can cap its
+  active children (`max_children`, migration `0030`) with recipients listed
+  server-side paginated/sortable and a batched bulk-revoke endpoint.
+- **Share template policy is no longer duplicated into children.** Children
+  inherit policy at resolution time instead of carrying a copied row
+  (migration `0029` nulls the duplicated columns; restore normalizes), and the
+  API key list orders parents before their share children.
+- **The chat wire emits only its selected token-limit field.** A request
+  carrying `max_completion_tokens` echoed that alias alongside the bounded
+  `max_tokens`, and a strict upstream refused the double field; the alias is
+  now deleted in either direction.
+- **DeepSeek-style reasoning replay stays present on resold models.** Models
+  served through a DeepSeek-family upstream kept their reasoning replay
+  marker even when the canonical surface stripped it, avoiding upstream
+  rejections on follow-up turns.
+- **The OAuth browser dialog no longer completes on a stale account
+  snapshot.** (pre-2.7.2 carry-over, recorded here for completeness.)
+- **Buddy device binding survives account export/import.** The buddy family
+  (CodeBuddy, CodeBuddy CN, WorkBuddy, WorkBuddy CN) binds a per-account
+  device identity (`qimei36`, sent as `X-Device-Id-List`) that defaults to a
+  derivation from the internal account id. Export/import mints a new account
+  id, so a re-imported account silently changed device identity and the
+  upstream channel check (11128) rejected it. The export now materializes the
+  resolved binding into the exported auth state whenever the account does not
+  already pin one, so a re-import presents the exact same device.
+- **The dashboard's glass blur now survives production builds.** The standard
+  `backdrop-filter` is declared after its `-webkit-` counterpart in every
+  glass surface, so a compliant browser applies the standard declaration last
+  instead of the prefixed one; a cascade test locks the ordering on both
+  stylesheets. (This is the build-blur fix, formerly diagnosed as a cache
+  issue.)
+
+- **Qoder native machine identity, bound per account.** The daily 100-credit
+  campaign grant is only revealed to a *native device identity* (UMID), so
+  pooled accounts now own one: `provider_accounts.native_identity` (migrations
+  `0026_add_qoder_native_identity` for both Postgres and SQLite, DB-enforced
+  one-slot-per-env uniqueness), a Drizzle-backed identity store with
+  in-process allocation (`qoder-native-identity-store.ts`), and check-in
+  behavior that probes the account's bound identity first before enumerating,
+  persisting the identity that actually wins the claim. `0027` marks the
+  genuine-seed carrier (`locale_cfg`) as persisted alongside the identity.
+- **Qoder identity mint pipeline.** `qoder-umid.ts` mints genuine device
+  identities by replaying the vendor bridge (`vendor/qoder-umid/umidpack/` —
+  Linux ELF ×86-64/aarch64, macOS Mach-O ×86-64/arm64, Windows PE + sgsdk.dll,
+  plus the 3.7 MB mini-bundle rootfs), with flock-serialized seed staging on
+  WSL and a documented generated-identity fallback. `scripts/tools/extract-qoder-umid.ts`
+  re-extracts the bundle from an official client.
+- **Native identity management in the dashboard.** A per-account
+  Native Identity dialog (qoder/qodercn account rows): bound status and slot,
+  copy/paste JSON export-import for moving an identity between installs, and
+  regenerate. Console routes carry per-account auth (platform admin for shared
+  accounts, tenant scope otherwise), and backup export/restore round-trips
+  `native_identity` verbatim.
+- **Qoder research record.** The reverse-engineering evidence now lives in-tree:
+  the daily-credit campaign recipe (`research/qoder-daily-credit-campaign.md`),
+  the UMID bridge internals (`research/qoder-umid-reverse.md`), the identity
+  gate post-mortem, the Pro-trial activity-claim endpoints found by unpacking
+  the shipped client (`research/qoder-trial-activity-endpoints.md` — including
+  the content-length-string signature scheme, the claim-API family, and the
+  provision matrix that settles provisioning as server-side cohorting), and the
+  relocated Buddy device-binding research (`research/buddy-device-binding.md`).
+  Skills updated so future sessions inherit the proven method: provider catalog
+  gains `references/qoder-identity-and-claims.md` (mint/replay/exchange rules,
+  claim-safety order, the DEAD `pro-upgrade` surface), and reverse-engineering
+  notes the two techniques that cracked it (literal-window grepping; capturing
+  the client's own signed request by hooking its shared-process bundle, restored
+  byte-for-byte afterward).
+
+### Changed
+
+- **Antigravity's static catalog matches the roster.** The offline model list
+  is pruned to the ids the account actually serves — the Gemini text SKUs
+  (`gemini-2.5-flash`, `gemini-2.5-flash-thinking`, `gemini-3-flash`,
+  `gemini-2.5-flash-lite`, `gemini-3.1-flash-lite`,
+  `gemini-3.5-flash-lite`, `gemini-3.8-flash`, `gemini-4-argon`,
+  `gemini-4-carbon`), the Claude SKUs (`claude-sonnet-4-6`,
+  `claude-opus-4-6`, `claude-sonnet-5-5`, `claude-opus-5-5`), and the
+  `tab_flash_lite_preview` laptop-class SKU — plus the image-generation rows
+  `gemini-3.1-flash-image` and the new `gemini-3-pro-image` (same limits and
+  capabilities as its 3.1 sibling). Rows Antigravity no longer lists
+  (`gemini-3.1-pro`, `gemini-3.6-flash`, `gemini-3.7-flash`,
+  `gpt-oss-120b`) are gone; live discovery still finds any id not seeded here.
+- **Qoder check-in speaks the desktop identity.** Campaign requests now carry
+  the desktop client's header set (`User-Agent: Qoder`, `cosy-clienttype: 10`,
+  `cosy-version` from the shared version source); without them the server
+  answers `showCampaign: false` and hides every campaign. OAuth state parsing
+  is shared with the adapter so account-state reads cannot drift, and an OAuth
+  device login that cannot resolve the account's user id fails loudly instead
+  of storing an identity-less credential every request would 401.
+- **Scratch/handoff documentation is now in-tree as research, not feature
+  guides.** `documentation/features/09-buddy-device-binding.md` moved to
+  `documentation/research/buddy-device-binding.md` (unverified-historical
+  status); `handoff.md` records the check-in working state, the hard-won facts,
+  and the parked macOS-binary item.
+
+### Fixed
+
+- **A settled relay deploy closes its dialog.** Deploying a relay left the
+  modal open after it succeeded, so the operator stared at a form whose job
+  was already done (and whose token had been cleared, so a second deploy
+  from there was impossible anyway). A success now closes it: the relay is
+  registered as a pool and the list behind the dialog shows it. A failure
+  that invalidates the session — a revoked or mistyped Cloudflare token,
+  which signs the console out behind it — closes too, since retrying inside
+  the form can only repeat it. An ordinary failure stays open, because a
+  taken project name or a transient error is one edited field from
+  succeeding.
+- **Glass surfaces keep their blur on a built dashboard.** Every glass surface
+  is driven at runtime by the Customization sliders (`--blur-cards`,
+  `--blur-cards-depth`) through `backdrop-filter: blur(calc(…))`, which no
+  fixed utility can express — so those rules live in the authored sheets and
+  land in `@layer base`. Tailwind declares `@layer utilities` last, and a later
+  layer wins the cascade regardless of specificity, so the filter was dropped
+  on every real build: cards, the sidebar, and the composer rendered with no
+  blur at all, while their `color-mix` background (already `!important`) still
+  painted. That is why it read as "the transparency setting is ignored" rather
+  than "the blur never applied", and why it never reproduced under
+  `bun run dev`, whose CSS injection does not carry the production layer
+  order. The runtime blur declarations are now `!important` like the
+  backgrounds they sit beside, and `dashboard/test/glass-cascade.test.ts`
+  locks it: a rule that loses the cascade fails the suite.
+- **Backup export no longer buffers a whole tenant in memory.** An export read
+  every table into one array and stringified the document in one gulp; a
+  deployment whose `api_keys` held 331k minted share children was OOM-killed
+  during a routine backup. Every table is now read through a keyset-paged walk
+  (500 rows per page on its primary key; tables without a declared `id` page on
+  their composite natural key; contract-bounded singletons read in one capped
+  statement), telemetry events page through their own cursor, and the document
+  is assembled incrementally — the dashboard's plain download streams the body
+  frame by frame, and the compressed and `/admin/export-backup` paths gzip it
+  in a single pass. `MAX_ROWS_PER_TABLE` remains an explicit cap on every
+  table, not a size threshold, and the file a stream produces is the same
+  document the buffered export wrote.
+- **Telemetry reads no longer break the PostgreSQL wire at six-figure id
+  sets.** Family-wide share reads expanded every minted child key into one
+  bind parameter each (~90k params on `api_key_id IN (…)`), which passed the
+  65,535-parameter Bind cap and ended in `08P01 bind message has N parameter
+  formats but 0 parameters` — a crash systemd restarted into a loop. Every
+  id-set membership filter is now sent as a single `= ANY($n::uuid[])`
+  parameter (chunks of individual placeholders on SQLite), deduplicated, and
+  guarded at 200k distinct ids with a handled `TelemetryQueryInputError`
+  instead of an unbounded wire write. A filter is never silently skipped for
+  being too large.
+- **Share family reads scale with the result, not the family.** Family
+  statistics, shared-key summaries, per-key token sums, and share-link
+  recipient counts resolved the whole key family in TypeScript — enumerating
+  tens of thousands of child rows and building multi-megabyte cache keys on
+  every share-page view — which grew memory and dashboard lag the longer the
+  server lived. A family is now addressed by its template key and rendered as
+  a constant-wire `EXISTS` against `api_keys`, recipient counts are one SQL
+  aggregate, and the stats cache key hashes `templateKeyId#memberCount` rather
+  than every family id.
+- **An unhandled promise rejection no longer kills the gateway.** A rejected
+  promise nothing awaited (a sweep, a cache warm, a ballooned query) was
+  fatal by default; the listener now logs it and stays up instead of handing
+  systemd another restart.
+- **Qoder daily check-in could answer "unavailable" for an account whose grant
+  was live.** The campaign probe raced its own enumeration: with a bound
+  identity the check-in now tries it first, falls back only on its error, and
+  settles the winning env slot atomically — a repeat run reuses the identity
+  that already won instead of re-rolling through one that had been consumed.
+
+## [2.7.2] - 2026-10-29
+
+### Added
+
+- **Codex CLI remote model mapping.** Codex now participates in the CLI Tools
+  remote-routing table like Claude Code: the Codex page gains the "CLI asks
+  for → Cartethyia routes to" mapping surface, and the inbound User-Agent
+  (`codex-tui/…`, `codex-cli/…`) is recognised for `routing:cli_mapping`.
+  The Codex `review` slot is first-class with its real source model
+  (`codex-auto-review`), so the Guardian approval-review model can be routed to
+  a serving provider instead of answering `accounts_unavailable`.
+- **Ollama Cloud provider catalog.** A static floor for the six public models
+  (gemma4:31b, gpt-oss:20b/120b, nemotron-3-nano:30b/-super/-ultra) with
+  live limits from the public roster, so the provider works before discovery
+  runs.
+
+### Changed
+
+- **BYOK providers can set a route client identity.** The Routing Strategy
+  "Client identity" control now applies to custom (BYOK) providers too: Codex
+  / Claude Code / None. The operator's explicit choice wins over the adapter's
+  default, and `None` is honored as no identity at all.
+
+### Fixed
+
+- **Qoder "insufficient tool messages" after cancelled/compacted parallel
+  calls.** An assistant `tool_calls` turn whose sibling call had no result
+  used to be withheld while the surviving `tool` result turn was still sent,
+  producing an orphan `tool` turn the upstream rejected
+  ("Messages with role 'tool' must be a response to a preceding message with
+  'tool_calls'"). The assistant `tool_calls` emit and the `tool` result turns
+  now share one source of truth, so a transcript is never half-stripped.
+- **Responses parallel `function_call` items fold into one assistant turn.**
+  Clients that send several `function_call` input items back-to-back (opencode,
+  Codex) decoded into separate canonical assistant turns, so the Qoder/OpenAI
+  wire saw an assistant `tool_calls` turn before the previous one's results —
+  rejected as "An assistant message with 'tool_calls' must be followed by tool
+  messages responding to each 'tool_call_id'". Consecutive tool-call turns now
+  merge (a leading `reasoning` item included).
+- **Responses `additional_tools` item no longer rejects Codex auto-review.**
+  Codex's Guardian approval reviewer declares its review tools with an
+  `additional_tools` input item; parsing it threw
+  ("Unsupported Responses input item type"), which failed the whole
+  auto-review request and made every permission escalation look like an
+  infrastructure error. The item is client-side metadata and is now skipped
+  safely.
+- **Responses "Encrypted reasoning" robust to non-string payloads.** A
+  reasoning item whose `encrypted_content` is not a string no longer throws;
+  it falls back to the readable reasoning, and the encoder only emits
+  `encrypted_content` when it is a string.
+- **Trae context-overflow streams classify as 413.** The upstream error code
+  4026 ("context length exceeded") now maps to `context_length_exceeded`
+  (413) instead of `platform_unavailable` (502).
+- **OAuth browser login no longer completes on a stale account snapshot.** The
+  dialog used a cached account baseline from an earlier login, so a second
+  login could report success before anything happened. The baseline is now
+  taken only after a fresh refetch, and each attempt opens a unique popup so a
+  leftover window is never reused.
+- **Qoder parallel tool echoes are recovered, not leaked.** When Qoder echoes
+  several tool calls as text (`[assistant 请求调用工具] …` JSON) with
+  unescaped inner quotes, the whole block used to be dropped and shown as
+  visible text. Multi-call echoes now salvage into real tool calls, and the
+  same recovery applies to the thinking channel (`reasoning_content`), so
+  DeepSeek-planned parallel batches run instead of leaking.
+- **Routing no longer dials a cooling account through continuation affinity.**
+  A multi-turn request carrying tool results was pinned to the account that
+  owns the live session *before* health was checked, so a session whose
+  account had hit quota kept being dialed and reproduced the refusal — the
+  "still hit a cooled-down account" report. The pin now evaluates eligibility:
+  a hard-cooling account answers `429` with the real reset, and a
+  disabled/locked one answers a clear `400`.
+- **Qoder upstream 499 refusals cool the account as quota.** Qoder closes an
+  exhausted-quota stream with an nginx-style 499, which read as a malformed
+  request (non-retryable, no cooldown) and kept the account in rotation. 499
+  scoped to qoder now classifies as `quota_exceeded` with a cooldown.
+- **Qoder OAuth accounts recover from a cold credential cache.** The loader
+  stores `auth_state` as JSON text, so the adapter received `undefined` after
+  a cache eviction and refused with "missing its user identity; sign in
+  again". The state parser now accepts the JSON-string form too.
+- **Qoder tool-protocol echoes fail closed instead of leaking.** When Qoder
+  echoes a tool-call block (`[assistant 请求调用工具] …`) that cannot be
+  recovered — malformed inner JSON, unescaped quotes that do not repair —
+  the turn now fails with a 502 instead of surfacing the protocol text as
+  visible content and leaving the model looking successful while nothing ran.
+- **Qoder echo recovery holds long, fragmented streams.** A valid echo split
+  across hundreds of tiny stream deltas used to trip the 200-frame hold cap
+  and was released as visible prose — the leak. The cap now counts only
+  frames that add no bytes, so a growing echo is held until recovery, and
+  salvaged arguments are validated (malformed arguments are rejected, not
+  passed through).
+- **Qoder tool-style tag echoes are recovered.** The model sometimes echoes a
+  tool call as an XML-like tag (`<execute code="..." />`) instead of a JSON
+  array. These now recover into structured tool calls instead of leaking as
+  visible text.
+- **Qoder wrapped `<tool_call>` echoes are recovered.** The model also wraps
+  each echoed call in `<tool_call>…</tool_call>` blocks; the stream hold-back
+  now keeps tag-style candidates (not just JSON) so a long, fragmented wrapped
+  echo is recovered instead of released as visible text.
+- **Qoder XML-style echoes use one generic parser.** Self-closing tags
+  (`<execute code="…" />`), paired blocks (`<tool_call>…</tool_call>`), and
+  angle-wrapped JSON (`<{…}>`/`<[…]>`, including a double-brace artifact)
+  are handled by a single parser, and the stream hold-back keeps angle-wrapped
+  candidates until their closing `>` so long fragmented echoes recover instead
+  of leaking.
+
 ## [2.7.1] - 2026-10-28
 
 ### Fixed

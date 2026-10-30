@@ -45,6 +45,8 @@ export const queryKeys = {
         accountId,
         "health-events",
       ] as const,
+    nativeIdentity: (accountId: string | undefined) =>
+      ["console", "accounts", accountId, "native-identity"] as const,
   },
   modelRouting: {
     all: ["console", "model-routing"] as const,
@@ -96,5 +98,8 @@ export const queryKeys = {
   inferhub: {
     summary: ["console", "inferhub", "summary"] as const,
     models: (prefix?: string) => ["console", "inferhub", "models", prefix ?? "all"] as const,
+  },
+  systemPrompt: {
+    config: ["console", "system-prompt"] as const,
   },
 } as const;

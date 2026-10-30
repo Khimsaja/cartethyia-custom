@@ -71,6 +71,12 @@ test("each backend has matching baseline and incremental migrations", () => {
     "0023_drop_api_key_concurrency_tolerance.sql",
     "0024_add_pool_provider_cooldowns.sql",
     "0025_add_pool_random_strategy.sql",
+    "0026_add_qoder_native_identity.sql",
+    "0027_qoder_identity_genuine_seed.sql",
+    "0028_add_family_template_key_telemetry.sql",
+    "0029_null_share_child_policy_columns.sql",
+    "0030_add_api_key_max_children.sql",
+    "0031_tenant_system_prompts.sql",
   ];
   expect(postgres).toEqual(expected);
   expect(sqlite).toEqual(expected);

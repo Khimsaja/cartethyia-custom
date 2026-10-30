@@ -183,6 +183,31 @@ export const providers = pgTable(
 // tenant-owned/BYOK. The concurrency ceiling lives in provider routing
 // (`provider_routing_settings.max_inflight`) and network pools
 // (`network_pools.max_inflight`); there is no per-account override.
+/**
+ * A Qoder native machine identity (UMID) bound to one account.
+ *
+ * The device identity is a deterministic function of a seed file
+ * (`~/.config/.locale_cfg`): the `runtime-info` bridge reads that seed and
+ * derives `machineToken`/`machineType`/`machineCode`. The server gates the
+ * daily 100-credit campaign on a *genuine, non-VM* device identity, so each
+ * account gets its own minted seed (a distinct "device").
+ *
+ * `seed` is the exact seed-file content the identity was minted from, stored
+ * so the same device identity can be replayed (restore seed → bridge → same
+ * token). It is not a credential, but it is the per-account device material
+ * and must never be shared between accounts. `machineToken` is the unique
+ * device key: two accounts sharing a token are the same device to the server.
+ */
+export interface NativeIdentityRecord {
+  readonly machineToken: string;
+  readonly machineType: string;
+  readonly machineCode: string;
+  /** The seed-file content this identity was minted from, if captured. */
+  readonly seed?: string;
+  /** How this identity was produced: the genuine SG bridge or the fallback. */
+  readonly source?: "runtime-info" | "generated";
+}
+
 export const providerAccounts = pgTable("provider_accounts", {
   id: uuid("id").primaryKey().defaultRandom(),
   providerId: text("provider_id")
@@ -270,6 +295,18 @@ export const providerAccounts = pgTable("provider_accounts", {
    */
   quotaPlan: text("quota_plan"),
 
+  /**
+   * Qoder native machine identity bound to this account, as one JSON object
+   * (see {@link NativeIdentityRecord}). `null` means the account has no bound
+   * identity: the check-in mints one on first use.
+   *
+   * Deliberately a dedicated column, not a key inside `auth_state`: the
+   * device token is queryable ("which device is taken by whom") and enforced
+   * unique by the partial index below, and it must survive backup/restore
+   * like any other non-secret column.
+   */
+  nativeIdentity: jsonb("native_identity").$type<NativeIdentityRecord | null>(),
+
   },
   (table) => [
     uniqueIndex("provider_accounts_identity_uidx").on(
@@ -290,6 +327,17 @@ export const providerAccounts = pgTable("provider_accounts", {
     // predicate that does not constrain `provider_id`. This one matches the
     // hot listing path.
     index("provider_accounts_tenant_id_idx").on(table.tenantId),
+    // One Qoder device identity per account: the partial unique index on the
+    // extracted `machineToken` guarantees two accounts never share a device,
+    // which is what makes the daily 100-credit grant reusable per account
+    // instead of colliding on a device identity. `NULL` rows (unbound
+    // accounts) are excluded so the uniqueness only applies to bound
+    // identities. The Postgres migration spells the expression
+    // `(native_identity ->> 'machineToken')`; the SQLite migration spells it
+    // `json_extract(native_identity, '$.machineToken')`.
+    uniqueIndex("provider_accounts_native_identity_token_uidx")
+      .on(sql`(${table.nativeIdentity} ->> 'machineToken')`)
+      .where(sql`${table.nativeIdentity} IS NOT NULL`),
   ],
 );
 
@@ -797,6 +845,13 @@ export const apiKeys = pgTable(
       .default(0),
     maxConcurrentRequests: integer("max_concurrent_requests"),
     /**
+     * Slot cap for a share template: the maximum number of concurrently
+     * active child keys it may mint. `null` = unlimited (legacy behavior).
+     * Enforced at mint time in `issueSharedApiKey`; the console exposes it as
+     * the template's "slots".
+     */
+    maxChildren: integer("max_children"),
+    /**
      * `whitelist` = only the names in `modelList` may be used (empty = all);
      * `blacklist` = the names in `modelList` are refused (empty = none). One
      * list, one mode.
@@ -1163,6 +1218,26 @@ export const consoleSettings = pgTable("console_settings", {
   updatedAt: updatedAtColumn(),
 });
 
+// Tenant-scoped system prompt injection (append/override). One row per
+// tenant; `global` NULL means never configured, distinct from an explicit
+// disabled setting. Providers/models are JSON object maps keyed by
+// providerId and `providerId::modelId` respectively — see
+// `src/console/system-prompt/contracts.ts` for the value shapes and the
+// resolution rules implemented by the dispatch-path transform.
+export const tenantSystemPrompts = pgTable("tenant_system_prompts", {
+  tenantId: tenantRefPrimaryKey(),
+  global: jsonb("global").$type<import("../console/system-prompt/contracts").PromptSetting | null>(),
+  providers: jsonb("providers")
+    .notNull()
+    .default({})
+    .$type<Record<string, import("../console/system-prompt/contracts").ProviderPromptEntry>>(),
+  models: jsonb("models")
+    .notNull()
+    .default({})
+    .$type<Record<string, import("../console/system-prompt/contracts").PromptSetting>>(),
+  updatedAt: updatedAtColumn(),
+});
+
 // InferHub `config_read` key. One row for the whole deployment.
 //
 // Deliberately NOT `provider_accounts.auth_state`: that field is documented as
@@ -1266,6 +1341,14 @@ export const telemetryEvents = pgTable(
     networkPoolId: uuid("network_pool_id"),
     endpoint: text("endpoint"),
     apiKeyId: uuid("api_key_id"),
+    /**
+     * The share-template key this event belongs to (the template itself, or
+     * the parent of the child key that carried the request). Denormalized at
+     * write time so family rollups survive the key row being deleted — an
+     * `EXISTS` join against `api_keys` tied history to key lifetime. NULL for
+     * requests that ran under no share template.
+     */
+    familyTemplateKeyId: uuid("family_template_key_id"),
     userAgent: text("user_agent"),
     clientIp: text("client_ip"),
     latencyMs: integer("latency_ms"),
@@ -1354,6 +1437,14 @@ export const telemetryEvents = pgTable(
       desc(table.createdAt),
       desc(table.id),
     ),
+    // Share-family rollup: equality on the denormalized template, keyset
+    // range+order. Backs both the family totals and the hourly chart reads.
+    index("telemetry_events_tenant_family_created_id_idx").on(
+      table.tenantId,
+      table.familyTemplateKeyId,
+      desc(table.createdAt),
+      desc(table.id),
+    ),
     index("telemetry_events_request_id_idx").on(table.requestId),
     index("telemetry_events_tenant_account_created_idx").on(
       table.tenantId,
@@ -1410,6 +1501,13 @@ export const telemetryUsageTotals = pgTable(
     tenantId: tenantRefRequired(),
     identityType: text("identity_type").$type<TelemetryUsageIdentityType>().notNull(),
     entityId: uuid("entity_id").notNull(),
+    /**
+     * For `api_key` identities, the share-template key this key belongs to
+     * (the template itself, or the parent of a minted child). Denormalized so
+     * family reads do not depend on the key row surviving; NULL for `account`
+     * identities and for keys outside a share family.
+     */
+    familyTemplateKeyId: uuid("family_template_key_id"),
     requests: bigint("requests", { mode: "number" }).notNull().default(0),
     errors: bigint("errors", { mode: "number" }).notNull().default(0),
     inputTokens: bigint("input_tokens", { mode: "number" }).notNull().default(0),
@@ -1425,6 +1523,10 @@ export const telemetryUsageTotals = pgTable(
     check(
       "telemetry_usage_totals_identity_type_check",
       sql`${table.identityType} IN ('account', 'api_key')`,
+    ),
+    index("telemetry_usage_totals_tenant_family_idx").on(
+      table.tenantId,
+      table.familyTemplateKeyId,
     ),
   ],
 );

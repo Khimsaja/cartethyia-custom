@@ -251,15 +251,13 @@ export interface AccountErrorClassification {
   /**
    * True when this write changed a field the routing snapshot actually reads.
    *
-   * The snapshot projects `provider_accounts.status` and
-   * `.cooldownUntil` and nothing else (`route-catalog.ts:286-287`), so only a
-   * write that moves one of those has to drop it. Everything else a failure
-   * persists — the failure streak, the error text, the category, a
-   * model-scoped cooldown — is invisible to routing, and invalidating for it
-   * forced the next request to rebuild an 11-SELECT snapshot for no reason.
+   * Routing reads account-wide `status`/`cooldownUntil` and the per-model
+   * `modelCooldowns` map (`route-catalog.ts`). Writes to any of those must drop
+   * the snapshot; failure streaks and diagnostic text remain invisible to
+   * routing.
    *
-   * That made a failure wave self-sustaining: N failed attempts produced N
-   * invalidations, and every following request paid the full rebuild.
+   * Only a changed deadline is routing-visible. Re-reporting the same active
+   * model cooldown must not rebuild the snapshot again.
    */
   readonly routesVisible: boolean;
   /**
@@ -1623,6 +1621,30 @@ const ACCOUNT_ERROR_RULES: readonly AccountErrorRule[] = [
         new Date(Date.now() + cooldownMs),
         s.reason("Model unreachable for this account"),
         modelScopedMutation,
+      );
+    },
+  },
+  {
+    // Qoder closes an exhausted-quota stream with upstream 499 (nginx
+    // client-close style). The gateway's own aborts are local `transport_closed`
+    // and never carry a qoder providerId, so a 499 scoped to qoder is a quota
+    // verdict, not a transport fault. It must run before `transport-fault`,
+    // which otherwise reads the status as a 5xx-class outage and cools the
+    // account for the shorter transient window — or leaves it unmutated.
+    name: "qoder-499-quota",
+    match: (s) =>
+      (s.providerId === "qoder" || s.providerId === "qodercn") &&
+      s.statusCode === 499 &&
+      s.origin === "upstream",
+    decide: (s) => {
+      const cooldownMs = s.statedCooldownMs ?? DEFAULT_QUOTA_COOLDOWN_MS();
+      return s.result(
+        "quota_exhausted",
+        "cooldown",
+        cooldownMs,
+        new Date(Date.now() + cooldownMs),
+        s.reason("Qoder quota exhausted (upstream 499)"),
+        s.origin === "upstream",
       );
     },
   },

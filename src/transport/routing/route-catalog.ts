@@ -35,7 +35,19 @@ import { providerHasAdapterUserAgent, providerUsesBespokeWire } from "../../prov
 
 const CLAUDE_MODEL_FAMILIES = new Set(["opus", "sonnet", "haiku", "fable", "mythos"]);
 
+/** Codex's built-in (non-routeable) model spellings worth matching. */
+const CODEX_REVIEW_MODELS = new Set(["codex-auto-review"]);
+
 export function cliMappingSourceKeys(toolId: string, sourceModel: string): readonly string[] {
+  if (toolId === "codex") {
+    const normalized = sourceModel.trim().toLowerCase();
+    if (CODEX_REVIEW_MODELS.has(normalized)) {
+      // Guardian's auto-review model is one fixed spelling; surface the full
+      // spelling plus the bare family so a slot mapped to either one hits.
+      return [...new Set([sourceModel, "codex-auto-review"])];
+    }
+    return [sourceModel];
+  }
   if (toolId !== "claude") return [sourceModel];
   const normalized = sourceModel.trim().toLowerCase();
   const family =
@@ -199,23 +211,33 @@ export function capabilityProfileCacheSize(): number {
   return capabilityProfileCache.size;
 }
 
-/** Resolves route identity only for bundled adapters without a native User-Agent builder. */
+/** Resolves route identity: bundled adapters without a native User-Agent builder, plus custom providers. */
 export function resolveRouteUserAgent(
   providerId: string,
   tenantUserAgent: string | undefined,
   globalUserAgent: string | undefined,
 ): string | undefined {
-  if (!isBundledProviderId(providerId) || providerHasAdapterUserAgent(providerId)) return undefined;
-  // A provider whose operator set no identity of their own gets the Claude Code
-  // CLI identity, resolved live so the stamped version tracks discovery. This
-  // used to be a frozen `codex_cli_rs` literal, which named a different vendor's
-  // client on requests that mostly reached neither.
-  const selected = resolveTenantOverride(
-    tenantUserAgent,
-    globalUserAgent,
-    buildClaudeCliUserAgent(),
-  );
-  return selected.trim() === "" ? undefined : selected;
+  if (isBundledProviderId(providerId)) {
+    // A bundled adapter that frames its own identity headers never consumes a
+    // route User-Agent (Command Code, Qoder, buddy, ...), so it never gets one
+    // — the control is hidden for it too.
+    if (providerHasAdapterUserAgent(providerId)) return undefined;
+    // Bundled API-key providers: an operator who set no identity of their own
+    // gets the Claude Code CLI identity, resolved live so the stamped version
+    // tracks discovery. This used to be a frozen `codex_cli_rs` literal, which
+    // named a different vendor's client on requests that mostly reached neither.
+    const selected = resolveTenantOverride(
+      tenantUserAgent,
+      globalUserAgent,
+      buildClaudeCliUserAgent(),
+    );
+    return selected.trim() === "" ? undefined : selected;
+  }
+  // Custom (BYOK) providers: only an explicit operator choice rides on the
+  // route; the adapter owns the default otherwise (see `registerByokProviders`).
+  // An explicit empty choice ("None") is preserved so the adapter can honor it.
+  const selected = resolveTenantOverride(tenantUserAgent, globalUserAgent, undefined);
+  return selected === undefined ? undefined : selected.trim();
 }
 
 /** One persisted model row ready for candidate construction. */
@@ -718,6 +740,8 @@ class RouteCatalogRepository {
                 ...(model.outputLimit == null ? {} : { output_limit: model.outputLimit }),
                 capability_profile: capabilityProfile,
                 tenant_id: tId,
+                // Public credential-less candidates have no account to own them.
+                owner_tenant_id: null,
                 requires_account: false as const,
                 network_pool_ids: tenantPools.ids,
                 network_pool_required: true,
@@ -744,6 +768,8 @@ class RouteCatalogRepository {
           ...(model.outputLimit == null ? {} : { output_limit: model.outputLimit }),
           capability_profile: capabilityProfile,
           tenant_id: providerTenantId,
+          // Public credential-less candidates have no account to own them.
+          owner_tenant_id: null,
           ...(providerRequiresAccount
             ? { health_status: "disabled" as const }
             : { requires_account: false as const }),
@@ -786,6 +812,9 @@ class RouteCatalogRepository {
           ...(routeUserAgent === undefined ? {} : { user_agent: routeUserAgent }),
           tenant_id: rowTenantId,
           provider_account_id: account.id,
+          // The account's owning tenant (null = shared pool-wide) — the bucket
+          // key for admission, distinct from the requesting tenant.
+          owner_tenant_id: account.tenantId ?? null,
           // The plan gate is per (account, model): the model may be refused on
           // a free plan and the account may be on one. Both ride here because
           // `plan()` sees the candidate and nothing else.

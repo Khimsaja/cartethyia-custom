@@ -4,10 +4,16 @@ import type {
   CreateApiKeyRequest,
   CreateApiKeyResponse,
   ShareKeyResponse,
-  SharedKeySummary,
   SharedKeyActivityDetail,
+  SharedKeyPage,
+  SharedChildSortColumn,
   UpdateApiKeyResponse,
 } from "../data/contracts";
+
+export interface RevokeSharedScopeResponse {
+  readonly success: boolean;
+  readonly deleted: number;
+}
 import { queryKeys } from "../data/query-keys";
 import { assertApiKeys, querySignal } from "../data/assert";
 import { DASHBOARD_QUERY_OPTIONS, POLL } from "../data/query-policy";
@@ -160,18 +166,56 @@ export function useApiKeys() {
   });
 }
 
+export interface SharedKeysPageParams {
+  readonly limit: number;
+  readonly offset: number;
+  readonly sortBy: SharedChildSortColumn;
+  readonly order: "asc" | "desc";
+  readonly status: "all" | "active" | "revoked";
+}
+
 /** Lists child credentials and safe usage aggregates for one share template. */
-export function useSharedKeys(parentKeyId: string | null) {
+export function useSharedKeys(parentKeyId: string | null, params: SharedKeysPageParams) {
   return useQuery({
-    queryKey: queryKeys.apiKeys.sharedKeys(parentKeyId ?? ""),
-    queryFn: (context) =>
-      consoleRequest<SharedKeySummary[]>(
-        `/api-keys/${encodeURIComponent(parentKeyId ?? "")}/shared-keys`,
+    queryKey: [...queryKeys.apiKeys.sharedKeys(parentKeyId ?? ""), params],
+    queryFn: (context) => {
+      const search = new URLSearchParams({
+        limit: String(params.limit),
+        offset: String(params.offset),
+        sort: params.sortBy,
+        order: params.order,
+        status: params.status,
+      });
+      return consoleRequest<SharedKeyPage>(
+        `/api-keys/${encodeURIComponent(parentKeyId ?? "")}/shared-keys?${search}`,
         { signal: querySignal(context) },
-      ),
+      );
+    },
     enabled: parentKeyId !== null,
     refetchInterval: POLL.live,
     refetchIntervalInBackground: false,
+  });
+}
+
+/** Revokes every active recipient of a template — or only the active ones that
+ * never spent a token — server-side, so the operation spans the whole family
+ * rather than the currently rendered page. */
+export function useRevokeSharedScope() {
+  const queryClient = useQueryClient();
+  return useMutation<
+    RevokeSharedScopeResponse,
+    ApiErrorShape,
+    { parentKeyId: string; scope: "active" | "unused" }
+  >({
+    mutationFn: ({ parentKeyId, scope }) =>
+      consoleRequest<RevokeSharedScopeResponse>(
+        `/api-keys/${encodeURIComponent(parentKeyId)}/shared-keys/revoke-scope`,
+        { method: "POST", body: JSON.stringify({ scope }) },
+      ),
+    onSuccess: async (_result, { parentKeyId }) => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.apiKeys.sharedKeys(parentKeyId) });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.apiKeys.all });
+    },
   });
 }
 

@@ -155,7 +155,18 @@ export type SharedApiKeyIssueResult =
       readonly keyPrefix: string;
       readonly createdAt: Date;
     }
-  | { readonly kind: "link_unavailable" };
+  | { readonly kind: "link_unavailable" }
+  | {
+      readonly kind: "already_issued";
+      readonly parentKeyId: string;
+      readonly tenantId: string;
+    }
+  | {
+      readonly kind: "slot_full";
+      readonly parentKeyId: string;
+      readonly tenantId: string;
+      readonly limit: number;
+    };
 
 type ApiKeyRow = typeof apiKeys.$inferSelect;
 type ShareLinkRow = typeof shareLinks.$inferSelect;
@@ -485,6 +496,53 @@ export class DrizzleShareLinkStore implements ShareLinkStore {
       );
       if (!activeLink) return { kind: "link_unavailable" };
 
+      // One child key per canonical client IP. The public route mints from an
+      // enrollment link, and a bot replaying the same URL from one IP was
+      // creating an unbounded number of children (observed: 331k `api_keys`
+      // rows from two Google Cloud IPs in three days). If this (parent, IP)
+      // pair already has a live child, that is the same enrollment — return it
+      // as `already_issued` instead of minting another.
+      if (material.clientIpKey.length > 0) {
+        const existing = await tx
+          .select({ id: apiKeys.id })
+          .from(apiKeys)
+          .where(
+            and(
+              eq(apiKeys.parentKeyId, parent.id),
+              eq(apiKeys.issuedClientIpKey, material.clientIpKey),
+              isNull(apiKeys.revokedAt),
+            ),
+          )
+          .limit(1);
+        if (existing[0] !== undefined) {
+          return {
+            kind: "already_issued",
+            parentKeyId: parent.id,
+            tenantId: parent.tenantId,
+          };
+        }
+      }
+
+      // Slot cap: a template may bound how many concurrently-active children
+      // exist. The public link is mint-able by anyone, so without this cap a
+      // bot rotating egress IPs (CDN edges, cloud egress, proxies) could mint
+      // without bound — observed: 331k children in three days. The count is
+      // live children only; revoked children free their slot for reuse.
+      if (parent.maxChildren !== null && parent.maxChildren !== undefined) {
+        const liveCount = await tx
+          .select({ value: sql<number>`count(*) filter (where ${apiKeys.revokedAt} is null)` })
+          .from(apiKeys)
+          .where(eq(apiKeys.parentKeyId, parent.id));
+        if (Number(liveCount[0]?.value ?? 0) >= parent.maxChildren) {
+          return {
+            kind: "slot_full",
+            parentKeyId: parent.id,
+            tenantId: parent.tenantId,
+            limit: parent.maxChildren,
+          };
+        }
+      }
+
       // The label is `hint + random`, capped at 12 chars — never the
       // parent's full label plus a suffix, which grew past every table
       // column it rendered in. Built here (not imported from the console
@@ -493,6 +551,12 @@ export class DrizzleShareLinkStore implements ShareLinkStore {
       const suffix = randomInt(1000, 10_000).toString();
       const label =
         hint.length === 0 ? `key-${suffix}` : `${hint}-${suffix}`.slice(0, 12);
+      // Child rows carry identity + scopes only. Auth resolves every policy
+      // field from the parent (`policy = parent ?? row`), so copying notes,
+      // limits, model_list, denylist, etc. was pure write-amplification.
+      // Nullable policy columns stay NULL; `model_access_mode` takes its
+      // NOT NULL default ('whitelist'). Keep in sync with migration 0029 and
+      // `normalizeShareChildPolicy` in `src/console/backup/store.ts`.
       const [child] = await tx
         .insert(apiKeys)
         .values({
@@ -506,18 +570,6 @@ export class DrizzleShareLinkStore implements ShareLinkStore {
           scopes: parent.scopes,
           keyPrefix: material.keyPrefix,
           keyEncrypted: null,
-          notesTitle: parent.notesTitle,
-          notesSubtitle: parent.notesSubtitle,
-          notesBody: parent.notesBody,
-          requestsPerMinute: parent.requestsPerMinute,
-          dailyTokenLimit: parent.dailyTokenLimit,
-          monthlyTokenLimit: parent.monthlyTokenLimit,
-          lifetimeTokenBudget: parent.lifetimeTokenBudget,
-          maxConcurrentRequests: parent.maxConcurrentRequests,
-          modelPrefix: parent.modelPrefix,
-          modelAccessMode: parent.modelAccessMode,
-          modelList: parent.modelList,
-          clientRouterDenylist: parent.clientRouterDenylist,
           lifetimeTokensConsumed: 0,
         })
         .returning({ id: apiKeys.id, tenantId: apiKeys.tenantId, createdAt: apiKeys.createdAt });

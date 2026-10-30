@@ -61,6 +61,13 @@ export function buildUpstreamDispatchContext(input: {
    * database handle.
    */
   readonly imageClampMaxBytes?: number;
+  /**
+   * Tenant system-prompt text resolved once per request (append/override
+   * injection). Carried through dispatch because the buddy adapters fold it
+   * into their fixed system turn after serialization — the canonical level
+   * cannot reach that turn.
+   */
+  readonly tenantSystemPrompt?: string;
   /** Opaque identity shared by retries of one logical gateway request. */
   readonly requestIdentity?: object;
   /** Whether this attempt's provider request body will be persisted by capture. */
@@ -103,6 +110,9 @@ export function buildUpstreamDispatchContext(input: {
     ...(input.imageClampMaxBytes === undefined
       ? {}
       : { image_clamp_max_bytes: input.imageClampMaxBytes }),
+    ...(input.tenantSystemPrompt === undefined
+      ? {}
+      : { tenant_system_prompt: input.tenantSystemPrompt }),
     ...(input.requestIdentity ? { request_identity: input.requestIdentity } : {}),
     ...(input.captureProviderBody === undefined
       ? {}

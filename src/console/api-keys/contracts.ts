@@ -72,6 +72,8 @@ export interface CreateApiKeyRequest {
    */
   extendByDays?: number;
   extendByHours?: number;
+  /** Share-template slot cap; only meaningful when keyMode === "share". */
+  maxChildren?: number | null;
   modelPrefix?: string;
   /**
    * The model template this key mirrors. On create, a string links the new
@@ -119,6 +121,7 @@ export interface ApiKeyResponse {
   readonly modelList?: readonly string[];
   readonly clientRouterDenylist?: readonly string[];
   readonly maxConcurrentRequests?: number;
+  readonly maxChildren?: number;
   readonly notesTitle?: string;
   readonly notesSubtitle?: string;
   readonly notesBody?: string;
@@ -376,6 +379,15 @@ export function validateApiKeyRequest(request: CreateApiKeyRequest): readonly Ac
       "expiry duration must not exceed 10 years",
     );
   }
+  if (request.maxChildren !== undefined && request.maxChildren !== null) {
+    finitePositive(request.maxChildren, "maxChildren");
+    if (request.maxChildren > 10_000) {
+      throw new ConsoleDomainError("invalid_limits", 400, "maxChildren must not exceed 10000");
+    }
+    if (keyMode !== "share") {
+      throw new ConsoleDomainError("invalid_limits", 400, "maxChildren is only valid for share templates");
+    }
+  }
   parseSharePopupImage(request.sharePopupImage);
   if (request.sharePopupTitle != null && request.sharePopupTitle.length > 120) {
     throw new ConsoleDomainError("invalid_share_popup", 400, "Share popup title is too long");
@@ -471,6 +483,7 @@ export function sanitizeApiKeyResponse(record: ApiKeyRecord): ApiKeyResponse {
     ...(record.monthlyTokenLimit === undefined ? {} : { monthlyTokenLimit: record.monthlyTokenLimit }),
     ...(record.lifetimeTokenBudget === undefined ? {} : { lifetimeTokenBudget: record.lifetimeTokenBudget }),
     ...(record.maxConcurrentRequests === undefined ? {} : { maxConcurrentRequests: record.maxConcurrentRequests }),
+    ...(record.maxChildren === undefined ? {} : { maxChildren: record.maxChildren }),
     ...(record.modelPrefix === undefined ? {} : { modelPrefix: record.modelPrefix }),
     ...(record.modelTemplateId === undefined ? {} : { modelTemplateId: record.modelTemplateId }),
     ...(record.modelAccessMode === undefined ? {} : { modelAccessMode: record.modelAccessMode }),
