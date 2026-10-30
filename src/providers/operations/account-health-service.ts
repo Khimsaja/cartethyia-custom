@@ -620,7 +620,7 @@ export async function reportAttemptOutcome(
   // Gated on `routesVisible`, not on `mutatesAccount`: a model cooldown changes
   // routing, while a repeated report with the same deadline or a streak-only
   // write does not.
-  if (classification?.routesVisible) await report.snapshotService?.invalidate();
+  if (classification?.mutatesAccount && classification?.routesVisible) await report.snapshotService?.invalidate();
 }
 
 export async function listAccountHealthEvents(

@@ -165,6 +165,10 @@ async function dial(
     return await socksFetch(url, {
       ...init,
       headers,
+      // Same buffered-body rule as the fetch path below: a measured stream
+      // body must be replaced by its bytes, or the SOCKS dial sends a drained
+      // body. (Merge note: upstream 2.7.3 added this branch without it.)
+      ...(body === undefined ? {} : { body }),
       dispatcher,
     });
   }

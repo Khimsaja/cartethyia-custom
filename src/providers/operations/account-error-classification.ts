@@ -595,6 +595,7 @@ interface AccountErrorSignals {
    */
   readonly buddyBanned: boolean;
   readonly priceRefusal: boolean;
+  readonly wafPromptRejection: boolean;
   readonly deploymentInfraError: boolean;
   readonly quotaSignal: boolean;
   readonly policyRejection: boolean;
@@ -806,6 +807,17 @@ export function classifyAccountError(
     lower.includes("max-per-mtok") ||
     lower.includes("no provider's ask") ||
     (lower.includes("ask") && lower.includes("bid"));
+  // TipRouter local patch (not upstream): a WAF prompt rejection is a verdict
+  // on the *request*, not on the account. inferhub answers HTTP 403 with
+  // "request blocked by the provider's web application firewall: the prompt
+  // matched an attack signature" when a buyer's prompt trips the upstream
+  // WAF. The credential is fine — refreshing the token cannot change that
+  // outcome — so it must never flip the account to auth_invalidated/disabled.
+  // Only that request fails. (Carried over from the pre-2.7.3 classifier,
+  // where this lived beside priceRefusal in account-health-service.ts.)
+  const wafPromptRejection =
+    lower.includes("web application firewall") ||
+    (lower.includes("attack signature") && statusCode === 403);
   // Deployment/proxy infrastructure errors (DEPLOYMENT_DISABLED, etc.) are
   // transport-level proxy pool failures, not account quota exhaustion.
   // Mutating the account parks it for an hour while the pool itself stays
@@ -1134,6 +1146,7 @@ export function classifyAccountError(
     buddy,
     buddyBanned,
     priceRefusal,
+    wafPromptRejection,
     deploymentInfraError,
     quotaSignal,
     policyRejection,
@@ -1338,9 +1351,24 @@ const ACCOUNT_ERROR_RULES: readonly AccountErrorRule[] = [
       ),
   },
   {
+    // TipRouter local patch (not upstream): a WAF prompt block says this
+    // prompt was refused by the upstream firewall, so the account is not at
+    // fault and must not be mutated: `mutatesAccount` is false and the
+    // deadline is left null. The category is `policy_blocked` because the
+    // request was refused on policy grounds — not because the credential is
+    // invalid — and the caller can fix it by changing the prompt. Placed
+    // before `credential-rejected`: a bare 403 + account evidence would
+    // otherwise claim it as a credential rejection.
+    name: "waf-prompt-rejection",
+    match: (s) => s.wafPromptRejection,
+    decide: (s) =>
+      s.result("policy_blocked", "cooldown", 0, null, s.reason("Request blocked by the provider WAF"), false),
+  },
+  {
     name: "credential-rejected",
     match: (s) =>
       !s.quotaSignal &&
+      !s.wafPromptRejection &&
       !s.policyRejection &&
       !s.hostedToolFailure &&
       !s.modelEntitlementFailure &&
