@@ -42,6 +42,7 @@ import {
   TENANT_KEY_SCOPES,
   normalizeClientRouterId,
   type ApiKeyResponse,
+  type ConcurrencyScope,
   type TenantScope,
   type ToolRegistryEntry,
 } from "../data/contracts";
@@ -338,6 +339,7 @@ export interface KeyFormInput {
   scopes: string[];
   requestsPerMinute?: number | null;
   maxConcurrentRequests?: number | null;
+  concurrencyScope?: ConcurrencyScope;
   /** Share-template recipient slot cap; null/undefined = unlimited. */
   maxChildren?: number | null;
   dailyTokenLimit?: number | null;
@@ -493,6 +495,9 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
   const [modelTemplateId, setModelTemplateId] = useState(record?.modelTemplateId ?? "");
   const initialModelTemplateId = record?.modelTemplateId ?? "";
   const templatesQuery = useModelTemplates();
+  const [concurrencyScope, setConcurrencyScope] = useState<ConcurrencyScope>(
+    record?.concurrencyScope ?? "family",
+  );
   const [maxChildren, setMaxChildren] = useState(
     (record as unknown as { maxChildren?: number | null })?.maxChildren?.toString() ?? "",
   );
@@ -623,6 +628,7 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
       clientRouterDenylist: blockedRouters,
       requestsPerMinute: parseLimitOrNull(rpm),
       maxConcurrentRequests: parseLimitOrNull(concurrent),
+      concurrencyScope: keyMode === "share" ? concurrencyScope : undefined,
       maxChildren: keyMode === "share" ? parseLimitOrNull(maxChildren) : null,
       dailyTokenLimit: isOneTime ? null : (parseTokenLimit(daily) ?? null),
       monthlyTokenLimit: isOneTime ? null : (parseTokenLimit(monthly) ?? null),
@@ -798,6 +804,24 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
             disabled={busy}
           />
           {keyMode === "share" ? (
+            <div className="flex flex-col gap-1.5">
+              <label htmlFor="api-key-concurrency-scope" className="form-label text-caption font-semibold text-text-primary">
+                Concurrency scope
+              </label>
+              <Select
+                id="api-key-concurrency-scope"
+                aria-label="Concurrency scope"
+                value={concurrencyScope}
+                onValueChange={(next) => setConcurrencyScope(next as ConcurrencyScope)}
+                options={[
+                  { value: "family", label: "Whole share family (all recipients together)" },
+                  { value: "per_key", label: "Per recipient key (each has its own cap)" },
+                ]}
+                size="md"
+              />
+            </div>
+          ) : null}
+          {keyMode === "share" ? (
             <Input
               label="Recipient slots (max children)"
               type="number"
@@ -819,7 +843,11 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
         <p className="text-micro leading-normal text-text-tertiary">
           {concurrent === ""
             ? "No concurrency limit, so the tenant allowance does nothing."
-            : `Limit ${concurrent} concurrent. Refusals name this number; the allowance above it is tenant-wide and set in Settings.`}
+            : keyMode === "share"
+              ? concurrencyScope === "family"
+                ? `Limit ${concurrent} concurrent across the whole share family — all recipients share this one cap.`
+                : `Limit ${concurrent} concurrent per recipient key — each key gets its own independent cap.`
+              : `Limit ${concurrent} concurrent for this key. Refusals name this number; the allowance above it is tenant-wide and set in Settings.`}
         </p>
         <div
           className="flex items-center justify-between gap-4 rounded-panel border border-inner-border px-4 py-3 bg-surface-2"

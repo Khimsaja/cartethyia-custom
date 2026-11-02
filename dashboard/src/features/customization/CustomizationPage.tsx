@@ -14,6 +14,7 @@ import { Button } from "../../components/ui/button";
 import { Card, CardBody, CardHeader } from "../../components/ui/card";
 import { Stack } from "../../components/ui/stack";
 import { Switch } from "../../components/ui/switch";
+import { Select } from "../../components/ui/select";
 import { CardActions } from "../../components/ui/inline";
 import {
   DEFAULT_BACKGROUND_URL,
@@ -28,10 +29,12 @@ import {
 import {
   BLUR_TARGET_ORDER,
   CUSTOMIZATION_DEFAULTS,
+  RENDER_PRESET_VALUES,
   saveCustomizationSettings,
   useCustomizationSettings,
   type BlurTarget,
   type CustomizationSettings,
+  type RenderMode,
 } from "./settings";
 
 
@@ -123,6 +126,7 @@ export default function CustomizationPage(): ReactNode {
       blurChromeEnabled: CUSTOMIZATION_DEFAULTS.blurChromeEnabled,
       blurCardsDepth: CUSTOMIZATION_DEFAULTS.blurCardsDepth,
       blurChromeDepth: CUSTOMIZATION_DEFAULTS.blurChromeDepth,
+      renderMode: CUSTOMIZATION_DEFAULTS.renderMode,
     });
     toast.success("Blur reset to defaults.");
   };
@@ -184,20 +188,47 @@ export default function CustomizationPage(): ReactNode {
           }
         />
         <CardBody>
+          <div className="mb-10 flex items-center justify-between gap-6 rounded-card border border-inner-border bg-surface-2 px-7 py-6 max-small:flex-col max-small:items-stretch">
+            <span className="flex min-w-0 flex-col">
+              <span className="text-caption font-semibold text-text-primary">Render preset</span>
+              <span className="text-badge text-text-tertiary">
+                Pretty keeps surfaces near-solid with no card blur; Extreme removes the backdrop read everywhere. Either one overrides the toggles below while active — the background image stays.
+              </span>
+            </span>
+            <Select
+              value={settings.renderMode}
+              onValueChange={(mode) => {
+                setSettings({ renderMode: mode as RenderMode });
+                toast.success(mode === "off" ? "Render preset off" : `Render preset: ${mode === "pretty" ? "Pretty" : "Extreme"}`);
+              }}
+              options={[
+                { value: "off", label: "Off (default)" },
+                { value: "pretty", label: "Pretty" },
+                { value: "extreme", label: "Extreme" },
+              ]}
+              size="sm"
+              aria-label="Render preset"
+              className="max-small:self-end"
+            />
+          </div>
           <div className="grid gap-10 lg:grid-cols-2">
             {BLUR_TARGET_ORDER.map((target) => {
               const chrome = target === "chrome";
+              const preset = settings.renderMode === "off"
+                ? undefined
+                : RENDER_PRESET_VALUES[settings.renderMode][chrome ? "chrome" : "cards"];
               return (
                 <BlurSlider
                   key={target}
                   target={target}
                   enabled={chrome ? settings.blurChromeEnabled : settings.blurCardsEnabled}
+                  held={settings.renderMode === "off" ? undefined : settings.renderMode}
                   onToggle={() =>
                     setSettings(chrome ? { blurChromeEnabled: !settings.blurChromeEnabled } : { blurCardsEnabled: !settings.blurCardsEnabled })
                   }
-                  clarity={chrome ? settings.blurChromeAmount : settings.blurCardsAmount}
+                  clarity={preset ? preset.amount : chrome ? settings.blurChromeAmount : settings.blurCardsAmount}
                   onClarity={(amount) => setSettings(chrome ? { blurChromeAmount: amount } : { blurCardsAmount: amount })}
-                  depth={chrome ? settings.blurChromeDepth : settings.blurCardsDepth}
+                  depth={preset ? preset.depth : chrome ? settings.blurChromeDepth : settings.blurCardsDepth}
                   onDepth={(amount) => setSettings(chrome ? { blurChromeDepth: amount } : { blurCardsDepth: amount })}
                 />
               );
@@ -396,6 +427,7 @@ function Slider({
 function BlurSlider({
   target,
   enabled,
+  held,
   onToggle,
   clarity,
   onClarity,
@@ -404,6 +436,8 @@ function BlurSlider({
 }: {
   readonly target: BlurTarget;
   readonly enabled: boolean;
+  /** A render preset holds this surface: the toggle and sliders are inert. */
+  readonly held: "pretty" | "extreme" | undefined;
   readonly onToggle: () => void;
   readonly clarity: number;
   readonly onClarity: (amount: number) => void;
@@ -411,6 +445,11 @@ function BlurSlider({
   readonly onDepth: (amount: number) => void;
 }): ReactNode {
   const item = BLUR_TARGET_COPY[target] ?? BLUR_TARGET_COPY.cards;
+  const heldLabel = held === "pretty" ? "Held by Pretty" : held === "extreme" ? "Held by Extreme" : undefined;
+  // Held surfaces show the preset's values, dimmed: the operator sees what the
+  // surface is painted with and what returns when the preset goes off, and
+  // nothing here is interactive because none of it would have an effect.
+  const effective = enabled && held === undefined;
   return (
     <div className="flex flex-col gap-8 rounded-card border border-inner-border bg-surface-2 p-8">
       <div className="flex items-center gap-5">
@@ -419,20 +458,27 @@ function BlurSlider({
         </span>
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="text-body font-semibold text-text-primary">{item.label}</span>
-          <span className="text-micro text-text-tertiary">{item.description}</span>
+          <span className="text-micro text-text-tertiary">{heldLabel ?? item.description}</span>
         </span>
         <button
           type="button"
           role="switch"
-          aria-checked={enabled}
+          aria-checked={held === undefined ? enabled : false}
           aria-label={`Toggle ${item.label} blur`}
-          onClick={onToggle}
-          className={enabled ? "h-10 w-18 shrink-0 rounded-pill bg-accent p-1" : "h-10 w-18 shrink-0 rounded-pill bg-surface-active p-1"}
+          disabled={held !== undefined}
+          onClick={held === undefined ? onToggle : undefined}
+          className={`${
+            held !== undefined
+              ? "h-10 w-18 shrink-0 rounded-pill bg-surface-active p-1 cursor-default"
+              : enabled
+                ? "h-10 w-18 shrink-0 rounded-pill bg-accent p-1"
+                : "h-10 w-18 shrink-0 rounded-pill bg-surface-active p-1"
+          }`}
         >
-          <span className={enabled ? "block size-8 translate-x-8 rounded-full bg-accent-foreground" : "block size-8 rounded-full bg-text-secondary"} />
+          <span className={held !== undefined || !enabled ? "block size-8 rounded-full bg-text-secondary" : "block size-8 translate-x-8 rounded-full bg-accent-foreground"} />
         </button>
       </div>
-      <div className={enabled ? "flex flex-col gap-6" : "flex flex-col gap-6 opacity-40"}>
+      <div className={effective ? "flex flex-col gap-6" : "flex flex-col gap-6 opacity-40"}>
         <label className="flex flex-col gap-3 text-caption text-text-secondary">
           <span className="flex items-center justify-between">
             Clarity

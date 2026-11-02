@@ -1,4 +1,4 @@
-import { Elysia } from "elysia";
+import { type AnyElysia } from "elysia";
 import { ConsoleDomainError } from "./shared/errors";
 import { createCliToolsRoutes } from "./cli-tools/routes";
 import { createAccountQuotaRoutes } from "./quota/account-quota";
@@ -135,7 +135,7 @@ import type { ProbeOutboundBinding } from "../providers/discovery/probing-servic
 
 
 export function registerConsoleDomains(
-  console: Elysia<any, any, any, any, any, any, any, any>,
+  console: AnyElysia,
   ctx: ConsoleDomainContext,
 ): void {
   const observabilityStore = new DrizzleObservabilityStore(ctx.db, ctx.redis);
@@ -388,8 +388,8 @@ export function registerConsoleDomains(
   // it is released when the last of those flows settles.
   const oauthCallbackListener = new OAuthCallbackListener({
     completer: {
-      complete: (providerId, code, state) =>
-        completeLogin(oauthConfig, providerId, code, state),
+      complete: (providerId, code, state, callbackParams) =>
+        completeLogin(oauthConfig, providerId, code, state, callbackParams),
     },
   });
   const oauthConfig: OAuthLoginConfig = {

@@ -224,6 +224,15 @@ describe("Qoder quota — an unreadable body is not a zero balance", () => {
     expect(result.error).toBeNull();
     expect(result.windows).toHaveLength(2);
     for (const window of result.windows) expect(window.accounting).toBe("pooled");
+
+    // Pooled windows must carry a computable percent so the console can render
+    // a real bar/tone (all-null percents rendered every Qoder account grey).
+    const plan = result.windows.find((w) => w.kind === "qoder:plan");
+    const addOn = result.windows.find((w) => w.kind === "qoder:addon");
+    expect(plan?.remainingPercent).toBeCloseTo(30, 5);
+    expect(plan?.usedPercent).toBeCloseTo(70, 5);
+    expect(addOn?.remainingPercent).toBeCloseTo(62.5, 5);
+    expect(addOn?.usedPercent).toBeCloseTo(37.5, 5);
   });
 
   test("an exhausted account with a usable shared pool is not reported as empty", async () => {
@@ -265,6 +274,9 @@ describe("Qoder quota — an unreadable body is not a zero balance", () => {
 
     expect(result.windows).toHaveLength(1);
     expect(result.windows[0]?.used).toBe(0);
+    expect(result.windows[0]?.limit).toBe(0);
+    // A spent 0/0 balance reads as 0% remaining, not an uncolored row.
+    expect(result.windows[0]?.remainingPercent).toBe(0);
     expect(result.error).toBeNull();
   });
 
@@ -277,6 +289,95 @@ describe("Qoder quota — an unreadable body is not a zero balance", () => {
 
     expect(result.windows).toHaveLength(0);
     expect(result.error).toBeNull();
+  });
+
+  test("a far-future reset sentinel is treated as no reset", async () => {
+    // The business API answers "never resets" as `9999-12-31T00:00:00.000Z`;
+    // surfacing it rendered a 7978-year countdown on every window.
+    const fetcher = routedFetcher([
+      [
+        "quota/usage",
+        jsonResponse({
+          expiresAt: "9999-12-31T00:00:00.000Z",
+          userQuota: { remaining: 300, total: 1000, used: 700 },
+          addOnQuota: { remaining: 50, total: 80, used: 30 },
+        }),
+      ],
+    ]);
+
+    const result = await fetchQoderQuota("token", fetcher, {});
+
+    for (const window of result.windows) expect(window.resetsAt).toBeNull();
+  });
+
+  test("a PAT is exchanged for a job token before the quota read", async () => {
+    // Verified live 2026-11-02: a raw `pt-…` bearer on `/api/v2/quota/usage`
+    // answers 401 `TOKEN_EXPIRE`, while the exchanged `jt-…` answers 200. The
+    // collector must exchange first. The exchange itself is a POST to the
+    // realm's job-token endpoint; route both calls and assert the quota read
+    // used the exchanged token and the exchange actually happened.
+    const pat = "pt-test-pat-value";
+    const jobToken = "jt-exchanged-value";
+    const quotaRequests: Array<{ url: string; authorization: string | undefined }> = [];
+    let exchanges = 0;
+
+    const fetcher = (async (url: unknown, init?: RequestInit): Promise<Response> => {
+      const target = String(url);
+      if (target.includes("jobToken")) {
+        exchanges++;
+        return jsonResponse({
+          id: "user-01",
+          securityOauthToken: jobToken,
+          refreshToken: "",
+          userType: "personal_standard",
+        });
+      }
+      if (target.includes("quota/usage")) {
+        const authorization = new Headers(init?.headers).get("authorization") ?? undefined;
+        quotaRequests.push({ url: target, authorization });
+        return jsonResponse({
+          userQuota: { remaining: 300, total: 1000, used: 700 },
+          addOnQuota: { remaining: 50, total: 80, used: 30 },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    }) as unknown as typeof fetch;
+
+    const result = await fetchQoderQuota(pat, fetcher, {});
+
+    expect(exchanges).toBe(1);
+    expect(quotaRequests).toHaveLength(1);
+    expect(quotaRequests[0]?.authorization).toBe(`Bearer ${jobToken}`);
+    expect(result.error).toBeNull();
+    expect(result.windows).toHaveLength(2);
+  });
+
+  test("a device token is used directly, no exchange", async () => {
+    // Device tokens (`dt-…`) are already active bearers on the business API —
+    // only PATs need the exchange. The exchange URL must never be hit.
+    const deviceToken = "dt-test-device-token";
+    let exchanges = 0;
+    const seenAuth: string[] = [];
+
+    const fetcher = (async (url: unknown, init?: RequestInit): Promise<Response> => {
+      const target = String(url);
+      if (target.includes("jobToken")) {
+        exchanges++;
+        return jsonResponse({ id: "u", securityOauthToken: "jt-never" });
+      }
+      if (target.includes("quota/usage")) {
+        seenAuth.push(new Headers(init?.headers).get("authorization") ?? "");
+        return jsonResponse({ userQuota: { remaining: 5, total: 10, used: 5 } });
+      }
+      return new Response("not found", { status: 404 });
+    }) as unknown as typeof fetch;
+
+    const result = await fetchQoderQuota(deviceToken, fetcher, {});
+
+    expect(exchanges).toBe(0);
+    expect(seenAuth).toEqual([`Bearer ${deviceToken}`]);
+    expect(result.error).toBeNull();
+    expect(result.windows).toHaveLength(1);
   });
 });
 

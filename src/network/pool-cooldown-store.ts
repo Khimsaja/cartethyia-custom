@@ -18,6 +18,7 @@ import type { CartethyiaDatabase } from "../persistence/db-handle";
 import { networkPools, healthEvents } from "../persistence/schema";
 import { log } from "../observability/logger";
 import { providerRateLimitIsIpScoped } from "../providers/provider-metadata";
+import { resolvePoolProviderRateLimitCooldownMs } from "../config/cooldowns";
 import { PROVIDER_BLOCK_MS, type ProxyCooldownEntry } from "./pool/selector";
 
 type PoolProviderCooldownMap = NonNullable<
@@ -121,6 +122,37 @@ export async function dropAllProviderCooldownMarkers(
 }
 
 /**
+ * Removes expired provider markers from one pool row, keeping live cooldowns
+ * and permanent blocks intact. Returns how many markers were dropped.
+ *
+ * The selector and Redis prune expired entries on read, but the durable JSON
+ * mirror is only ever written, never swept — so a marker that expired while
+ * the process was down survives on the row forever. Harmless to routing (boot
+ * restores only future-dated markers), but it bloats the row and makes the
+ * backup/restore surface carry dead state.
+ */
+export async function pruneExpiredProviderCooldownMarkers(
+  db: CartethyiaDatabase,
+  poolId: string,
+): Promise<number> {
+  try {
+    const map = await readMarkerMap(db, poolId);
+    const now = Date.now();
+    const expiredKeys: string[] = [];
+    for (const [providerKey, marker] of Object.entries(map)) {
+      if (marker.until <= now) expiredKeys.push(providerKey);
+    }
+    if (expiredKeys.length === 0) return 0;
+    for (const providerKey of expiredKeys) delete map[providerKey];
+    await writeMarkerMap(db, poolId, map);
+    return expiredKeys.length;
+  } catch (error) {
+    log.warn("pool provider cooldown mirror prune failed", { networkPoolId: poolId, error: String(error) });
+    return 0;
+  }
+}
+
+/**
  * Writes a probe-measured verdict the same way a dispatch-side event would be
  * recorded: one mirror marker and one audit row.
  *
@@ -201,19 +233,22 @@ function probeEndpointOf(endpointConfig: unknown): string {
 /**
  * Re-enforces the stored probe verdicts at boot (new: replay, read-ahead).
  *
- * A stored `blocked` verdict is a *state*, not a decoration. If the marker the
- * probe flagged failed to persist, or the verdict predated the marker column,
- * the egress would return to rotation after restart and get refused again —
- * dispatch spending a real request to rediscover a refusal the row already
- * knew. So the boot read reconciles: a fresh (endpoint still matches) `blocked`
- * verdict for an address-keyed provider becomes a block flag, even when the
- * mirror has nothing (or has an older, cooler entry — the retirement claim is
- * the sharper fact and wins).
+ * A stored verdict is a *state*, not a decoration. If the marker the probe
+ * flagged failed to persist, or the verdict predated the marker column, the
+ * egress would return to rotation after restart and get refused again — dispatch
+ * spending a real request to rediscover a refusal the row already knew. So the
+ * boot read reconciles:
  *
- * `throttled` is deliberately **not** replayed into a cooldown: the cooldown
- * the probe flagged already carries the measured window, and blind-replaying
- * one from a verdict that predates the restart could outlive the upstream's
- * actual window.
+ * - A fresh `blocked` verdict for an address-keyed provider becomes a block
+ *   flag, even when the mirror has nothing (or has an older, cooler entry — the
+ *   retirement claim is the sharper fact and wins).
+ * - A fresh `throttled` verdict for an address-keyed provider becomes the same
+ *   cooldown a dispatch-side 429 would have written. The probe measured the
+ *   rate-limit window itself (`provider_probe_at` is when it observed the 429),
+ *   so the replayed window starts at that measurement, not at boot — without
+ *   the monotonic clock, a restart mid-window would shorten the cool-off the
+ *   probe proved. The configured default window is applied when the probe did
+ *   not record a duration.
  *
  * Returns how many verdicts were replayed.
  */
@@ -221,6 +256,7 @@ export async function restorePoolProbeVerdicts(
   selector: { hydrateProviderCooldown(entry: ProxyCooldownEntry): void },
   db: CartethyiaDatabase,
 ): Promise<number> {
+  const probeCooldownMs = resolvePoolProviderRateLimitCooldownMs();
   const rows = await db
     .select({
       id: networkPools.id,
@@ -230,21 +266,40 @@ export async function restorePoolProbeVerdicts(
       providerProbeStatus: networkPools.providerProbeStatus,
       providerProbeReason: networkPools.providerProbeReason,
       providerProbeEndpoint: networkPools.providerProbeEndpoint,
+      providerProbeAt: networkPools.providerProbeAt,
     })
     .from(networkPools);
   let replayed = 0;
   for (const row of rows) {
     if (row.status !== "active") continue;
-    if (row.providerProbeStatus !== "blocked") continue;
+    if (row.providerProbeStatus !== "blocked" && row.providerProbeStatus !== "throttled") continue;
     if (row.providerProbeEndpoint !== probeEndpointOf(row.endpointConfig)) continue;
     const providerId = row.providerProbeProviderId;
     if (typeof providerId !== "string" || !providerRateLimitIsIpScoped(providerId)) continue;
+    if (row.providerProbeStatus === "blocked") {
+      selector.hydrateProviderCooldown({
+        poolId: row.id,
+        providerId: providerId.toLowerCase(),
+        until: Date.now() + PROVIDER_BLOCK_MS,
+        reason: row.providerProbeReason ?? "Upstream refused this egress address",
+        blocked: true,
+      });
+      replayed += 1;
+      continue;
+    }
+    // `throttled`: replay the cooldown the probe measured. The upstream's
+    // window began when the probe saw the 429, so the marker expires at
+    // `probeAt + window`, unless that is already past — an allowance that
+    // refilled while the process was down must not be resurrected.
+    const probeAt = row.providerProbeAt?.getTime();
+    const until =
+      probeAt !== undefined ? probeAt + probeCooldownMs : Date.now() + probeCooldownMs;
+    if (until <= Date.now()) continue;
     selector.hydrateProviderCooldown({
       poolId: row.id,
       providerId: providerId.toLowerCase(),
-      until: Date.now() + PROVIDER_BLOCK_MS,
-      reason: row.providerProbeReason ?? "Upstream refused this egress address",
-      blocked: true,
+      until,
+      reason: row.providerProbeReason ?? "Operator probe measured a provider 429",
     });
     replayed += 1;
   }

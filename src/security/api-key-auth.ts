@@ -274,7 +274,7 @@ export interface ResolvedApiKey {
  * indistinguishable — distinguishing them would let a caller confirm that a
  * guessed token once existed — so there is no variant carrying a reason.
  */
-const INVALID_KEY_MESSAGE = "Invalid API key. Check the key you are sending, or create a new one in API Keys and send it as: Authorization: Bearer <key>.";
+const INVALID_KEY_MESSAGE = "Invalid API key (request {requestId}). Check the key you are sending, or create a new one in API Keys and send it as: Authorization: Bearer <key>. Wrong key, right door — double-check and come back 🔑";
 
 export function unknownApiKeyError(): GatewayError {
   return new GatewayError("authentication_failed", 401, INVALID_KEY_MESSAGE);
@@ -293,7 +293,7 @@ export function modelsListApiKeyError(): GatewayError {
   return new GatewayError(
     "authentication_failed",
     401,
-    "Invalid API key. Rotate the default Cartethyia API key in API Keys and send the new key as: Authorization: Bearer <key>.",
+    "Invalid API key (request {requestId}). Rotate the default Cartethyia API key in API Keys and send the new key as: Authorization: Bearer <key>. Wrong key, right door — rotate and try again 🔑",
   );
 }
 
@@ -314,12 +314,12 @@ export function requestToken(headers: Headers | Record<string, string>): string 
     // *different* credentials stay a conflict — accepting whichever came first
     // would silently decide the request's identity.
     if (bearerMatch?.[1] === apiKey) return apiKey;
-    throw new GatewayError("invalid_request", 400, "The request sends two different credentials. Send exactly one key, either as Authorization: Bearer <key> or as the api-key header.");
+    throw new GatewayError("invalid_request", 400, "The request sends two different credentials (request {requestId}). Send exactly one key, either as Authorization: Bearer <key> or as the api-key header. Pick one key and stick with it 🤝");
   }
   if (hasApiKey) return apiKey;
   const token = bearerMatch?.[1];
   if (token === undefined)
-    throw new GatewayError("invalid_request", 401, "The request carries no usable credential. Send the key as: Authorization: Bearer <key>.");
+    throw new GatewayError("authentication_failed", 401, "The request carries no usable credential (request {requestId}). Send the key as: Authorization: Bearer <key>. We need a key to let you in 🔑");
   return token;
 }
 
@@ -404,6 +404,12 @@ export async function resolveApiKeyAuthorization(
   // keep the issued row values forever. Reading the parent here makes denylist /
   // one-time / recurring edits apply on the next cache miss.
   const policy = parent ?? row;
+  // Share-template concurrency scope decides whether the family shares one
+  // admission counter (default `family`) or each recipient has its own
+  // (`per_key`). In `family` mode the child participates in the parent's
+  // counter namespace; in `per_key` mode the child is its own admission
+  // identity and carries its own cap.
+  const perKeyConcurrency = parent !== undefined && row.concurrencyScope === "per_key";
   // Only a `share` parent can have children, and children are the only thing
   // the SUM below can find. Every other key ran an aggregate that was certain
   // to return 0 — one extra Postgres round-trip on the auth path for nothing.
@@ -422,8 +428,10 @@ export async function resolveApiKeyAuthorization(
     api_key_id: row.id,
     tenant_id: row.tenantId,
     // Family quota / concurrency share one admission counter namespace so two
-    // recipients cannot each burn a full lifetime/daily budget.
-    ...(parent ? { admission_identity: parent.id } : {}),
+    // recipients cannot each burn a full lifetime/daily budget. In `per_key`
+    // concurrency mode the child is its own admission identity so its cap and
+    // counter are independent.
+    ...(parent && !perKeyConcurrency ? { admission_identity: parent.id } : {}),
     ...(policy.modelList ? { model_list: policy.modelList as string[] } : {}),
     model_access_mode: policy.modelAccessMode ?? "whitelist",
     ...(policy.clientRouterDenylist
@@ -434,7 +442,11 @@ export async function resolveApiKeyAuthorization(
     ...(policy.monthlyTokenLimit != null ? { monthly_tokens: policy.monthlyTokenLimit } : {}),
     ...(policy.lifetimeTokenBudget != null ? { lifetime_token_budget: policy.lifetimeTokenBudget } : {}),
     lifetime_tokens_consumed: consumed,
-    ...(policy.maxConcurrentRequests != null ? { max_concurrent: policy.maxConcurrentRequests } : {}),
+    // `per_key` mode: the child carries its own cap (copied at issue); family
+    // mode inherits the parent's cap.
+    ...((perKeyConcurrency ? row.maxConcurrentRequests : policy.maxConcurrentRequests) != null
+      ? { max_concurrent: perKeyConcurrency ? row.maxConcurrentRequests : policy.maxConcurrentRequests }
+      : {}),
     scopes,
   });
 

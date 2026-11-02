@@ -167,7 +167,7 @@ export function statusToGatewayErrorCode(status: number): GatewayErrorCode {
   if (status === 413) return "request_too_large";
   if (status === 415) return "unsupported_media_type";
   if (status === 422) return "upstream_unprocessable";
-  if (status === 529) return "capacity_exhausted";
+  if (status === 529) return "upstream_overloaded";
   if (status >= 500 && status <= 599) return "platform_unavailable";
   return "invalid_request";
 }
@@ -274,7 +274,9 @@ export function classifyUpstreamFailure(error: unknown): UpstreamFailurePolicy {
         error.code === "capability_unsupported" ||
     error.code === "model_not_found" ||
     error.code === "admission_unavailable" ||
+    error.code === "route_unavailable" ||
     error.code === "capacity_exhausted" ||
+    error.code === "upstream_overloaded" ||
     // A provider max-inflight rejection: the plan's next sibling account may
     // have a free slot, exactly as with an API-key concurrency rejection.
     error.code === "provider_capacity_exhausted" ||
@@ -286,6 +288,7 @@ export function classifyUpstreamFailure(error: unknown): UpstreamFailurePolicy {
     error.code === "accounts_unavailable" ||
     error.code === "accounts_rate_limited" ||
     error.code === "quota_exceeded" ||
+    error.code === "rate_limited" ||
     error.code === "authentication_failed" ||
     error.code === "proxy_auth_required" ||
     error.code === "deadline_exceeded" ||
@@ -427,10 +430,14 @@ const CATEGORY_HTTP_STATUS: Partial<Record<GatewayErrorCode | "unknown_error", n
   // in this process.
   transport_unavailable: 502,
   platform_unavailable: 502,
+  upstream_overloaded: 529,
   deadline_exceeded: 504,
   transport_closed: 499,
   shutting_down: 503,
   overloaded: 529,
+  route_unavailable: 503,
+  model_not_allowed: 403,
+  rate_limited: 429,
   unknown_error: 500,
 };
 
@@ -624,7 +631,7 @@ export function upstreamQueuedError(
     503,
     detail.length > 0
       ? detail
-      : "The upstream has queued this request. Retry after the stated interval.",
+      : "The upstream has queued this request (request {requestId}); retry after the stated interval. You're in line — no cuts 💛",
     {
       providerId,
       reason: "upstream-queued",
@@ -649,6 +656,12 @@ const QUOTA_ERROR_IDENTIFIERS: ReadonlySet<string> = new Set([
   // it is a spend/limit verdict, never an auth one, so it must classify as
   // quota (a cooldown) instead of `auth_invalidated`.
   "110",
+  // Qoder also reports quota exhaustion as `{"code":116,"error":"quota
+  // exceeded"}` (seen on the IDE model-server surface with a 499/stream
+  // close). The 499 special-case below already treats qoder 499 as quota;
+  // naming the code here makes any status that carries it classify as quota
+  // instead of `invalid_request`/`authentication_failed`.
+  "116",
   // InferHub publishes its own vocabulary in `error.code`. The two 403s below
   // are deliberate absences: `account_blocked` means the account was blocked
   // (an auth/entitlement verdict, not a spend limit) and
@@ -816,7 +829,7 @@ export function classifyUpstreamError(
   }
   if (normalized !== undefined && CAPACITY_ERROR_IDENTIFIERS.has(normalized))
     return {
-      code: "capacity_exhausted",
+      code: "upstream_overloaded",
       status: status === 503 || status === 529 ? status : 529,
       origin: "upstream",
     };
@@ -969,7 +982,7 @@ export async function throwIfHtmlResponse(response: Response): Promise<void> {
   throw new GatewayError(
     "transport_unavailable",
     502,
-    `Upstream returned an HTML error page: ${summary}`.slice(0, 300),
+    `Upstream returned an HTML error page: ${summary} (request {requestId}). The provider's edge is having a moment — hang tight ☕️`.slice(0, 320),
     { upstreamStatus: response.status, contentType, accountScope: true },
     "upstream",
   );
@@ -1011,11 +1024,11 @@ export function fallbackRetryDelayMs(attemptIndex: number): number {
 
 /** Sleeps until the delay expires or the request is aborted. */
 export function sleep(ms: number, signal: AbortSignal): Promise<void> {
-  if (signal.aborted) return Promise.reject(new GatewayError("transport_closed", 499, "request was cancelled"));
+  if (signal.aborted) return Promise.reject(new GatewayError("transport_closed", 499, "The request was cancelled (request {requestId}). Send it again whenever ready 🙃"));
   if (ms <= 0) return Promise.resolve();
   const { promise, resolve, reject } = Promise.withResolvers<void>();
   const timer = setTimeout(() => { signal.removeEventListener("abort", onAbort); resolve(); }, ms);
-  const onAbort = () => { clearTimeout(timer); reject(new GatewayError("transport_closed", 499, "request was cancelled")); };
+  const onAbort = () => { clearTimeout(timer); reject(new GatewayError("transport_closed", 499, "The request was cancelled (request {requestId}). Send it again whenever ready 🙃")); };
   signal.addEventListener("abort", onAbort, { once: true });
   return promise;
 }

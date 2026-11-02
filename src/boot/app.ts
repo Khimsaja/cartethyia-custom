@@ -28,6 +28,8 @@ import type { ByokUpstreamHost } from "../providers/operations/provider-catalog-
 import type { NetworkPoolSelector } from "../network/pool/selector";
 import type { ProxyRequestPreparer } from "../transport/request/preparer";
 import { ProxyRequestStateStore } from "../transport/request/state";
+import { resolveTenantVisionHandoffModels } from "../transport/request/tenant-preferences";
+import { tryVisionHandoff, type VisionHandoffDeps } from "../transport/vision-handoff";
 import { fastPathname } from "../transport/pathname";
 import {
   handleProviderProxyRequest,
@@ -222,7 +224,7 @@ export function createGatewayApp(deps: GatewayAppDeps) {
       (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
     );
     if (reserved) {
-      const notFound = new GatewayError("not_found", 404, "No endpoint exists at this path. Check the route against the API reference.");
+      const notFound = new GatewayError("not_found", 404, "No endpoint exists at this path (request {requestId}). Check the route against the API reference. Nothing here but dust — check the path 🌙");
       return new Response(JSON.stringify(publicGatewayErrorBody(notFound)), {
         status: notFound.status,
         headers: {
@@ -242,11 +244,38 @@ export function createGatewayApp(deps: GatewayAppDeps) {
     deps.mode === "production" ? deps.shutdownCoordinator : undefined,
   );
   deps.runtimeMetricsSampler?.bindInFlight(() => requestStateStore.inFlightCount());
+  // Vision handoff runs as an internal sub-dispatch when the tenant configured
+  // an ordered list of vision models. Wire the preparer's runner here, where
+  // the request state store and the full dispatch dependency surface exist.
+  if (deps.mode === "production") {
+    deps.proxyPreparer.bindVisionHandoff(async (input) => {
+      const models = await resolveTenantVisionHandoffModels(
+        deps.db,
+        input.authorization.tenantId,
+      );
+      if (models.length === 0) return [];
+      const runnerDeps: VisionHandoffDeps = {
+        db: deps.db,
+        stateStore: requestStateStore,
+        proxyPreparer: deps.proxyPreparer,
+        resolveProviderAdapter: deps.resolveProviderAdapter,
+        byokUpstreamHosts: deps.byokUpstreamHosts,
+        networkBindingFactory: deps.networkBindingFactory,
+        snapshotService: deps.snapshotService,
+        telemetryBuffer: deps.telemetryBuffer,
+        resolveOAuthRefresher: deps.resolveOAuthRefresher,
+        oauthRefreshService: deps.oauthRefreshService,
+        poolSelector: deps.poolSelector,
+      };
+      return tryVisionHandoff(runnerDeps, input, models);
+    });
+  }
   // Shutdown ordering: abort in-flight proxy controllers first so the
   // bounded drain observes cancellation and finalizers run before
   // telemetry flush and pool close. The reason is threaded through so the
-  // streaming path emits a drain-aware terminal frame (`restart_for_update`
-  // vs `shutting_down`) instead of a bare abort that reads as a client drop.
+  // streaming path emits a drain-aware terminal frame (`shutting_down` with
+  // reason `restart_for_update` vs plain `shutting_down`) instead of a bare
+  // abort that reads as a client drop.
   // Only production has a coordinator to wire; the shell never drains.
   if (deps.mode === "production") {
     const coordinator = deps.shutdownCoordinator;
@@ -516,7 +545,7 @@ export function createGatewayApp(deps: GatewayAppDeps) {
         throw new GatewayError(
           "model_not_found",
           404,
-          `The model '${targetId}' does not exist or you do not have access to it.`,
+          `The model '${targetId}' does not exist or you do not have access to it (request {requestId}). Try another model — this one's off the menu 📚`,
         );
       return new Response(JSON.stringify(found), {
         headers: {
@@ -647,14 +676,14 @@ export function createGatewayApp(deps: GatewayAppDeps) {
         // for something only the local host may ask. `invalid_request` told an
         // operator to fix the body, when the body was never the problem.
         if (!isLoopbackPeer(peerAddresses.get(request) ?? null))
-          throw new GatewayError("policy_rejected", 403, "task trigger is only available from loopback");
+          throw new GatewayError("policy_rejected", 403, "task trigger is only available from loopback (request {requestId}). This operation is only allowed from a trusted loopback connection — no hard feelings 🫂");
         if (!tokenMatches(request.headers.get("x-drain-token"), token))
-          throw new GatewayError("authentication_failed", 401, "invalid drain token");
+          throw new GatewayError("authentication_failed", 401, "invalid drain token (request {requestId}). Wrong key, right door — check the token 🔑");
         const name = params.name;
         if (!tasks.names().includes(name))
-          throw new GatewayError("invalid_request", 404, `no such task: ${name}`);
+          throw new GatewayError("not_found", 404, `no such task: ${name} (request {requestId}). Nothing here but dust — check the task name 🌙`);
         if (tasks.isRunning(name))
-          throw new GatewayError("invalid_request", 409, `${name} is already running`);
+          throw new GatewayError("invalid_request", 409, `${name} is already running (request {requestId}). One at a time — wait for it to finish ⏳`);
         void tasks.runNow(name);
         return new Response(JSON.stringify({ task: name, status: "started" }), {
           status: 202,

@@ -22,7 +22,7 @@
  * OpenAI-compatible factory's reach — stays bespoke, never re-audit.
  */
 import type { CanonicalEvent, CanonicalRequest } from "../../../protocol/canonical-model";
-import { GatewayError, capabilityUnsupported } from "../../../protocol/gateway-error";
+import { GatewayError } from "../../../protocol/gateway-error";
 import { getCodexVersion } from "../../operations/client-versions";
 import { buildCodexUserAgent } from "../../operations/cli-platform";
 import { randomUUID } from "node:crypto";
@@ -54,6 +54,7 @@ export function _setCodexRateLimitSleepForTesting(
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return rateLimitSleep(ms, signal);
 }
+import { assertWireFamily } from "../../provider-contracts";
 import type { ImageGenerationOutcome, ProviderDispatchTarget, ProviderAdapter, ProviderDispatchContext, ResolvedCredential, WebSearchOutcome, WebSearchResult } from "../../provider-contracts";
 import type { FetchLike } from "../../quota/quota-contracts";
 import { boundedUpstreamArray, boundedUpstreamNumber, sanitizeUpstreamLabel } from "../../provider-sanitize";
@@ -199,7 +200,7 @@ export function assertCodexOAuthCredential(
     throw new GatewayError(
       "invalid_request",
       400,
-      `codex: ChatGPT OAuth credential required (got credential_kind=${credential.credential_kind})`,
+      `codex: ChatGPT OAuth credential required (got credential_kind=${credential.credential_kind}) (request {requestId}). Wrong key, right door — check the credential 🔑`,
     );
   }
 }
@@ -361,7 +362,7 @@ function authHeadersForCodex(
     throw new GatewayError(
       "invalid_request",
       400,
-      "codex: OAuth credential is missing a bearer token",
+      "codex: OAuth credential is missing a bearer token (request {requestId}). Wrong key, right door — check the credential 🔑",
     );
   }
   const token = new TextDecoder().decode(credential.secret);
@@ -748,7 +749,7 @@ export function createCodexAdapter(
       context: ProviderDispatchContext,
     ): Promise<WebSearchOutcome> {
       const query = typeof body.query === "string" ? body.query.trim() : "";
-      if (!query) throw new GatewayError("invalid_request", 400, "search query is required");
+      if (!query) throw new GatewayError("invalid_request", 400, "search query is required (request {requestId}). Check the shape of what you sent — then resend 🪞");
       const requested = typeof body.model === "string" ? body.model.trim() : "";
       const model = requested.length > 0 && requested !== "codex" ? requested : CODEX_SEARCH_DEFAULT_MODEL;
       const request: CanonicalRequest = {
@@ -779,7 +780,7 @@ export function createCodexAdapter(
       }
       const results = normalizeCodexSearchCitations(citations, answerText);
       if (results.length === 0)
-        throw new GatewayError("platform_unavailable", 502, "Codex search returned no citations");
+        throw new GatewayError("platform_unavailable", 502, "Codex search returned no citations (request {requestId}). The upstream came back empty-handed — retry 🌙");
       const rawMax = body.max_results;
       const maxResults =
         typeof rawMax === "number" && Number.isFinite(rawMax)
@@ -796,7 +797,7 @@ export function createCodexAdapter(
       const prompt = imagePrompt(body);
       const requested =
         candidate.model_id.length > 0 ? candidate.model_id : typeof body.model === "string" ? body.model : "";
-      if (requested.length === 0) throw new GatewayError("invalid_request", 400, "model is required");
+      if (requested.length === 0) throw new GatewayError("invalid_request", 400, "model is required (request {requestId}). Check the shape of what you sent — then resend 🪞");
       // A `-image` id is the chat model with the suffix removed. Dedicated
       // image tools still need a chat carrier, and the account's visible 5.6
       // models are the current ones.
@@ -868,7 +869,7 @@ export function createCodexAdapter(
           try {
             parsed = JSON.parse(data);
           } catch {
-            throw new GatewayError("platform_unavailable", 502, "Codex image stream returned malformed JSON", {}, "upstream");
+            throw new GatewayError("platform_unavailable", 502, "Codex image stream returned malformed JSON (request {requestId}). The upstream came back empty-handed — retry 🌙", {}, "upstream");
           }
           if (isRecord(parsed) && (parsed.type === "error" || parsed.type === "response.failed")) {
             const message = isRecord(parsed.error) && typeof parsed.error.message === "string"
@@ -876,7 +877,7 @@ export function createCodexAdapter(
               : isRecord(parsed.response) && isRecord(parsed.response.error) && typeof parsed.response.error.message === "string"
                 ? parsed.response.error.message
                 : "Codex image generation failed";
-            throw new GatewayError("platform_unavailable", 502, message, {}, "upstream");
+            throw new GatewayError("platform_unavailable", 502, `${message} (request {requestId}). The upstream came back empty-handed — retry 🌙`, {}, "upstream");
           }
           image = responsesImageResult(parsed) ?? image;
         }
@@ -903,19 +904,17 @@ export function createCodexAdapter(
         throw new GatewayError(
           "invalid_request",
           400,
-          "codex adapter received non-codex candidate",
+          "codex adapter received non-codex candidate (request {requestId}). Even we have bad days — check the registry wiring 🐻",
         );
       }
       if (candidate.wire_family !== "responses") {
-        throw capabilityUnsupported("responses", {
-          wire_family: candidate.wire_family,
-        });
+        assertWireFamily(candidate, "responses", "codex");
       }
       if (request.model.includes("?")) {
         throw new GatewayError(
           "invalid_request",
           400,
-          "model must not contain query string",
+          "model must not contain query string (request {requestId}). Check the shape of what you sent — then resend 🪞",
         );
       }
 
@@ -1181,8 +1180,8 @@ export function createCodexAdapter(
               "platform_unavailable",
               502,
               error instanceof Error
-                ? `Malformed SSE event: ${error.message}`
-                : "Malformed SSE event",
+                ? `Malformed SSE event: ${error.message} (request {requestId}). The upstream sent something we can't read — retry 🌙`
+                : `Malformed SSE event (request {requestId}). The upstream sent something we can't read — retry 🌙`,
               {},
               "upstream",
             );

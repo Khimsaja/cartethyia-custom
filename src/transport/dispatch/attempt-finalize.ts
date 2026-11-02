@@ -426,7 +426,7 @@ export function terminalFailure(
     return new GatewayError(
       "transport_unavailable",
       502,
-      "The upstream closed the response without reporting a result. Retry; if it keeps happening, the account or pool is unstable.",
+      "The upstream closed the response without reporting a result (request {requestId}). Retry; if it keeps happening, the account or pool is unstable. The connection ghosted us — come back in a moment 👻",
       {},
       "upstream",
     );
@@ -438,7 +438,7 @@ export function terminalFailure(
     const details: Record<string, unknown> = {};
     if (terminal.provider_stop_reason) details["provider_code"] = terminal.provider_stop_reason;
     if (terminal.stop_details) Object.assign(details, terminal.stop_details);
-    const message = typeof details["message"] === "string" ? details["message"] : "upstream request failed";
+    const message = typeof details["message"] === "string" ? details["message"] : "upstream request failed (request {requestId}). The upstream came back empty-handed — retry 🌙";
    // Preserve the upstream's error code when the provider embedded it in
    // `stop_details` (Cursor writes `quota_exceeded` and `authentication_failed`
    // there). Wrapping every terminal failure as `transport_unavailable` discarded
@@ -461,7 +461,7 @@ export function terminalFailure(
     // reports it as truncation instead.
     return options.truncated === true
       ? undefined
-      : new GatewayError("transport_closed", 499, "request was cancelled");
+      : new GatewayError("transport_closed", 499, "The request was cancelled (request {requestId}). Send it again whenever ready 🙃");
   }
   return undefined;
 }
@@ -841,6 +841,7 @@ export async function completeAttempt(
           (completion.error instanceof ProxyConnectRefusalError ? "network" : undefined);
         await recordPoolDispatchOutcome(completion.db, completion.networkPoolId, {
           succeeded: completion.status === "completed",
+          ...(completion.providerId === undefined ? {} : { providerId: completion.providerId }),
           ...(completion.error === undefined ? {} : { error: completion.error }),
           // A CONNECT refusal is the proxy's own answer, given before any
           // upstream was dialed, so it is a network fault even though the

@@ -16,6 +16,7 @@
  *    protocol at the `/anthropic` path suffix, including `thinking_delta`
  *    blocks, so the Messages leg is built directly.
  */
+import { assertWireFamily } from "../../provider-contracts";
 import type {
   ProviderAdapter,
   ProviderDispatchContext,
@@ -57,7 +58,7 @@ function cloudflareEnvelope(context: ProviderDispatchContext): {
 } {
   const secret = context.credential.secret;
   if (secret === undefined || secret.length === 0) {
-    throw new GatewayError("invalid_request", 400, "cloudflareai: credential is missing a secret value");
+    throw new GatewayError("invalid_request", 400, "cloudflareai: credential is missing a secret value (request {requestId}). Wrong key, right door — check the credential 🔑");
   }
   let envelope: ReturnType<typeof decodeCloudflareAiGatewayCredential>;
   try {
@@ -66,7 +67,7 @@ function cloudflareEnvelope(context: ProviderDispatchContext): {
     throw new GatewayError(
       "invalid_request",
       400,
-      `cloudflareai: ${error instanceof Error ? error.message : "stored credential is not a Cloudflare envelope"}`,
+      `cloudflareai: ${error instanceof Error ? error.message : "stored credential is not a Cloudflare envelope"} (request {requestId}). Wrong key, right door — check the credential 🔑`,
     );
   }
   return { token: envelope.token, baseUrl: cloudflareBaseUrl(envelope.accountId, envelope.gatewayId) };
@@ -93,11 +94,7 @@ class CloudflareAiGatewayAdapter implements ProviderAdapter {
     context: ProviderDispatchContext,
   ): AsyncIterable<CanonicalEvent> {
     if (candidate.wire_family !== "messages") {
-      throw new GatewayError(
-        "capability_unsupported",
-        400,
-        `cloudflareai supports messages only, got ${candidate.wire_family}`,
-      );
+      assertWireFamily(candidate, "messages", "cloudflareai");
     }
     const { token, baseUrl } = cloudflareEnvelope(context);
     const outbound = buildClaudeMessagesRequest({

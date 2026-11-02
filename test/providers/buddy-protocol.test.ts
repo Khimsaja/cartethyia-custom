@@ -175,12 +175,23 @@ describe("Buddy upstream protocol alignment", () => {
     expect(payload["max_tokens"]).toBe(64_000);
   });
 
-  test("`auto` stays `auto` on the international roster", () => {
-    // `default-model` was removed from the catalog, so rewriting `auto` onto
-    // it would send clients to an id that is no longer served.
+  test("intl `auto` resolves to the intl backend-selected id (`default-model`)", () => {
+    // Live CLI session logs send `model=default-model` for the intl auto path,
+    // and `default-model` is a served catalog row. The rewrite is what makes
+    // eligibility, cooldowns and the catalog all key on one id.
     const viaAuto: Record<string, unknown> = { model: "auto", messages: [] };
     buddyPrePayloadCommon(viaAuto, request, "intl");
-    expect(viaAuto["model"]).toBe("auto");
+    expect(viaAuto["model"]).toBe("default-model");
+  });
+
+  test("injects `cache_retention` (long) and honors the disable-caching env", () => {
+    const payload: Record<string, unknown> = { model: "hy3", messages: [] };
+    buddyPrePayloadCommon(payload, request, "intl");
+    expect(payload["cache_retention"]).toBe("long");
+    // A caller-supplied value is never overwritten.
+    const explicit: Record<string, unknown> = { model: "hy3", messages: [], cache_retention: "short" };
+    buddyPrePayloadCommon(explicit, request, "intl");
+    expect(explicit["cache_retention"]).toBe("short");
   });
 
   test("CN `auto` resolves to the CN backend-selected id, not the intl one", () => {
@@ -714,15 +725,13 @@ describe("Buddy client-identity hardening", () => {
     credential: { account_id: "acct123456", auth_state: {} },
   } as unknown as ProviderDispatchContext;
 
-  test("the intl variants install the official client identity prompt", () => {
-    // Fidelity with the real client: the leading system turn is the official
-    // CodeBuddy CLI / WorkBuddy prompt, not a neutral stand-in, so a proxied
-    // request matches what the official client emits.
-    expect(CODEBUDDY_SYSTEM_PROMPT.startsWith("You are CodeBuddy Code.")).toBe(true);
-    expect(WORKBUDDY_SYSTEM_PROMPT.startsWith("You are WorkBuddy, a powerful AI assistant.")).toBe(true);
-    // Both end on the shared instruction the upstream keys on.
-    expect(CODEBUDDY_SYSTEM_PROMPT).toContain("<user_query>");
-    expect(WORKBUDDY_SYSTEM_PROMPT).toContain("<user_query>");
+  test("the intl variants install a neutral helpful-assistant prompt", () => {
+    // The leading system turn is a wire contract, but its text is deliberately
+    // neutral: a simple helpful-assistant persona with no client/CLI branding.
+    expect(CODEBUDDY_SYSTEM_PROMPT).toBe("You are a helpful assistant.");
+    expect(WORKBUDDY_SYSTEM_PROMPT).toBe("You are a helpful assistant.");
+    expect(CODEBUDDY_SYSTEM_PROMPT).not.toMatch(/CodeBuddy|CLI|tool/i);
+    expect(WORKBUDDY_SYSTEM_PROMPT).not.toMatch(/WorkBuddy|assistant\.\n/i);
   });
 
   test("a replayed DeepSeek Harness history is rewritten to the WorkBuddy identity", () => {
@@ -746,7 +755,7 @@ describe("Buddy client-identity hardening", () => {
       .filter((m) => m["role"] === "assistant")
       .map((m) => `${typeof m["content"] === "string" ? m["content"] : ""}${typeof m["reasoning_content"] === "string" ? m["reasoning_content"] : ""}`)
       .join(" ");
-    expect(assistantText).toContain("You are WorkBuddy, a powerful AI assistant");
+    expect(assistantText).toContain("You are a helpful assistant");
     expect(assistantText).not.toContain("DeepSeek Harness");
     expect(assistantText).toContain("deepseek-v4");
   });
@@ -755,7 +764,7 @@ describe("Buddy client-identity hardening", () => {
     // Upstream can interleave U+200B between characters; the match must still
     // fire so a normalized-away identity cannot slip through.
     const scrubbed = scrubBuddyChannelIdentityText("You\u200bare DeepSeek\u200b Harness");
-    expect(scrubbed).toBe("You are WorkBuddy, a powerful AI assistant");
+    expect(scrubbed).toBe("You are a helpful assistant");
     const gui = scrubBuddyChannelIdentityText("Open the DeepSeek Harness Web GUI");
     expect(gui).toBe("Open the WorkBuddy Web GUI");
   });
@@ -776,7 +785,7 @@ describe("Buddy client-identity hardening", () => {
     codeBuddyCnPrePayload(payload, wbRequest, wbCandidate, wbContext);
     const messages = payload["messages"] as Array<Record<string, unknown>>;
     expect(messages[0]?.["role"]).toBe("system");
-    expect(messages[0]?.["content"]).toBe("You are a helpful AI assistant that helps with software engineering tasks.");
+    expect(messages[0]?.["content"]).toBe("You are a helpful assistant.");
     expect(messages[0]?.["content"]).not.toContain("CodeBuddy Code");
   });
 });

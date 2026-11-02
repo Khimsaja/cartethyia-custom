@@ -19,6 +19,9 @@
  * bytes. It is also off whenever the attempt's provider body will be
  * captured (`capture_provider_body`), because capture reads the string body
  * to persist it — a stream has no string to read.
+ * `bodyEncoder` lets a provider send the same body with non-JSON encoding
+ * (e.g. zstd, which the Grok Build CLI does). When omitted, the JSON string is
+ * sent as-is.
  */
 import type { ProviderDispatchContext, ValidatedOutboundFetch } from "../../providers/provider-contracts";
 import { abortGatewayError, createUpstreamDeadlineLifecycle } from "../../providers/operations/upstream-deadline";
@@ -142,6 +145,7 @@ export async function postUpstreamJson(
   context: ProviderDispatchContext,
   outboundFetch: ValidatedOutboundFetch,
   options?: { streamBody?: boolean },
+  bodyEncoder?: (payload: Record<string, unknown>) => string | Uint8Array<ArrayBuffer>,
 ): Promise<{ res: Response; signal: AbortSignal; release: () => void }> {
   const lifecycle = createUpstreamDeadlineLifecycle(context);
   try {
@@ -152,7 +156,7 @@ export async function postUpstreamJson(
     const res = await outboundFetch(fetchUrl, {
       method: "POST",
       headers,
-      body: stream ?? JSON.stringify(payload),
+      body: bodyEncoder ? bodyEncoder(payload) : (stream ?? JSON.stringify(payload)),
       signal: lifecycle.signal,
       // Undici-style fetch implementations require this for stream bodies;
       // the validated fetch ignores unknown init fields.

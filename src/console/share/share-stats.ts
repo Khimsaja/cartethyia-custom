@@ -17,6 +17,10 @@ import { type TelemetryEventRecord } from "../../observability/event-log";
 import {
   queryTelemetryEvents as querySqlEvents,
   sumTelemetryTokens,
+  familyKpiTotals,
+  familyWindowRequests,
+  familyHourlyTelemetry,
+  familyIpBreakdown,
 } from "../../observability/event-query";
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import { apiKeys } from "../../persistence/schema";
@@ -72,6 +76,12 @@ export interface ShareTopClientIp {
    * the tool rather than the machine.
    */
   readonly clientType: string | null;
+  /**
+   * True when this address made a request within {@link ACTIVE_IP_WINDOW_MS}.
+   * A recipient watching the link can tell which addresses are still using it
+   * versus ones that stopped days ago.
+   */
+  readonly active: boolean;
 }
 
 export interface ShareFamilyStats {
@@ -110,6 +120,24 @@ export interface ShareStatsPort {
 }
 
 const HOUR_MS = 3_600_000;
+
+/**
+ * How old an address's last request may be and still count as active on the
+ * share page. 24 hours matches the page's own "last 24 hours" framing: an IP
+ * that made a request since yesterday is "active", one that stopped before
+ * that window is "inactive".
+ */
+const ACTIVE_IP_WINDOW_MS = 24 * HOUR_MS;
+
+/**
+ * Recency window for the client-IP ranking's *work set*: the GROUP BY only
+ * scans this slice of telemetry instead of the whole retained window every
+ * tick. Within the window, addresses are ranked by request volume (highest
+ * first), and older addresses fall out of the ranking entirely. 7 days keeps
+ * the ranking useful while staying orders of magnitude smaller than the
+ * retained window.
+ */
+const IP_WINDOW_MS = 7 * 24 * HOUR_MS;
 
 /**
  * Names the client behind a request from its User-Agent.
@@ -154,7 +182,7 @@ interface FamilyRollup {
   totals: ShareFamilyTotals;
   byHour: Map<string, { requests: number; tokens: number }>;
   models: Map<string, { modelId: string; requests: number; tokens: number; rateSum: number; rateCount: number; ttfbSum: number; ttfbCount: number }>;
-  ips: Map<string, { ip: string; requests: number; tokens: number; lastSeenAt: string | null; userAgent: string | null }>;
+  ips: Map<string, { ip: string; requests: number; tokens: number; lastSeenAt: string | null; userAgent: string | null; active: boolean }>;
 }
 
 /**
@@ -163,7 +191,7 @@ interface FamilyRollup {
  */
 function rollupFamily(
   events: readonly TelemetryEventRecord[],
-  bounds: { dayStart: number; monthStart: number; lastHourStart: number; windowStart: number; allowed: ReadonlySet<string> | null },
+  bounds: { dayStart: number; monthStart: number; lastHourStart: number; windowStart: number; activeIpCutoff: number; allowed: ReadonlySet<string> | null },
 ): FamilyRollup {
   const totals = { requests: 0, errors: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, lastHourRequests: 0, todayTokens: 0, monthTokens: 0 };
   const byHour = new Map<string, { requests: number; tokens: number }>();
@@ -196,13 +224,14 @@ function rollupFamily(
       models.set(event.requestedModel, model);
     }
     if (event.clientIp !== null) {
-      const ip = ips.get(event.clientIp) ?? { ip: event.clientIp, requests: 0, tokens: 0, lastSeenAt: null, userAgent: null };
+      const ip = ips.get(event.clientIp) ?? { ip: event.clientIp, requests: 0, tokens: 0, lastSeenAt: null, userAgent: null, active: false };
       ip.requests += 1;
       ip.tokens += tokens;
       // Events arrive newest first, so the first one seen is the most recent.
       if (ip.lastSeenAt === null) {
         ip.lastSeenAt = event.createdAt;
         ip.userAgent = event.userAgent;
+        ip.active = at >= bounds.activeIpCutoff;
       }
       ips.set(event.clientIp, ip);
     }
@@ -244,17 +273,18 @@ const HOURS_WINDOW = 24;
 /**
  * Cache lifetime for one family's rollup.
  *
- * Matched to the share page's SSE tick, which was the point of the old 2 s
- * value — but at 2 s the cache expired on every tick, so every single push was
- * a full parse of the retained telemetry window. A share page's numbers move
- * when a request does, not every 2 s; 10 s still reads as live, and cuts the
- * parse rate by five.
+ * Longer than the SSE tick (30s) so most ticks are served from cache. The
+ * cold-compute path reads the family's telemetry windows (24h chart, 7d IP
+ * ranking), which on a busy family is the single most expensive thing the
+ * share page does; a 5-minute TTL caps that to once per family per 5
+ * minutes while the page still reads as live — KPI numbers move with
+ * traffic, not on a per-minute cadence.
  *
  * Declared here rather than imported from the router so this port does not
- * depend on it. `SHARE_STATS_STREAM_INTERVAL_MS` must be raised with it, or
- * the two drift apart and the cache expires between ticks for no reason.
+ * depend on it. `SHARE_STATS_STREAM_INTERVAL_MS` must stay below it, or the
+ * tick and cache drift apart and every tick bypasses the cache.
  */
-export const SHARE_STATS_CACHE_TTL_SECONDS = 10;
+export const SHARE_STATS_CACHE_TTL_SECONDS = 300;
 
 /**
  * Cache key for one family's rollup. The family is named by its template key
@@ -318,17 +348,23 @@ async function computeFamilyStatsBody(
   const hourStart = utcHourStart(now);
   const lastHourStart = new Date(now.getTime() - HOUR_MS);
   const windowStart = new Date(hourStart.getTime() - (HOURS_WINDOW - 1) * HOUR_MS);
+  // The IP breakdown is bounded to this recency window: a family's "who is
+  // using the link" answer only needs addresses that were active recently,
+  // and an unbounded GROUP BY over every retained event is the one remaining
+  // full-window scan on the share page.
+  const ipWindowStart = new Date(now.getTime() - IP_WINDOW_MS);
 
-  // All-time and today's/month's spend come from SQL aggregates, not from the
-  // bounded page below. The page is capped so a very large family cannot pull
-  // the whole table, which means it cannot carry the all-time total. Lifetime,
-  // daily, and monthly are therefore separate bounded sums over the retained
-  // SQL window (each is a single `SUM` aggregate, not a row materialization).
-  // The page's events feed only the hourly chart and the two ranked tables.
-  const [totalTokens, todayTokens, monthTokens, template] = await Promise.all([
-    sumTelemetryTokens(db, tenantId, { familyKeyId: templateKeyId, since: new Date(0) }),
+  // All-time family KPI comes from the durable rollup
+  // (`telemetry_usage_totals`, charged at write time), not from re-aggregating
+  // the entire retained telemetry window on every tick: the share page's tick
+  // would otherwise read every event a busy family ever produced just to draw
+  // four numbers. Today's/month's spend and the last-hour count are bounded
+  // window reads over the time index, which stay small.
+  const [kpi, todayTokens, monthTokens, lastHourRequests, template] = await Promise.all([
+    familyKpiTotals(db, tenantId, templateKeyId),
     sumTelemetryTokens(db, tenantId, { familyKeyId: templateKeyId, since: dayStart }),
     sumTelemetryTokens(db, tenantId, { familyKeyId: templateKeyId, since: monthStart }),
+    familyWindowRequests(db, tenantId, templateKeyId, lastHourStart),
     db
       .select({ lifetime: apiKeys.lifetimeTokensConsumed })
       .from(apiKeys)
@@ -342,8 +378,9 @@ async function computeFamilyStatsBody(
   // across the overview, the share dialog, and this page.
   const templateLifetime = Number(template[0]?.lifetime ?? 0);
 
-  // The hourly chart covers the last 24 hours, so the page only needs events
-  // in that window — not the whole retained history. Bounded and small.
+  // The ranked tables need real events, bounded to the 24-hour window. The
+  // totals and hourly chart are computed in SQL, so the page cap here only
+  // shapes the model/IP rankings — never the KPI numbers.
   const page = await querySqlEvents(db, {
     tenantId,
     familyApiKeyId: templateKeyId,
@@ -356,6 +393,7 @@ async function computeFamilyStatsBody(
     monthStart: monthStart.getTime(),
     lastHourStart: lastHourStart.getTime(),
     windowStart: windowStart.getTime(),
+    activeIpCutoff: now.getTime() - ACTIVE_IP_WINDOW_MS,
     allowed: allowedSet,
   });
   rollup.totals = {
@@ -363,20 +401,61 @@ async function computeFamilyStatsBody(
     // The template counter is the seed on the running total, not a distinct
     // bucket: daily/monthly windows are telemetry-only (the counter has no
     // time axis), so those keep their own sums.
-    totalTokens: templateLifetime + totalTokens,
+    totalTokens: templateLifetime + kpi.tokens,
     todayTokens,
     monthTokens,
+    // Lifetime counts come from the durable rollup, not the page: a family
+    // busier than the page cap must not freeze at 500 requests/errors.
+    requests: kpi.requests,
+    errors: kpi.errors,
+    lastHourRequests,
   };
 
-  // Fill the 24 buckets in JS: only hours that saw traffic are present, and
-  // a chart drawn from sparse rows would silently compress the axis.
-  const byHour = rollup.byHour;
+  // The hourly chart is a SQL aggregate over the whole family window, so a
+  // busy family's bars stay true. Buckets are filled in JS because only hours
+  // that saw traffic are present; a chart drawn from sparse rows would
+  // silently compress the axis.
+  const bucketSeconds = HOUR_MS / 1000;
+  const sqlHourly = await familyHourlyTelemetry(db, tenantId, templateKeyId, windowStart, bucketSeconds);
+  const byHour = new Map(
+    sqlHourly.map((bucket) => [
+      new Date(bucket.at).toISOString(),
+      { requests: bucket.requests, tokens: bucket.inputTokens + bucket.outputTokens },
+    ]),
+  );
   const hourly: ShareHourlyBucket[] = [];
   for (let index = 0; index < HOURS_WINDOW; index += 1) {
     const hour = new Date(windowStart.getTime() + index * HOUR_MS).toISOString();
     const bucket = byHour.get(hour);
     hourly.push({ hour, requests: bucket?.requests ?? 0, tokens: bucket?.tokens ?? 0 });
   }
+
+  // Client IPs come from a SQL aggregate over a bounded recent window, ranked
+  // by request volume — so a family's "who is using the link most" answer
+  // stays cheap instead of scanning the whole retained telemetry on every
+  // tick. `clientType` is best-effort from the page's events (the most recent
+  // 24 hours), which carry the User-Agent.
+  const ipRows = await familyIpBreakdown(db, tenantId, templateKeyId, TOP_IPS_LIMIT, ipWindowStart);
+  const clientTypeByIp = new Map<string, string | null>();
+  for (const event of events) {
+    if (event.clientIp !== null && !clientTypeByIp.has(event.clientIp)) {
+      clientTypeByIp.set(event.clientIp, clientTypeFromUserAgent(event.userAgent));
+    }
+  }
+  const activeIpCutoff = now.getTime() - ACTIVE_IP_WINDOW_MS;
+  const clientIps = ipRows.map((row) => {
+    const lastSeenAt =
+      row.lastSeenAt instanceof Date ? row.lastSeenAt : new Date(String(row.lastSeenAt ?? ""));
+    const lastSeenMs = Number.isFinite(lastSeenAt.getTime()) ? lastSeenAt.getTime() : 0;
+    return {
+      ip: maskClientIp(row.ip),
+      requests: row.requests,
+      tokens: row.tokens,
+      lastSeenAt: lastSeenMs > 0 ? lastSeenAt.toISOString() : null,
+      clientType: clientTypeByIp.get(row.ip) ?? null,
+      active: lastSeenMs >= activeIpCutoff,
+    };
+  });
 
   return {
     totals: rollup.totals,
@@ -391,15 +470,6 @@ async function computeFamilyStatsBody(
         avgTokensPerSec: row.rateCount > 0 ? row.rateSum / row.rateCount : null,
         avgTtfbMs: row.ttfbCount > 0 ? Math.round(row.ttfbSum / row.ttfbCount) : null,
       })),
-    clientIps: [...rollup.ips.values()]
-      .sort((a, b) => b.requests - a.requests)
-      .slice(0, TOP_IPS_LIMIT)
-      .map((row) => ({
-        ip: maskClientIp(row.ip),
-        requests: row.requests,
-        tokens: row.tokens,
-        lastSeenAt: row.lastSeenAt,
-        clientType: clientTypeFromUserAgent(row.userAgent),
-      })),
+    clientIps,
   };
 }

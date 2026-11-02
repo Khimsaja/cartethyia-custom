@@ -1,7 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
   Activity,
-  Fingerprint,
   FlaskConical,
   KeyRound,
   Loader2,
@@ -22,13 +21,13 @@ import { Dialog } from "../../../components/ui/dialog";
 import { Input } from "../../../components/ui/input";
 import { Inline } from "../../../components/ui/inline";
 import { Stack } from "../../../components/ui/stack";
-import { formatResetDistance } from "../../../lib/format/quota";
+import { formatResetDistance, quotaPillSummary } from "../../../lib/format/quota";
 import { toast } from "../../../lib/toast";
+import { usePoolHealthEvents, usePoolProviderProbe } from "../../../hooks/network";
+import { EmptyState, LoadingState, ErrorState } from "../../../components/ui/state";
 import type { ProviderAccountResponse } from "../../../data/contracts";
 import { AccountStatusBadge } from "./AccountStatusBadge";
-import { NativeIdentityDialog } from "./NativeIdentityDialog";
-
-const QODER_PROVIDER_IDS = new Set(["qoder", "qodercn"]);
+import { authMethodPill } from "./account-auth-method";
 
 function credentialExpiryLabel(expiresAt: string | undefined): string | undefined {
   if (expiresAt === undefined) return undefined;
@@ -41,54 +40,21 @@ function credentialExpiryLabel(expiresAt: string | undefined): string | undefine
 /**
  * One chip for pooled credits when available, otherwise the lowest independent
  * quota percent. Sits before the inflight chip so the operator sees allowance
- * before concurrency.
+ * before concurrency. The aggregation lives in `quotaPillSummary` — the same
+ * shapes the server-side totals read, so the pill and the Quota page cannot
+ * drift apart.
  */
 function QuotaPill({
   windows,
 }: {
   readonly windows: readonly QuotaWindow[] | undefined;
 }): ReactNode {
-  if (windows === undefined || windows.length === 0) return null;
-  let remaining = 0;
-  let total = 0;
-  let hasCredits = false;
-  let lowestPercent: number | null = null;
-  for (const window of windows) {
-    const isPooled = window.accounting === "pooled";
-    if (!isPooled) {
-      if (typeof window.remainingPercent === "number" && Number.isFinite(window.remainingPercent)) {
-        lowestPercent =
-          lowestPercent === null ? window.remainingPercent : Math.min(lowestPercent, window.remainingPercent);
-      }
-      continue;
-    }
-    const limit = typeof window.limit === "number" && Number.isFinite(window.limit) ? window.limit : null;
-    const left =
-      typeof window.remaining === "number" && Number.isFinite(window.remaining)
-        ? window.remaining
-        : limit !== null && typeof window.used === "number" && Number.isFinite(window.used)
-          ? limit - window.used
-          : null;
-    if (left !== null && limit !== null) {
-      remaining += Math.max(0, left);
-      total += limit;
-      hasCredits = true;
-    }
-  }
-  let displayText: string | null = null;
-  if (hasCredits) {
-    displayText = `${trimNumber(remaining)} of ${trimNumber(total)}`;
-  } else if (lowestPercent !== null) {
-    displayText = `${Math.round(lowestPercent)}% left`;
-  }
-  if (displayText === null) return null;
-  const low = hasCredits
-    ? remaining <= 0 || (lowestPercent ?? 100) <= 10
-    : (lowestPercent ?? 100) <= 10;
+  const summary = quotaPillSummary(windows ?? []);
+  if (summary.text === null) return null;
   return (
-    <span className="inline-flex items-center gap-2.5 max-w-full px-3.5 py-1 border border-inner-border rounded-chip bg-surface-1 text-text-secondary text-badge leading-normal whitespace-nowrap" data-tone={low ? "warn" : undefined} title={hasCredits ? `${trimNumber(remaining)} credits available of ${trimNumber(total)}` : "Lowest remaining percent across this account's quota windows"}>
+    <span className="inline-flex items-center gap-2.5 max-w-full px-3.5 py-1 border border-inner-border rounded-chip bg-surface-1 text-text-secondary text-badge leading-normal whitespace-nowrap" data-tone={summary.low ? "warn" : undefined} title={summary.hasCredits ? `${trimNumber(summary.remaining)} credits available of ${trimNumber(summary.total)}` : "Lowest remaining percent across this account's quota windows"}>
       <span className="text-text-tertiary text-micro font-semibold uppercase tracking-label">Quota</span>
-      {displayText}
+      {summary.text}
     </span>
   );
 }
@@ -207,13 +173,17 @@ export function AccountRow({
   const update = useUpdateProviderAccount();
   const recover = useRecoverAccount();
   const testQuota = useRefreshAccountQuota(account.id);
+  const poolProbe = usePoolProviderProbe();
+  const isPool = account.kind === "pool";
+  const poolId = account.networkPoolId;
+  const poolHealth = usePoolHealthEvents(isPool ? poolId : undefined);
   const disabled = account.status === "disabled";
   const cooldownUntilMs = account.cooldownUntil ? new Date(account.cooldownUntil).getTime() : NaN;
   const hasActiveCooldown = Number.isFinite(cooldownUntilMs) && cooldownUntilMs > Date.now();
   const isRecoverable = account.status === "cooldown" || hasActiveCooldown;
   const [showHistory, setShowHistory] = useState(false);
+  const [showPoolHistory, setShowPoolHistory] = useState(false);
   const [editKeyOpen, setEditKeyOpen] = useState(false);
-  const [nativeIdentityOpen, setNativeIdentityOpen] = useState(false);
   const [, setTick] = useState(0);
   const [renaming, setRenaming] = useState(false);
   const [draftLabel, setDraftLabel] = useState("");
@@ -326,6 +296,30 @@ export function AccountRow({
                 <span className="text-body font-semibold text-text-primary min-w-0 overflow-hidden text-ellipsis whitespace-nowrap" title={account.label || account.id}>
                   {label}
                 </span>
+                {isPool ? (
+                  <span
+                    className="inline-flex items-center gap-1 px-2 py-0.5 border border-inner-border rounded-tiny bg-surface-1 text-micro font-bold uppercase tracking-label text-text-secondary"
+                    title="Proxy pool routing as an account for this ip-scoped provider"
+                  >
+                    Pool
+                  </span>
+                ) : null}
+                {(() => {
+                  const pill = authMethodPill(account.authMethod);
+                  if (pill === null) return null;
+                  return (
+                    <span
+                      className={`inline-flex items-center gap-1 px-2 py-0.5 border rounded-tiny text-micro font-bold uppercase tracking-label ${
+                        pill.tone === "accent"
+                          ? "border-accent bg-accent-soft text-accent"
+                          : "border-inner-border bg-surface-1 text-text-secondary"
+                      }`}
+                      title={`Signed in via ${pill.label}`}
+                    >
+                      {pill.label}
+                    </span>
+                  );
+                })()}
                 <button
                   type="button"
                   className="shrink-0 grid place-items-center w-10 h-10 p-0 border-0 bg-transparent text-text-tertiary cursor-pointer rounded-tiny hover:bg-inner-border hover:text-text-primary"
@@ -376,61 +370,100 @@ export function AccountRow({
         </div>
 
         <div className="account-row-actions flex items-center justify-end gap-3 flex-wrap">
-          <Button
-            size="icon"
-            variant="secondary"
-            icon={<Activity size={12} />}
-            label="Health"
-            aria-label={`Health for ${label}`}
-            onClick={() => setShowHistory(true)}
-            title="View Health & Error History"
-          />
-          <Button
-            size="icon"
-            variant="secondary"
-            icon={
-              testQuota.isPending ? (
-                <Loader2 size={12} className="animate-spin" />
-              ) : (
-                <FlaskConical size={12} />
-              )
-            }
-            label={testQuota.isPending ? "Testing…" : "Test"}
-            aria-label={`Test ${label}`}
-            disabled={testQuota.isPending}
-            onClick={handleTest}
-            title="Refresh quota and health for this account"
-          />
-          <Button
-            size="icon"
-            variant="secondary"
-            icon={<KeyRound size={12} />}
-            label="Edit key"
-            aria-label={`Replace API key for ${label}`}
-            onClick={() => setEditKeyOpen(true)}
-            title="Replace API key"
-          />
-          {QODER_PROVIDER_IDS.has(providerId) ? (
+          {!isPool ? (
             <Button
               size="icon"
               variant="secondary"
-              icon={<Fingerprint size={12} />}
-              label="Native identity"
-              aria-label={`Native machine identity for ${label}`}
-              onClick={() => setNativeIdentityOpen(true)}
-              title="Qoder native machine identity (daily check-in slot)"
+              icon={<Activity size={12} />}
+              label="Health"
+              aria-label={`Health for ${label}`}
+              onClick={() => setShowHistory(true)}
+              title="View Health & Error History"
+            />
+          ) : (
+            <Button
+              size="icon"
+              variant="secondary"
+              icon={<Activity size={12} />}
+              label="Health"
+              aria-label={`Health for ${label}`}
+              onClick={() => setShowPoolHistory(true)}
+              title="View pool health & error history"
+            />
+          )}
+          {!isPool ? (
+            <Button
+              size="icon"
+              variant="secondary"
+              icon={
+                testQuota.isPending ? (
+                  <Loader2 size={12} className="animate-spin" />
+                ) : (
+                  <FlaskConical size={12} />
+                )
+              }
+              label={testQuota.isPending ? "Testing…" : "Test"}
+              aria-label={`Test ${label}`}
+              disabled={testQuota.isPending}
+              onClick={handleTest}
+              title="Refresh quota and health for this account"
+            />
+          ) : (
+            <Button
+              size="icon"
+              variant="secondary"
+              icon={
+                poolProbe.isPending ? (
+                  <Loader2 size={12} className="animate-spin" />
+                ) : (
+                  <FlaskConical size={12} />
+                )
+              }
+              label={poolProbe.isPending ? "Testing…" : "Test"}
+              aria-label={`Test ${label}`}
+              disabled={poolProbe.isPending || poolId === undefined}
+              onClick={() => {
+                if (!poolId) return;
+                poolProbe.mutate(
+                  { poolId, providerId },
+                  {
+                    onSuccess: (result) => {
+                      if (result.status === "allowed") toast.success("Pool probe passed", label);
+                      else if (result.status === "blocked") toast.error("Pool blocked", result.reason ?? "Upstream refused this egress");
+                      else if (result.status === "throttled") toast.error("Pool rate-limited", result.reason ?? "Address accepted; rate limit spent");
+                      else toast.error("Pool unreachable", result.reason ?? "Probe could not complete");
+                    },
+                    onError: (err) =>
+                      toast.error("Pool probe failed", (err as { message?: string }).message ?? "Probe failed"),
+                  },
+                );
+              }}
+              title="Probe this pool against the provider"
+            />
+          )}
+          {!isPool ? (
+            <Button
+              size="icon"
+              variant="secondary"
+              icon={<KeyRound size={12} />}
+              label="Edit key"
+              aria-label={`Replace API key for ${label}`}
+              onClick={() => setEditKeyOpen(true)}
+              title="Replace API key"
             />
           ) : null}
-          <Button
-            size="icon"
-            variant="secondary"
-            icon={disabled ? <LockOpen size={12} /> : <PowerOff size={12} />}
-            label={disabled ? "Enable" : "Disable"}
-            aria-label={disabled ? `Enable ${label}` : `Disable ${label}`}
-            disabled={update.isPending}
-            onClick={toggleEnabled}
-            title={disabled ? "Enable account" : "Disable account"}
-          />
+          {!isPool ? (
+            <Button
+              size="icon"
+              variant="secondary"
+              icon={disabled ? <LockOpen size={12} /> : <PowerOff size={12} />}
+              label={disabled ? "Enable" : "Disable"}
+              aria-label={disabled ? `Enable ${label}` : `Disable ${label}`}
+              disabled={update.isPending}
+              onClick={toggleEnabled}
+              title={disabled ? "Enable account" : "Disable account"}
+            />
+          ) : null}
           {isRecoverable ? (
             <Button
               size="icon"
@@ -443,15 +476,17 @@ export function AccountRow({
               title="Clear cooldown / restore active status"
             />
           ) : null}
-          <Button
-            size="icon"
-            variant="danger"
-            icon={<Trash2 size={12} />}
-            label="Delete"
-            aria-label={`Delete ${label}`}
-            onClick={() => onDelete(account)}
-            title="Delete account"
-          />
+          {!isPool ? (
+            <Button
+              size="icon"
+              variant="danger"
+              icon={<Trash2 size={12} />}
+              label="Delete"
+              aria-label={`Delete ${label}`}
+              onClick={() => onDelete(account)}
+              title="Delete account"
+            />
+          ) : null}
         </div>
       </div>
       {showHistory && (
@@ -479,11 +514,55 @@ export function AccountRow({
           onClose={() => setEditKeyOpen(false)}
         />
       )}
-      {nativeIdentityOpen && (
-        <NativeIdentityDialog
-          accountId={account.id}
-          onClose={() => setNativeIdentityOpen(false)}
-        />
+      {showPoolHistory && (
+        <Dialog open title="Pool Health & Error History" onClose={() => setShowPoolHistory(false)} width={640} footer={
+          <Button variant="secondary" size="sm" onClick={() => setShowPoolHistory(false)}>
+            Close
+          </Button>
+        }>
+          <div className="flex flex-col gap-3 min-h-40">
+            {poolHealth.isPending ? (
+              <LoadingState label="Loading pool health events…" />
+            ) : poolHealth.isError ? (
+              <ErrorState
+                message="Failed to load pool health events"
+                onRetry={() => void poolHealth.refetch()}
+              />
+            ) : (poolHealth.data ?? []).length === 0 ? (
+              <EmptyState compact title="No health events recorded" message="Status transitions, rate limits, and auto-recoveries will appear here." />
+            ) : (
+              <div className="scroll-region max-h-160 overflow-y-auto pr-1 flex flex-col gap-3">
+                {(poolHealth.data ?? []).map((event) => (
+                  <div
+                    key={event.id}
+                    className="rounded-control border border-inner-border bg-surface-2 px-4 py-3 text-badge"
+                  >
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="font-mono tabular-nums text-micro text-text-tertiary">
+                        {new Date(event.createdAt).toLocaleString()}
+                      </span>
+                      <span className="inline-flex items-center gap-2">
+                        <span className="text-text-tertiary text-micro uppercase tracking-label">
+                          {event.fromStatus ?? "—"} → {event.toStatus}
+                        </span>
+                        {event.errorCategory ? (
+                          <span className="rounded-pill border border-warning-line bg-surface-2 px-2.5 py-px font-mono text-micro text-status-warning">
+                            {event.errorCategory}
+                          </span>
+                        ) : null}
+                      </span>
+                    </div>
+                    {event.reason ? (
+                      <p className="mt-2 text-micro text-text-secondary [overflow-wrap:anywhere] break-words">
+                        {event.reason}
+                      </p>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </Dialog>
       )}
     </>
   );

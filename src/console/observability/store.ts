@@ -7,11 +7,8 @@ import { type TelemetryEventRecord } from "../../observability/event-log";
 import {
   breakdownTelemetry,
   chartTelemetry,
-  healthTelemetry,
   queryTelemetryEvents as queryTelemetryEventPage,
-  summarizeHealthPerformance,
-  summarizeUsagePerformanceSql,
-  summarizeTelemetry,
+  summarizeUsageWithPerformance,
 } from "../../observability/event-query";
 import { clientNameFromUserAgent } from "../../observability/client-name";
 
@@ -145,6 +142,7 @@ function mapUsageRequestItem(
       : {}),
     ...(event.endpoint ? { endpoint: event.endpoint } : {}),
     ...(event.apiKeyId ? { apiKeyId: event.apiKeyId } : {}),
+    ...(event.networkPoolId ? { networkPoolId: event.networkPoolId } : {}),
     ...(event.userAgent ? { userAgent: event.userAgent } : {}),
     ...(event.userAgent ? { clientName: clientNameFromUserAgent(event.userAgent) } : {}),
     ...(event.clientIp
@@ -186,6 +184,14 @@ async function resolveProxyLabel(
 }
 const HEALTH_WINDOW_MS = 24 * 3_600_000;
 const TOP_N = 50;
+/**
+ * TTL for the usage analytics read-through (summary, chart, breakdown, totals).
+ * The dashboard polls these every 5–10s; a 30s TTL means the heavy telemetry
+ * window scans run once per 30s and the polls in between are answered from
+ * Redis (or the in-process fallback) with a `304`. Health stays on the
+ * default 10s — it feeds the live status tile.
+ */
+const USAGE_READ_THROUGH_TTL_SECONDS = 30;
 
 /**
  * Nearest-rank percentile over a sorted array — kept for the JS-side
@@ -326,11 +332,10 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
       // cost on the dashboard. `healthTelemetry` returns the totals and the
       // database computes the percentiles.
       const since = new Date(Date.now() - HEALTH_WINDOW_MS);
-      const totals = await healthTelemetry(this.db, tenantId, since);
-      const performance = await summarizeHealthPerformance(this.db, tenantId, since);
+      const { summary: totals, performance } = await summarizeUsageWithPerformance(this.db, tenantId, since);
       total = totals.requests;
       errors = totals.errors;
-      avg = performance.latencyAvgMs === null ? 0 : Math.round(performance.latencyAvgMs);
+      avg = Math.round(performance.avgDurationMs ?? 0);
       p95 = performance.latencyP95Ms ?? 0;
       p99 = performance.latencyP99Ms ?? 0;
       const inputTokens = totals.inputTokens;
@@ -392,6 +397,7 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
   async usage(tenantId: string, period: string): Promise<CachedResult<UsageResponse>> {
     return this.readThroughWithEtag(this.usageCacheKey(tenantId, period, "usage"), () =>
       this.computeUsage(tenantId, period),
+    USAGE_READ_THROUGH_TTL_SECONDS,
     );
   }
 
@@ -421,8 +427,8 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
     // Totals AND the top-model/top-provider counts come from SQL: the old
     // shape parsed the whole retained window into an array to count two
     // dimensions in JavaScript.
-    const [summary, models, providers] = await Promise.all([
-      summarizeTelemetry(this.db, tenantId, since),
+    const [{ summary }, models, providers] = await Promise.all([
+      summarizeUsageWithPerformance(this.db, tenantId, since),
       breakdownTelemetry(this.db, tenantId, "model", since),
       breakdownTelemetry(this.db, tenantId, "provider", since),
     ]);
@@ -466,18 +472,18 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
   async usageSummary(tenantId: string, period: string): Promise<CachedResult<UsageSummaryResponse>> {
     return this.readThroughWithEtag(this.usageCacheKey(tenantId, period, "summary"), () =>
       this.computeSummary(tenantId, period),
+    USAGE_READ_THROUGH_TTL_SECONDS,
     );
   }
 
   private async computeSummary(tenantId: string, period: string): Promise<UsageSummaryResponse> {
     const since = this.periodSince(period);
     // Totals, status breakdown, and latency percentiles all computed in SQL.
-    // This used to parse the whole retained window into JavaScript to sum six
-    // counters and sort a latency array.
-    const [summary, statuses, performance] = await Promise.all([
-      summarizeTelemetry(this.db, tenantId, since),
+    // The summary totals and performance figures come from ONE combined window
+    // scan (one percentile pass), not two independent scans.
+    const [{ summary, performance }, statuses] = await Promise.all([
+      summarizeUsageWithPerformance(this.db, tenantId, since),
       breakdownTelemetry(this.db, tenantId, "status", since),
-      summarizeUsagePerformanceSql(this.db, tenantId, since),
     ]);
     const inputTokens = summary.inputTokens;
     const cachedTokens = summary.cachedInputTokens;
@@ -507,6 +513,7 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
   async usageChart(tenantId: string, period: string): Promise<CachedResult<UsageChartResponse>> {
     return this.readThroughWithEtag(this.usageCacheKey(tenantId, period, "chart"), () =>
       this.computeChart(tenantId, period),
+    USAGE_READ_THROUGH_TTL_SECONDS,
     );
   }
 
@@ -554,6 +561,7 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
   ): Promise<CachedResult<UsageByResponse>> {
     return this.readThroughWithEtag(this.usageCacheKey(tenantId, `${dimension}:${period}`, "by"), () =>
       this.computeBy(tenantId, dimension, period),
+    USAGE_READ_THROUGH_TTL_SECONDS,
     );
   }
 
@@ -659,7 +667,7 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
   }
 
   private async computeCache(tenantId: string, period: string): Promise<UsageCacheResponse> {
-    const summary = await summarizeTelemetry(this.db, tenantId, this.periodSince(period));
+    const { summary } = await summarizeUsageWithPerformance(this.db, tenantId, this.periodSince(period));
     const inputTokens = summary.inputTokens;
     const outputTokens = summary.outputTokens;
     const cachedTokens = summary.cachedInputTokens;
@@ -775,7 +783,11 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
     const item = mapUsageRequestItem(event, hideClientIp);
     const keyLabel = event.apiKeyId ? keyLabels?.get(event.apiKeyId) : undefined;
     const labeled = keyLabel === undefined ? item : { ...item, apiKeyLabel: keyLabel };
-    const presented = { ...labeled, proxy };
+    const presented = {
+      ...labeled,
+      proxy,
+      ...(event.networkPoolId ? { networkPoolLabel: proxy } : {}),
+    };
     // Filter the payload table directly instead of joining `telemetry_events`
     // only to re-apply the tenant predicate: `telemetry_payloads` carries
     // `tenant_id` itself, so the join added a second table's rows to filter for

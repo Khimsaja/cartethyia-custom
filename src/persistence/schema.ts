@@ -2,8 +2,22 @@
 import { desc, sql } from "drizzle-orm";
 import {
   bigint, boolean, check, customType, index, integer, jsonb, numeric, pgEnum, pgTable,
-  primaryKey, text, timestamp, uniqueIndex, uuid, type AnyPgColumn,
+  primaryKey, text, timestamp, unique, uniqueIndex, uuid, type AnyPgColumn,
 } from "drizzle-orm/pg-core";
+import type { ProviderQuotaResult } from "../providers/quota/quota-contracts";
+
+/**
+ * The persisted copy of one account's last successful quota read.
+ *
+ * Survives process restarts, which the in-process quota cache does not — so a
+ * cold page open can render the last known balance immediately while the sweep
+ * refreshes it. Stored only on success; a failed fetch leaves the previous
+ * snapshot in place.
+ */
+export interface ProviderQuotaResultSnapshot {
+  readonly quota: ProviderQuotaResult;
+  readonly fetchedAt: string;
+}
 
 export const TENANT_STATUSES = ["active", "suspended", "deleted"] as const;
 export type TenantStatus = (typeof TENANT_STATUSES)[number];
@@ -188,15 +202,16 @@ export const providers = pgTable(
  *
  * The device identity is a deterministic function of a seed file
  * (`~/.config/.locale_cfg`): the `runtime-info` bridge reads that seed and
- * derives `machineToken`/`machineType`/`machineCode`. The server gates the
- * daily 100-credit campaign on a *genuine, non-VM* device identity, so each
- * account gets its own minted seed (a distinct "device").
+ * derives `machineToken`/`machineType`/`machineCode`. The daily 100-credit
+ * campaign does not gate grants on this identity. A persisted seed allows the
+ * vendor bridge to replay the same native identity where another Qoder surface
+ * requires it.
  *
  * `seed` is the exact seed-file content the identity was minted from, stored
  * so the same device identity can be replayed (restore seed → bridge → same
- * token). It is not a credential, but it is the per-account device material
- * and must never be shared between accounts. `machineToken` is the unique
- * device key: two accounts sharing a token are the same device to the server.
+ * token). It is not a credential, but it is per-account device material and
+ * should not be shared between accounts. Campaign grant eligibility is
+ * independent of `machineToken`.
  */
 export interface NativeIdentityRecord {
   readonly machineToken: string;
@@ -294,6 +309,18 @@ export const providerAccounts = pgTable("provider_accounts", {
    * to an account that may well be refused.
    */
   quotaPlan: text("quota_plan"),
+  /**
+   * The last successful quota read for this account, as a JSON snapshot.
+   *
+   * Persisted rather than left only in the quota cache: that cache is a short
+   * in-process TTL and empty on a cold start, so right after a restart the
+   * console would show no balance for every account until the sweep re-read
+   * them. The row survives the restart, so a cold page open renders the last
+   * known numbers immediately (and the sweep refreshes them). Only a
+   * *successful* read is stored — a failed fetch leaves the previous snapshot
+   * in place, mirroring the plan column's behaviour.
+   */
+  quotaSnapshot: jsonb("quota_snapshot").$type<ProviderQuotaResultSnapshot | null>(),
 
   /**
    * Qoder native machine identity bound to this account, as one JSON object
@@ -422,7 +449,7 @@ export const models = pgTable(
      * that predicts access — `credits` and `vendor` were both measured against
      * real dispatches and neither correlates. Only the refusal itself is a
      * signal, so the answer has to be recorded. See
-     * `.skills/cartethyia-reverse-engineering/references/codebuddy-dispatch-headers.md`.
+     * `documentation/research/codebuddy/2026-10-19-codebuddy-chat-dispatch-headers.md`.
      */
     proOnly: boolean("pro_only"),
     /**
@@ -580,6 +607,49 @@ export const networkPools = pgTable("network_pools", {
     index("network_pools_dedicated_provider_id_idx").on(table.dedicatedProviderId),
   ],
 );
+
+/**
+ * A pool's account-equivalent routing entity for ip-scoped, credential-less
+ * providers (OpenCode Free today).
+ *
+ * These providers own no `provider_accounts` rows — the rate limit belongs to
+ * the egress address, not to a credential. Materializing one row per (pool,
+ * ip-scoped provider) lets the account health machine, routing eligibility, and
+ * the provider-detail accounts UI treat each egress like an account: the row
+ * carries the same health state machine and cooldown columns, so a spent egress
+ * is excluded from the plan the same way a cooling account is, and the operator
+ * sees it in the provider's Accounts card with a "Pool" badge.
+ *
+ * The row is an *account-equivalent*, not an account: it resolves no credential
+ * (`credential_kind` is fixed to `none`-style egress), is skipped by the quota
+ * refresh and identity sweeps (they filter on real credential kinds), and is
+ * owned by its pool — deleting the pool cascades the row.
+ */
+export const providerPoolAccounts = pgTable(
+  "provider_pool_accounts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: tenantRefRequired(),
+    networkPoolId: uuid("network_pool_id")
+      .notNull()
+      .references(() => networkPools.id, { onDelete: "cascade" }),
+    providerId: text("provider_id").notNull(),
+    label: text("label").notNull(),
+    ...healthColumns(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("provider_pool_accounts_pool_provider_uidx").on(
+      table.networkPoolId,
+      table.providerId,
+      table.tenantId,
+    ),
+    index("provider_pool_accounts_tenant_status_idx").on(table.tenantId, table.status),
+    index("provider_pool_accounts_provider_status_idx").on(table.providerId, table.status),
+  ],
+);
+export type ProviderPoolAccount = typeof providerPoolAccounts.$inferSelect;
 
 
 // Account and network-pool health events share one table. The entity kind
@@ -806,6 +876,10 @@ export type ApiKeyMode = (typeof API_KEY_MODES)[number];
 export const API_KEY_MODEL_ACCESS_MODES = ["whitelist", "blacklist"] as const;
 export type ApiKeyModelAccessMode = (typeof API_KEY_MODEL_ACCESS_MODES)[number];
 
+/** Share-template concurrency scope — see `apiKeys.concurrencyScope`. */
+export const API_KEY_CONCURRENCY_SCOPES = ["family", "per_key"] as const;
+export type ApiKeyConcurrencyScope = (typeof API_KEY_CONCURRENCY_SCOPES)[number];
+
 /**
  * Inbound `/v1/*` keys never store plaintext secrets. Personal keys carry an
  * authentication hash; share templates carry policy and child keys point back
@@ -845,6 +919,24 @@ export const apiKeys = pgTable(
       .default(0),
     maxConcurrentRequests: integer("max_concurrent_requests"),
     /**
+     * How `maxConcurrentRequests` applies to a share family:
+     *
+     * - `family` (default) — one cap across the whole family: every recipient
+     *   key shares the same admission counter and budget, so 20 means 20
+     *   concurrent requests across all children of the template.
+     * - `per_key` — each recipient key gets its own independent concurrent
+     *   window and cap. The cap is copied from the template to each child at
+     *   issue time (children carry their own `maxConcurrentRequests`), and a
+     *   child's admission identity is its own id, not the parent's.
+     *
+     * Only meaningful for `share` keys; personal keys always use their own
+     * per-key cap.
+     */
+    concurrencyScope: text("concurrency_scope")
+      .$type<ApiKeyConcurrencyScope>()
+      .notNull()
+      .default("family"),
+    /**
      * Slot cap for a share template: the maximum number of concurrently
      * active child keys it may mint. `null` = unlimited (legacy behavior).
      * Enforced at mint time in `issueSharedApiKey`; the console exposes it as
@@ -881,6 +973,21 @@ export const apiKeys = pgTable(
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
     /** Hard expiry for time-boxed keys; NULL means the key never expires. */
     expiresAt: timestamp("expires_at", { withTimezone: true }),
+    /**
+     * Ban state. A ban is distinct from a revoke: it records the operator's
+     * reason (`banReason`) so the console can show it, and it is fully
+     * reversible — unban clears both columns, leaving no metadata behind.
+     * Banned keys are rejected by the auth path exactly like revoked keys.
+     */
+    bannedAt: timestamp("banned_at", { withTimezone: true }),
+    banReason: text("ban_reason"),
+    /**
+     * When the ban lifts on its own, if it is not permanent. `null` means the
+     * ban does not lapse (until an operator unbans it). The auth path treats a
+     * key as banned only while `banned_at` is set and `banned_until` is either
+     * null or in the future — so a timed ban expires without SQL.
+     */
+    bannedUntil: timestamp("banned_until", { withTimezone: true }),
     /**
      * The tenant's mandatory gateway key. Seeded at first boot whether or not
      * `CARTETHYIA_API_KEY` was configured, and the one key the console refuses
@@ -1210,6 +1317,14 @@ export interface ConsoleSettingsPreferences {
    * the safer direction and the more common need.
    */
   imageClampMaxBytes?: number | null;
+  /**
+   * Ordered list of vision model ids (`provider/model`) used to describe
+   * images when the selected model is not image-capable. The first healthy
+   * model wins; if it fails (cooldown/quota/upstream error), the handoff
+   * falls through to the next entry. Empty/absent = legacy `[image]`
+   * placeholder behavior.
+   */
+  visionHandoffModels?: readonly string[];
 }
 
 export const consoleSettings = pgTable("console_settings", {
@@ -1220,21 +1335,33 @@ export const consoleSettings = pgTable("console_settings", {
 
 // Tenant-scoped system prompt injection (append/override). One row per
 // tenant; `global` NULL means never configured, distinct from an explicit
-// disabled setting. Providers/models are JSON object maps keyed by
-// providerId and `providerId::modelId` respectively — see
-// `src/console/system-prompt/contracts.ts` for the value shapes and the
-// resolution rules implemented by the dispatch-path transform.
+// disabled setting. Providers/models/combos/aliases are JSON object maps
+// keyed by providerId, `providerId::modelId`, combo name, and alias name
+// respectively — see `src/console/system-prompt/contracts.ts` for the value
+// shapes and the resolution rules implemented by the dispatch-path transform.
 export const tenantSystemPrompts = pgTable("tenant_system_prompts", {
   tenantId: tenantRefPrimaryKey(),
-  global: jsonb("global").$type<import("../console/system-prompt/contracts").PromptSetting | null>(),
+  global: jsonb("global").$type<import("../console/system-prompt/contracts").ScopePromptRef | null>(),
+  presets: jsonb("presets")
+    .notNull()
+    .default({})
+    .$type<Record<string, import("../console/system-prompt/contracts").SystemPromptPreset>>(),
   providers: jsonb("providers")
     .notNull()
     .default({})
-    .$type<Record<string, import("../console/system-prompt/contracts").ProviderPromptEntry>>(),
+    .$type<Record<string, import("../console/system-prompt/contracts").ScopePromptRef>>(),
   models: jsonb("models")
     .notNull()
     .default({})
-    .$type<Record<string, import("../console/system-prompt/contracts").PromptSetting>>(),
+    .$type<Record<string, import("../console/system-prompt/contracts").ScopePromptRef>>(),
+  combos: jsonb("combos")
+    .notNull()
+    .default({})
+    .$type<Record<string, import("../console/system-prompt/contracts").ScopePromptRef>>(),
+  aliases: jsonb("aliases")
+    .notNull()
+    .default({})
+    .$type<Record<string, import("../console/system-prompt/contracts").ScopePromptRef>>(),
   updatedAt: updatedAtColumn(),
 });
 
@@ -1449,6 +1576,22 @@ export const telemetryEvents = pgTable(
     index("telemetry_events_tenant_account_created_idx").on(
       table.tenantId,
       table.accountId,
+      table.createdAt,
+    ),
+    // Provider usage matrix + `breakdownTelemetry("provider")`: equality on
+    // `provider_id`, range+aggregate on `created_at`. Was served by the
+    // tenant-range index, which scanned every event in the window for one
+    // provider's card.
+    index("telemetry_events_tenant_provider_created_idx").on(
+      table.tenantId,
+      table.providerId,
+      table.createdAt,
+    ),
+    // `breakdownTelemetry("model")` (top-model lists): equality on
+    // `requested_model`, range+aggregate on `created_at`.
+    index("telemetry_events_tenant_model_created_idx").on(
+      table.tenantId,
+      table.requestedModel,
       table.createdAt,
     ),
     /**

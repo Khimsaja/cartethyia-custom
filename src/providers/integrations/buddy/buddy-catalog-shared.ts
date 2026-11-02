@@ -160,7 +160,7 @@ export function makeBuddyCnImageModels(
  * plan rather than about the model. A pro account serves all six. The pill is
  * therefore a hint about a free account, and a dispatch is what settles it.
  *
- * @see `.skills/cartethyia-reverse-engineering/references/codebuddy-dispatch-headers.md`
+ * @see `documentation/research/codebuddy/2026-10-19-codebuddy-chat-dispatch-headers.md`
  */
 export const BUDDY_PRO_ONLY_MODEL_IDS: ReadonlySet<string> = new Set([
   "primary-model",
@@ -273,7 +273,7 @@ export function makeBuddyModel(
   endpoint?: string,
   realm: "intl" | "cn" = "intl",
 ): ModelDefinition {
-  if (!entry[0]) throw new GatewayError("invalid_request", 400, "invalid model");
+  if (!entry[0]) throw new GatewayError("invalid_request", 400, "invalid model (request {requestId}). Check the shape of what you sent — then resend 🪞");
   const image = BUDDY_IMAGE_MODEL_ID_SET.has(entry[0]);
   const efforts = (realm === "cn" ? BUDDY_CN_EFFORTS : BUDDY_INTL_EFFORTS)[entry[0].toLowerCase()];
   // Refused on free is only a question for the intl realm. cbcn serves every

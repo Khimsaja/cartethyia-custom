@@ -34,8 +34,57 @@ import {
 } from "./candidate-index";
 import { totalRemainingCredit, totalRemainingPercent, type ProviderQuotaWindow } from "../../providers/quota/quota-contracts";
 import { getCachedQuotaEntry, quotaLens } from "../../providers/quota/cache";
+import { readQuotaSnapshot } from "../../providers/quota/snapshot";
+import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import type { RedisClient } from "../../persistence/redis";
 import { sharedClaudeSlowLanes } from "../../providers/integrations/claude/claude-slow-lane";
+
+/**
+ * Filters quota windows to those relevant to the candidate model.
+ * Providers like Antigravity report separate quotas for distinct model families
+ * (Gemini vs Claude/GPT), and Grok reports per-product buckets.
+ * Evaluating a Claude exhaustion against a Gemini request would incorrectly
+ * mark the account exhausted for Gemini when Gemini capacity is still available.
+ */
+export function filterCandidateQuotaWindows(
+  windows: readonly ProviderQuotaWindow[],
+  candidate: { readonly provider_id?: string; readonly model_id?: string },
+): readonly ProviderQuotaWindow[] {
+  if (windows.length === 0) return windows;
+  const providerId = candidate.provider_id?.toLowerCase() ?? "";
+  const modelId = candidate.model_id?.toLowerCase() ?? "";
+
+  if (providerId === "antigravity") {
+    const isGemini = /gemini|tab_flash/i.test(modelId);
+    const isClaude = /claude|opus|sonnet/i.test(modelId);
+    if (isGemini) {
+      return windows.filter((w) => {
+        const text = `${w.kind} ${w.label}`.toLowerCase();
+        if (text.includes("gemini") || text.includes("google")) return true;
+        return !text.includes("claude") && !text.includes("gpt");
+      });
+    }
+    if (isClaude) {
+      return windows.filter((w) => {
+        const text = `${w.kind} ${w.label}`.toLowerCase();
+        if (text.includes("claude") || text.includes("gpt")) return true;
+        return !text.includes("gemini") && !text.includes("google");
+      });
+    }
+  }
+
+  if (providerId === "grok") {
+    return windows.filter((w) => {
+      if (w.kind.startsWith("product:")) {
+        const product = w.kind.split(":")[1]?.toLowerCase();
+        return product ? modelId.includes(product) : true;
+      }
+      return true;
+    });
+  }
+
+  return windows;
+}
 
 /**
  * True when the account's remaining allowance is at or below its provider's
@@ -47,9 +96,13 @@ function belowUsageFloor(state: {
   readonly usage_floor?: number;
   readonly usage_floor_unit?: "credit" | "percent";
   readonly quota_windows?: readonly unknown[] | undefined;
+  readonly provider_id?: string;
+  readonly model_id?: string;
 }): boolean {
-  const windows = state.quota_windows as readonly ProviderQuotaWindow[] | undefined;
-  if (windows === undefined || windows.length === 0) return false;
+  const rawWindows = state.quota_windows as readonly ProviderQuotaWindow[] | undefined;
+  if (rawWindows === undefined || rawWindows.length === 0) return false;
+  const windows = filterCandidateQuotaWindows(rawWindows, state);
+  if (windows.length === 0) return false;
   const credit = totalRemainingCredit(windows);
   const percent = totalRemainingPercent(windows);
   const exhaustedIndependentWindow = windows.some(
@@ -65,6 +118,23 @@ function belowUsageFloor(state: {
   if (floor === undefined) return false;
   const remaining = state.usage_floor_unit === "credit" ? credit : percent;
   return remaining !== null && remaining <= floor;
+}
+
+/**
+ * Routing priority for an account's remaining allowance when two candidates sit
+ * in the same rank group: positive remaining credit first, then unknown, then
+ * known-zero last. Free-tier models skip the preference entirely — a free model
+ * routes to any account, as the provider's own directory stated it is free.
+ */
+function creditPriority(
+  candidate: RouteCandidate & { quota_windows?: readonly unknown[] },
+): number {
+  if (candidate.free_tier === true) return 0;
+  const windows = candidate.quota_windows as readonly ProviderQuotaWindow[] | undefined;
+  if (windows === undefined || windows.length === 0) return 0;
+  const credit = totalRemainingCredit(windows);
+  if (credit === null) return 0;
+  return credit > 0 ? 1 : -1;
 }
 
 /**
@@ -332,6 +402,7 @@ export class RoutingEngine {
   constructor(
     private readonly admission: AdmissionController = new InMemoryAdmissionController(),
     private readonly redis?: RedisClient,
+    private readonly db?: CartethyiaDatabase,
   ) {}
 
   private getRoundRobin(key: string): RoundRobinState {
@@ -467,13 +538,30 @@ export class RoutingEngine {
       accountId,
       this.redis,
     ).catch(() => undefined);
-    const quotaWindows = cached?.quota.windows ?? [];
+    // The live cache is authoritative when warm; when it is cold (e.g. right
+    // after a restart, before the sweep re-reads accounts), fall back to the
+    // persisted quota snapshot — the durable source of truth — so routing
+    // still prefers accounts that actually have remaining credit. The snapshot
+    // is never fresher than the cache, but a stale balance beats an unknown
+    // one for ordering, and the sweep refreshes it on schedule.
+    let rawWindows = cached?.quota.windows;
+    if (rawWindows === undefined && this.db !== undefined) {
+      const snapshot = await readQuotaSnapshot(this.db, accountId).catch(() => null);
+      rawWindows = snapshot?.quota.windows;
+    }
+    // The cache is authoritative when it has a reading; when it does not,
+    // keep whatever the candidate already carried (the credit ordering reads
+    // these windows, and a miss must not erase a stamped value).
+    const quotaWindows =
+      rawWindows === undefined
+        ? undefined
+        : filterCandidateQuotaWindows(rawWindows, candidate);
     return {
       ...candidate,
       ...(setting?.usageFloor == null
         ? {}
         : { usage_floor: setting.usageFloor, usage_floor_unit: setting.usageFloorUnit }),
-      quota_windows: quotaWindows,
+      ...(quotaWindows === undefined ? {} : { quota_windows: quotaWindows }),
     };
   }
 
@@ -624,7 +712,7 @@ export class RoutingEngine {
       throw new GatewayError(
         "invalid_request",
         400,
-        "This tool result belongs to a Cursor account that is no longer routable. Reconnect the account, or resend the complete conversation.",
+        "This tool result belongs to a Cursor account that is no longer routable (request {requestId}). Reconnect the account, or resend the complete conversation. The session went cold — reconnect or resend 🔌",
         {
           providerId: affinity.providerId,
           accountId: affinity.providerAccountId,
@@ -641,6 +729,11 @@ export class RoutingEngine {
     const pinnedDecisions = pinned.map((candidate) => this.eligibility.evaluate(candidate));
     const blocked = pinnedDecisions.find((decision) => !decision.eligible);
     if (blocked !== undefined) {
+      // A rebaseable continuation (complete conversation replay) is not owed
+      // to this account: the recorded exchange may travel as history to a
+      // fresh Run on an eligible account. Cooling/blocked pinned account must
+      // not turn that into a hard refusal — fall through to normal routing.
+      if (affinity.rebaseable) return null;
       const reason = blocked.reason;
       if (
         reason === "cooldown_hard" ||
@@ -652,7 +745,7 @@ export class RoutingEngine {
       throw new GatewayError(
         "invalid_request",
         400,
-        "This tool result belongs to an account that is no longer routable. Reconnect the account, or resend the complete conversation.",
+        "This tool result belongs to an account that is no longer routable (request {requestId}). Reconnect the account, or resend the complete conversation. The session went cold — reconnect or resend 🔌",
         {
           providerId: affinity.providerId,
           accountId: affinity.providerAccountId,
@@ -810,11 +903,14 @@ export class RoutingEngine {
       );
     }
 
-    // Single sort by rank (fresh → slow → cooling → saturated), stable.
+    // Single sort by rank (fresh → slow → cooling → saturated), stable. Within
+    // the same rank, accounts with remaining credit come first unless the model
+    // is free tier, which routes to any account.
     eligible = [...eligible].sort((left, right) => {
       const leftRank = decisions.get(admissionKey(left))?.rank ?? ROUTING_RANK.FRESH;
       const rightRank = decisions.get(admissionKey(right))?.rank ?? ROUTING_RANK.FRESH;
-      return leftRank - rightRank;
+      if (leftRank !== rightRank) return leftRank - rightRank;
+      return creditPriority(right) - creditPriority(left);
     });
 
     // Provider routing rotates accounts within the same rank group only; it can

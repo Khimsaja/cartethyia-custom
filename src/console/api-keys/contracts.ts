@@ -9,7 +9,7 @@ import type { ApiKeyRecord, ApiKeyStore } from "../../persistence/stores/api-key
 import type { DrizzleModelTemplateStore } from "../../persistence/stores/model-template-store";
 import { hashSecret } from "../../security/crypto";
 import { type ShareLinkStore, type ShareLinkSummary } from "../../persistence/stores/share-store";
-import { API_KEY_MODES, type ApiKeyMode, type ApiKeyModelAccessMode, type ShareLinkKind } from "../../persistence/schema";
+import { API_KEY_MODES, API_KEY_CONCURRENCY_SCOPES, type ApiKeyMode, type ApiKeyModelAccessMode, type ShareLinkKind } from "../../persistence/schema";
 import { isValidTenantKeyScope, type AccessScope } from "../../security/access-control";
 import { normalizeClientRouterId } from "../../security/client-router-fingerprint";
 import type { ShareActivityPort } from "../share/share-usage";
@@ -35,6 +35,9 @@ export type {
   SharedKeySummary,
   SharedKeyActivityDetail,
 } from "../share/share-usage";
+/** How a share template's concurrency cap applies to its recipients. */
+export type ConcurrencyScope = (typeof API_KEY_CONCURRENCY_SCOPES)[number];
+
 /** Input accepted when creating or editing a key. Null limits mean unlimited. */
 export interface CreateApiKeyRequest {
   enabled?: boolean;
@@ -72,6 +75,13 @@ export interface CreateApiKeyRequest {
    */
   extendByDays?: number;
   extendByHours?: number;
+  /**
+   * How `maxConcurrentRequests` applies to a share template's family:
+   * `family` (default) = one cap across all recipient keys (a single shared
+   * admission counter); `per_key` = each recipient key gets its own cap and
+   * independent counter. Ignored/meaningless for personal keys.
+   */
+  concurrencyScope?: ConcurrencyScope;
   /** Share-template slot cap; only meaningful when keyMode === "share". */
   maxChildren?: number | null;
   modelPrefix?: string;
@@ -121,6 +131,7 @@ export interface ApiKeyResponse {
   readonly modelList?: readonly string[];
   readonly clientRouterDenylist?: readonly string[];
   readonly maxConcurrentRequests?: number;
+  readonly concurrencyScope?: ConcurrencyScope;
   readonly maxChildren?: number;
   readonly notesTitle?: string;
   readonly notesSubtitle?: string;
@@ -134,6 +145,11 @@ export interface ApiKeyResponse {
   readonly revokedAt?: string;
   /** ISO expiry for time-boxed keys; absent when the key never expires. */
   readonly expiresAt?: string;
+  /** Ban state; see the schema columns for the contract. */
+  readonly bannedAt?: string;
+  readonly banReason?: string;
+  /** When the ban lifts on its own; absent means permanent. */
+  readonly bannedUntil?: string;
   readonly tokensConsumed: number;
 }
 /** Creation result; plaintext is returned only when a personal key is minted. */
@@ -144,6 +160,32 @@ export interface CreateApiKeyResponse extends ApiKeyResponse {
 /** Edit result carries one new secret on personal rotation or template conversion. */
 export interface UpdateApiKeyResponse extends ApiKeyResponse {
   readonly secret?: string;
+}
+
+/**
+ * Ban reasons offered by the console dropdown, and the durations the ban
+ * endpoint accepts. These are pure lists, kept in `ban-constants.ts` (no
+ * `node:*` imports) so the dashboard can import them without dragging Node
+ * crypto into the browser bundle. Re-exported here for backend consumers
+ * (`routes.ts` validates against `BAN_DURATION_CHOICES`).
+ */
+export {
+  API_KEY_BAN_REASONS,
+  BAN_DURATION_CHOICES,
+} from "./ban-constants";
+
+/** What a bare "ban this key" click uses: the shortest, most reversible choice. */
+export const DEFAULT_BAN_MINUTES: number = 60;
+
+/** Body accepted by the ban endpoint. */
+export interface BanApiKeyRequest {
+  readonly reason: string;
+  readonly reasonLabel?: string;
+  /**
+   * Ban duration in whole minutes from {@link BAN_DURATION_CHOICES}; `null`
+   * means permanent. Absent = {@link DEFAULT_BAN_MINUTES}.
+   */
+  readonly minutes?: number | null;
 }
 
 /** API-key route dependency boundary. */
@@ -379,6 +421,19 @@ export function validateApiKeyRequest(request: CreateApiKeyRequest): readonly Ac
       "expiry duration must not exceed 10 years",
     );
   }
+  if (
+    request.concurrencyScope !== undefined &&
+    !(API_KEY_CONCURRENCY_SCOPES as readonly string[]).includes(request.concurrencyScope)
+  ) {
+    throw new ConsoleDomainError("invalid_limits", 400, "concurrencyScope must be family or per_key");
+  }
+  if (request.concurrencyScope !== undefined && keyMode !== "share") {
+    throw new ConsoleDomainError(
+      "invalid_limits",
+      400,
+      "concurrencyScope is only valid for share templates",
+    );
+  }
   if (request.maxChildren !== undefined && request.maxChildren !== null) {
     finitePositive(request.maxChildren, "maxChildren");
     if (request.maxChildren > 10_000) {
@@ -483,6 +538,7 @@ export function sanitizeApiKeyResponse(record: ApiKeyRecord): ApiKeyResponse {
     ...(record.monthlyTokenLimit === undefined ? {} : { monthlyTokenLimit: record.monthlyTokenLimit }),
     ...(record.lifetimeTokenBudget === undefined ? {} : { lifetimeTokenBudget: record.lifetimeTokenBudget }),
     ...(record.maxConcurrentRequests === undefined ? {} : { maxConcurrentRequests: record.maxConcurrentRequests }),
+    ...(record.concurrencyScope === undefined ? {} : { concurrencyScope: record.concurrencyScope }),
     ...(record.maxChildren === undefined ? {} : { maxChildren: record.maxChildren }),
     ...(record.modelPrefix === undefined ? {} : { modelPrefix: record.modelPrefix }),
     ...(record.modelTemplateId === undefined ? {} : { modelTemplateId: record.modelTemplateId }),
@@ -494,6 +550,9 @@ export function sanitizeApiKeyResponse(record: ApiKeyRecord): ApiKeyResponse {
     createdAt: record.createdAt.toISOString(),
     ...(record.revokedAt === undefined ? {} : { revokedAt: record.revokedAt.toISOString() }),
     ...(record.expiresAt === undefined ? {} : { expiresAt: record.expiresAt.toISOString() }),
+    ...(record.bannedAt === undefined ? {} : { bannedAt: record.bannedAt.toISOString() }),
+    ...(record.banReason === undefined ? {} : { banReason: record.banReason }),
+    ...(record.bannedUntil === undefined ? {} : { bannedUntil: record.bannedUntil.toISOString() }),
     tokensConsumed: record.tokensConsumed,
   };
 }

@@ -1,4 +1,4 @@
-import { Elysia } from "elysia";
+import { Elysia, type AnyElysia } from "elysia";
 import { spawn } from "node:child_process";
 import { consoleErrorHandler, requireTenantScope } from "../shared/errors";
 import { consoleSseResponse, createConsoleSseStream } from "../observability/sse";
@@ -7,7 +7,10 @@ import type { ConsoleAccessResolver } from "../auth/access";
 import { fetchLatestRelease, type LatestRelease } from "./repository-updates";
 import { isNewerRelease } from "./version-compare";
 
-const MEMORY_SAMPLE_INTERVAL_MS = 10_000;
+// Memory is sampled per visible tab: ten seconds per stream made a console
+// with many open tabs wake up constantly for numbers nobody is reading. 30 s
+// is still responsive for a memory warning while cutting that work by three.
+const MEMORY_SAMPLE_INTERVAL_MS = 30_000;
 const UPDATE_SAMPLE_INTERVAL_MS = 60_000;
 const HIGH_MEMORY_PERCENT = 85;
 const HIGH_MEMORY_CLEAR_PERCENT = 80;
@@ -94,7 +97,7 @@ export function createUpdateRoutes(config: {
   readonly accessResolver: ConsoleAccessResolver;
   readonly observabilityStore: ObservabilityStore;
   readonly fetchRelease?: () => Promise<LatestRelease | null>;
-}): Elysia {
+}): AnyElysia {
   const fetchRelease = config.fetchRelease ?? fetchLatestRelease;
   return new Elysia()
     .error(consoleErrorHandler("Update check failed"))
@@ -199,5 +202,5 @@ export function createUpdateRoutes(config: {
           };
         }),
       );
-    }) as unknown as Elysia;
+    });
 }

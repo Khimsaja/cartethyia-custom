@@ -22,6 +22,7 @@ import type { CanonicalRequest } from "../../../protocol/canonical-model";
 import { GatewayError } from "../../../protocol/gateway-error";
 import { decodeMuseCredential } from "../../../security/credential-codec";
 import { OpenAICompatibleAdapter, withBearerAuthentication } from "../../adapters/compatible-adapter";
+import { assertCredentialKind } from "../../provider-contracts";
 import type { ProviderDispatchTarget, ProviderDispatchContext, ResolvedCredential } from "../../provider-contracts";
 import { providerBaseUrl } from "../../provider-metadata";
 
@@ -85,19 +86,19 @@ export function parseMuseCodeCredential(
     // as before the extraction.
     const message = error instanceof Error ? error.message : "";
     if (message.endsWith("must be a JSON object")) {
-      throw new GatewayError("invalid_request", 400, "muse: credential must be a JSON object");
+      throw new GatewayError("invalid_request", 400, "muse: credential must be a JSON object (request {requestId}). Wrong key, right door — check the credential 🔑");
     }
     if (message.endsWith("is not a valid JSON blob")) {
       throw new GatewayError(
         "invalid_request",
         400,
-        "muse: credential is not a valid JSON blob; sign in again",
+        "muse: credential is not a valid JSON blob (request {requestId}); sign in again. Wrong key, right door — check the credential 🔑",
       );
     }
     throw new GatewayError(
       "authentication_failed",
       401,
-      "muse: credential is missing oauthAccessToken or apiKey; sign in again",
+      "muse: credential is missing oauthAccessToken or apiKey (request {requestId}); sign in again. Wrong key, right door — check the credential 🔑",
     );
   }
 }
@@ -137,17 +138,13 @@ class MuseCodeAdapter extends OpenAICompatibleAdapter {
     candidate: ProviderDispatchTarget,
   ): Promise<Record<string, string>> {
     if (context.credential.credential_kind !== "oauth") {
-      throw new GatewayError(
-        "invalid_request",
-        400,
-        `muse: OAuth credential required (got credential_kind=${context.credential.credential_kind})`,
-      );
+      assertCredentialKind(context.credential, "oauth", "muse");
     }
     if (!context.credential.secret) {
       throw new GatewayError(
         "authentication_failed",
         401,
-        "muse: OAuth credential secret is required",
+        "muse: OAuth credential secret is required (request {requestId}). Wrong key, right door — check the credential 🔑",
       );
     }
     const { apiKey } = decodeMuseCredential(context.credential.secret);

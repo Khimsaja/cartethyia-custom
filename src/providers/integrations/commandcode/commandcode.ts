@@ -19,7 +19,7 @@ import type { ModelDefinition } from "../../provider-model-definition";
 import {
   getCommandCodeVersion,
 } from "../../operations/client-versions";
-import { MimoThinkSplitter } from "../xiaomi-mimo/think-stream";
+import { ThinkSplitter } from "../../../protocol/think-split";
 export const COMMANDCODE_PROVIDER_ID = "commandcode" as const;
 export const COMMANDCODE_BASE_URL = providerBaseUrl("commandcode");
 /**
@@ -426,7 +426,7 @@ export async function headers(sessionId: string, token: string): Promise<Record<
 }
 
 
-type StreamState = { toolIndexById: Map<string, number>; nextToolIndex: number; finishReason: string | undefined; usage: Record<string, unknown> | undefined; think: MimoThinkSplitter };
+type StreamState = { toolIndexById: Map<string, number>; nextToolIndex: number; finishReason: string | undefined; usage: Record<string, unknown> | undefined; think: ThinkSplitter };
 
 export function ccMapFinishReason(reason: string): CanonicalStopReason {
   return reason === "length" ? "length" : reason === "tool_calls" ? "tool_use" : reason === "content_filter" ? "content_filter" : "stop";
@@ -527,7 +527,7 @@ export function transformLine(line: string, state: StreamState, seqBase: number)
     const message =
       extractUpstreamMessage(raw) ||
       extractUpstreamMessage(event) ||
-      "Command Code stream error";
+      "Command Code stream error (request {requestId}). The upstream came back empty-handed — retry 🌙";
     throw new GatewayError(
       classification.code,
       classification.status,
@@ -550,7 +550,7 @@ export function transformLine(line: string, state: StreamState, seqBase: number)
 export async function* transformNdjson(body: ReadableStream<Uint8Array>, signal: AbortSignal): AsyncIterable<CanonicalEvent> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
-  const state: StreamState = { toolIndexById: new Map(), nextToolIndex: 0, finishReason: undefined, usage: undefined, think: new MimoThinkSplitter() };
+  const state: StreamState = { toolIndexById: new Map(), nextToolIndex: 0, finishReason: undefined, usage: undefined, think: new ThinkSplitter() };
   let buffer = "";
   let hasTerminal = false;
   let seq = 1;
@@ -558,11 +558,11 @@ export async function* transformNdjson(body: ReadableStream<Uint8Array>, signal:
   yield { type: "response_start", sequence_number: seq++, model: "commandcode" } as CanonicalEvent;
 
   const readWithAbort = (): Promise<{ done: boolean; value?: Uint8Array }> => {
-    if (signal.aborted) throw new GatewayError("transport_closed", 499, "Command Code stream aborted");
+    if (signal.aborted) throw new GatewayError("transport_closed", 499, "Command Code stream aborted (request {requestId}). Send it again whenever ready 🙃");
     const { promise, resolve, reject } = Promise.withResolvers<{ done: boolean; value?: Uint8Array }>() as unknown as { promise: Promise<{ done: boolean; value?: Uint8Array }>; resolve: (v: unknown) => void; reject: (e: unknown) => void };
     const onAbort = (): void => {
-      if (signal.aborted) reject(new GatewayError("transport_closed", 499, "Command Code stream aborted"));
-      else reject(new GatewayError("platform_unavailable", 502, "Command Code stream error", {}, "upstream"));
+      if (signal.aborted) reject(new GatewayError("transport_closed", 499, "Command Code stream aborted (request {requestId}). Send it again whenever ready 🙃"));
+      else reject(new GatewayError("platform_unavailable", 502, "Command Code stream error (request {requestId}). The upstream came back empty-handed — retry 🌙", {}, "upstream"));
     };
     signal.addEventListener("abort", onAbort, { once: true });
     void reader.read().then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));

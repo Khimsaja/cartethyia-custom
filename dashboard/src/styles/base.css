@@ -249,8 +249,14 @@ html[data-glass-enabled="true"] .card-solid .nested-panel {
 html[data-blur-cards-on="false"] .card-solid,
 html[data-blur-cards-on="false"] .card-glass {
   background: var(--surface-1) !important;
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
+  /* `!important` matches the rules above: both live in this layer and carry
+     it, and same-importance declarations are resolved by specificity — but a
+     `!important` in `@layer utilities` (none today) or any later rule with it
+     would win otherwise. Without it the toggle's `none` lost against the
+     `blur(...) !important` two rules up, and switching blur off changed
+     nothing at all — the toggle shipped dead. */
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
 
 html[data-blur-chrome-on="false"] .app-sidebar,
@@ -260,8 +266,56 @@ html[data-blur-cards-on="false"] .user-card-content,
 html[data-blur-cards-on="false"] .composer-glass {
 
   background: var(--surface-1) !important;
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+/*
+ * Render presets ("Off / Pretty / Extreme" on the Customization page).
+ *
+ * `pretty`: card surfaces read at clarity 90 / depth 0 — near-solid with no
+ * backdrop read at all, so a weak device is never asked to diffuse a snapshot;
+ * the shell keeps a shallow tint with a real blur (80/80) to stay legible over
+ * the background. `extreme`: near-solid everywhere (90/0) — the deepest cut,
+ * no backdrop read on any surface, forced on. Both
+ * blocks sit after the kill-switch rules on purpose: a preset wins over a
+ * per-surface toggle while it is active. The backdrop numbers here read the
+ * same tokens `applyCustomization` rewrites, so only the filter needs restating.
+ */
+html[data-render-mode="pretty"] .card-glass,
+html[data-render-mode="pretty"] .card-solid,
+html[data-render-mode="pretty"] .user-card-content,
+html[data-render-mode="pretty"] .composer-glass {
+  background: color-mix(in srgb, var(--surface-1) calc(40% + var(--blur-cards, 30) * 0.55%), transparent) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+html[data-render-mode="pretty"] .app-sidebar,
+html[data-render-mode="pretty"] .app-topbar,
+html[data-render-mode="pretty"] .app-topbar-popover {
+  background: color-mix(in srgb, var(--surface-1) calc(40% + var(--blur-chrome, 30) * 0.55%), transparent) !important;
+  -webkit-backdrop-filter: blur(calc((100 - var(--blur-chrome, 30)) * var(--blur-chrome-depth, 30) * 0.01px)) !important;
+  backdrop-filter: blur(calc((100 - var(--blur-chrome, 30)) * var(--blur-chrome-depth, 30) * 0.01px)) !important;
+}
+
+/* Depth 0 in the formula lands on blur(0px), which still pays the composite
+   read — Extreme must drop the filter itself, on both groups. */
+html[data-render-mode="extreme"] .card-glass,
+html[data-render-mode="extreme"] .card-solid,
+html[data-render-mode="extreme"] .user-card-content,
+html[data-render-mode="extreme"] .composer-glass {
+  background: color-mix(in srgb, var(--surface-1) calc(40% + var(--blur-cards, 30) * 0.55%), transparent) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+html[data-render-mode="extreme"] .app-sidebar,
+html[data-render-mode="extreme"] .app-topbar,
+html[data-render-mode="extreme"] .app-topbar-popover {
+  background: color-mix(in srgb, var(--surface-1) calc(40% + var(--blur-chrome, 30) * 0.55%), transparent) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
 
 

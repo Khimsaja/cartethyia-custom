@@ -1,5 +1,6 @@
 // Routing contracts and snapshots.
 import { GatewayError } from "../../protocol/gateway-error";
+import { log } from "../../observability/logger";
 import { type ServiceKind, type WireFamily } from "../../protocol/canonical-model";
 import type { CallerIdentity } from "../../security/access-control";
 
@@ -84,6 +85,12 @@ export interface RouteCandidate {
    * refused.
    */
   readonly pro_only?: boolean;
+  /**
+   * True when the provider publishes this model as free (its own directory
+   * statement, e.g. Qoder's `is_free`). A free model may be routed to any
+   * account — the credit-preference ordering skips it entirely.
+   */
+  readonly free_tier?: boolean;
   /**
    * The plan the provider last reported for `provider_account_id`.
    *
@@ -345,6 +352,7 @@ const ELIGIBILITY_REASON_LABELS: Readonly<Record<string, string>> = {
   locked: "all accounts are locked by another request",
   credit_floor_reached: "credit or quota is exhausted",
   quota_exhausted: "every account has an exhausted quota window or is below its configured usage floor",
+  capability_unsupported: "the accounts serving this model do not support the request's capabilities (e.g. images, tools, or reasoning)",
 };
 
 function explainEligibilityReasons(reasons: readonly string[]): string {
@@ -358,7 +366,7 @@ export function ambiguousModelError(bare: string, owners: string[]): GatewayErro
   return new GatewayError(
     "ambiguous_model",
     400,
-    `'${bare}' matches more than one provider (${owners.join(", ")}). Qualify it as '${owners[0]}/${bare}', or add an alias to pick one.`,
+    `'${bare}' matches more than one provider (${owners.join(", ")}). Qualify it as '${owners[0]}/${bare}', or add an alias to pick one. Too popular for its own good — qualify it 🧩`,
     {
       model: bare,
       owners,
@@ -380,7 +388,7 @@ export function modelNotFoundError(requested: string, resolved: readonly string[
     404,
     `'${requested}' is not routed${
       targets.length > 0 ? ` — it resolved to ${hint}, which no account serves` : ""
-    }. Enable the model on an account, or point the alias at one that exists.`,
+    } (request {requestId}). Enable the model on an account, or point the alias at one that exists. Try another model — this one's off the menu 📚`,
     {
       model: requested,
       ...(targets.length > 0 ? { resolved_models: targets } : {}),
@@ -392,7 +400,7 @@ export function capabilityUnsupportedError(capability: string): GatewayError {
   return new GatewayError(
     "capability_unsupported",
     400,
-    `No account serving this model supports ${capability}. Drop the ${capability} part of the request, or route to a model that accepts it.`,
+    `No account serving this model supports ${capability} (request {requestId}). Drop the ${capability} part of the request, or route to a model that accepts it. Know your tools — this one just isn't in the box 🧰`,
     { capability },
   );
 }
@@ -424,8 +432,8 @@ export function capacityExhaustedError(context?: {
     "provider_capacity_exhausted",
     429,
     onlyOne
-      ? "The only account routing this model is at its concurrency limit. Retry shortly; if it persists, raise the provider's max-inflight or add another account."
-      : "Every account is at its concurrency limit. Retry shortly; if it persists, raise the provider's max-inflight or add an account.",
+      ? "The only account routing this model is at its concurrency limit (request {requestId}). Retry shortly; if it persists, raise the provider's max-inflight or add another account. Even the machine needs a rest — chill 🦋"
+      : "Every account is at its concurrency limit (request {requestId}). Retry shortly; if it persists, raise the provider's max-inflight or add an account. Even the machine needs a rest — chill 🦋",
     {
       ...(context?.providerId !== undefined ? { providerId: context.providerId } : {}),
       ...(context?.model !== undefined ? { model: context.model } : {}),
@@ -453,10 +461,18 @@ export function accountsUnavailableError(
   reasons: readonly string[],
 ): GatewayError {
   const distinct = [...new Set(reasons)].sort();
+  const capabilityBlocked = distinct.includes("capability_unsupported");
+  // When the blocker is a capability (the model exists and accounts exist, but
+  // none can carry the request's images/tools/reasoning), telling the client to
+  // "add an account" or wait out a coffee break is misleading — more accounts
+  // cannot conjure a capability the model itself lacks. Name the real fix.
+  const hint = capabilityBlocked
+    ? "Request a model that supports this capability (or a vision-capable model for images), or drop the unsupported part of the request. The model is the limit, not the pool 🧰"
+    : "Add an account, or wait for an operator to re-enable one. Every account is on a coffee break — try later ☕️";
   return new GatewayError(
     "accounts_unavailable",
     503,
-    `No account in the pool can serve '${requested}' right now (${explainEligibilityReasons(distinct)}). Add an account, or wait for an operator to re-enable one.`,
+    `No account in the pool can serve '${requested}' right now (request {requestId}) (${explainEligibilityReasons(distinct)}). ${hint}`,
     { model: requested, reasons: distinct, candidate_count: reasons.length, gateway_hint: "no_healthy_account" },
   );
 }
@@ -492,7 +508,7 @@ export function accountsRateLimitedError(
   return new GatewayError(
     "accounts_rate_limited",
     429,
-    `Every account serving '${requested}'${routeNote} is cooling down after hitting upstream limits. The request is fine — retry once the cooldown resets.`,
+    `Every account serving '${requested}'${routeNote} is cooling down after hitting upstream limits (request {requestId}). The request is fine — retry once the cooldown resets. They're resting up 🌸`,
     {
       model: requested,
       routed_model: routed,
@@ -597,6 +613,10 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
     // Storm protection comes from the mutatesAccount gate plus the
     // memoized rebuild, not from serving stale routing.
     this.snapshot = undefined;
+    // TEMPORARY diagnostic logging for the 2026-10-31 /v1/models latency
+    // investigation: rebuilds are otherwise invisible (no journal lines, no
+    // metrics). Remove once the rebuild hypothesis is confirmed or refuted.
+    log.info("[snapshot] invalidated", { revision: this.revision });
     //
     // Broadcast, because `reusePort` runs several gateway processes and each
     // holds its own snapshot: a console write handled by one of them left the
@@ -608,6 +628,22 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
   }
 
   private async build(revision: RoutingRevision): Promise<RouteSnapshot> {
+    const startedAt = Date.now();
+    // TEMPORARY diagnostic logging (see invalidate()).
+    log.info("[snapshot] rebuild started", { revision });
+    try {
+      return await this.buildInner(revision, startedAt);
+    } catch (error) {
+      log.error(
+        "[snapshot] rebuild failed",
+        error instanceof Error ? error : undefined,
+        { revision, durationMs: Date.now() - startedAt, thrownType: typeof error },
+      );
+      throw error;
+    }
+  }
+
+  private async buildInner(revision: RoutingRevision, startedAt: number): Promise<RouteSnapshot> {
     const built = await this.builder();
     const providerRouting: ProviderRoutingMap | undefined = built.providerRouting
       ? Object.fromEntries(
@@ -645,6 +681,12 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
       this.snapshot = snapshot;
       this.lastGood = snapshot;
     }
+    // TEMPORARY diagnostic logging (see invalidate()).
+    log.info("[snapshot] rebuild completed", {
+      revision,
+      durationMs: Date.now() - startedAt,
+      candidates: snapshot.candidates.length,
+    });
     return snapshot;
   }
 }

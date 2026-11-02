@@ -40,6 +40,25 @@ export const QODER_CHAT_PATH =
 export const QODER_MODELS_PATH = "/algo/api/v2/model/list?Encode=1";
 
 /**
+ * The modern model-server surface used by the IDE / QoderWake (OpenAI-shaped
+ * chunks, plain bearer auth). This surface streams immediately and echoes the
+ * real model key — the legacy `/algo` chat endpoint answers
+ * `10605 isQueued` (parking requests in a server-side queue) and echoes a
+ * fixed `"auto"` model. Dispatch tries this surface first, and falls back to
+ * legacy COSY only when it refuses the account on entitlement grounds (HTTP
+ * 402 / `{"code":116}`) AND the dispatched model is a free-tier row — for a
+ * billed model the same code is genuine quota exhaustion and must surface.
+ */
+export const QODER_IDE_CHAT_PATH = "/model/v1/chat/completions";
+
+/** The model-server host for one realm (intl: `api2-v2`, cn: gateway). */
+export function qoderIdeChatUrl(realm: QoderRealm): string {
+  return realm === "cn"
+    ? `https://gateway.qoder.com.cn${QODER_IDE_CHAT_PATH}`
+    : `https://api2-v2.qoder.sh${QODER_IDE_CHAT_PATH}`;
+}
+
+/**
  * Realm → deployment.
  *
  * `intl` carries two gateway fallbacks (`api2`, `api3`); `cn` has exactly one
@@ -61,7 +80,9 @@ export const QODER_REALMS: Readonly<Record<QoderRealm, QoderRealmConfig>> = {
     gatewayFallbacks: [],
     openapi: "https://openapi.qoder.com.cn",
     website: "https://qoder.com.cn",
-    clientId: "1c5e33e1-364d-4ce6-b02c-acaa81274a5c",
+    // 1:1 with the desktop IDE's device flow (`Hfl` in the unpacked worker):
+    // the client id the IDE registers for the CN deployment.
+    clientId: "e93fe488-5778-4c35-a6fc-0f54ed7b3139",
     redirectUri: "qoder-work-cn://",
     userAgent: "QoderWork/1.1.64",
   },

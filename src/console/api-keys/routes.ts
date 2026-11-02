@@ -2,7 +2,7 @@
 //
 // Owns validation, CRUD operations, and route wiring through the ApiKeyStore.
 
-import { Elysia, t } from "elysia";
+import { Elysia, t, type AnyElysia } from "elysia";
 import { randomBytes, randomUUID } from "node:crypto";
 import { decryptCredentialToString, encryptCredential } from "../../security/crypto";
 import { invalidateApiKeyCache } from "../../security/api-key-auth";
@@ -11,8 +11,8 @@ import { generateShareSlug, hashShareToken } from "../../persistence/stores/shar
 import type { AccessDecision } from "../../security/access-control";
 import { ConsoleDomainError, errorResponse, requireTenantScope } from "../shared/errors";
 import { literalUnion } from "../shared/elysia-schema";
-import { API_KEY_MODES, API_KEY_MODEL_ACCESS_MODES, type ShareLinkKind } from "../../persistence/schema";
-import type { ApiKeyConfig, ApiKeyResponse, UpdateApiKeyResponse } from "./contracts";
+import { API_KEY_MODES, API_KEY_MODEL_ACCESS_MODES, API_KEY_CONCURRENCY_SCOPES, type ShareLinkKind } from "../../persistence/schema";
+import type { ApiKeyConfig, ApiKeyResponse, BanApiKeyRequest, UpdateApiKeyResponse } from "./contracts";
 import type {
   ApiKeyPatch,
   ApiKeyRecord,
@@ -20,6 +20,8 @@ import type {
   SharedChildrenPageOptions,
 } from "../../persistence/stores/api-key-store";
 import {
+  BAN_DURATION_CHOICES,
+  DEFAULT_BAN_MINUTES,
   generateApiKeySecret,
   isDefaultGatewayApiKey,
   parseSharePopupImage,
@@ -312,6 +314,7 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
         ...(request.lifetimeTokenBudget == null ? {} : { lifetimeTokenBudget: request.lifetimeTokenBudget }),
         ...(request.maxConcurrentRequests == null ? {} : { maxConcurrentRequests: request.maxConcurrentRequests }),
         ...(createExpiresAt === undefined ? {} : { expiresAt: createExpiresAt }),
+        ...(request.concurrencyScope !== undefined ? { concurrencyScope: request.concurrencyScope } : {}),
         ...(request.maxChildren == null ? {} : { maxChildren: request.maxChildren }),
         ...(request.modelPrefix === undefined ? {} : { modelPrefix: request.modelPrefix }),
         ...(modelTemplateId === undefined || modelTemplateId === null
@@ -502,6 +505,7 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
         ...(patchRequest.monthlyTokenLimit === undefined ? {} : { monthlyTokenLimit: patchRequest.monthlyTokenLimit }),
         ...(patchRequest.lifetimeTokenBudget === undefined ? {} : { lifetimeTokenBudget: patchRequest.lifetimeTokenBudget }),
         ...(patchRequest.maxConcurrentRequests === undefined ? {} : { maxConcurrentRequests: patchRequest.maxConcurrentRequests }),
+        ...(patchRequest.concurrencyScope !== undefined ? { concurrencyScope: patchRequest.concurrencyScope } : {}),
         ...(patchRequest.maxChildren === undefined ? {} : { maxChildren: patchRequest.maxChildren }),
         ...(patchRequest.modelPrefix === undefined ? {} : { modelPrefix: patchRequest.modelPrefix }),
         ...(expiresAtPatch === undefined ? {} : { expiresAt: expiresAtPatch.expiresAt }),
@@ -959,6 +963,69 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
       });
       return { success: true };
     },
+    async banKey(
+      access: AccessDecision | undefined,
+      keyId: string,
+      request: BanApiKeyRequest,
+    ): Promise<ApiKeyResponse> {
+      const authorized = requireTenantScope(access, "dashboard:write");
+      const reason = request.reason.trim();
+      if (reason.length === 0)
+        throw new ConsoleDomainError("invalid_request", 400, "reason is required");
+      // Parse the duration choice. `null` is permanent; absent defaults to one
+      // hour. Anything not on the offered list is rejected rather than clamped —
+      // clamping would answer a request for 90 days with a week and report
+      // success.
+      const chosenMinutes = request.minutes === undefined ? DEFAULT_BAN_MINUTES : request.minutes;
+      const allowed = new Set(BAN_DURATION_CHOICES.map((choice) => choice.minutes));
+      if (!allowed.has(chosenMinutes)) {
+        throw new ConsoleDomainError(
+          "invalid_request",
+          400,
+          "Unsupported ban duration. Choose one of the offered durations.",
+        );
+      }
+      const bannedUntil = chosenMinutes === null ? null : new Date(Date.now() + chosenMinutes * 60_000);
+      const current = await config.store.get(authorized.tenantId, keyId);
+      if (!current || current.revokedAt !== undefined)
+        throw new ConsoleDomainError("key_not_found", 404, "Key not found");
+      const banned = await config.store.ban(authorized.tenantId, keyId, reason, bannedUntil);
+      if (!banned) throw new ConsoleDomainError("key_not_found", 404, "Key not found");
+      // A banned child key does not affect its share template or sibling keys:
+      // `store.ban` only turns off the one row named by `keyId`, and the auth
+      // path rejects per key hash. The template keeps issuing working children.
+      // A banned key must leave the auth cache for every process at once.
+      invalidateApiKeyCache();
+      await config.auditSink?.record({
+        access: authorized,
+        action: "api_key.banned",
+        target: keyId,
+        detail: { reason, ...(bannedUntil === null ? { permanent: true } : { bannedUntil: bannedUntil.toISOString() }) },
+      });
+      const record = await config.store.get(authorized.tenantId, keyId);
+      if (!record) throw new ConsoleDomainError("key_not_found", 404, "Key not found");
+      return sanitizeApiKeyResponse(record);
+    },
+    async unbanKey(
+      access: AccessDecision | undefined,
+      keyId: string,
+    ): Promise<ApiKeyResponse> {
+      const authorized = requireTenantScope(access, "dashboard:write");
+      const current = await config.store.get(authorized.tenantId, keyId);
+      if (!current || current.revokedAt !== undefined)
+        throw new ConsoleDomainError("key_not_found", 404, "Key not found");
+      const unbanned = await config.store.unban(authorized.tenantId, keyId);
+      if (!unbanned) throw new ConsoleDomainError("key_not_found", 404, "Key not found");
+      invalidateApiKeyCache();
+      await config.auditSink?.record({
+        access: authorized,
+        action: "api_key.unbanned",
+        target: keyId,
+      });
+      const record = await config.store.get(authorized.tenantId, keyId);
+      if (!record) throw new ConsoleDomainError("key_not_found", 404, "Key not found");
+      return sanitizeApiKeyResponse(record);
+    },
   };
   return operations;
 }
@@ -983,6 +1050,7 @@ const apiKeyBody = t.Object({
   extendByDays: t.Optional(t.Union([t.Number(), t.Null()])),
   extendByHours: t.Optional(t.Union([t.Number(), t.Null()])),
   modelTemplateId: t.Optional(t.Union([t.String(), t.Null()])),
+  concurrencyScope: t.Optional(literalUnion(API_KEY_CONCURRENCY_SCOPES)),
   modelPrefix: t.Optional(t.String()),
   modelAccessMode: t.Optional(literalUnion(API_KEY_MODEL_ACCESS_MODES)),
   modelList: t.Optional(t.Array(t.String())),
@@ -1020,7 +1088,7 @@ function jsonNull(): Response {
   });
 }
 /** Creates tenant-bound API-key routes with request-local authorization. */
-export function createApiKeyRoutes(config: ApiKeyConfig): Elysia {
+export function createApiKeyRoutes(config: ApiKeyConfig): AnyElysia {
   const factory = createApiKeyOperations(config);
   return new Elysia({ prefix: "/api-keys" })
     .get("/", async ({ request, set }) => {
@@ -1140,6 +1208,30 @@ export function createApiKeyRoutes(config: ApiKeyConfig): Elysia {
         return errorResponse(error, set, "API-key operation failed");
       }
     })
+    .post(
+      "/:keyId/ban",
+      {
+        body: t.Object({
+          reason: t.String(),
+          reasonLabel: t.Optional(t.String()),
+          minutes: t.Optional(t.Union([t.Number({ minimum: 1 }), t.Null()])),
+        }),
+      },
+      async ({ request, params, body, set }) => {
+        try {
+          return await factory.banKey(config.accessResolver(request), params.keyId, body);
+        } catch (error) {
+          return errorResponse(error, set, "API-key operation failed");
+        }
+      },
+    )
+    .post("/:keyId/unban", async ({ request, params, set }) => {
+      try {
+        return await factory.unbanKey(config.accessResolver(request), params.keyId);
+      } catch (error) {
+        return errorResponse(error, set, "API-key operation failed");
+      }
+    })
     .get("/:keyId/share", async ({ request, params, set }) => {
       try {
         const share = await factory.getShare(config.accessResolver(request), params.keyId, {
@@ -1178,5 +1270,5 @@ export function createApiKeyRoutes(config: ApiKeyConfig): Elysia {
       } catch (error) {
         return errorResponse(error, set, "API-key operation failed");
       }
-    }) as unknown as Elysia;
+    });
 }

@@ -42,10 +42,54 @@ export function readCredentialSecret(credential: ResolvedCredential, errorMessag
     throw new GatewayError(
       "authentication_failed",
       401,
-      errorMessage ?? "Provider credential secret is missing or empty",
+      `${errorMessage ?? "Provider credential secret is missing or empty"} (request {requestId}). Wrong key, right door — check the credential 🔑`,
     );
   }
   return raw;
+}
+
+/**
+ * Asserts a credential is of the required kind, throwing a typed rejection
+ * otherwise. Providers disagree on the kind they accept (`oauth` vs
+ * `api_key` vs `scoped_access_token`), and each hand-rolled its own check +
+ * message. This centralizes the common pattern so a mis-bound credential reads
+ * the same everywhere, preserving the existing `invalid_request`/400 wire
+ * contract.
+ */
+export function assertCredentialKind(
+  credential: ResolvedCredential,
+  expected: CredentialKind | readonly CredentialKind[],
+  providerLabel: string,
+): void {
+  const expectedKinds = Array.isArray(expected) ? expected : [expected];
+  if (expectedKinds.includes(credential.credential_kind)) return;
+  throw new GatewayError(
+    "invalid_request",
+    400,
+    `${providerLabel}: ${expectedKinds.join(" or ")} credential required (got credential_kind=${credential.credential_kind}) (request {requestId}). Wrong key, right door — check the credential 🔑`,
+    { expected_credential_kind: expectedKinds },
+  );
+}
+
+/**
+ * Asserts a candidate's wire family is one of the ones the provider serves,
+ * throwing `capability_unsupported` otherwise. Every provider hand-rolled this
+ * guard with the same shape; this centralizes the pattern so a mis-routed
+ * candidate reads the same everywhere.
+ */
+export function assertWireFamily(
+  candidate: ProviderDispatchTarget,
+  allowed: WireFamily | readonly WireFamily[],
+  providerLabel: string,
+): void {
+  const allowedFamilies = Array.isArray(allowed) ? allowed : [allowed];
+  if (allowedFamilies.includes(candidate.wire_family)) return;
+  throw new GatewayError(
+    "capability_unsupported",
+    400,
+    `${providerLabel} supports ${allowedFamilies.join("/")} only, got ${candidate.wire_family} (request {requestId}). Know your tools — this one just isn't in the box 🧰`,
+    { expected_wire_families: allowedFamilies, got_wire_family: candidate.wire_family },
+  );
 }
 
 /** Fetch capability that validates DNS answers and redirects before each request. */
@@ -360,7 +404,7 @@ export interface WebSearchOutcome {
 function normalizeProviderSlug(id: string): string {
   const trimmed = id.trim().toLowerCase();
   if (!/^[a-z][a-z0-9-]{0,63}$/.test(trimmed)) {
-    throw new GatewayError("invalid_request", 400, "Provider ID must be a lowercase slug");
+    throw new GatewayError("invalid_request", 400, "Provider ID must be a lowercase slug (request {requestId}). Check the shape of what you sent — then resend 🪞");
   }
   return trimmed;
 }
@@ -387,7 +431,7 @@ export function parseCustomProviderId(value: string): CustomProviderId {
     throw new GatewayError(
       "slug_reserved",
       409,
-      "The provider ID is reserved for a builtin provider",
+      "The provider ID is reserved for a builtin provider (request {requestId}). This name's taken — pick another alias ✨",
       { provider_id: normalized },
     );
   }

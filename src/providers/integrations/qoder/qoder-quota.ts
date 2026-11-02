@@ -1,8 +1,10 @@
 // Qoder quota.
 //
-// `GET /api/v2/quota/usage` on the **openapi** host, with a plain bearer token
-// — no COSY signature on this surface, which is the one place the business API
-// differs from inference.
+// `GET /api/v2/quota/usage` on the **openapi** host, with a bearer token — no
+// COSY signature on this surface, which is the one place the business API
+// differs from inference. Device tokens (`dt-…`) are used directly; a PAT
+// (`pt-…`) is exchanged for a job token (`jt-…`) first, because the business
+// API rejects a raw PAT with 401 `TOKEN_EXPIRE`.
 //
 // The response carries two quota objects and they are not interchangeable:
 //
@@ -36,6 +38,7 @@ import {
 import type { QuotaCollectionContext } from "../../quota/quota-support";
 import { log } from "../../../observability/logger";
 import { QODER_REALMS, type QoderRealm } from "./qoder-realm";
+import { isQoderPat, resolveQoderAuth } from "./qoder";
 
 /** Paths on the realm's openapi host. */
 const QUOTA_PATH = "/api/v2/quota/usage";
@@ -75,7 +78,29 @@ function creditWindow(
 ): ProviderQuotaWindow | null {
   if (remaining === null && limit === null) return null;
   const used = remaining !== null && limit !== null ? limit - remaining : null;
-  return percentWindow(kind, label, null, resetsAt, used, limit, "pooled");
+  // Give pooled windows a percentage so the console can render a real bar and
+  // tone instead of an uncolored "quota-only" row (which is what a null
+  // percent produced: every Qoder account was grey, and "enable available
+  // accounts" could never match a window). A ceiling of 0 with nothing left is
+  // a spent balance — report 0% remaining rather than a null percent.
+  let usedPercent: number | null = null;
+  if (remaining !== null && limit !== null) {
+    if (limit > 0) usedPercent = ((limit - remaining) / limit) * 100;
+    else if (remaining <= 0) usedPercent = 100;
+  }
+  return percentWindow(kind, label, usedPercent, resetsAt, used, limit, "pooled");
+}
+
+/**
+ * The business API answers "never resets" with a far-future sentinel
+ * (`9999-12-31T00:00:00.000Z`). Keeping it on the wire makes the console show
+ * a 7978-year countdown. Any date at or beyond year 9999 means no reset.
+ */
+function normalizeQoderReset(resetsAt: string | null): string | null {
+  if (resetsAt === null) return null;
+  const date = new Date(resetsAt);
+  if (!Number.isFinite(date.getTime())) return null;
+  return date.getUTCFullYear() >= 9999 ? null : resetsAt;
 }
 
 /**
@@ -103,11 +128,28 @@ export async function fetchQoderQuota(
 
   let payload: unknown;
   try {
+    // A PAT (`pt-…`) is not an active bearer on the business API: it is a
+    // minted credential that must be exchanged for a short-lived job token
+    // (`jt-…`) first. Verified live 2026-11-02: a raw `pt-…` bearer answers
+    // 401 `TOKEN_EXPIRE` while the exchanged `jt-…` answers 200. Device
+    // tokens (`dt-…`) are used directly. A failed exchange — expired/revoked
+    // PAT — is an unreadable balance, not an error that cools the account.
+    let bearer = credential;
+    if (isQoderPat(credential)) {
+      const auth = await resolveQoderAuth({
+        secret: credential,
+        authState: raw,
+        signal: AbortSignal.timeout(15_000),
+        fetcher,
+        realm,
+      });
+      bearer = auth.securityOauthToken;
+    }
     const response = await fetcher(url, {
       method: "GET",
       headers: {
         accept: "application/json",
-        authorization: `Bearer ${credential}`,
+        authorization: `Bearer ${bearer}`,
         "user-agent": config.userAgent,
       },
     });
@@ -148,7 +190,7 @@ export async function fetchQoderQuota(
     return { source: "qoder", plan: null, windows: [], error: null };
   }
 
-  const resetsAt = isoDate(root["expiresAt"] ?? root["expireAt"] ?? root["expires_at"]);
+  const resetsAt = normalizeQoderReset(isoDate(root["expiresAt"] ?? root["expireAt"] ?? root["expires_at"]));
   const windows: ProviderQuotaWindow[] = [];
   const plan = creditWindow("qoder:plan", "Plan credits", number(userQuota?.["remaining"]), number(userQuota?.["total"]), resetsAt);
   if (plan) windows.push(plan);

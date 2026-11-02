@@ -18,8 +18,9 @@
  * - `isGatewayError()` semantics live in one shared SQL predicate.
  */
 import { and, desc, eq, gte, inArray, isNotNull, or, sql, type SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import type { CartethyiaDatabase } from "../persistence/db-handle";
-import { apiKeys, telemetryEvents } from "../persistence/schema";
+import { apiKeys, telemetryEvents, telemetryUsageTotals } from "../persistence/schema";
 import type { TelemetryEventRecord } from "./event-log";
 import { gatewayErrorSql } from "./telemetry-status";
 
@@ -31,7 +32,7 @@ import { gatewayErrorSql } from "./telemetry-status";
  * totals, and the durable usage rollup cannot drift apart — an unknown status
  * must be classified identically in all three.
  */
-const IS_GATEWAY_ERROR_SQL = gatewayErrorSql(telemetryEvents.status, telemetryEvents.httpStatus);
+export const IS_GATEWAY_ERROR_SQL = gatewayErrorSql(telemetryEvents.status, telemetryEvents.httpStatus);
 
 /** One bounded page of events, newest first. */
 export interface EventPage {
@@ -225,8 +226,9 @@ export function eventRecordFromRow(row: {
  * renders the SQL, so it is the only answer that cannot disagree with it.
  */
 function isPostgres(db: CartethyiaDatabase): boolean {
-  const dialect = (db as unknown as { dialect?: { constructor?: { name?: string } } }).dialect;
-  const name = dialect?.constructor?.name;
+  const dialect = (db as unknown as { dialect?: unknown }).dialect;
+  if (dialect instanceof PgDialect) return true;
+  const name = (dialect as { constructor?: { name?: string } } | undefined)?.constructor?.name;
   return name === "PostgresDialect" || name === "PgDialect";
 }
 
@@ -516,23 +518,39 @@ async function latencyPercentiles(
   }
 
   // SQLite: nearest-rank percentile = the value at ceil(p * n) rows into the
-  // ordered latency column, via ORDER BY + OFFSET/LIMIT in SQL.
-  const rankAt = async (fraction: number): Promise<number | null> => {
-    const offset = Math.max(0, Math.ceil(fraction * sampled) - 1);
-    const [row] = await db
-      .select({ value: telemetryEvents.latencyMs })
-      .from(telemetryEvents)
-      .where(and(...base))
-      .orderBy(telemetryEvents.latencyMs)
-      .limit(1)
-      .offset(offset);
-    return row?.value ?? null;
+  // ordered latency column. One query computes all three ranks via a window
+  // function, instead of three separate OFFSET/LIMIT passes over the same
+  // ordered column (one per percentile).
+  const n = Math.max(1, sampled);
+  const ranks = [
+    Math.ceil(0.5 * n),
+    Math.ceil(0.95 * n),
+    Math.ceil(0.99 * n),
+  ];
+  const [row] = await db
+    .select({
+      p50: sql<number | null>`max(case when rn = ${ranks[0]} then value end)`,
+      p95: sql<number | null>`max(case when rn = ${ranks[1]} then value end)`,
+      p99: sql<number | null>`max(case when rn = ${ranks[2]} then value end)`,
+    })
+    .from(
+      sql`(
+        select ${telemetryEvents.latencyMs} as value,
+               row_number() over (order by ${telemetryEvents.latencyMs}) as rn
+        from ${telemetryEvents}
+        where ${and(...base)}
+      )`,
+    );
+  return {
+    p50: numericNullable(row?.p50 ?? null),
+    p95: numericNullable(row?.p95 ?? null),
+    p99: numericNullable(row?.p99 ?? null),
   };
-  const [p50, p95, p99] = await Promise.all([rankAt(0.5), rankAt(0.95), rankAt(0.99)]);
-  return { p50, p95, p99 };
 }
 
-/** The SQL column one breakdown dimension groups by. */
+/**
+ * The SQL column one breakdown dimension groups by.
+ */
 function dimensionColumn(dimension: string) {
   if (dimension === "model") return telemetryEvents.requestedModel;
   if (dimension === "provider") return telemetryEvents.providerId;
@@ -767,6 +785,196 @@ export async function sumTelemetryTokens(
   return numeric(row?.total ?? 0);
 }
 
+/** One hour, in milliseconds — the share page's hourly bucket width. */
+const HOUR_MS = 3_600_000;
+
+/**
+ * All-time family counts from the durable rollup, not from a scan of the
+ * retained telemetry window.
+ *
+ * The share KPI cards need lifetime numbers. `telemetry_usage_totals` is
+ * charged at write time and accumulates per identity, so a family's lifetime
+ * requests/errors/tokens are a SUM over its rows (keyed by
+ * `family_template_key_id`) — sub-millisecond on a small table, versus a
+ * full-window aggregate over `telemetry_events` that reads every retained
+ * event on every tick. The rollup is the same definition as the read-side
+ * counts, so the two cannot drift.
+ */
+export interface FamilyKpiTotals {
+  readonly requests: number;
+  readonly errors: number;
+  readonly tokens: number;
+}
+
+/** Sums one share family's durable lifetime totals. */
+export async function familyKpiTotals(
+  db: CartethyiaDatabase,
+  tenantId: string,
+  familyKeyId: string,
+): Promise<FamilyKpiTotals> {
+  const [row] = await db
+    .select({
+      requests: sql<number>`coalesce(sum(${telemetryUsageTotals.requests}), 0)`,
+      errors: sql<number>`coalesce(sum(${telemetryUsageTotals.errors}), 0)`,
+      tokens: sql<number>`coalesce(sum(coalesce(${telemetryUsageTotals.inputTokens}, 0) + coalesce(${telemetryUsageTotals.outputTokens}, 0)), 0)`,
+    })
+    .from(telemetryUsageTotals)
+    .where(
+      and(
+        eq(telemetryUsageTotals.tenantId, tenantId),
+        eq(telemetryUsageTotals.familyTemplateKeyId, familyKeyId),
+      ),
+    );
+  return {
+    requests: numeric(row?.requests ?? 0),
+    errors: numeric(row?.errors ?? 0),
+    tokens: numeric(row?.tokens ?? 0),
+  };
+}
+
+/**
+ * All-time family counts: the numbers a share page's KPI card shows.
+ *
+ * These must be computed in SQL, not derived from the bounded page read — the
+ * page caps at {@link MAX_LIMIT}, so a busy family would freeze at 500
+ * requests/errors/last-hour regardless of real traffic.
+ */
+export interface FamilyUsageTotals {
+  readonly requests: number;
+  readonly errors: number;
+  readonly lastHourRequests: number;
+}
+
+/** Counts one share family's requests, errors, and last-hour traffic in SQL. */
+export async function familyUsageTotals(
+  db: CartethyiaDatabase,
+  tenantId: string,
+  familyKeyId: string,
+  now: Date,
+): Promise<FamilyUsageTotals> {
+  const lastHourStart = new Date(now.getTime() - HOUR_MS);
+  const conditions = [eq(telemetryEvents.tenantId, tenantId), familyKeyCondition(familyKeyId)];
+  const [row] = await db
+    .select({
+      requests: sql<number>`count(*)`,
+      errors: sql<number>`sum(case when ${IS_GATEWAY_ERROR_SQL} then 1 else 0 end)`,
+      lastHourRequests: sql<number>`sum(case when ${telemetryEvents.createdAt} >= ${lastHourStart} then 1 else 0 end)`,
+    })
+    .from(telemetryEvents)
+    .where(and(...conditions));
+  return {
+    requests: numeric(row?.requests ?? 0),
+    errors: numeric(row?.errors ?? 0),
+    lastHourRequests: numeric(row?.lastHourRequests ?? 0),
+  };
+}
+
+/** Counts one share family's requests in a bounded window — a range scan, not a full-window aggregate. */
+export async function familyWindowRequests(
+  db: CartethyiaDatabase,
+  tenantId: string,
+  familyKeyId: string,
+  since: Date,
+): Promise<number> {
+  const [row] = await db
+    .select({
+      requests: sql<number>`count(*)`,
+    })
+    .from(telemetryEvents)
+    .where(
+      and(
+        eq(telemetryEvents.tenantId, tenantId),
+        familyKeyCondition(familyKeyId),
+        gte(telemetryEvents.createdAt, since),
+      ),
+    );
+  return numeric(row?.requests ?? 0);
+}
+
+/**
+ * One share family's client-IP breakdown, computed in SQL.
+ *
+ * Unlike the 24-hour page read, this covers a bounded history so an address
+ * that stopped before the last day still appears — marked inactive. The
+ * `active` flag is decided in the caller from `lastSeenAt` vs a cutoff; here
+ * we only aggregate. The window is bounded (`since`, default the whole
+ * retained window) so an unbounded scan is never the default for callers
+ * that only need recent addresses.
+ */
+export async function familyIpBreakdown(
+  db: CartethyiaDatabase,
+  tenantId: string,
+  familyKeyId: string,
+  limit = 50,
+  since?: Date,
+): Promise<{ ip: string; requests: number; tokens: number; lastSeenAt: Date | null }[]> {
+  const conditions = [
+    eq(telemetryEvents.tenantId, tenantId),
+    familyKeyCondition(familyKeyId),
+    ...(since === undefined ? [] : [gte(telemetryEvents.createdAt, since)]),
+  ];
+  const rows = await db
+    .select({
+      ip: telemetryEvents.clientIp,
+      requests: sql<number>`count(*)`,
+      tokens: sql<number>`coalesce(sum(coalesce(${telemetryEvents.inputTokens}, 0) + coalesce(${telemetryEvents.outputTokens}, 0)), 0)`,
+      lastSeenAt: sql<Date>`max(${telemetryEvents.createdAt})`,
+    })
+    .from(telemetryEvents)
+    .where(and(...conditions))
+    .groupBy(telemetryEvents.clientIp)
+    // Highest volume first: the table answers "who has used the link most",
+    // not just who is active right now.
+    .orderBy(desc(sql`count(*)`))
+    .limit(limit);
+  return rows.flatMap((row) =>
+    row.ip === null ? [] : [{ ip: row.ip, requests: numeric(row.requests), tokens: numeric(row.tokens), lastSeenAt: row.lastSeenAt }],
+  );
+}
+
+/**
+ * One share family's time-series buckets, computed in SQL with the family
+ * membership filter.
+ *
+ * Mirrors {@link chartTelemetry} but scoped to a share family. The share page's
+ * 24-hour strip must not be truncated to the bounded page (500 events), or a
+ * busy family's chart undercounts every hour bucket.
+ */
+export async function familyHourlyTelemetry(
+  db: CartethyiaDatabase,
+  tenantId: string,
+  familyKeyId: string,
+  since: Date,
+  bucketSeconds: number,
+): Promise<ChartBucket[]> {
+  const width = Math.max(1, Math.trunc(bucketSeconds));
+  // Inlined (not parameterised) so Postgres sees the SELECT and GROUP BY
+  // expressions as identical — see chartTelemetry for the failure this avoids.
+  const w = sql.raw(String(width));
+  const bucketExpression = isPostgres(db)
+    ? sql<number>`(cast(extract(epoch from ${telemetryEvents.createdAt}) as bigint) / ${w}) * ${w}`
+    : sql<number>`(cast(strftime('%s', ${telemetryEvents.createdAt}) as integer) / ${w}) * ${w}`;
+  const conditions = [scoped(tenantId, since), familyKeyCondition(familyKeyId)];
+  const rows = await db
+    .select({
+      at: bucketExpression,
+      requests: sql<number>`count(*)`,
+      errors: sql<number>`sum(case when ${IS_GATEWAY_ERROR_SQL} then 1 else 0 end)`,
+      inputTokens: sql<number>`coalesce(sum(${telemetryEvents.inputTokens}), 0)`,
+      outputTokens: sql<number>`coalesce(sum(${telemetryEvents.outputTokens}), 0)`,
+    })
+    .from(telemetryEvents)
+    .where(and(...conditions))
+    .groupBy(bucketExpression);
+  return rows.map((row) => ({
+    at: numeric(row.at) * 1000,
+    requests: numeric(row.requests),
+    errors: numeric(row.errors),
+    inputTokens: numeric(row.inputTokens),
+    outputTokens: numeric(row.outputTokens),
+  }));
+}
+
 /**
  * The health card's latency and throughput figures for one window.
  *
@@ -859,5 +1067,103 @@ export async function summarizeUsagePerformanceSql(
     latencySampleCount: sampled,
     resolveSampleCount: resolveCount,
     avgTokensPerSec: numeric(row?.avgTokensPerSec ?? 0),
+  };
+}
+
+/**
+ * Combined usage totals + performance in ONE window scan.
+ *
+ * `summarizeTelemetry` and `summarizeUsagePerformanceSql` both scan the same
+ * tenant window and each additionally run the percentile path, so the Usage
+ * summary endpoint paid two scans plus two percentile passes for one response.
+ * This runs the combined SELECT once and one percentile pass, returning both
+ * shapes so the caller needs no second query.
+ */
+export async function summarizeUsageWithPerformance(
+  db: CartethyiaDatabase,
+  tenantId: string,
+  since: Date,
+): Promise<{ summary: UsageSummary; performance: UsagePerformanceTotals }> {
+  const condition = scoped(tenantId, since);
+  const [row] = await db
+    .select({
+      requests: sql<number>`count(*)`,
+      errors: sql<number>`sum(case when ${IS_GATEWAY_ERROR_SQL} then 1 else 0 end)`,
+      cancelled: sql<number>`sum(case when ${telemetryEvents.status} = 'cancelled' then 1 else 0 end)`,
+      truncated: sql<number>`sum(case when ${telemetryEvents.status} = 'truncated' then 1 else 0 end)`,
+      inputTokens: sql<number>`coalesce(sum(${telemetryEvents.inputTokens}), 0)`,
+      outputTokens: sql<number>`coalesce(sum(${telemetryEvents.outputTokens}), 0)`,
+      cachedInputTokens: sql<number>`coalesce(sum(${telemetryEvents.cachedInputTokens}), 0)`,
+      reasoningTokens: sql<number>`coalesce(sum(${telemetryEvents.reasoningTokens}), 0)`,
+      estimatedCostUsd: sql<number>`coalesce(sum(${telemetryEvents.estimatedCostUsd}), 0)`,
+      sampled: sql<number>`count(${telemetryEvents.latencyMs})`,
+      latencyAvg: sql<number>`avg(${telemetryEvents.latencyMs})`,
+      unpriced: sql<number>`sum(case when ${telemetryEvents.estimatedCostUsd} is null then 1 else 0 end)`,
+      resolveSum: sql<number>`coalesce(sum(${telemetryEvents.resolveMs}), 0)`,
+      resolveCount: sql<number>`count(${telemetryEvents.resolveMs})`,
+      avgTokensPerSec: sql<number>`coalesce(avg(${telemetryEvents.tokensPerSec}), 0)`,
+    })
+    .from(telemetryEvents)
+    .where(condition);
+
+  if (!row) {
+    const empty: UsageSummary = {
+      requests: 0,
+      errors: 0,
+      cancelled: 0,
+      truncated: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      reasoningTokens: 0,
+      estimatedCostUsd: 0,
+      sampled: 0,
+      latencyMs: { avg: null, p50: null, p95: null, p99: null },
+      unpriced: 0,
+    };
+    const emptyPerformance: UsagePerformanceTotals = {
+      avgResolveMs: 0,
+      avgDurationMs: 0,
+      latencyP50Ms: 0,
+      latencyP95Ms: 0,
+      latencyP99Ms: 0,
+      latencySampleCount: 0,
+      resolveSampleCount: 0,
+      avgTokensPerSec: 0,
+    };
+    return { summary: empty, performance: emptyPerformance };
+  }
+
+  const sampled = numeric(row.sampled);
+  const percentiles = await latencyPercentiles(db, tenantId, since, sampled);
+  const resolveCount = numeric(row.resolveCount);
+  return {
+    summary: {
+      requests: numeric(row.requests),
+      errors: numeric(row.errors),
+      cancelled: numeric(row.cancelled),
+      truncated: numeric(row.truncated),
+      inputTokens: numeric(row.inputTokens),
+      outputTokens: numeric(row.outputTokens),
+      cachedInputTokens: numeric(row.cachedInputTokens),
+      reasoningTokens: numeric(row.reasoningTokens),
+      estimatedCostUsd: numeric(row.estimatedCostUsd),
+      sampled,
+      latencyMs: {
+        avg: numericNullable(row.latencyAvg),
+        ...percentiles,
+      },
+      unpriced: numeric(row.unpriced),
+    },
+    performance: {
+      avgResolveMs: resolveCount > 0 ? numeric(row.resolveSum) / resolveCount : 0,
+      avgDurationMs: numericNullable(row.latencyAvg) ?? 0,
+      latencyP50Ms: percentiles.p50 ?? 0,
+      latencyP95Ms: percentiles.p95 ?? 0,
+      latencyP99Ms: percentiles.p99 ?? 0,
+      latencySampleCount: sampled,
+      resolveSampleCount: resolveCount,
+      avgTokensPerSec: numeric(row.avgTokensPerSec),
+    },
   };
 }

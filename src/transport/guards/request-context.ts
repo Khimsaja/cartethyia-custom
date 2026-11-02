@@ -159,7 +159,7 @@ export function createCanonicalRequestMiddleware(deps: {
       // literal `null` body) is a valid single-read value and flows to the
       // surface adapter's parse error rather than triggering a second read.
       if (state.ingressBody === undefined)
-        throw new GatewayError("admission_unavailable", 503, "The request body was never read, so this route cannot be served. Resend the request.");
+        throw new GatewayError("route_unavailable", 503, "The request body was never read, so this route cannot be served (request {requestId}). Resend the request. The bouncer stepped out — resend shortly 🚪");
       const body = state.ingressBody;
       const headers: Record<string, string> = {};
       request.headers.forEach((value, key) => {
@@ -192,7 +192,7 @@ export function createCanonicalRequestMiddleware(deps: {
         throw new GatewayError(
           "capability_unsupported",
           400,
-          `Surface adapter unavailable: ${detection.surface}`,
+          `Surface adapter unavailable: ${detection.surface} (request {requestId}). Know your tools — this one just isn't in the box 🧰`,
           { surface: detection.surface },
         );
       const ingress = deps.stateStore.require(request);
@@ -224,7 +224,7 @@ export function createProxyRoutePreparationMiddleware(deps: {
       if (!isJsonRoute || path === "/v1/responses/compact" || isOpaqueBodyRoute(path)) return;
       const state = deps.stateStore.require(request);
       if (!state.authorization || !state.canonicalRequest)
-        throw new GatewayError("admission_unavailable", 503, "The request was not authenticated and parsed, so this route cannot be served. Resend the request.");
+        throw new GatewayError("route_unavailable", 503, "The request was not authenticated and parsed, so this route cannot be served (request {requestId}). Resend the request. The bouncer stepped out — resend shortly 🚪");
       // The key rides along so a strike is charged to the caller that made it.
       // Without it, one recipient of a shared link could escalate a ban onto
       try {

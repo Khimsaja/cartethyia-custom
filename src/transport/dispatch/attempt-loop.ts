@@ -41,7 +41,8 @@ import {
   type ProviderExchangeCapture,
 } from "./attempt-finalize";
 import { repriceUsage } from "../../providers/provider-usage";
-import { isFreeTierIpBlock, isOAuthCredentialInvalidated, shouldCooldownPool } from "./retry-policy";
+import { classifyEgressFailure } from "../../network/rate-limit-verdict";
+import { isOAuthCredentialInvalidated } from "./retry-policy";
 import { drainAbortReason } from "../shutdown-notice";
 
 /**
@@ -316,7 +317,7 @@ export async function runAttemptLoop<TResult, TAdapter>(
     };
     try {
       if (state.abortController.signal.aborted)
-        throw new GatewayError("transport_closed", 499, "request was cancelled");
+        throw new GatewayError("transport_closed", 499, "The request was cancelled (request {requestId}). Send it again whenever ready 🙃");
       const { credential, adapter } = await input.prepare(candidate);
       const host = input.resolveHost?.(candidate);
       // Single attempt-lease manager owns acquisition order (admission →
@@ -353,9 +354,10 @@ export async function runAttemptLoop<TResult, TAdapter>(
       });
     } catch (error) {
       // A drain aborts the controller, so a mid-flight attempt unwinds here as
-      // an abort. Surface the typed shutdown error (503 shutting_down /
-      // restart_for_update) instead of an opaque `transport_closed`, so the
-      // client's JSON error — not just the SSE path — names the real cause.
+      // an abort. Surface the typed shutdown error (503 shutting_down, reason
+      // restart_for_update for an update drain) instead of an opaque
+      // `transport_closed`, so the client's JSON error — not just the SSE path —
+      // names the real cause.
       const drain = drainAbortReason(state.abortController.signal.reason);
       if (drain !== undefined) error = drain;
       lastError = error;
@@ -374,11 +376,12 @@ export async function runAttemptLoop<TResult, TAdapter>(
       // single candidate carrying every pool). Judging it there is what made a
       // refused egress end the request instead of failing over to a healthy
       // one.
-      const rateLimitedPool = !cancelled && shouldCooldownPool(error, candidate.provider_id);
+      const egressVerdict = !cancelled ? classifyEgressFailure(error, candidate.provider_id) : { kind: "none" } as const;
       // A free-tier refusal is only ever this provider's: the guard is gated on
       // `ipScopedRateLimit` in the provider metadata, so a 403 from any other
       // upstream still means what it always did and never retires an egress.
-      const blockedPool = !cancelled && isFreeTierIpBlock(error, candidate.provider_id);
+      const rateLimitedPool = egressVerdict.kind === "cooldown";
+      const blockedPool = egressVerdict.kind === "blocked";
       const poolScopedFailure =
         (rateLimitedPool || blockedPool) &&
         networkPoolId !== undefined &&

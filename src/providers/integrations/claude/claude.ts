@@ -61,6 +61,7 @@ import {
   refusalCreditToken,
   sharedFallbackCreditCache,
 } from "./fallback-credit";
+import { assertCredentialKind, assertWireFamily } from "../../provider-contracts";
 import type { ProviderDispatchTarget, ProviderAdapter, ProviderDispatchContext } from "../../provider-contracts";
 import { defineModel } from "../../provider-model-definition";
 import type { ModelDefinition } from "../../provider-model-definition";
@@ -185,21 +186,13 @@ export class ClaudeAdapter implements ProviderAdapter {
     context: ProviderDispatchContext,
   ): AsyncIterable<CanonicalEvent> {
     if (candidate.wire_family !== "messages") {
-      throw new GatewayError(
-        "capability_unsupported",
-        400,
-        "claude supports messages only",
-      );
+      assertWireFamily(candidate, "messages", "claude");
     }
     if (
       context.credential.credential_kind !== "oauth" &&
       context.credential.credential_kind !== "scoped_access_token"
     ) {
-      throw new GatewayError(
-        "invalid_request",
-        400,
-        `claude: the assistant OAuth credential required (got credential_kind=${context.credential.credential_kind})`,
-      );
+      assertCredentialKind(context.credential, ["oauth", "scoped_access_token"], "claude");
     }
     const customHeaders = filterClaudeCustomHeaders({
       ...this.customHeaders,

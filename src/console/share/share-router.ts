@@ -4,7 +4,7 @@ import { globalOrOwnedBy } from "../../persistence/tenant-scope";
 // Share URLs reveal policy and allow one child key to be created per canonical
 // client IP. The child bearer is returned only by the successful issue call.
 
-import { Elysia } from "elysia";
+import { Elysia, type AnyElysia } from "elysia";
 import { and, eq, sql } from "drizzle-orm";
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import { apiKeys, models, providers } from "../../persistence/schema";
@@ -34,12 +34,12 @@ const MIN_TOKEN_LENGTH = 20;
 /**
  * Cadence of the share stats SSE snapshot.
  *
- * Raised with `SHARE_STATS_CACHE_TTL_SECONDS` (10 s). At 2 s the tick was
- * shorter than the rollup's own cache TTL, so every push re-parsed the whole
- * retained telemetry window — the interval was the thing making this read
- * expensive, not the number of viewers. Short enough to still read as live.
+ * Roughly one tenth of the cache TTL (`SHARE_STATS_CACHE_TTL_SECONDS`, 300
+ * s), so nearly every tick is served from the cache and the cold-compute
+ * path runs at most once per five minutes per family. Short enough to still
+ * read as live.
  */
-const SHARE_STATS_STREAM_INTERVAL_MS = 10_000;
+const SHARE_STATS_STREAM_INTERVAL_MS = 30_000;
 
 /**
  * Context and capabilities for one allowed model, sourced from the public
@@ -89,12 +89,12 @@ function json(body: unknown, status = 200): Response {
 function notFound(refusal: ShareLinkRefusal = "not_found"): Response {
   const message =
     refusal === "expired"
-      ? "This share link has expired"
+      ? "This share link has expired (request {requestId}). Time for a fresh one 🌷"
       : refusal === "revoked"
-        ? "This share link's key has been revoked"
+        ? "This share link's key has been revoked (request {requestId}). Ask for a new one 📩"
         : refusal === "disabled"
-          ? "This share link's key is paused"
-          : "Share link is unavailable";
+          ? "This share link's key is paused (request {requestId}). Re-enable it when ready 🌱"
+          : "Share link is unavailable (request {requestId}). This link leads nowhere — check it again 🔗";
   const error = new GatewayError(`link_${refusal}`, 404, message);
   return json(publicGatewayErrorBody(error), error.status);
 }
@@ -261,7 +261,7 @@ async function resolveFamilyStats(
 }
 
 /** Creates the public enrollment page and one-time shared-key issuance route. */
-export function createShareRouter(options: ShareRouterOptions): Elysia {
+export function createShareRouter(options: ShareRouterOptions): AnyElysia {
   const { db, shareStore } = options;
 
   return new Elysia()
@@ -296,6 +296,7 @@ export function createShareRouter(options: ShareRouterOptions): Elysia {
         oneTimeLimit: row.lifetimeTokenBudget,
         requestsPerMinute: row.requestsPerMinute,
         maxConcurrentRequests: row.maxConcurrentRequests,
+        concurrencyScope: row.concurrencyScope ?? "family",
         modelPrefix: row.modelPrefix,
         models,
         modelInfo,
@@ -486,5 +487,5 @@ export function createShareRouter(options: ShareRouterOptions): Elysia {
           };
         }),
       );
-    }) as unknown as Elysia;
+    })
 }

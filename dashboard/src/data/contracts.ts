@@ -92,11 +92,6 @@ export type {
 
 export type { AccountHealthEventRecord } from "../../../src/providers/operations/account-health-service";
 
-// Qoder native machine identity (UMID) — the account's daily check-in slot.
-// The type lives in the schema (backend) and is re-exported here so the
-// provider-detail screen can render bound status without mirroring the shape.
-export type { NativeIdentityRecord } from "../../../src/persistence/schema";
-
 /**
  * Reasoning efforts the probe accepts, as the backend declares them. Re-exported
  * as a value (like `TENANT_KEY_SCOPES`) so the Thinking selector and the route
@@ -130,8 +125,11 @@ export type {
   ApiKeyResponse,
   CreateApiKeyResponse,
   UpdateApiKeyResponse,
+  ConcurrencyScope,
+  BanApiKeyRequest,
   ShareKeyResponse,
 } from "../../../src/console/api-keys/contracts";
+export { API_KEY_BAN_REASONS } from "../../../src/console/api-keys/ban-constants";
 
 import type { SharedKeySummary } from "../../../src/console/share/share-usage";
 

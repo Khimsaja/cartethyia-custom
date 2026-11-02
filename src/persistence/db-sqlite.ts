@@ -326,9 +326,11 @@ const AUTH_KEY_COLUMNS = [
   "id", "tenant_id", "key_hash", "key_mode", "parent_key_id", "issued_client_ip",
   "issued_client_ip_key", "label", "scopes", "requests_per_minute", "daily_token_limit",
   "monthly_token_limit", "lifetime_token_budget", "lifetime_tokens_consumed",
-  "max_concurrent_requests", "model_access_mode", "model_list", "client_router_denylist",
-  "model_prefix", "created_at", "enabled", "revoked_at", "key_prefix", "key_encrypted",
+  "max_concurrent_requests", "concurrency_scope", "model_access_mode", "model_list", "client_router_denylist",
+  "model_prefix", "created_at", "enabled", "revoked_at", "banned_at", "ban_reason", "banned_until",
+  "key_prefix", "key_encrypted",
   "notes_title", "notes_subtitle", "notes_body", "is_default", "sort_index", "expires_at",
+  "expires_at",
 ].join(", ");
 
 export interface SqliteAuthStatements {
@@ -341,7 +343,11 @@ export interface SqliteAuthStatements {
 }
 
 export function prepareAuthStatements(sqlite: Database): SqliteAuthStatements {
-  const active = `enabled = 1 AND revoked_at IS NULL`;
+  // A key is active while not revoked and not under an active ban: a ban is
+  // active when `banned_at` is set and `banned_until` is null (permanent) or
+  // still in the future. SQLite stores timestamps as ISO text, so the
+  // comparison is lexical (ISO sorts chronologically).
+  const active = `enabled = 1 AND revoked_at IS NULL AND (banned_at IS NULL OR (banned_until IS NOT NULL AND banned_until <= datetime('now')))`;
   // `query`, not `prepare`: bun's `prepare` compiles a statement per call and
   // never finalizes one, while `query` caches the compiled statement behind an
   // LRU of its own. All three are constant text run once per authenticated

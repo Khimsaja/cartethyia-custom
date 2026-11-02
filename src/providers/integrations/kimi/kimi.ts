@@ -26,6 +26,7 @@ import {
 } from "../../../protocol/request/messages";
 import { sendClaudeMessagesRequest } from "../../../protocol/upstream/send-claude-messages";
 import { endpointUrl } from "../../../protocol/codecs";
+import { assertCredentialKind, assertWireFamily } from "../../provider-contracts";
 import type { ProviderDispatchTarget, ProviderAdapter, ProviderDispatchContext } from "../../provider-contracts";
 import {
   getKimiCommonHeaders,
@@ -141,24 +142,16 @@ class KimiCodeAdapter implements ProviderAdapter {
     context: ProviderDispatchContext,
   ): AsyncIterable<CanonicalEvent> {
     if (candidate.wire_family !== "messages") {
-      throw new GatewayError(
-        "capability_unsupported",
-        400,
-        `kimi supports messages only, got ${candidate.wire_family}`,
-      );
+      assertWireFamily(candidate, "messages", "kimi");
     }
     if (context.credential.credential_kind !== "oauth") {
-      throw new GatewayError(
-        "invalid_request",
-        400,
-        `kimi: OAuth credential required (got credential_kind=${context.credential.credential_kind})`,
-      );
+      assertCredentialKind(context.credential, "oauth", "kimi");
     }
     if (!context.credential.secret) {
       throw new GatewayError(
         "authentication_failed",
         401,
-        "kimi: OAuth credential secret is required",
+        "kimi: OAuth credential secret is required (request {requestId}). Wrong key, right door — check the credential 🔑",
       );
     }
     const credential = parseKimiCredential(

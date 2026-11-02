@@ -18,6 +18,7 @@ import { GatewayError } from "../../protocol/gateway-error";
 import { buildClaudeMessagesRequest, filterClaudeCustomHeaders } from "./shared/claude-messages";
 import { sendClaudeMessagesRequest } from "../../protocol/upstream/send-claude-messages";
 import { applyParamQuirks } from "../../protocol/translation/quirks";
+import { assertCredentialKind, assertWireFamily } from "../provider-contracts";
 import type { ProviderDispatchTarget, ProviderAdapter, ProviderDispatchContext, ProviderId } from "../provider-contracts";
 import { providerBaseUrl } from "../provider-metadata";
 
@@ -58,18 +59,10 @@ export class AnthropicApiKeyAdapter implements ProviderAdapter {
     context: ProviderDispatchContext,
   ): AsyncIterable<CanonicalEvent> {
     if (candidate.wire_family !== "messages") {
-      throw new GatewayError(
-        "capability_unsupported",
-        400,
-        `${this.provider_id} supports messages only`,
-      );
+      assertWireFamily(candidate, "messages", this.provider_id);
     }
     if (context.credential.credential_kind !== "api_key") {
-      throw new GatewayError(
-        "invalid_request",
-        400,
-        `${this.provider_id}: x-api-key credential required (got credential_kind=${context.credential.credential_kind})`,
-      );
+      assertCredentialKind(context.credential, "api_key", this.provider_id);
     }
     if (
       context.credential.secret === undefined ||
@@ -78,7 +71,7 @@ export class AnthropicApiKeyAdapter implements ProviderAdapter {
       throw new GatewayError(
         "invalid_request",
         400,
-        `${this.provider_id}: API key is missing a secret value`,
+        `${this.provider_id}: API key is missing a secret value (request {requestId}). Wrong key, right door — check the credential 🔑`,
       );
     }
     const apiKey = new TextDecoder().decode(context.credential.secret);

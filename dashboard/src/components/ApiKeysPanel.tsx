@@ -29,8 +29,9 @@ import { compactTokens, limitLabel } from "../lib/format/tokens";
 import { filterApiKeys } from "../lib/api-key-search";
 import { useClipboard } from "../hooks/use-clipboard";
 import { useRuntimeSettings, useUpdateRuntimeSettings } from "../hooks/settings";
-import { PowerOff } from "lucide-react";
+import { AlertTriangle, PowerOff, ShieldOff } from "lucide-react";
 import type { ApiKeyResponse } from "../data/contracts";
+import { BannedKeysDialog } from "./BannedKeysDialog";
 import {
   useApiKeys,
   useCreateApiKey,
@@ -38,6 +39,7 @@ import {
   useReorderApiKeys,
   useRevealApiKey,
   useRevokeApiKey,
+  useUnbanApiKey,
   useUpdateApiKey,
 } from "../hooks/api-keys";
 import { useModelTemplates } from "../hooks/model-templates";
@@ -69,6 +71,7 @@ export function ApiKeysPanel(): ReactNode {
   const createKey = useCreateApiKey();
   const updateKey = useUpdateApiKey();
   const revokeKey = useRevokeApiKey();
+  const unbanKey = useUnbanApiKey();
   const regenerateKey = useRegenerateApiKey();
   const revealKey = useRevealApiKey();
   const reorderKeys = useReorderApiKeys();
@@ -80,6 +83,8 @@ export function ApiKeysPanel(): ReactNode {
   const [createOpen, setCreateOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<ApiKeyResponse | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<ApiKeyResponse | null>(null);
+  const [bansOpen, setBansOpen] = useState(false);
+  const [seeReasonTarget, setSeeReasonTarget] = useState<ApiKeyResponse | null>(null);
   const [rotateTarget, setRotateTarget] = useState<ApiKeyResponse | null>(null);
   const [revealedSecret, setRevealedSecret] = useState<string | null>(null);
   const [shareTarget, setShareTarget] = useState<ApiKeyResponse | null>(null);
@@ -129,7 +134,6 @@ export function ApiKeysPanel(): ReactNode {
   // "rotate" lives in the share dialog (regenerating the link). Only the
   // personal path is offered from the row.
   const rotateWarning = regenerateWarning(true);
-
   // Global invoke kill switch. This is the tenant-wide "deny all keys"
   // breaker: when invoke is off, every /v1/* request is refused with 503 and
   // nothing upstream is dialed. The toggle is confirm-gated because the off
@@ -165,6 +169,14 @@ export function ApiKeysPanel(): ReactNode {
               icon={<PowerOff size={13} />}
             >
               {invokeDisabled ? "Enable Invoke" : "Disable Invoke"}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setBansOpen(true)}
+              icon={<ShieldOff size={13} />}
+            >
+              Banned Users
             </Button>
             <Button
               variant="primary"
@@ -254,9 +266,21 @@ export function ApiKeysPanel(): ReactNode {
                     <strong className="text-body">
                       {key.label || "Unnamed credential"}
                     </strong>
-                    <Badge tone={key.revokedAt ? "err" : key.expiresAt !== undefined && new Date(key.expiresAt).getTime() <= Date.now() ? "err" : key.enabled ? "ok" : "warn"}>
-                      {key.revokedAt ? "revoked" : key.expiresAt !== undefined && new Date(key.expiresAt).getTime() <= Date.now() ? "expired" : key.enabled ? "enabled" : "disabled"}
+                    <Badge tone={key.revokedAt ? "err" : key.bannedAt ? "err" : key.expiresAt !== undefined && new Date(key.expiresAt).getTime() <= Date.now() ? "err" : key.enabled ? "ok" : "warn"}>
+                      {key.revokedAt ? "revoked" : key.bannedAt ? "banned" : key.expiresAt !== undefined && new Date(key.expiresAt).getTime() <= Date.now() ? "expired" : key.enabled ? "enabled" : "disabled"}
                     </Badge>
+                    {key.bannedAt && !key.revokedAt ? (
+                      <Badge tone="err" title={key.banReason ?? "Banned"}>
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1 cursor-pointer bg-transparent border-0 p-0 text-inherit"
+                          onClick={() => setSeeReasonTarget(key)}
+                        >
+                          <Eye size={11} aria-hidden="true" />
+                          See reason
+                        </button>
+                      </Badge>
+                    ) : null}
                     <Badge tone={key.keyMode === "share" ? "accent" : "default"}>
                       {key.keyMode === "share" ? "share template" : "personal"}
                     </Badge>
@@ -310,6 +334,11 @@ export function ApiKeysPanel(): ReactNode {
                     <span className="inline-flex items-center gap-2.5 px-3.5 py-1 border border-inner-border rounded-chip bg-surface-1 text-text-secondary text-badge leading-normal whitespace-nowrap max-medium:justify-between">
                       <span className="text-text-tertiary text-micro font-semibold uppercase tracking-label">Concurrent</span>
                       {limitLabel(key.maxConcurrentRequests)}
+                      {key.keyMode === "share" ? (
+                        <span className="font-semibold text-text-tertiary" title={key.concurrencyScope === "per_key" ? "Each recipient key has its own concurrency cap and counter." : "All recipients share one concurrency cap and counter."}>
+                          {key.concurrencyScope === "per_key" ? "· per key" : "· family"}
+                        </span>
+                      ) : null}
                     </span>
                     <span className="inline-flex items-center gap-2.5 px-3.5 py-1 border border-inner-border rounded-chip bg-surface-1 text-text-secondary text-badge leading-normal whitespace-nowrap max-medium:justify-between">
                       <span className="text-text-tertiary text-micro font-semibold uppercase tracking-label">{key.modelAccessMode === "blacklist" ? "Blocked" : "Models"}</span>
@@ -402,6 +431,25 @@ export function ApiKeysPanel(): ReactNode {
                       Revoke
                     </Button>
                   )}
+                  {key.bannedAt && !key.revokedAt ? (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      icon={<AlertTriangle size={13} />}
+                      onClick={() => {
+                        unbanKey.mutate(
+                          { keyId: key.id },
+                          {
+                            onSuccess: () => toast.success(`Unbanned ${key.label || key.id}.`),
+                            onError: (error) => toast.error(getErrorMessage(error, "Could not unban key.")),
+                          },
+                        );
+                      }}
+                      disabled={unbanKey.isPending}
+                    >
+                      Unban
+                    </Button>
+                  ) : null}
                 </div>
               </div>
             )}
@@ -535,6 +583,29 @@ export function ApiKeysPanel(): ReactNode {
       />
 
       <ApiKeySecretDialog secret={revealedSecret} onClose={() => setRevealedSecret(null)} />
+
+      {bansOpen ? <BannedKeysDialog keys={keys} onClose={() => setBansOpen(false)} /> : null}
+
+      <Dialog
+        open={seeReasonTarget !== null}
+        onClose={() => setSeeReasonTarget(null)}
+        title="Ban reason"
+        size="sm"
+        footer={
+          <Button variant="secondary" size="sm" onClick={() => setSeeReasonTarget(null)}>
+            Close
+          </Button>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          <p className="text-caption text-text-secondary">
+            {seeReasonTarget?.label || "API key"} was banned.
+          </p>
+          <div className="rounded-control border border-warning-line bg-surface-2 px-4 py-5 text-caption text-text-primary">
+            {seeReasonTarget?.banReason ?? "No reason recorded."}
+          </div>
+        </div>
+      </Dialog>
 
     </Card>
   );

@@ -51,20 +51,57 @@ export interface SseDecodeOptions {
 
 const DEFAULT_MAX_EVENT_BYTES = 4 * 1024 * 1024;
 
+/**
+ * True when the accumulated data is a complete JSON value.
+ *
+ * Uses a bracket-depth scan that skips string contents (including escapes), so
+ * an inline `\n` or `\n\n` inside a string does not count as a structural
+ * terminator. A non-JSON payload (`[DONE]`, plain text) has depth 0 and reads
+ * as complete, so blank-line boundaries stay working for ordinary streams.
+ */
+function isCompleteJsonValue(data: string): boolean {
+  if (data.length === 0) return true;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < data.length; i += 1) {
+    const ch = data[i]!;
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === "{" || ch === "[") {
+      depth += 1;
+    } else if (ch === "}" || ch === "]") {
+      depth -= 1;
+      if (depth < 0) return true; // trailing close: not a partial JSON prefix
+    }
+  }
+  return depth <= 0;
+}
+
 // A corrupt SSE stream is an upstream protocol failure, not a client mistake:
 // labelling it `invalid_request` told the client its request was wrong and
 // invited a retry of the identical request against a broken upstream. The
 // `upstream` origin keeps the public envelope from prefixing it
 // a gateway-branded message, which blamed the gateway for the provider's bytes.
 function oversized(what: string): GatewayError {
-  return new GatewayError("platform_unavailable", 502, `SSE ${what} exceeds size bound`, {}, "upstream");
+  return new GatewayError("platform_unavailable", 502, `SSE ${what} exceeds size bound (request {requestId}). The upstream sent more than we can hold — retry 🌙`, {}, "upstream");
 }
 
 export async function* decodeSseEvents(
   body: ReadableStream<Uint8Array> | null,
   opts: SseDecodeOptions = {},
 ): AsyncIterable<SseEvent> {
-  if (body === null) throw new GatewayError("platform_unavailable", 502, "SSE response has no body", {}, "upstream");
+  if (body === null) throw new GatewayError("platform_unavailable", 502, "SSE response has no body (request {requestId}). The upstream came back empty-handed — retry 🌙", {}, "upstream");
   const maxEventBytes = opts.maxEventBytes ?? DEFAULT_MAX_EVENT_BYTES;
   const maxLineBytes = opts.maxLineBytes ?? maxEventBytes;
   const signal = opts.signal;
@@ -156,6 +193,18 @@ export async function* decodeSseEvents(
     }
     if (line.startsWith("id:") || line.startsWith("retry:")) return;
     if (line.trim() === "") {
+      // A blank line is an SSE event boundary — but only when the payload
+      // accumulated so far is already a complete value. Some upstreams
+      // (Qoder IDE /model/v1) emit JSON that contains literal blank lines
+      // inside a string (`raw_usage` carries keys like
+      // `"data_policy_preferre\n\nnd_count"`). Treating that blank line as a
+      // boundary splits the JSON, leaves a dangling continuation, and throws
+      // "Malformed SSE line". When the open data is not yet a complete JSON
+      // value, append the blank line as a continuation instead.
+      if (dataLines.length > 0 && !isCompleteJsonValue(dataLines.join("\n"))) {
+        dataLines.push("");
+        return;
+      }
       yield* dispatchEvent();
       return;
     }
@@ -163,7 +212,18 @@ export async function* decodeSseEvents(
     // not 502 the request: only `event:`/`data:` carry payload, the rest is
     // heartbeat/metadata. Unknown colon-prefixed fields are ignored.
     if (/^[a-zA-Z0-9_-]+:/.test(line)) return;
-    throw new GatewayError("platform_unavailable", 502, "Malformed SSE line", {}, "upstream");
+    // Some vendors (Qoder IDE /model/v1) emit a single `data:` event whose JSON
+    // payload contains literal newlines, so the event arrives as several lines:
+    // the first has the `data:` prefix, the rest are bare continuations. Treat
+    // a bare line as a continuation of the open `data:` event rather than a
+    // malformed stream. A bare line with no open data is still an error.
+    if (dataLines.length > 0) {
+      dataLines.push(line);
+      eventBytes += line.length;
+      if (eventBytes > maxEventBytes) throw oversized("event");
+      return;
+    }
+    throw new GatewayError("platform_unavailable", 502, "Malformed SSE line (request {requestId}). The upstream sent something we can't read — retry 🌙", {}, "upstream");
   }
 
   try {

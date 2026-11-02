@@ -7,6 +7,7 @@ import { DASHBOARD_QUERY_OPTIONS, POLL } from "../data/query-policy";
 import { GITHUB_RELEASES_URL } from "../lib/links";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
+import { useSseWhenVisible } from "./sse-visibility";
 
 export interface NotificationItem {
   readonly id: string;
@@ -52,8 +53,10 @@ function readNotification(value: unknown): NotificationItem | undefined {
 /** Streams server-generated memory and release alerts without blocking shell rendering. */
 export function useNotifications(): readonly NotificationItem[] {
   const [notifications, setNotifications] = useState<readonly NotificationItem[]>([]);
+  const visible = useSseWhenVisible();
 
   useEffect(() => {
+    if (!visible) return;
     let active = true;
     let source: EventSource | undefined;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -91,7 +94,7 @@ export function useNotifications(): readonly NotificationItem[] {
       source?.close();
       clearTimeout(reconnectTimer);
     };
-  }, []);
+  }, [visible]);
 
   return notifications;
 }
@@ -110,8 +113,11 @@ export function useSessionUser() {
   });
 }
 
-/** Loads current system health and refreshes it on the dashboard cadence. */
-export function useSystemHealth() {
+/** Loads current system health; refreshes only while the caller asks it to.
+ * Defaults to a single fetch that is cached by react-query — the shell reads
+ * the version from the same cache, and a consumer that wants live readings
+ * (the notifications popover) passes `refetchInterval` while it is open. */
+export function useSystemHealth(options?: { enabled?: boolean; refetchInterval?: number | false }) {
   return useQuery({
     queryKey: queryKeys.system.health,
     queryFn: (context) =>
@@ -119,7 +125,8 @@ export function useSystemHealth() {
         assertSystemHealth,
       ),
     ...DASHBOARD_QUERY_OPTIONS,
-    refetchInterval: POLL.status,
+    enabled: options?.enabled ?? true,
+    refetchInterval: options?.refetchInterval ?? false,
   });
 }
 
