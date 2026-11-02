@@ -61,6 +61,7 @@ const SYNC_EXCLUDED_LABELS: ReadonlySet<string> = new Set([
   "tiprouter-bot (automation)",
   "tiprouter-checkout",
   "MASTER KEY",
+  "Default Cartethyia API key",
 ]);
 
 function isSyncExcludedLabel(label: string): boolean {
