@@ -12,6 +12,10 @@ import {
   latestDeadlineMs,
   unsupportedModelCooldownMs,
 } from "./account-error-classification";
+import {
+  resolveAuthEscalationProviders,
+  resolveAuthEscalationThreshold,
+} from "../../config/cooldowns";
 import type { AccountErrorClassification, AccountFailureEvidence } from "./account-error-classification";
 
 // ===== lock-timeout retry (account-health contention patch) =====
@@ -143,6 +147,9 @@ export async function recordAccountFailure(
         status: providerAccounts.status,
         staticToken: providerAccounts.staticToken,
         consecutiveFailures: providerAccounts.consecutiveFailures,
+        consecutiveAuthRejections: providerAccounts.consecutiveAuthRejections,
+        lastAuthRejectionAt: providerAccounts.lastAuthRejectionAt,
+        providerId: providerAccounts.providerId,
         modelCooldowns: providerAccounts.modelCooldowns,
         // Read only for the unsupported-model ladder; NULL means "never
         // counted", which is the common case and must stay cheap.
@@ -204,6 +211,35 @@ export async function recordAccountFailure(
     const unsupportedCooldownMs =
       unsupportedHits === undefined ? undefined : unsupportedModelCooldownMs(unsupportedHits);
 
+    // AUTH-ESCALATION (2026-11-04, user-approved policy change): a streak
+    // of consecutive upstream auth rejections on a static-token account of
+    // an in-scope provider. The streak counts only here, in the account-wide
+    // path — never in the classifier, which is stateless per event — and
+    // only for live dispatch: probe-surface failures are excluded, so a
+    // probe storm during a provider incident cannot mass-disable accounts.
+    // The 24 h window: a rejection older than that restarts the streak at
+    // 1, so two rejections a week apart are not a streak. The recovery
+    // sweep deliberately does NOT reset this counter (it resets only
+    // consecutiveFailures): the flap loop is 401 -> cooldown -> recover ->
+    // 401, and resetting on recovery would let it run forever.
+    const escalationThreshold = resolveAuthEscalationThreshold();
+    const escalationProviders = resolveAuthEscalationProviders();
+    const accountProvider =
+      typeof account.providerId === "string" ? account.providerId.toLowerCase() : "";
+    const isProbeSurface = options?.sourceSurface === "probe";
+    const authStreakApplies =
+      effective.category === "auth_invalidated" &&
+      account.staticToken === true &&
+      escalationThreshold > 0 &&
+      escalationProviders.includes(accountProvider) &&
+      !isProbeSurface;
+    const prevAuthRejections = Math.max(0, account.consecutiveAuthRejections ?? 0);
+    const lastAuthRejectionMs = account.lastAuthRejectionAt?.getTime?.() ?? null;
+    const authWindowFresh =
+      lastAuthRejectionMs !== null && now.getTime() - lastAuthRejectionMs <= 24 * 60 * 60 * 1000;
+    const nextAuthRejections = authWindowFresh ? prevAuthRejections + 1 : 1;
+    const authEscalates = authStreakApplies && nextAuthRejections >= escalationThreshold;
+
     if (shouldModelCooldown) {
       const existing = (account.modelCooldowns as Record<string, string> | null) ?? {};
       // Monotonic: never move an in-force window earlier (see `latestDeadlineMs`).
@@ -252,6 +288,10 @@ export async function recordAccountFailure(
             ? {}
             : { modelBlockHits: { ...blockHits, [modelId]: unsupportedHits } }),
           consecutiveFailures: sql`${providerAccounts.consecutiveFailures} + 1`,
+          // AUTH-ESCALATION: a non-auth verdict proves the credential was
+          // accepted, so it clears any pending auth-rejection streak.
+          consecutiveAuthRejections: 0,
+          lastAuthRejectionAt: null,
           lastError: effective.reason,
           lastErrorCategory: effective.category,
           lastErrorAt: now,
@@ -281,11 +321,74 @@ export async function recordAccountFailure(
       return { ...classification, routesVisible: previousDeadline !== nextDeadline };
     }
 
+    // AUTH-ESCALATION override: the streak reached the threshold, so the
+    // normal cooldown UPDATE below is replaced by an operator-style disable.
+    // Status disabled with a NULL deadline is never undone by the recovery
+    // sweep (which only recovers `cooldown` rows) — only an operator's
+    // explicit recovery re-enables it. The health-event reason names the
+    // policy and the streak count, so a bulk re-enable by reason+date stays
+    // possible if the upstream ever reverses a mass revoke.
+    if (authEscalates) {
+      await client
+        .update(providerAccounts)
+        .set({
+          status: "disabled",
+          consecutiveFailures: sql`${providerAccounts.consecutiveFailures} + 1`,
+          consecutiveAuthRejections: nextAuthRejections,
+          lastAuthRejectionAt: now,
+          lastError: effective.reason,
+          lastErrorCategory: "auth_invalidated",
+          lastErrorAt: now,
+          cooldownUntil: null,
+        })
+        .where(eq(providerAccounts.id, accountId));
+      await writeHealthEvent(client, {
+        entityKind: "account",
+        accountId,
+        fromStatus: fromStatus as "active" | "cooldown" | "disabled",
+        toStatus: "disabled",
+        reason: `auto_escalation:auth_invalidated_x${nextAuthRejections}`,
+        errorCategory: "auth_invalidated",
+        modelId: modelId ?? null,
+        createdAt: now,
+      });
+      // Status moved (active/cooldown -> disabled), which the route snapshot
+      // projects, so this always invalidates.
+      return { ...classification, routesVisible: true };
+    }
+
+    // GUARD (invalidate guard, 2026-11-04): the snapshot projects only
+    // `status` and `cooldownUntil`, so a repeat failure that moves neither
+    // must not invalidate. Compute the exact values the UPDATE below writes
+    // — one shared Date.now(), so the comparison is about the written value,
+    // not a recomputation a millisecond later — and compare against the row
+    // just read. (null vs null = unchanged.) The UPDATE and the health-event
+    // row below are written exactly as before; only the invalidate signal is
+    // gated.
+    const nextStatus = effective.status;
+    const nextDeadline = accountDeadlineMs([
+      effective.retryAt?.getTime(),
+      escalatedCooldownMs > 0 ? Date.now() + escalatedCooldownMs : undefined,
+      account.cooldownUntil?.getTime?.(),
+    ]);
+    const prevCooldownMs = account.cooldownUntil?.getTime?.() ?? null;
+    const nextCooldownMs = nextDeadline?.getTime?.() ?? null;
+    const accountRoutesVisible = fromStatus !== nextStatus || prevCooldownMs !== nextCooldownMs;
+
     await client
       .update(providerAccounts)
       .set({
-        status: effective.status,
+        status: nextStatus,
         consecutiveFailures: sql`${providerAccounts.consecutiveFailures} + 1`,
+        // AUTH-ESCALATION: an in-scope auth rejection advances the streak;
+        // any other verdict clears it (the credential was accepted); an
+        // out-of-scope / non-static / probe-surface auth rejection leaves
+        // the streak untouched.
+        ...(authStreakApplies
+          ? { consecutiveAuthRejections: nextAuthRejections, lastAuthRejectionAt: now }
+          : effective.category !== "auth_invalidated"
+            ? { consecutiveAuthRejections: 0, lastAuthRejectionAt: null }
+            : {}),
         lastError: effective.reason,
         lastErrorCategory: effective.category,
         lastErrorAt: now,
@@ -297,11 +400,7 @@ export async function recordAccountFailure(
         // (see `accountDeadlineMs`): the one state that asks for it is a
         // terminal automatic disable, and an elapsed deadline there would hand
         // the row straight back to the recovery sweep.
-        cooldownUntil: accountDeadlineMs([
-          effective.retryAt?.getTime(),
-          escalatedCooldownMs > 0 ? Date.now() + escalatedCooldownMs : undefined,
-          account.cooldownUntil?.getTime?.(),
-        ]),
+        cooldownUntil: nextDeadline,
       })
       .where(eq(providerAccounts.id, accountId));
 
@@ -317,9 +416,10 @@ export async function recordAccountFailure(
         createdAt: now,
       });
     }
-    // This path wrote `status` and `cooldownUntil`, both of which the snapshot
-    // projects, so routing has to see it.
-    return { ...classification, routesVisible: true };
+    // Only a genuine change to a projected column invalidates: a repeat
+    // failure on an already-cooling account with the same status and the same
+    // (monotonic) deadline changes nothing routing reads.
+    return { ...classification, routesVisible: accountRoutesVisible };
   };
 
   try {
@@ -338,7 +438,19 @@ export async function recordAccountFailure(
   }
 }
 
-/** Clears failure state after a successful dispatch; true when the account changed. */
+/** Clears failure state after a successful dispatch.
+ *
+ * Returns true only when routing-visible state changed: the snapshot
+ * projects `status`, `cooldownUntil` and `modelCooldowns`, and this UPDATE
+ * writes status "active" + cooldownUntil null while never touching
+ * modelCooldowns — so a row leaving a non-active status, or clearing a real
+ * cooldown, is visible, while a streak-only reset (or clearing block hits)
+ * on an already-active, cooldown-free row is not. The UPDATE, the
+ * lastRecoveredAt write and the health-event row are unchanged; only the
+ * invalidate signal narrows. Both callers of this return
+ * (reportAttemptOutcome and the probe path) use it purely as an invalidate
+ * gate, audited 2026-11-04, so narrowing the return narrows both gates.
+ */
 export async function recordAccountSuccess(
   db: CartethyiaDatabase,
   accountId: string,
@@ -352,6 +464,8 @@ export async function recordAccountSuccess(
       .select({
         status: providerAccounts.status,
         consecutiveFailures: providerAccounts.consecutiveFailures,
+        consecutiveAuthRejections: providerAccounts.consecutiveAuthRejections,
+        lastAuthRejectionAt: providerAccounts.lastAuthRejectionAt,
         // Read only to decide whether there is anything to clear: the common
         // case (no unsupported-model hit ever recorded) must not write.
         modelBlockHits: providerAccounts.modelBlockHits,
@@ -366,7 +480,17 @@ export async function recordAccountSuccess(
     const account = rows[0];
     if (!account || account.status === "disabled") return false;
     const fromStatus = account.status;
-    const hadFailures = (account.consecutiveFailures ?? 0) > 0 || account.status !== "active";
+    const hadFailures =
+      (account.consecutiveFailures ?? 0) > 0 ||
+      account.status !== "active" ||
+      (account.consecutiveAuthRejections ?? 0) > 0;
+    // GUARD (invalidate guard, 2026-11-04): see the doc comment above.
+    // `consecutiveFailures` and `modelBlockHits` are not projected by the
+    // route catalog, so resetting them alone must not invalidate. A stray
+    // non-null cooldownUntil on an already-active row still invalidates:
+    // conservative, and unreachable through the normal writers, which always
+    // set status and cooldownUntil together.
+    const routesVisible = fromStatus !== "active" || account.cooldownUntil !== null;
     const now = new Date();
     // The unsupported-model escalation restarts after a success: a model that
     // just served is not "not supported", so the next report of it must start
@@ -391,6 +515,7 @@ export async function recordAccountSuccess(
     if (
       !hadFailures &&
       !hasBlockHits &&
+      (account.consecutiveAuthRejections ?? 0) === 0 &&
       account.cooldownUntil === null &&
       lastSuccessFresh
     ) {
@@ -401,6 +526,10 @@ export async function recordAccountSuccess(
       .set({
         status: "active",
         consecutiveFailures: 0,
+        // AUTH-ESCALATION: a success proves the credential works, so it
+        // clears any pending auth-rejection streak.
+        consecutiveAuthRejections: 0,
+        lastAuthRejectionAt: null,
         cooldownUntil: null,
         lastSuccessAt: now,
         ...(hadFailures ? { lastRecoveredAt: now } : {}),
@@ -419,7 +548,7 @@ export async function recordAccountSuccess(
         createdAt: now,
       });
     }
-    return hadFailures;
+    return routesVisible;
   };
   try {
     return await withHealthWriteRetry(async () => {

@@ -270,6 +270,21 @@ export const CONFIG_SPEC = {
   CARTETHYIA_ACCOUNT_AUTH_REJECTED_COOLDOWN_MS: { kind: "int", default: 300_000, min: 0, max: 86_400_000 },
   CARTETHYIA_ACCOUNT_POLICY_BLOCK_COOLDOWN_MS: { kind: "int", default: 300_000, min: 0, max: 86_400_000 },
   CARTETHYIA_ACCOUNT_DISABLED_RECOVERY_MS: { kind: "int", default: 86_400_000, min: 0, max: 604_800_000 },
+  /**
+   * Auth-escalation policy (2026-11-04, user-approved, default OFF).
+   * How many consecutive upstream auth rejections within 24 h disable a
+   * static-token account operator-style (NULL deadline, sweep never
+   * recovers it). 0 = feature off: no streak is counted, nothing disables.
+   * Recommended activation value is 3: observed transients never exceed
+   * 2 consecutive auth failures before a success or a non-auth verdict.
+   */
+  CARTETHYIA_AUTH_ESCALATION_THRESHOLD: { kind: "int", default: 0, min: 0, max: 100 },
+  /**
+   * Providers the auth-escalation streak applies to (comma-separated).
+   * Unset or empty = qoder,qodercn (where the 2026-11-04 wave happened).
+   * OAuth accounts are never in scope: the streak requires a static token.
+   */
+  CARTETHYIA_AUTH_ESCALATION_PROVIDERS: { kind: "list" },
 
   // Proxy pool agents
   CARTETHYIA_PROXY_MAX_SOCKETS: { kind: "int", default: 100, min: 1, max: 100_000 },

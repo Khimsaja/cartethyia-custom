@@ -242,6 +242,13 @@ export interface AccountFailureEvidence {
    */
   readonly providerId?: string;
   /**
+   * Which surface produced this failure. The probe path passes `"probe"`;
+   * live dispatch leaves it unset. The auth-escalation streak in
+   * `recordAccountFailure` ignores probe-surface failures: a probe storm
+   * during a provider incident must not mass-disable accounts.
+   */
+  readonly sourceSurface?: string;
+  /**
    * How many times this (account, model) pair has already been reported
    * unsupported, when the caller has read them. Best-effort: the classifier
    * states the base window without it, and the writer recomputes against the
@@ -628,6 +635,7 @@ interface AccountErrorSignals {
   /** Buddy-family provider: the only family with provider-specific codes below. */
   readonly buddyBanned: boolean;
   readonly priceRefusal: boolean;
+  readonly inferhubNoCapacity: boolean;
   readonly wafPromptRejection: boolean;
   readonly deploymentInfraError: boolean;
   readonly quotaSignal: boolean;
@@ -840,6 +848,27 @@ export function classifyAccountError(
       reason("Start Plan trial unavailable for this model"), origin === "upstream");
   }
 
+  // An InferHub marketplace exhaustion is a verdict on the *market*, not on
+  // the account: "no available provider for <model> (all offers exhausted or
+  // in cooldown)" says every publisher is busy or cooling, which says nothing
+  // about this credential. Status-agnostic on purpose: the upstream's HTTP
+  // status for this refusal is not contractual (503/529 reach the
+  // model-capacity arm, which cooled the pair and re-stamped its deadline on
+  // every failure; a 429 would reach the rate-limit arm and cool it the same
+  // way), while the body is. Narrow on purpose: requires an inferhub marker
+  // (providerId, the word in the message, or the body's own
+  // "source":"inferhub") AND (no_capacity or "all offers exhausted"), so
+  // another provider's exhaustion wording is untouched. The category stays
+  // "model_capacity" — the category this payload already carries in
+  // telemetry — so no new errorCategory string appears in log-watch.
+  const inferhubNoCapacity =
+    (providerId === "inferhub" ||
+      lower.includes("inferhub") ||
+      (rawUpstreamResponse !== undefined &&
+        rawUpstreamResponse.replace(/\s+/g, "").toLowerCase().includes('"source":"inferhub"'))) &&
+    (providerCode === "no_capacity" ||
+      lower.includes("no_capacity") ||
+      lower.includes("all offers exhausted"));
   // A price refusal is a verdict on the *request*, not on the account. inferhub
   // answers 402 with `no provider's ask matches your max-per-mtok bid`: the
   // caller's own price ceiling was below every upstream ask, which says nothing
@@ -1191,6 +1220,7 @@ export function classifyAccountError(
     credentialKind,
     buddyBanned,
     priceRefusal,
+    inferhubNoCapacity,
     wafPromptRejection,
     deploymentInfraError,
     quotaSignal,
@@ -1340,6 +1370,25 @@ const ACCOUNT_ERROR_RULES: readonly AccountErrorRule[] = [
       ),
   },
   {
+    // Must precede `credential-rejected`, `quota-exhausted`, `rate-limit`
+    // and `model-capacity`: at 503/529 the last claimed this payload and
+    // cooled the pair; at 429 the rate-limit arm would. Placed after the
+    // arms above, none of which match this payload (no WAF wording, no
+    // GitHub provider, no concurrency-limit wording).
+    name: "inferhub-marketplace-exhausted",
+    match: (s) => s.inferhubNoCapacity,
+    decide: (s) =>
+      s.result(
+        "model_capacity",
+        "cooldown",
+        0,
+        null,
+        s.reason("InferHub marketplace exhausted; no provider available for this model"),
+        // Never mutates: there is nothing wrong with the account to record.
+        false,
+      ),
+  },
+  {
     name: "credential-rejected",
     match: (s) =>
       !s.quotaSignal &&
@@ -1396,6 +1445,15 @@ const ACCOUNT_ERROR_RULES: readonly AccountErrorRule[] = [
       // rejection would remove the account from rotation until an operator
       // noticed — the exact outcome the comment above says a static token must
       // not suffer.
+      // POLICY CHANGE (2026-11-04, user-approved): the single-failure rule
+      // above still stands — one 401 only cools a static token. But
+      // `recordAccountFailure` now escalates a *streak* of consecutive auth
+      // rejections (env threshold, default off; qoder/qodercn only; probe
+      // surface excluded) to an operator-style disable. That is a deliberate
+      // override of this arm's conservatism, not a contradiction of it:
+      // observed transients never exceed 2 consecutive auth failures before
+      // a success or a non-auth verdict, while a truly dead token otherwise
+      // burns one ~59 s collision per request forever.
       const revoked = s.revocationNamed;
       const recoverable = s.staticToken || oauthRecovery || !revoked;
       // An automatic disable is **not** terminal any more, but the deadline is what

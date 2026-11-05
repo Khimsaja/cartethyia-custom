@@ -77,12 +77,18 @@ function creditWindow(
   resetsAt: string | null,
 ): ProviderQuotaWindow | null {
   if (remaining === null && limit === null) return null;
+  // A zero ceiling is not a spent balance: it means the account holds no
+  // such budget at all (a free account's plan credits are always 0).
+  // Emitting a 0-limit window makes routing read "no plan" as
+  // "exhausted" and blackholes every free-tier model for the provider.
+  // A genuinely spent paid plan reports limit > 0 with remaining 0 and
+  // keeps blocking as before.
+  if (limit === 0) return null;
   const used = remaining !== null && limit !== null ? limit - remaining : null;
   // Give pooled windows a percentage so the console can render a real bar and
   // tone instead of an uncolored "quota-only" row (which is what a null
   // percent produced: every Qoder account was grey, and "enable available
-  // accounts" could never match a window). A ceiling of 0 with nothing left is
-  // a spent balance — report 0% remaining rather than a null percent.
+  // accounts" could never match a window). A spent balance (limit > 0, nothing left) — report 0% remaining rather than a null percent.
   let usedPercent: number | null = null;
   if (remaining !== null && limit !== null) {
     if (limit > 0) usedPercent = ((limit - remaining) / limit) * 100;

@@ -108,6 +108,19 @@ function healthColumns() {
   return {
     status: healthStatus("status").notNull().default("active"),
     consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+    /**
+     * Consecutive upstream auth rejections within a 24 h window, for the
+     * auth-escalation policy (2026-11-04, user-approved): a static-token
+     * account whose streak reaches CARTETHYIA_AUTH_ESCALATION_THRESHOLD is
+     * disabled operator-style by `recordAccountFailure`. Reset to 0 by any
+     * success and by any non-auth verdict; the recovery sweep deliberately
+     * does NOT reset it, so the flap loop (401 -> cooldown -> recover ->
+     * 401) still reaches the threshold. Lives in the shared healthColumns()
+     * so all three tables that spread it carry it; the 0043 migration adds
+     * it to all three.
+     */
+    consecutiveAuthRejections: integer("consecutive_auth_rejections").notNull().default(0),
+    lastAuthRejectionAt: timestamp("last_auth_rejection_at", { withTimezone: true }),
     lastSuccessAt: timestamp("last_success_at", { withTimezone: true }),
     lastError: text("last_error"),
     lastErrorCategory: text("last_error_category"),

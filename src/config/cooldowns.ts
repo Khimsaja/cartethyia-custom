@@ -2,7 +2,7 @@
  * Account/pool health cooldown fallback resolvers.
  */
 
-import { CONFIG_SPEC, readInt } from "./spec";
+import { CONFIG_SPEC, readInt, readList } from "./spec";
 
 /** The spec row shape every cooldown resolver reads. */
 type CooldownSpecEntry = {
@@ -161,6 +161,39 @@ export function resolveAccountDisabledRecoveryMs(): number {
 }
 
 /**
+ * Auth-escalation threshold (2026-11-04): consecutive auth rejections
+ * within 24 h that disable a static-token account. 0 = feature off.
+ * Cached like every other cooldown knob; tests reset it with
+ * `resetCooldownCacheForTests`.
+ */
+export function resolveAuthEscalationThreshold(): number {
+  return cachedCooldownMs(
+    "CARTETHYIA_AUTH_ESCALATION_THRESHOLD",
+    CONFIG_SPEC.CARTETHYIA_AUTH_ESCALATION_THRESHOLD,
+  );
+}
+
+let cachedAuthEscalationProviders: readonly string[] | undefined;
+let authEscalationProvidersResolved = false;
+
+/**
+ * Providers the auth-escalation streak applies to. Unset or empty reads as
+ * the default pair; entries are lowercased so `Qoder` in env still matches
+ * the lowercase provider ids stored on account rows.
+ */
+export function resolveAuthEscalationProviders(): readonly string[] {
+  if (!authEscalationProvidersResolved) {
+    cachedAuthEscalationProviders =
+      readList(
+        "CARTETHYIA_AUTH_ESCALATION_PROVIDERS",
+        CONFIG_SPEC.CARTETHYIA_AUTH_ESCALATION_PROVIDERS,
+      )?.map((entry) => entry.toLowerCase()) ?? ["qoder", "qodercn"];
+    authEscalationProvidersResolved = true;
+  }
+  return cachedAuthEscalationProviders ?? ["qoder", "qodercn"];
+}
+
+/**
  * Fallback cooldown for a provider-scoped egress 429 when the upstream named no
  * window (default 1h). See `CARTETHYIA_POOL_PROVIDER_RATE_LIMIT_COOLDOWN_MS`.
  * An upstream `retryAfterMs` always wins over this.
@@ -178,4 +211,6 @@ export function resolvePoolProviderRateLimitCooldownMs(): number {
  */
 export function resetCooldownCacheForTests(): void {
   cooldownCache.clear();
+  cachedAuthEscalationProviders = undefined;
+  authEscalationProvidersResolved = false;
 }

@@ -60,7 +60,7 @@ export interface AdmissionReserveRequest {
    * Fresh persisted `lifetime_tokens_consumed` for the family, read on demand.
    *
    * The seed for `admission:lifetime:<id>` comes from the auth snapshot, which
-   * is cached for `AUTH_CACHE_TTL_MS` (~3s) and can therefore understate the
+   * is cached for `AUTH_CACHE_TTL_MS` (~30s) and can therefore understate the
    * true persisted total when another request just committed usage. Once the
    * counter is seeded low it stays that way for its whole TTL — every future
    * INCRBY builds on the wrong baseline. This callback is invoked *only when

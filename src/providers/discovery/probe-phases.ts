@@ -731,6 +731,9 @@ export async function recordProbeHealth(args: {
       ...classifyUpstreamFailure(failure),
       modelId,
       ...(upstreamStatusCode === undefined ? {} : { statusCode: upstreamStatusCode }),
+      // AUTH-ESCALATION exclusion: probe-surface failures must not feed the
+      // auth-rejection streak (see recordAccountFailure).
+      sourceSurface: "probe",
     };
     // The health machine owns the outcome. A 202 that carries a rate limit is
     // already classified as `rate_limit_transient` with a real cooldown by
@@ -738,7 +741,7 @@ export async function recordProbeHealth(args: {
     // cooldown with a state nothing recovers from.
     await recordAccountFailure(db, accountId, failure, failureEvidence)
       .then((classification) => {
-        if (classification?.mutatesAccount) void invalidator?.invalidate();
+        if (classification?.mutatesAccount && classification?.routesVisible) void invalidator?.invalidate();
       })
       .catch(() => {});
   }

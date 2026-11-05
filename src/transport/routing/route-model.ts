@@ -604,13 +604,20 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
    * the single latest-revision rebuild. The timer is cleared on `stop()`.
    */
   private rebuildTimer: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * True when an invalidate landed while a build was in flight (SINGLEFLIGHT_XREV):
+   * the settling build owes exactly one debounced follow-up at the latest
+   * revision. Consumed only in rebuildNow()'s finally(), so an invalidation
+   * can never be lost between a build finishing and its follow-up starting.
+   */
+  private rebuildPending = false;
   private stopped = false;
 
   constructor(
     private readonly builder: SnapshotBuilder,
     options: { readonly rebuildDebounceMs?: number } = {},
   ) {
-    this.rebuildDebounceMs = options.rebuildDebounceMs ?? 500;
+    this.rebuildDebounceMs = options.rebuildDebounceMs ?? 20000;
     // Peers' mutations arrive once per process, not per instance: the handler
     // schedules a background rebuild, which is the only one there is.
     this.unsubscribe = subscribeRoutingInvalidation(() => {
@@ -630,10 +637,22 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
    * timer is pending, further invalidates just bump the revision and the
    * pending rebuild picks up the latest. Single-flight by construction — the
    * rebuild itself reuses {@link building}, so concurrent callers share one
-   * promise for the same revision.
+   * promise, whatever its revision tag.
    */
   private scheduleRebuild(): void {
-    if (this.stopped || this.rebuildTimer !== undefined) return;
+    if (this.stopped) return;
+    // SINGLEFLIGHT_XREV: a build already in flight owns the next rebuild.
+    // An invalidate landing mid-build only marks a follow-up as owed — it
+    // must NOT start a timer here, or the timer would fire mid-build and
+    // launch a second build on top of the running one (the overlap storm).
+    // This check comes BEFORE the timer-pending guard: if a timer is
+    // already pending, that timer will only join the running build, so
+    // returning on the timer alone would swallow this invalidation.
+    if (this.building !== undefined) {
+      this.rebuildPending = true;
+      return;
+    }
+    if (this.rebuildTimer !== undefined) return;
     this.rebuildTimer = setTimeout(() => {
       this.rebuildTimer = undefined;
       void this.rebuildNow().catch((error: unknown) => {
@@ -645,16 +664,28 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
     if (typeof this.rebuildTimer.unref === "function") this.rebuildTimer.unref();
   }
 
-  /** Starts (or joins) the build for the current revision. */
+  /** Starts (or joins) the single in-flight build. SINGLEFLIGHT_XREV:
+   * joins ANY in-flight build regardless of its revision tag — at most one
+   * build ever runs. Joining an older-revision build is safe: buildInner
+   * only caches when the revision is still current, and invalidations that
+   * landed mid-build are repaid by the follow-up in finally() below. */
   private rebuildNow(): Promise<RouteSnapshot> {
     const revision = this.revision;
-    if (this.building && this.building.revision === revision) return this.building.promise;
+    if (this.building) return this.building.promise;
     const promise = this.build(revision);
     this.building = { revision, promise };
     void promise.finally(() => {
       // Only the build that is still current may clear the slot; a build
       // started after a mutation must not be dropped by an older one finishing.
       if (this.building?.promise === promise) this.building = undefined;
+      // SINGLEFLIGHT_XREV: repay exactly one follow-up for every
+      // invalidate that landed while this build ran, at the latest
+      // revision. Debounced via scheduleRebuild so a fresh burst still
+      // coalesces instead of chaining builds.
+      if (this.rebuildPending && !this.stopped) {
+        this.rebuildPending = false;
+        this.scheduleRebuild();
+      }
     });
     return promise;
   }
@@ -687,6 +718,13 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
     // Storm protection comes from the mutatesAccount gate plus the
     // memoized rebuild, not from serving stale routing.
     this.snapshot = undefined;
+    // SINGLEFLIGHT_XREV: local invalidate does not schedule a rebuild (the
+    // next getSnapshot rebuilds lazily, immediately), but an invalidate that
+    // lands while a build is in flight must not be lost: mark the follow-up
+    // as owed so the settling build repays it, debounced, at the latest
+    // revision. Without this, a mid-build mutation would be served stale
+    // until some unrelated write rebuilt.
+    if (this.building !== undefined) this.rebuildPending = true;
     // Broadcast, because `reusePort` runs several gateway processes and each
     // holds its own snapshot: a console write handled by one of them left the
     // others serving pre-write routing until something else invalidated them.
@@ -699,6 +737,7 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
   /** Stops background rebuilds. Test/teardown helper. */
   stop(): void {
     this.stopped = true;
+    this.rebuildPending = false;
     if (this.rebuildTimer !== undefined) {
       clearTimeout(this.rebuildTimer);
       this.rebuildTimer = undefined;
