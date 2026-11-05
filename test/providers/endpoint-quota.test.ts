@@ -255,10 +255,16 @@ describe("Qoder quota — an unreadable body is not a zero balance", () => {
     expect(shared?.limit).toBe(2500);
   });
 
-  test("a live free-tier zero balance is reported, not discarded", async () => {
-    // Verified against a real credential: a live free-tier account answers
-    // `userQuota` all zeroes with `isQuotaExceeded: true`. That is a balance of
-    // zero, not an unreadable body — discarding it hid the account entirely.
+  test("a live free-tier zero ceiling reports no budget, not a spent balance", async () => {
+    // TipRouter divergence from upstream (2026-11-05 prod incident): a live
+    // free-tier account answers `userQuota` all zeroes with
+    // `isQuotaExceeded: true`. Upstream reports that as a 0-limit window,
+    // but routing read a 0-remaining window as exhausted and blackholed
+    // every free-tier model for the provider. A zero ceiling means the
+    // account holds no such budget at all — not a spent balance — so the
+    // reader emits no window. A genuinely spent paid plan still reports
+    // limit > 0 with remaining 0 and keeps its window (see the pooled
+    // tests above). The body itself is readable, so this is not an error.
     const fetcher = routedFetcher([
       [
         "quota/usage",
@@ -272,11 +278,7 @@ describe("Qoder quota — an unreadable body is not a zero balance", () => {
 
     const result = await fetchQoderQuota("token", fetcher, {});
 
-    expect(result.windows).toHaveLength(1);
-    expect(result.windows[0]?.used).toBe(0);
-    expect(result.windows[0]?.limit).toBe(0);
-    // A spent 0/0 balance reads as 0% remaining, not an uncolored row.
-    expect(result.windows[0]?.remainingPercent).toBe(0);
+    expect(result.windows).toHaveLength(0);
     expect(result.error).toBeNull();
   });
 

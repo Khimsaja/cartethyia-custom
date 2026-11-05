@@ -673,19 +673,26 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
     if (this.building) return this.building.promise;
     const promise = this.build(revision);
     this.building = { revision, promise };
-    void promise.finally(() => {
-      // Only the build that is still current may clear the slot; a build
-      // started after a mutation must not be dropped by an older one finishing.
-      if (this.building?.promise === promise) this.building = undefined;
-      // SINGLEFLIGHT_XREV: repay exactly one follow-up for every
-      // invalidate that landed while this build ran, at the latest
-      // revision. Debounced via scheduleRebuild so a fresh burst still
-      // coalesces instead of chaining builds.
-      if (this.rebuildPending && !this.stopped) {
-        this.rebuildPending = false;
-        this.scheduleRebuild();
-      }
-    });
+    // The finally-chain is a separate promise: without this catch, a failed
+    // build rejects it unhandled even when the caller handles the original
+    // promise (getSnapshot's stale-serve fallback) — bun test / node report
+    // that as a test failure / crash. The original promise is still returned
+    // above, so callers see the real outcome.
+    void promise
+      .finally(() => {
+        // Only the build that is still current may clear the slot; a build
+        // started after a mutation must not be dropped by an older one finishing.
+        if (this.building?.promise === promise) this.building = undefined;
+        // SINGLEFLIGHT_XREV: repay exactly one follow-up for every
+        // invalidate that landed while this build ran, at the latest
+        // revision. Debounced via scheduleRebuild so a fresh burst still
+        // coalesces instead of chaining builds.
+        if (this.rebuildPending && !this.stopped) {
+          this.rebuildPending = false;
+          this.scheduleRebuild();
+        }
+      })
+      .catch(() => {});
     return promise;
   }
 

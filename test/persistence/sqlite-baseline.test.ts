@@ -95,7 +95,11 @@ test("each backend has matching baseline and incremental migrations", () => {
     "0040_add_models_dialect.sql",
     "0041_add_daily_checkin_ledger_account_fk.sql",
     "0042_add_telemetry_degenerate_stop.sql",
-    "0043_add_provider_custom_user_agent.sql",
+    // TipRouter local 0043 (auth-escalation counters) collides with the
+    // upstream 0043 (custom user agent): the upstream file was renamed to
+    // 0044 in staging so both migrations apply on upgrade.
+    "0043_add_auth_escalation_counters.sql",
+    "0044_add_provider_custom_user_agent.sql",
   ];
   expect(postgres).toEqual(expected);
   expect(sqlite).toEqual(expected);

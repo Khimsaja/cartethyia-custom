@@ -8,8 +8,8 @@ describe("API key L1 authorization cache", () => {
 
     cache.rememberPositive("hash-1", "key-1", first, 100);
     cache.rememberPositive("hash-2", "key-1", { id: "key-1" }, 100);
-    expect(cache.lookup("hash-1", 3_099)).toEqual({ kind: "positive", value: first });
-    expect(cache.lookup("hash-1", 3_100)).toEqual({ kind: "miss" });
+    expect(cache.lookup("hash-1", 30_099)).toEqual({ kind: "positive", value: first });
+    expect(cache.lookup("hash-1", 30_100)).toEqual({ kind: "miss" });
 
     cache.rememberNegative("unknown", 100);
     expect(cache.lookup("unknown", 1_599)).toEqual({ kind: "negative" });
