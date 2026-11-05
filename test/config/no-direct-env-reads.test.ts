@@ -125,7 +125,6 @@ const ALLOW_LIST: Readonly<Record<string, Readonly<Record<string, string>>>> = {
     CARTETHYIA_SEARCH_API_KEY: "opencode websearch plugin API key override",
     CARTETHYIA_SEARCH_BACKEND: "opencode websearch plugin backend override (exa/parallel)",
   },
-  },
 };
 
 /** Walk a directory, yielding every .ts/.tsx file path relative to repo root. */

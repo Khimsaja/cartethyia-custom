@@ -4,7 +4,6 @@ import { log } from "../../observability/logger";
 import { type ServiceKind, type WireFamily } from "../../protocol/canonical-model";
 import type { CallerIdentity } from "../../security/access-control";
 import type { ProviderQuotaWindow } from "../../providers/quota/quota-contracts";
-import { log } from "../../observability/logger";
 
 export type { CallerIdentity };
 
@@ -747,7 +746,7 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
   private async build(revision: RoutingRevision): Promise<RouteSnapshot> {
     const startedAt = Date.now();
     try {
-      return await this.buildInner(revision, startedAt);
+      return await this.buildInner(revision);
     } catch (error) {
       log.error(
         "[snapshot] rebuild failed",
@@ -758,7 +757,7 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
     }
   }
 
-  private async buildInner(revision: RoutingRevision, startedAt: number): Promise<RouteSnapshot> {
+  private async buildInner(revision: RoutingRevision): Promise<RouteSnapshot> {
     const built = await this.builder();
     const providerRouting: ProviderRoutingMap | undefined = built.providerRouting
       ? Object.fromEntries(
