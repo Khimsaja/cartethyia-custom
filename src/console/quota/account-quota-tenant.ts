@@ -4,16 +4,20 @@ import type { Elysia } from "elysia";
 import { and, eq, inArray } from "drizzle-orm";
 import { providerAccounts, providers } from "../../persistence/schema";
 import { providerDisplayName } from "../../providers/provider-metadata";
-import { invalidateCredentialCache } from "../../providers/operations/provider-credential-service";
+import {
+  invalidateCredentialCache,
+  invalidateCredentialCaches,
+} from "../../providers/operations/provider-credential-service";
 import { requireTenantScope } from "../shared/errors";
 import { BUDDY_PROVIDER_IDS } from "../../providers/provider-metadata";
-import { readBuddyUsageSnapshots } from "../../providers/integrations/buddy/buddy-usage-store";
 import { GatewayError } from "../../protocol/gateway-error";
 import {
   GLOBAL_QUOTA_LENS,
   getCachedQuotaEntries,
   getCachedQuotaEntry,
   invalidateQuotaCache,
+  invalidateQuotaCaches,
+  invalidateQuotaCacheForAccount,
 } from "../../providers/quota/cache";
 import { readQuotaSnapshot, readQuotaSnapshots } from "../../providers/quota/snapshot";
 import {
@@ -45,13 +49,20 @@ import {
   isQoderCheckinProvider,
 } from "../../providers/integrations/qoder/qoder-checkin";
 import {
+  claimQoderCredits,
+  QODER_CREDIT_PROVIDER_IDS,
+  type QoderCreditClaimResult,
+} from "../../providers/integrations/qoder/claim-qoder-credits";
+import {
   DrizzleQoderNativeIdentityStore,
   type QoderNativeIdentityStore,
 } from "../../providers/integrations/qoder/qoder-native-identity-store";
-import { buddyAccountUid } from "../../providers/integrations/buddy/buddy-oauth-shared";
+import { claimZcodeGifts, type ZcodeGiftResult } from "../../providers/integrations/zcode-start-plan/gifts";
+import { ZCODE_START_PLAN_PROVIDER_ID } from "../../providers/integrations/zcode-start-plan/provider";
 import {
   supportsAccountReset,
   consumeAccountResetCredit,
+  getCachedResetCredits,
   listAccountResetCredits,
 } from "../../providers/operations/account-reset-service";
 import {
@@ -65,6 +76,14 @@ import {
   type AccountQuotaRoutesDeps,
   type AccountStatus,
 } from "./account-quota-shared";
+import {
+  DAILY_GROWTH_LEG_TIMEOUT_MS,
+  enqueueDailyGrowthJob,
+  getDailyGrowthJob,
+  withLegBudget,
+  type DailyGrowthJobAccount,
+  type DailyGrowthJobDeps,
+} from "./daily-growth-job";
 
 /** Daily check-in only exists on the buddy billing facade; everything else 400s with intent. */
 function supportsAccountCheckin(providerId: string): boolean {
@@ -134,10 +153,6 @@ async function runAccountCheckin(
   });
 }
 
-/** Bound on accounts one manual daily-growth batch may cover. */
-/** Concurrent accounts inside one manual daily-growth batch. */
-const DAILY_GROWTH_CONCURRENCY = 3;
-
 /**
  * One account's daily growth pass, report first then claim.
  *
@@ -176,6 +191,12 @@ async function runDailyGrowthForAccount(
   // fails closed instead of reporting under another account's identity. Qoder
   // has no activity-report leg — its daily grant is purely the check-in.
   const qoderAccount = isQoderCheckinProvider(String(providerId));
+  // dynamic-import: B-02 lazy graph — buddy uid decoder, only for buddy report legs.
+  // The buddy-oauth-shared graph is lazy-loaded: the uid decoder is only
+  // needed for buddy accounts' report leg (B-02).
+  const { buddyAccountUid } = await import(
+    "../../providers/integrations/buddy/buddy-oauth-shared"
+  );
   const userId = buddyAccountUid(credential);
   let report: { ok: boolean; message: string };
   if (qoderAccount) {
@@ -403,6 +424,12 @@ export function registerAccountQuotaTenantRoutes(
       // the upstream: the page renders every account at once, and re-hitting the
       // billing endpoint per account would make opening it scale with the
       // account count. One batch read for every buddy row.
+      // dynamic-import: B-02 lazy graph — buddy usage snapshots, only when the page renders buddy accounts.
+      // The buddy-usage-store graph is lazy-loaded: it is only needed when the
+      // page actually renders buddy accounts (B-02).
+      const { readBuddyUsageSnapshots } = await import(
+        "../../providers/integrations/buddy/buddy-usage-store"
+      );
       const usageByAccount = await readBuddyUsageSnapshots(
         db,
         rows.filter((row) => isBuddyProvider(row.providerId)).map((row) => row.id),
@@ -817,17 +844,60 @@ export function registerAccountQuotaTenantRoutes(
       });
       return { success: true };
     })
+    .post(
+      "/accounts/batch-delete",
+      {
+        body: t.Object({
+          accountIds: t.Array(t.String()),
+        }),
+      },
+      async ({ request, body }) => {
+        const access = requireTenantScope(accessResolver(request), "dashboard:write");
+        const accountIds = [...new Set(body.accountIds)];
+        if (accountIds.length === 0) {
+          return { ok: true, deleted: [], missing: [] };
+        }
+        // One DELETE statement for the whole batch, scoped to the tenant: a
+        // global/shared account (`tenant_id IS NULL`) is never matchable, so
+        // it lands in `missing` rather than being deleted by a tenant.
+        const deleted = await db
+          .delete(providerAccounts)
+          .where(
+            and(
+              inArray(providerAccounts.id, accountIds),
+              eq(providerAccounts.tenantId, access.tenantId),
+            ),
+          )
+          .returning({ id: providerAccounts.id });
+        const deletedIds = deleted.map((row) => row.id);
+        const deletedSet = new Set(deletedIds);
+        const missing = accountIds.filter((id) => !deletedSet.has(id));
+        // One credential-cache pass, one quota-cache pass, one snapshot
+        // invalidation, one audit row — never one per deleted account.
+        invalidateCredentialCaches(deletedIds);
+        await invalidateQuotaCaches(access.tenantId, deletedIds, redis);
+        await snapshotInvalidator?.invalidate();
+        await auditRecorder?.record({
+          access,
+          action: "provider_account.batch_deleted",
+          target: access.tenantId,
+          detail: { deleted: deletedIds, missing },
+        });
+        return { ok: true, deleted: deletedIds, missing };
+      },
+    )
     /**
-     * Runs the daily growth pass over a provider's accounts in one request:
-     * the growth-activity report first, then the check-in claim — the order the
+     * Enqueues a background daily-growth job over a provider's accounts: the
+     * growth-activity report first, then the check-in claim — the order the
      * sweep uses — with egress rotated per account the same way the worker
      * does, so a batch leaves from more than one address.
      *
-     * A manual trigger is the operator asserting "try now", so it bypasses the
-     * sweep's once-per-day ledger; the upstream stays idempotent either way.
-     * Per-account outcomes are reported individually: a batch is not
-     * all-or-nothing, and one account's closed check-in must not hide the
-     * others' streaks.
+     * Running the whole batch in the request held it open for every account's
+     * upstream calls; the route now returns `{ jobId }` immediately and the
+     * work drains through a bounded background worker (see the job status
+     * route below). A manual trigger is the operator asserting "try now", so
+     * it bypasses the sweep's once-per-day ledger; the upstream stays
+     * idempotent either way.
      */
     .post(
       "/quota/daily-growth",
@@ -873,59 +943,66 @@ export function registerAccountQuotaTenantRoutes(
           };
         }
         // No size cap, for the same reason as the quota refresh: the work is
-        // already drained through a bounded worker pool, so refusing the request
-        // protected nothing and just forced the operator to batch by hand.
-        // One egress rotator for the whole request, exactly as the sweep builds
-        // it, so consecutive accounts leave from consecutive pools.
+        // already drained through a bounded worker pool behind the job, so
+        // refusing the request protected nothing and just forced the operator
+        // to batch by hand.
+        //
+        // One egress rotator for the whole job, exactly as the sweep builds it,
+        // so consecutive accounts leave from consecutive pools. The job carries
+        // the per-account run (report then claim) through the injected runner.
         const rotator =
           networkBindingFactory !== undefined
             ? dailyCheckinEgressForPass({ db, networkBindingFactory })
             : undefined;
+        // One leg budget for the whole job: every upstream fetch the per-account
+        // run issues carries it on top of the helpers' own per-request timeouts.
+        const legSignal = AbortSignal.timeout(DAILY_GROWTH_LEG_TIMEOUT_MS);
+        const rotatorWithBudget =
+          rotator === undefined
+            ? undefined
+            : async (accountId: string, tenantId?: string | null) => {
+                const base = await rotator(accountId, tenantId);
+                return withLegBudget(base, legSignal) as unknown as ValidatedFetch;
+              };
 
-        const results: {
-          readonly accountId: string;
-          readonly label: string;
-          readonly report: { readonly ok: boolean; readonly message: string };
-          readonly checkin: { readonly ok: boolean; readonly message: string };
-        }[] = [];
-
-        for (let offset = 0; offset < accounts.length; offset += DAILY_GROWTH_CONCURRENCY) {
-          const batch = accounts.slice(offset, offset + DAILY_GROWTH_CONCURRENCY);
-          const settled = await Promise.all(
-            batch.map(async (account) => {
-              const outcome = await runDailyGrowthForAccount(
-                providerId as ProviderId,
-                account,
-                refreshDeps,
-                rotator,
-              );
-              return { account, outcome };
-            }),
+        const runAccount = async (account: DailyGrowthJobAccount) => {
+          const outcome = await runDailyGrowthForAccount(
+            providerId as ProviderId,
+            account,
+            refreshDeps,
+            rotatorWithBudget,
           );
-          for (const { account, outcome } of settled) {
-            results.push({
-              accountId: account.id,
-              label: account.label || account.id,
-              report: outcome.report,
-              checkin: outcome.checkin,
-            });
+          if (!outcome.checkin.ok) {
+            return { ok: false, error: outcome.checkin.message };
           }
-        }
-
-        // The ledger is shared with the sweep, so invalidate once at the end
-        // rather than per account — the page re-reads "attempted today" from it.
-        await snapshotInvalidator?.invalidate();
-        const reportsOk = results.filter((entry) => entry.report.ok).length;
-        const claimed = results.filter((entry) => entry.checkin.ok).length;
-        return {
-          ok: true,
-          status: 200,
-          providerId,
-          data: results,
-          message: `${results.length} account${results.length === 1 ? "" : "s"} · report ${reportsOk}/${results.length} · check-in ${claimed}/${results.length}`,
+          return { ok: true };
         };
+
+        const jobDeps: DailyGrowthJobDeps = {
+          db,
+          redis,
+          runAccount,
+          ...(snapshotInvalidator ? { snapshotInvalidator } : {}),
+        };
+        const jobId = enqueueDailyGrowthJob({
+          deps: jobDeps,
+          tenantId: access.tenantId,
+          providerId,
+          accounts,
+        });
+        set.status = 202;
+        return { jobId, status: 202 };
       },
     )
+    .get("/quota/daily-growth/status/:jobId", async ({ request, params, set }) => {
+      const access = requireTenantScope(accessResolver(request), "dashboard:read");
+      const job = getDailyGrowthJob(params.jobId, access.tenantId);
+      if (job === null) {
+        set.status = 404;
+        return { error: `Job ${params.jobId} not found`, code: "not_found" };
+      }
+      return job;
+    })
     .post("/accounts/:id/checkin", async ({ request, params, set }) => {
       const access = requireTenantScope(accessResolver(request), "dashboard:write");
       const rows = await db
@@ -995,6 +1072,144 @@ export function registerAccountQuotaTenantRoutes(
         message: checkinStateMessage(result),
       };
     })
+    // Gift grants are an explicit action, not a side effect of a quota read.
+    .post("/accounts/:id/claim-gifts", async ({ request, params, set }) => {
+      const access = requireTenantScope(accessResolver(request), "dashboard:write");
+      const rows = await db
+        .select()
+        .from(providerAccounts)
+        .where(
+          and(eq(providerAccounts.id, params.id), eq(providerAccounts.tenantId, access.tenantId)),
+        )
+        .limit(1);
+      const account = rows[0];
+      if (!account) {
+        set.status = 404;
+        return { error: `Account ${params.id} not found`, code: "not_found" };
+      }
+      if (account.providerId !== ZCODE_START_PLAN_PROVIDER_ID) {
+        set.status = 400;
+        return {
+          error: `Gift plans are only claimable for ${ZCODE_START_PLAN_PROVIDER_ID}`,
+          code: "gifts_unsupported",
+        };
+      }
+      let result: ZcodeGiftResult;
+      try {
+        const credential = await refreshDeps.resolveCredential(account.providerId as ProviderId, account.id);
+        const fetcher = networkBindingFactory
+          ? await dailyCheckinEgressForPass({ db, networkBindingFactory })(account.id, access.tenantId)
+          : globalThis.fetch;
+        result = await claimZcodeGifts({ accountId: account.id, credential, fetcher });
+      } catch {
+        set.status = 502;
+        return {
+          ok: false, status: 502,
+          data: { id: account.id, state: "error", claimed: [], detail: "Gift claim request failed" },
+          message: "Gift claim request failed", code: "gift_claim_failed",
+        };
+      }
+      if (result.claimed.length > 0) {
+        // Cold readers must not resurrect the balance from before the grant.
+        await db.update(providerAccounts).set({ quotaSnapshot: null }).where(
+          and(eq(providerAccounts.id, account.id), eq(providerAccounts.tenantId, access.tenantId)),
+        );
+        await invalidateQuotaCacheForAccount(account.id, redis);
+        await snapshotInvalidator?.invalidate();
+      }
+      if (result.state === "error") {
+        set.status = 502;
+        return {
+          ok: false,
+          status: 502,
+          data: { id: account.id, ...result },
+          message: result.detail ?? "Gift claim failed",
+          code: "gift_claim_failed",
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        data: { id: account.id, ...result },
+        message:
+          result.state === "nothing"
+            ? "No gift plan to claim"
+            : result.state === "claimed"
+              ? `Claimed ${result.claimed.join(", ")}`
+              : result.state === "already_claimed"
+                ? "Every gift plan was claimed before"
+                : (result.detail ?? "Claim it in the ZCode app"),
+      };
+    })
+    // Qoder daily-credits claim is likewise an explicit operator action: the
+    // CREDITS campaign only surfaces with the real UMID headers, so the claim
+    // mints/binds a native identity first (same store the check-in worker uses).
+    .post("/accounts/:id/claim-qoder-credits", async ({ request, params, set }) => {
+      const access = requireTenantScope(accessResolver(request), "dashboard:write");
+      const rows = await db
+        .select()
+        .from(providerAccounts)
+        .where(
+          and(eq(providerAccounts.id, params.id), eq(providerAccounts.tenantId, access.tenantId)),
+        )
+        .limit(1);
+      const account = rows[0];
+      if (!account) {
+        set.status = 404;
+        return { error: `Account ${params.id} not found`, code: "not_found" };
+      }
+      if (!QODER_CREDIT_PROVIDER_IDS.includes(account.providerId as (typeof QODER_CREDIT_PROVIDER_IDS)[number])) {
+        set.status = 400;
+        return {
+          error: "Daily credits are only claimable for qoder accounts",
+          code: "qoder_credits_unsupported",
+        };
+      }
+      let result: QoderCreditClaimResult;
+      try {
+        const credential = await refreshDeps.resolveCredential(account.providerId as ProviderId, account.id);
+        const fetcher = networkBindingFactory
+          ? await dailyCheckinEgressForPass({ db, networkBindingFactory })(account.id, access.tenantId)
+          : globalThis.fetch;
+        result = await claimQoderCredits({ db, providerId: account.providerId, accountId: account.id, credential, fetcher });
+      } catch {
+        set.status = 502;
+        return {
+          ok: false, status: 502,
+          data: { id: account.id, state: "error", amount: 0, detail: "Qoder credit claim request failed" },
+          message: "Qoder credit claim request failed", code: "qoder_credit_claim_failed",
+        };
+      }
+      if (result.state === "claimed") {
+        // Cold readers must not resurrect the balance from before the grant.
+        await db.update(providerAccounts).set({ quotaSnapshot: null }).where(
+          and(eq(providerAccounts.id, account.id), eq(providerAccounts.tenantId, access.tenantId)),
+        );
+        await invalidateQuotaCacheForAccount(account.id, redis);
+        await snapshotInvalidator?.invalidate();
+      }
+      if (result.state === "error") {
+        set.status = 502;
+        return {
+          ok: false,
+          status: 502,
+          data: { id: account.id, ...result },
+          message: result.detail ?? "Qoder credit claim failed",
+          code: "qoder_credit_claim_failed",
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        data: { id: account.id, ...result },
+        message:
+          result.state === "nothing"
+            ? "No CREDITS campaign to claim"
+            : result.state === "claimed"
+              ? `Claimed ${result.amount} credits`
+              : "CREDITS campaign already claimed",
+      };
+    })
     .post("/accounts/:id/activity-report", async ({ request, params, set }) => {
       const access = requireTenantScope(accessResolver(request), "dashboard:write");
       const rows = await db
@@ -1043,6 +1258,12 @@ export function registerAccountQuotaTenantRoutes(
         // The growth event scores by uid, and only a JWT carries one. An
         // opaque API key must fail closed here — reporting it under another
         // account's uid would poison someone else's streak.
+        // dynamic-import: B-02 lazy graph — buddy uid decoder on this buddy-only surface.
+        // The buddy-oauth-shared graph is lazy-loaded: the uid decoder is only
+        // needed on this buddy-only surface (B-02).
+        const { buddyAccountUid } = await import(
+          "../../providers/integrations/buddy/buddy-oauth-shared"
+        );
         const userId = buddyAccountUid(credential);
         if (!userId) {
           set.status = 400;
@@ -1109,7 +1330,12 @@ export function registerAccountQuotaTenantRoutes(
           account.providerId as ProviderId,
           account.id,
         );
-        const list = await listAccountResetCredits(account.providerId, credential);
+        // Cached per account for a short TTL: every dialog open was hitting the
+        // upstream live. The cache is cleared on a successful redemption, so a
+        // consumed credit is not shown again for the rest of the TTL.
+        const list = await getCachedResetCredits(account.providerId, account.id, () =>
+          listAccountResetCredits(account.providerId, credential),
+        );
         return list ?? { availableCount: 0, credits: [] };
       } catch (err) {
         return { availableCount: 0, credits: [] };

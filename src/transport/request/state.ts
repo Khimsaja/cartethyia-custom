@@ -60,6 +60,12 @@ export interface ProxyRequestOutcome {
   readonly firstContentDeltaAtMs?: number;
   /** Last event timestamp (for generation duration calculation). */
   readonly lastEventAtMs?: number;
+  /**
+   * True for a completed request whose output was far smaller than the model's
+   * ceiling and which ended with an ordinary `stop` (a "degenerate stop").
+   * Set by completion bookkeeping; carried onto the telemetry row.
+   */
+  readonly degenerateStop?: boolean;
 }
 export interface ProxyRequestState {
   readonly requestId: string;
@@ -170,10 +176,9 @@ export interface ProxyRequestState {
    */
   extendDeadline(ms: number): void;
   cleanup(): void;
-  addCleanup(cleanup: () => void): void;
 }
 
-export interface RequestTracker {
+interface RequestTracker {
   track(id: string): void;
   untrack(id: string): void;
 }
@@ -330,7 +335,6 @@ export class ProxyRequestStateStore {
     else request.signal.addEventListener("abort", onAbort, { once: true });
     let cleaned = false;
     let providerFlightStarted = false;
-    const cleanups: Array<() => void> = [];
     const armDeadline = (ms: number): void => {
       clearTimeout(timer);
       timer = setTimeout(() => {
@@ -404,21 +408,11 @@ export class ProxyRequestStateStore {
           request.signal.removeEventListener("abort", onAbort);
         } catch {
         }
-        for (const cleanup of cleanups.splice(0)) {
-          try {
-            cleanup();
-          } catch {
-          }
-        }
         try {
           abortController.abort(new DOMException("request complete", "AbortError"));
         } catch {
         }
         this.states.delete(request);
-      },
-      addCleanup: (cleanup) => {
-        if (cleaned) cleanup();
-        else cleanups.push(cleanup);
       },
     };
     this.liveControllers.set(state.requestId, abortController);

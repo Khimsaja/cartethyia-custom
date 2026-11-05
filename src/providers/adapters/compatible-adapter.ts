@@ -13,6 +13,9 @@ import {
 import { applyRouteUserAgent, type ProviderDispatchTarget, type ProviderId, type ProviderDispatchContext } from "../provider-contracts";
 import { BaseProviderAdapter } from "./base-adapter";
 import { encodeWireRequest, decodeWireResponse, decodeWireStream } from "../../protocol/registry";
+import { resolveDialect } from "../../protocol/translation/dialect/resolver";
+import { resolveThinkingForModel } from "../../protocol/translation/dialect/thinking-ladder";
+import type { DialectPolicy } from "../../protocol/translation/dialect/types";
 import { postUpstreamJson } from "../../protocol/upstream/post-json";
 import { GATEWAY_USER_AGENT } from "../operations/gateway-user-agent";
 import { resolvePromptCacheKey } from "../operations/session-resolution";
@@ -24,6 +27,19 @@ import {
   type AuthHeaderShape,
 } from "../../protocol/codecs";
 const TEXT_DECODER = new TextDecoder("utf-8", { fatal: false });
+
+/**
+ * Provider ids that understand the OpenAI-style `service_tier` control. Only
+ * these upstreams accept the field; every other OpenAI-compatible provider
+ * either ignores it or rejects the whole request with `unsupported_value`
+ * (measured: GitHub Copilot returns 400). `service_tier` is advisory on the
+ * providers that do support it, so dropping it elsewhere is lossless.
+ */
+const SERVICE_TIER_SUPPORTED_PROVIDERS: ReadonlySet<string> = new Set([
+  "openai",
+  "codex",
+  "anthropic",
+]);
 
 /**
  * The subset of a canonical request a native-service header hook may read.
@@ -213,6 +229,17 @@ export class OpenAICompatibleAdapter extends BaseProviderAdapter {
     const wireFamily = candidate.wire_family;
     const effectiveRequest = this.config.prepareRequest?.(request) ?? request;
     const promptCacheKey = resolvePromptCacheKey(effectiveRequest, context);
+    const dialectPolicy: DialectPolicy = resolveDialect(
+      candidate.model_id,
+      candidate.provider_id,
+      wireFamily,
+      candidate.dialect,
+    );
+    const thinking = resolveThinkingForModel(
+      candidate.model_id,
+      candidate.provider_id,
+      wireFamily,
+    );
     const payload = await encodeWireRequest(wireFamily, effectiveRequest, {
       supportsPromptCaching: this.config.supports_prompt_caching !== false,
       ...(promptCacheKey === undefined ? {} : { promptCacheKey }),
@@ -223,6 +250,8 @@ export class OpenAICompatibleAdapter extends BaseProviderAdapter {
       ...(context.image_clamp_max_bytes === undefined
         ? {}
         : { maxBytesOverride: context.image_clamp_max_bytes }),
+      dialectPolicy,
+      thinking,
     });
     if (
       wireFamily !== "messages" &&
@@ -263,6 +292,18 @@ export class OpenAICompatibleAdapter extends BaseProviderAdapter {
       }
     }
     this.config.prePayload?.(payload, effectiveRequest, candidate, context);
+    // `service_tier` is an OpenAI-style control that only a small set of
+    // upstreams understand. Every other OpenAI-compatible provider either
+    // ignores it silently or rejects the whole request with
+    // `unsupported_value` (measured: GitHub Copilot returns 400). Since the
+    // field is purely advisory on the providers that support it, dropping it
+    // everywhere else is safe and prevents avoidable upstream 400s.
+    if (
+      payload["service_tier"] !== undefined &&
+      !SERVICE_TIER_SUPPORTED_PROVIDERS.has(candidate.provider_id)
+    ) {
+      delete payload["service_tier"];
+    }
     return payload;
   }
 
@@ -322,8 +363,11 @@ export class OpenAICompatibleAdapter extends BaseProviderAdapter {
    * the caller (the route handler validates only the trust boundary), so this
    * method only stamps headers and posts.
    *
-   * `systemone` is kept as a named alias because the `/v1/systemone` route
-   * reads it directly; both names are the same behavior.
+   * `systemone` is kept as a named alias because both names are live: the
+   * transport dispatch handler for `POST /v1/systemone`
+   * (transport/dispatch/systemone.ts) and the discovery probing service
+   * (discovery/probing-service.ts) read it directly; both names are the same
+   * behavior.
    */
   async dispatchNativeService(
     body: Record<string, unknown>,
@@ -378,7 +422,10 @@ export class OpenAICompatibleAdapter extends BaseProviderAdapter {
           "upstream",
         );
       }
-      yield* decodeWireStream(wireFamily, res.body, request, { signal: context.abort_signal });
+      yield* decodeWireStream(wireFamily, res.body, request, {
+        signal: context.abort_signal,
+        dialectPolicy: resolveDialect(candidate.model_id, candidate.provider_id, wireFamily, candidate.dialect),
+      });
     } else {
       // A streaming request answered with a non-SSE body is a provider
       // protocol violation, and the body is often an error envelope or a
@@ -412,12 +459,15 @@ export class OpenAICompatibleAdapter extends BaseProviderAdapter {
       // the absence of every completion shape so a provider that merely
       // echoes an `error` field alongside real output is not misread.
       const envelopeError = json["error"];
+      const startPlanError = this.provider_id === "zcode-start" &&
+        (json["success"] === false || (json["code"] !== undefined &&
+          ![0, 200, "0", "200"].includes(json["code"] as string | number)));
       const hasCompletionShape =
         json["choices"] !== undefined ||
         json["output"] !== undefined ||
         json["content"] !== undefined ||
         json["candidates"] !== undefined;
-      if (envelopeError !== undefined && envelopeError !== null && !hasCompletionShape) {
+      if (((envelopeError !== undefined && envelopeError !== null) || startPlanError) && !hasCompletionShape) {
         const errorObject = isRecord(envelopeError) ? envelopeError : json;
         const identifier = upstreamErrorIdentifier(json);
         const providerStatus = [

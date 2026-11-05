@@ -42,14 +42,17 @@ import {
   buildProbeCanonicalRequest,
   computeProbeVerdict,
   extractSample,
+  modelFromEvents,
   GROK_407_PROBE_PROMPT,
   grok407ProbeFailure,
   hasMeaningfulOutput,
   loadProbePreferences,
+  qoderCmodelProbePrompt,
   recordProbeHealth,
   resolveProbeAdapter,
   resolveProbeTarget,
   selectProbeAccount,
+  selectUsableAccount,
   wireContextFrom,
   type ProbeProviderRow,
 } from "./probe-phases";
@@ -185,7 +188,16 @@ export class ProviderProbingService {
     request: ProbeModelRequest,
   ): Promise<ProbeModelResult> {
     const startedAt = Date.now();
-    const modelId = request.modelId;
+    // Qoder's IDE surface is the only transport that echoes provider metadata
+    // (`provider_model`, `target`, …) in its raw_usage, so probes for Qoder
+    // default to it unless the operator picked a surface explicitly. This
+    // covers every entry point (single model, all models, all accounts).
+    const normalizedRequest: ProbeModelRequest =
+      (providerId === "qoder" || providerId === "qodercn") &&
+      (request.surface === undefined || request.surface === "default")
+        ? { ...request, surface: "ide" }
+        : request;
+    const modelId = normalizedRequest.modelId;
     // One provider snapshot per probe: the contract gate, the account gate, the
     // custom-adapter fallback, and the wire context all read this same row, so a
     // concurrent edit cannot make two reads disagree.
@@ -206,10 +218,10 @@ export class ProviderProbingService {
       db: this.db,
       tenantId,
       providerId,
-      requestedAccountId: request.accountId,
+      requestedAccountId: normalizedRequest.accountId,
       requiresAccount,
       allowCoolingAccount:
-        providerId === "grok" && request.prompt === GROK_407_PROBE_PROMPT,
+        providerId === "grok" && normalizedRequest.prompt === GROK_407_PROBE_PROMPT,
     });
     if (!account.ok) {
       return { ok: false, latencyMs: Date.now() - startedAt, error: account.error };
@@ -235,9 +247,16 @@ export class ProviderProbingService {
       wireFamily,
       request,
     });
+    // Qoder's gRPC surface refuses a probe that asks a model to identify
+    // itself (406 from the upstream proxy) for one roster row (`cmodel`,
+    // virtual id `cantus`). dmodel/qmodel/smodel accept the identity prompt
+    // fine — only cmodel refuses it — so the workaround is scoped to that
+    // row, not to every Qoder probe, and never overrides an explicit prompt.
+    const qoderCmodelPrompt = qoderCmodelProbePrompt(providerId, modelId, normalizedRequest.prompt);
+    const probeRequest = qoderCmodelPrompt === undefined ? normalizedRequest : { ...normalizedRequest, prompt: qoderCmodelPrompt };
     const canonicalRequest = buildProbeCanonicalRequest({
       modelId,
-      request,
+      request: probeRequest,
       probeReasoning,
       sourceSurface,
     });
@@ -256,6 +275,11 @@ export class ProviderProbingService {
       // The model row's own output ceiling, so a probe with a max-output
       // ceiling (OpenCode free) shapes with the model's limit, not a guess.
       ...(outputLimit == null ? {} : { output_limit: outputLimit }),
+      // Probe-only transport override, when the operator asked for one. Live
+      // dispatch never sets this.
+      ...(normalizedRequest.surface === undefined || normalizedRequest.surface === "default"
+        ? {}
+        : { probe_surface: normalizedRequest.surface }),
     };
 
     const probeSignal = AbortSignal.timeout(30_000);
@@ -307,7 +331,7 @@ export class ProviderProbingService {
               `Provider ${providerId} has no web search transport (request {requestId}). Know your tools — this one just isn't in the box 🧰`,
             );
           }
-          const searchProbeQuery = request.prompt?.trim() || "Cartethyia gateway probe";
+          const searchProbeQuery = normalizedRequest.prompt?.trim() || "Cartethyia gateway probe";
           const response = await adapter.websearch(
             { model: modelId, query: searchProbeQuery, max_results: 3 },
             candidate,
@@ -573,7 +597,16 @@ export class ProviderProbingService {
     }
 
     const sample = extractSample(events);
-    const reportedModel = await probeCapture?.reportedModel?.catch(() => undefined);
+    // The HTTP-only `readReportedModel` covers response-body transports; a
+    // non-HTTP transport (Qoder gRPC) reports the upstream echo as a
+    // `response_start` event instead — fall back to that when the body read
+    // came up empty.
+    const reportedModel =
+      (await probeCapture?.reportedModel?.catch(() => undefined)) ?? modelFromEvents(events);
+    // Provider-specific upstream model metadata (Qoder IDE surface raw_usage):
+    // carried on the terminal event by the adapter, surfaced verbatim.
+    const terminal = events.find((event) => event.type === "terminal");
+    const providerMetadata = terminal?.type === "terminal" ? terminal.provider_metadata : undefined;
     return {
       ...(accountId ? { accountId } : {}),
       ok,
@@ -582,6 +615,9 @@ export class ProviderProbingService {
       ...(upstreamStatusCode === undefined ? {} : { statusCode: upstreamStatusCode }),
       ...(sample ? { sample } : {}),
       ...(reportedModel === undefined ? {} : { reportedModel }),
+      ...(providerMetadata === undefined || Object.keys(providerMetadata).length === 0
+        ? {}
+        : { providerMetadata }),
       ...(searchResults !== undefined && searchResults.length > 0 ? { searchResults } : {}),
       ...(errorMessage ? { error: errorMessage } : {}),
     };
@@ -915,6 +951,9 @@ export class ProviderProbingService {
         source: discDef?.freeTier === true ? "auto_free" : "discovered",
         sourceUpdatedAt,
         enabled: true,
+        ...(discDef?.dialect === undefined && knownDefinition?.dialect === undefined
+          ? {}
+          : { dialect: discDef?.dialect ?? knownDefinition?.dialect }),
       });
     }
     // One statement per chunk (500, the account-health batch step) instead of
@@ -936,6 +975,7 @@ export class ProviderProbingService {
             cost: sql`excluded.cost`,
             proOnly: sql`excluded.pro_only`,
             freeTier: sql`excluded.free_tier`,
+            dialect: sql`excluded.dialect`,
             // The proposed row's own source, not a constant: a free-tier
             // discovery and an ordinary one write the same upsert, and pinning
             // this to `discovered` would relabel every free-tier row on the
@@ -1000,14 +1040,7 @@ export class ProviderProbingService {
           globalOrOwnedBy(providerAccounts.tenantId, tenantId),
         ),
       );
-    const now = Date.now();
-    const usable = rows
-      .filter(
-        (row) =>
-          row.status !== "disabled" &&
-          (row.cooldownUntil === null || row.cooldownUntil.getTime() <= now),
-      )
-      .sort((left, right) => Number(right.tenantId !== null) - Number(left.tenantId !== null))[0];
+    const usable = selectUsableAccount(rows);
     if (!usable?.credentialCiphertext) return undefined;
     const authState = isRecord(usable.authState) ? usable.authState as Readonly<Record<string, unknown>> : undefined;
     return {

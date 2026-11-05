@@ -34,11 +34,10 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { log } from "../../../observability/logger";
-
-/** Valid environment codes (kept for validation/console surface). */
-export const QODER_ENV_CODES = ["0", "3", "4", "5", "6", "7"] as const;
+import { qoderMachineHostname, qoderMachineOs } from "../../operations/cli-platform";
 
 /** Environment code: an upstream "region/flavor", not a device identity. */
 const ENV_CODE = "3";
@@ -63,12 +62,66 @@ export function umidpackDir(): string {
   return join(process.cwd(), "vendor", "qoder-umid", "umidpack");
 }
 
+/** The vendored mini-ELF tarball (static glibc bundle for containers). */
+export function umidMiniTarball(): string {
+  return join(process.cwd(), "vendor", "qoder-umid", "qoder-umid-mini.tar.gz");
+}
+
+/**
+ * Staging directory for the extracted mini-ELF bundle. Uses a per-user cache
+ * dir (respecting `XDG_CACHE_HOME` on Linux) so a container does not need to
+ * carry the extracted tree, and the repo stays clean.
+ */
+export function umidMiniDir(): string {
+  const base = process.env.XDG_CACHE_HOME?.trim() || join(process.env.HOME ?? tmpdir(), ".cache");
+  return join(base, "cartethyia", "umid-mini");
+}
+
+let miniExtracted = false;
+
+/** Extracts `qoder-umid-mini.tar.gz` once into {@link umidMiniDir}. */
+export function ensureUmidMiniExtracted(): boolean {
+  const tar = umidMiniTarball();
+  const out = umidMiniDir();
+  if (!existsSync(tar)) return false;
+  if (existsSync(join(out, "opt", "umid", "runtime-info")) && miniExtracted) return true;
+  try {
+    mkdirSync(out, { recursive: true });
+    // Re-extract on empty/missing target only; leave existing tree in place.
+    if (!existsSync(join(out, "opt", "umid", "runtime-info"))) {
+      const r = spawnSync("tar", ["-xzf", tar, "-C", out], { encoding: "utf8", timeout: 30_000 });
+      if (r.status !== 0) {
+        log.warn(`[qoder] umid mini extract failed: ${String(r.stderr ?? "").slice(0, 300)}`);
+        return false;
+      }
+    }
+    const bin = join(out, "opt", "umid", "runtime-info");
+    if (existsSync(bin)) chmodSync(bin, 0o755);
+    miniExtracted = true;
+    return true;
+  } catch (error) {
+    log.warn("[qoder] umid mini extract error", error as Error);
+    return false;
+  }
+}
+
 /** WSL-side staging/seed paths for the Linux bridge on a Windows host. */
 const WSL_BIN = "/tmp/umidpack/runtime-info";
 const WSL_SEED = "/home/risun/.config/.locale_cfg";
 const WSL_LOCK = "/tmp/umidpack/bridge.lock";
 
-type Bridge = { kind: "elf" | "macho" | "pe" | "wsl-elf" };
+type Bridge = { kind: "elf" | "macho" | "pe" | "wsl-elf" | "mini-elf" };
+
+/** True when this process runs inside a container (Docker/Podman). */
+function isContainerized(): boolean {
+  if (existsSync(join("/", ".dockerenv")) || existsSync(join("/", ".containerenv"))) return true;
+  try {
+    const cgroup = readFileSync("/proc/1/cgroup", "utf8");
+    return /(?:docker|containerd|podman|kubepods)/i.test(cgroup);
+  } catch {
+    return false;
+  }
+}
 
 /** Picks the bridge for this host; `null` when nothing genuine can run. */
 function pickBridge(): Bridge | null {
@@ -80,20 +133,34 @@ function pickBridge(): Bridge | null {
     const exe = join(umidpackDir(), "runtime-info.exe");
     const dll = join(umidpackDir(), "sgsdk.dll");
     if (existsSync(exe) && existsSync(dll)) return { kind: "pe" };
-    return null;
+    // Windows has no native mini-ELF runner; WSL may still be present.
+    return ensureUmidMiniExtracted() ? { kind: "wsl-elf" } : null;
   }
   if (process.platform === "darwin") {
     const arch = process.arch === "arm64" ? "macho-arm64" : "macho-x86_64";
+    // Prefer the re-signed adhoc `.clean` binary (DYLD-spoofable); the stock
+    // vendored binary is Hardened Runtime and ignores DYLD_INSERT_LIBRARIES.
+    const clean = join(umidpackDir(), arch, "runtime-info.clean");
+    if (existsSync(clean)) return { kind: "macho" };
     return existsSync(join(umidpackDir(), arch, "runtime-info")) ? { kind: "macho" } : null;
+  }
+  // Linux. Containers (Docker/K8s/Podman) prefer the mini-ELF bundle: it ships
+  // a static glibc tree and mints tokens with `isVm:false`, so a containerized
+  // deployment is not flagged as a VM. Set CARTETHYIA_QODER_UMID_MINI=1 to
+  // force it on any Linux host, or =0 to disable container detection.
+  const miniForced = process.env.CARTETHYIA_QODER_UMID_MINI;
+  const wantMini =
+    miniForced === "1" || (miniForced !== "0" && isContainerized());
+  if (wantMini && process.arch === "x64" && ensureUmidMiniExtracted()) {
+    return { kind: "mini-elf" };
   }
   const arch = process.arch === "arm64" ? "elf-aarch64" : "elf-x86_64";
   if (existsSync(join(umidpackDir(), arch, "runtime-info"))) return { kind: "elf" };
-  return existsSync(join(umidpackDir(), "elf-x86_64", "runtime-info")) ? { kind: "elf" } : null;
-}
-
-/** True when a genuine bridge can run on this host. */
-export function hasGenuineBridge(): boolean {
-  return pickBridge() !== null;
+  if (existsSync(join(umidpackDir(), "elf-x86_64", "runtime-info"))) return { kind: "elf" };
+  // Linux without a native vendored ELF (e.g. a slim container with no mini):
+  // fall back to the mini-ELF bundle when it extracts.
+  if (ensureUmidMiniExtracted() && process.arch === "x64") return { kind: "mini-elf" };
+  return null;
 }
 
 /** Generated (software) identity — deterministic per account id, NOT SG-signed. */
@@ -224,6 +291,23 @@ export function mintQoderNativeIdentity(accountId: string): { identity: QoderNat
     return { identity, seed: existsSync(seed) ? readFileSync(seed, "utf8") : "" };
   }
 
+  if (bridge.kind === "mini-elf") {
+    const exe = join(umidMiniDir(), "opt", "umid", "runtime-info");
+    ensurePosixExecutable(exe);
+    const seed = seedPath();
+    const dir = seed.slice(0, seed.lastIndexOf("/"));
+    mkdirSync(dir, { recursive: true });
+    try { spawnSync("rm", ["-f", seed]); } catch { /* ignore */ }
+    const r = spawnSync(exe, [ENV_CODE], {
+      encoding: "utf8",
+      timeout: 25_000,
+      env: { ...process.env, LD_LIBRARY_PATH: join(umidMiniDir(), "lib", "x86_64-linux-gnu") },
+    });
+    const identity = parseBridgeLine(String(r.stdout ?? ""));
+    if (!identity) { log.warn("[qoder] mini-elf mint failed"); return null; }
+    return { identity, seed: existsSync(seed) ? readFileSync(seed, "utf8") : "" };
+  }
+
   // pe — hardware-bound; no seed concept on Windows.
   const exe = join(umidpackDir(), "runtime-info.exe");
   const r = spawnSync(exe, [ENV_CODE], { encoding: "utf8", timeout: 30_000, windowsHide: true, cwd: umidpackDir() });
@@ -275,33 +359,40 @@ export function replayQoderNativeIdentity(seed: string, accountId: string): Qode
     return parseBridgeLine(String(r.stdout ?? ""));
   }
 
+  if (bridge.kind === "mini-elf") {
+    const exe = join(umidMiniDir(), "opt", "umid", "runtime-info");
+    ensurePosixExecutable(exe);
+    const seedPathStr = seedPath();
+    writeFileSync(seedPathStr, seed, "utf8");
+    const r = spawnSync(exe, [ENV_CODE], {
+      encoding: "utf8",
+      timeout: 25_000,
+      env: { ...process.env, LD_LIBRARY_PATH: join(umidMiniDir(), "lib", "x86_64-linux-gnu") },
+    });
+    return parseBridgeLine(String(r.stdout ?? ""));
+  }
+
   return null; // pe: cannot replay a seed on a hardware-bound identity
 }
 
-/** Reads the current seed file content (diagnostics). */
-export function readCurrentQoderSeed(): string {
-  const path = seedPath();
-  try {
-    if (process.platform === "win32") return wsl(`cat ${WSL_SEED} 2>/dev/null`);
-    return existsSync(path) ? readFileSync(path, "utf8") : "";
-  } catch {
-    return "";
-  }
-}
-
-/** The six native machine headers for one identity. */
-export function qoderMachineHeaders(identity: QoderNativeIdentity): Record<string, string> {
+/**
+ * The six native machine headers for one identity.
+ *
+ * The upstream treats `cosy-machineid` as a stable UUID-shaped machine id
+ * (the desktop client caches it; the donor hub derives a UUIDv4 from the
+ * account uid). The native machineToken/Type/Code come from the UMID bridge.
+ * The OS and hostname are derived from the real runtime (`qoderMachineOs` /
+ * `qoderMachineHostname`), not hardcoded — the campaign surface fingerprint
+ * must match the actual client (verified live 2026-11-04).
+ */
+export function qoderMachineHeaders(identity: QoderNativeIdentity, machineId?: string): Record<string, string> {
+  const mid = machineId && machineId.length > 0 ? machineId : identity.machineToken;
   return {
-    "cosy-machineid": identity.machineToken,
+    "cosy-machineid": mid,
     "cosy-machinetoken": identity.machineToken,
     "cosy-machinetype": identity.machineType,
     "cosy-machinecode": identity.machineCode,
-    "cosy-machineos": "x86_64_linux",
-    "cosy-machinehostname": "DESKTOP-QODER",
+    "cosy-machineos": qoderMachineOs(),
+    "cosy-machinehostname": qoderMachineHostname(),
   };
-}
-
-/** For tests: force re-mint (identities are pure functions of their seed). */
-export function resetQoderNativeIdentityCache(): void {
-  // no persistent in-process identity cache remains
 }

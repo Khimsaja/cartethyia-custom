@@ -459,6 +459,26 @@ function banWording(lower: string): boolean {
 }
 
 /**
+ * Whether GitHub Copilot stated the account lacks a license — a ban-shaped
+ * verdict on the account, not a refreshable auth rejection.
+ *
+ * Observed live (2026-11-03): the health log showed
+ * `unauthorized: not licensed to use Copilot` and `forbidden` on
+ * `gpt-6-luna`. Copilot answers 401 for a bad credential and 403 for a
+ * license/entitlement refusal, so `forbidden`/`unauthorized` on this surface
+ * is the same verdict. No amount of waiting or refreshing changes it — the
+ * subscription cannot serve this credential.
+ */
+function copilotNotLicensed(lower: string): boolean {
+  return (
+    lower.includes("not licensed") ||
+    lower.includes("forbidden") ||
+    lower.includes("unauthorized") ||
+    lower.includes("license")
+  );
+}
+
+/**
  * Bounded to a day, matching `MAX_COOLDOWN_MS` in the failure policy: a stated
  * window longer than that is a monthly or plan-level limit, and parking an
  * account for a month on one upstream field is a decision for the operator,
@@ -606,21 +626,12 @@ interface AccountErrorSignals {
   readonly staticToken: boolean;
   readonly credentialKind: string | undefined;
   /** Buddy-family provider: the only family with provider-specific codes below. */
-  readonly buddy: boolean;
-  /**
-   * The upstream named a restriction on this account, not a refusal of the
-   * request. Only the `11140` shape carries `displayMsg` about the account
-   * being restricted, so the policy arm can tell a ban from a bad request
-   * instead of treating both as one cooldown.
-   */
   readonly buddyBanned: boolean;
   readonly priceRefusal: boolean;
   readonly wafPromptRejection: boolean;
   readonly deploymentInfraError: boolean;
   readonly quotaSignal: boolean;
   readonly policyRejection: boolean;
-  readonly requestScoped: boolean;
-  readonly channelRejection: boolean;
   readonly hostedToolFailure: boolean;
   readonly modelEntitlementFailure: boolean;
   readonly queuedUpstream: boolean;
@@ -814,7 +825,20 @@ export function classifyAccountError(
   const modelBlockHits = Math.max(1, Math.floor(options?.modelBlockHits ?? 1));
   const staticToken = options?.staticToken === true;
   const credentialKind = options?.credentialKind;
-  const buddy = BUDDY_PROVIDER_IDS.has(options?.providerId?.toLowerCase() ?? "");
+
+  // Start Plan is a separate provider: its named trial refusal rests only that model.
+  const providerId = options?.providerId ?? (error instanceof GatewayError ? error.details.providerId : undefined);
+  const refusedModel = statusCode === 400
+    ? /no active limited quota for ([\w.-]+)/i.exec(message)?.[1]
+    : statusCode === 429
+      ? /limited quota(?: for)? ([\w.-]+)(?: is)? exhausted/i.exec(message)?.[1]
+      : undefined;
+  if (providerId === "zcode-start" && modelId !== undefined && refusedModel !== undefined &&
+    refusedModel.toLowerCase().replace(/-trial$/, "") === modelId.toLowerCase().replace(/-trial$/, "")) {
+    const cooldownMs = statedCooldownMs ?? DEFAULT_QUOTA_COOLDOWN_MS();
+    return result("model_unreachable", "cooldown", cooldownMs, new Date(Date.now() + cooldownMs),
+      reason("Start Plan trial unavailable for this model"), origin === "upstream");
+  }
 
   // A price refusal is a verdict on the *request*, not on the account. inferhub
   // answers 402 with `no provider's ask matches your max-per-mtok bid`: the
@@ -1100,7 +1124,8 @@ export function classifyAccountError(
   // for all other models. Disabling the whole account breaks healthy models.
   const modelEntitlementFailure =
     statusCode === 403 &&
-    (lower.includes("not have a valid license") ||
+    ((providerId === "commandcode" && lower.includes("model_not_in_plan")) ||
+      lower.includes("not have a valid license") ||
       lower.includes("valid license of this product") ||
       lower.includes("model not supported") ||
       lower.includes("not entitled to") ||
@@ -1164,15 +1189,12 @@ export function classifyAccountError(
     modelBlockHits,
     staticToken,
     credentialKind,
-    buddy,
     buddyBanned,
     priceRefusal,
     wafPromptRejection,
     deploymentInfraError,
     quotaSignal,
     policyRejection,
-    requestScoped,
-    channelRejection,
     hostedToolFailure,
     modelEntitlementFailure,
     queuedUpstream,
@@ -1260,101 +1282,6 @@ const ACCOUNT_ERROR_RULES: readonly AccountErrorRule[] = [
       ),
   },
   {
-    name: "deployment-infrastructure",
-    match: (s) => s.deploymentInfraError,
-    decide: (s) =>
-      s.result(
-        "server_error",
-        "cooldown",
-        60_000,
-        null,
-        `Proxy deployment error: ${s.message.slice(0, 160)}`,
-        false,
-      ),
-  },
-  {
-    name: "model-frequency-window",
-    match: (s) => s.lower.includes("frequency limit") && s.lower.includes("switch to the other models"),
-    decide: (s) => {
-      const cooldownMs = s.statedCooldownMs ?? DEFAULT_QUOTA_COOLDOWN_MS();
-      return s.result(
-        "rate_limit_transient",
-        "cooldown",
-        cooldownMs,
-        new Date(Date.now() + cooldownMs),
-        s.reason("Provider frequency limit for this model"),
-        // Provider-scoped evidence still has to reach the writer: a stream frame
-        // carries no credential detail, so `canMutate` is false and without this
-        // the pair would be retried for the whole window it was closed for.
-        s.origin === "upstream" && s.scope === "provider",
-      );
-    },
-  },
-  {
-    name: "content-policy-block",
-    match: (s) => s.policyRejection && s.buddy,
-    decide: (s) => {
-      // A ban is a verdict on the credential, and cooldown cannot answer it:
-      // the account is refused, not throttled. Disabling is the fix, and
-      // disabling *immediately* is a feature — a client's retry budget is spent
-      // in seconds, so a banned account that merely cooled stayed in the plan
-      // and burned sibling accounts that were still healthy before the window
-      // expired.
-      //
-      // The two shapes are told apart by the body, not the code alone: `11140`
-      // names a restriction on the account, `11-128` refuses the request.
-      if (s.buddyBanned) {
-        return s.result(
-          "policy_blocked_banned",
-          "disabled",
-          0,
-          null,
-          s.reason("Account banned by upstream"),
-          // A ban is evidence about the credential even at provider scope, for
-          // the same reason a named revocation is: the message is the evidence.
-          // Without this a stream frame's missing credential detail would leave
-          // a banned account serving.
-          true,
-        );
-      }
-      // Not a ban: the upstream refused this request. The account is fine, so
-      // the only correct move is to stop retrying it verbatim. Cooling the
-      // account here was the bug that made one malformed request look like a
-      // dead credential.
-      return s.result(
-        "policy_blocked_invalid_request",
-        "cooldown",
-        0,
-        null,
-        s.reason("Upstream refused this request"),
-        // Never mutates: a malformed body fails identically on every account,
-        // so cooling would burn a healthy credential on the gateway's own fault.
-        false,
-      );
-    },
-  },
-  {
-    name: "request-scoped-rejection",
-    match: (s) => s.requestScoped && s.buddy,
-    decide: (s) =>
-      s.result("unknown", "cooldown", 0, null, s.reason("Request-scoped upstream rejection"), false),
-  },
-  {
-    name: "channel-rejection",
-    match: (s) => s.channelRejection && s.buddy,
-    decide: (s) => {
-      const channelBlockMs = resolveAccountPolicyBlockCooldownMs();
-      return s.result(
-        "policy_blocked",
-        "cooldown",
-        channelBlockMs,
-        new Date(Date.now() + channelBlockMs),
-        s.reason("Provider channel rejection"),
-        s.origin === "upstream",
-      );
-    },
-  },
-  {
     name: "validation-required",
     match: (s) => s.validationRequired,
     decide: (s) =>
@@ -1384,6 +1311,33 @@ const ACCOUNT_ERROR_RULES: readonly AccountErrorRule[] = [
     match: (s) => s.wafPromptRejection,
     decide: (s) =>
       s.result("policy_blocked", "cooldown", 0, null, s.reason("Request blocked by the provider WAF"), false),
+  },
+  {
+    // GitHub Copilot answers a license/entitlement refusal with 403 and
+    // "not licensed to use Copilot" / "forbidden" / "unauthorized". That is a
+    // verdict on the account: the subscription cannot serve this credential,
+    // and no amount of waiting or refreshing changes it. Cooldown cycling
+    // (auth_invalidated + 5m backoff) kept a dead account in rotation where a
+    // client's retry budget burned sibling accounts — the same failure the
+    // buddy ban exists to prevent. Disable immediately. Must run before
+    // `credential-rejected`, which would claim the bare 403 as a refreshable
+    // auth rejection.
+    name: "github-copilot-not-licensed",
+    match: (s) =>
+      s.origin === "upstream" &&
+      s.providerId === "github" &&
+      copilotNotLicensed(s.lower),
+    decide: (s) =>
+      s.result(
+        "policy_blocked_banned",
+        "disabled",
+        0,
+        null,
+        s.reason("GitHub Copilot account not licensed"),
+        // A license refusal is evidence about the account even at provider
+        // scope, for the same reason a named revocation or a buddy ban is.
+        true,
+      ),
   },
   {
     name: "credential-rejected",
@@ -1594,7 +1548,7 @@ const ACCOUNT_ERROR_RULES: readonly AccountErrorRule[] = [
   },
   {
     name: "quota-exhausted",
-    match: (s) => s.quotaSignal,
+    match: (s) => s.origin === "upstream" && s.quotaSignal,
     decide: (s) => {
       // xAI Grok Build's free tier resets on a rolling window. Use a duration
       // stated by the provider when present; otherwise park for the conservative
@@ -1648,6 +1602,7 @@ const ACCOUNT_ERROR_RULES: readonly AccountErrorRule[] = [
     // moves to the next account and the flagged one returns almost at once.
     name: "inception-per-minute-limit",
     match: (s) =>
+      s.origin === "upstream" &&
       s.providerId === "inception" &&
       (s.statusCode === 429 ||
         s.providerCode === "rate_limit_reached" ||
@@ -1672,15 +1627,16 @@ const ACCOUNT_ERROR_RULES: readonly AccountErrorRule[] = [
   {
     name: "rate-limit",
     match: (s) =>
-      s.statusCode === 429 ||
-      s.providerCode === "rate_limit_exceeded" ||
-      s.lower.includes("rate_limit") ||
-      s.lower.includes("rate limit") ||
-      s.lower.includes("too many requests") ||
-      s.lower.includes("requests per minute") ||
-      s.lower.includes("tokens per minute") ||
-      s.lower.includes("tpm limit") ||
-      s.lower.includes("rpm limit"),
+      s.origin === "upstream" &&
+      (s.statusCode === 429 ||
+        s.providerCode === "rate_limit_exceeded" ||
+        s.lower.includes("rate_limit") ||
+        s.lower.includes("rate limit") ||
+        s.lower.includes("too many requests") ||
+        s.lower.includes("requests per minute") ||
+        s.lower.includes("tokens per minute") ||
+        s.lower.includes("tpm limit") ||
+        s.lower.includes("rpm limit")),
     decide: (s) => {
       const cooldownMs = s.statedCooldownMs ?? DEFAULT_RATE_LIMIT_COOLDOWN_MS();
       // Same per-account reasoning as quota above: the failing account (or
@@ -1699,13 +1655,14 @@ const ACCOUNT_ERROR_RULES: readonly AccountErrorRule[] = [
   {
     name: "model-capacity",
     match: (s) =>
-      s.statusCode === 503 ||
-      s.statusCode === 529 ||
-      s.providerCode === "model_capacity" ||
-      s.queuedUpstream ||
-      s.lower.includes("model overloaded") ||
-      s.lower.includes("capacity exceeded") ||
-      s.lower.includes("temporarily unavailable"),
+      s.origin === "upstream" &&
+      (s.statusCode === 503 ||
+        s.statusCode === 529 ||
+        s.providerCode === "model_capacity" ||
+        s.queuedUpstream ||
+        s.lower.includes("model overloaded") ||
+        s.lower.includes("capacity exceeded") ||
+        s.lower.includes("temporarily unavailable")),
     decide: (s) => {
       const cooldownMs = s.statedCooldownMs ?? MODEL_CAPACITY_COOLDOWN_MS();
       const modelScopedMutation = s.origin === "upstream" && s.modelId !== undefined;

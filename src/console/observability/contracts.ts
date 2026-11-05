@@ -173,7 +173,7 @@ export interface UsageCacheResponse {
   cacheWriteTokens: number;
   hitRate: number;
 }
-export type UsageRequestMode = "stream" | "non_stream";
+type UsageRequestMode = "stream" | "non_stream";
 export interface UsageRequestItem {
   requestId: string;
   surface?: string;
@@ -232,6 +232,12 @@ export interface UsageRequestItem {
    * written before the column existed.
    */
   payloadCaptureState?: string;
+  /**
+   * True for a completed request whose output was far smaller than the model's
+   * ceiling and which ended with an ordinary `stop` (a "degenerate stop").
+   * Absent for everything else — including rows written before the column.
+   */
+  degenerateStop?: boolean;
   /**
    * Bitmask of the payload stages captured for this request: 1 request,
    * 2 provider request, 4 provider response, 8 client response. Read from the

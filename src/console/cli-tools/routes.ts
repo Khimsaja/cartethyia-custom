@@ -23,7 +23,7 @@ import type { ApplyInput, CliMappingInput, CliModelMapping } from "./contracts";
  * `download` and `apply` require `keyId`; the server resolves the recoverable
  * AES-256-GCM copy so the operator never pastes a raw secret.
  */
-export interface CliToolsRoutesConfig {
+interface CliToolsRoutesConfig {
   readonly service: CliToolService;
   readonly accessResolver: ConsoleAccessResolver;
   readonly auditSink?: AuditSink;
@@ -102,6 +102,10 @@ function parseApplyInput(
     ...(value.mode === "file" || value.mode === "remote" || value.mode === "both"
       ? { mode: value.mode }
       : {}),
+    ...(typeof value.sdk === "string" && value.sdk.length > 0 ? { sdk: value.sdk } : {}),
+    ...(typeof value.websearch === "string" && value.websearch.length > 0
+      ? { websearch: value.websearch }
+      : {}),
   };
 }
 
@@ -128,6 +132,8 @@ const applyBody = t.Object({
     }),
   ),
   bypassPermissions: t.Optional(t.Boolean()),
+  sdk: t.Optional(t.String()),
+  websearch: t.Optional(t.String()),
 });
 
 const mappingBody = t.Object({

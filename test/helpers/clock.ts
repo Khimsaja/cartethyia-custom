@@ -7,14 +7,10 @@
  * machine the sleep returns before the work is done and the assertion fails,
  * and on an idle one it passes while proving nothing about the boundary.
  *
- * Two tools replace it, chosen by what the code under test actually reads:
+ * `withFakeTimers` advances Bun's timer queue when the subject *schedules*
+ * work (a retry backoff, a debounce). No wall-clock time passes at all.
  *
- * - `withFrozenTime` pins `Date.now()` when the subject reads the wall clock
- *   directly (a cooldown deadline comparison, a TTL check).
- * - `withFakeTimers` advances Bun's timer queue when the subject *schedules*
- *   work (a retry backoff, a debounce). No wall-clock time passes at all.
- *
- * Both restore the real clock in a `finally`, so a failing assertion cannot
+ * It restores the real clock in a `finally`, so a failing assertion cannot
  * leave a later test running against frozen time.
  */
 import { setSystemTime } from "bun:test";

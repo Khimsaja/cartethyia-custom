@@ -30,7 +30,7 @@ import { cachedRead } from "../shared/read-through-cache";
 import { utcDayStart, utcMonthStart } from "../shared/day";
 
 /** Totals for the whole share family, all-time plus the windows the UI draws. */
-export interface ShareFamilyTotals {
+interface ShareFamilyTotals {
   readonly requests: number;
   readonly errors: number;
   readonly inputTokens: number;
@@ -45,7 +45,7 @@ export interface ShareFamilyTotals {
 }
 
 /** One hour bucket of the last 24 hours, oldest first. */
-export interface ShareHourlyBucket {
+interface ShareHourlyBucket {
   /** ISO instant at the top of the hour. */
   readonly hour: string;
   readonly requests: number;
@@ -53,7 +53,7 @@ export interface ShareHourlyBucket {
   readonly tokens: number;
 }
 
-export interface ShareTopModel {
+interface ShareTopModel {
   readonly modelId: string;
   readonly requests: number;
   readonly tokens: number;
@@ -63,7 +63,7 @@ export interface ShareTopModel {
   readonly avgTtfbMs: number | null;
 }
 
-export interface ShareTopClientIp {
+interface ShareTopClientIp {
   /** Always masked: this payload is served to the recipient, not the tenant. */
   readonly ip: string;
   readonly requests: number;
@@ -371,11 +371,9 @@ async function computeFamilyStatsBody(
       .where(eq(apiKeys.id, templateKeyId))
       .limit(1),
   ]);
-  // Cumulative family spend: the template's own counter plus the telemetry
-  // total. The counter is a manually-configured seed (an operator limit), not
-  // traffic, and it is never reset; azmetry rows for revoked/deleted children
-  // likewise stay counted, so the running total is monotonic and consistent
-  // across the overview, the share dialog, and this page.
+  // Cumulative family spend: the template's own counter is the live
+  // accumulator (updated by every recipient commit), so it IS the total.
+  // Telemetry still drives the bounded daily/monthly windows below.
   const templateLifetime = Number(template[0]?.lifetime ?? 0);
 
   // The ranked tables need real events, bounded to the 24-hour window. The
@@ -398,10 +396,10 @@ async function computeFamilyStatsBody(
   });
   rollup.totals = {
     ...rollup.totals,
-    // The template counter is the seed on the running total, not a distinct
-    // bucket: daily/monthly windows are telemetry-only (the counter has no
-    // time axis), so those keep their own sums.
-    totalTokens: templateLifetime + kpi.tokens,
+    // The template counter IS the running family total (live accumulator).
+    // Daily/monthly windows stay telemetry-only (the counter has no time
+    // axis), so those keep their own sums.
+    totalTokens: templateLifetime,
     todayTokens,
     monthTokens,
     // Lifetime counts come from the durable rollup, not the page: a family

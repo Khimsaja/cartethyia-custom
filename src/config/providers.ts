@@ -4,20 +4,7 @@
  * public origin.
  */
 
-import { CONFIG_SPEC, readInt, readOptionalText, readRequired, readText } from "./spec";
-
-/** Reads and normalizes the public OAuth origin. */
-export function requirePublicOrigin(): string {
-  return readRequired("CARTETHYIA_PUBLIC_ORIGIN", CONFIG_SPEC.CARTETHYIA_PUBLIC_ORIGIN).replace(
-    /\/+$/,
-    "",
-  );
-}
-
-/** Builds the fixed OAuth callback URL for a provider id. */
-export function oauthCallbackUrl(providerId: string): string {
-  return `${requirePublicOrigin()}/console/api/providers/${providerId}/oauth/callback`;
-}
+import { CONFIG_SPEC, readInt, readOptionalText, readText } from "./spec";
 
 /**
  * Browser-authorize redirect URI for a provider.
@@ -102,4 +89,22 @@ export function resolveGithubEnterpriseDomain(): string {
   } catch {
     return "";
   }
+}
+
+export type GithubCopilotMode = "opencode-copilot" | "vscode-client-real";
+
+/**
+ * Which GitHub Copilot wire identity the adapter uses. Defaults to
+ * `opencode-copilot` (raw GitHub OAuth token + minimal OpenCode headers),
+ * which is the proven-most-stable path (one token, no mint expiry). The
+ * `vscode-client-real` mode matches the VS Code reference client exactly but
+ * requires a freshly minted Copilot token.
+ */
+export function resolveGithubCopilotMode(): GithubCopilotMode {
+  const raw = readText(
+    "CARTETHYIA_GITHUB_COPILOT_MODE",
+    CONFIG_SPEC.CARTETHYIA_GITHUB_COPILOT_MODE,
+  ).trim().toLowerCase();
+  if (raw === "vscode-client-real") return "vscode-client-real";
+  return "opencode-copilot";
 }

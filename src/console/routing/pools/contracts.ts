@@ -240,7 +240,7 @@ const POOL_READ_STATUSES = ["active", "cooldown", "disabled"] as const;
  * stay aligned with the `pool_routing_strategy` enum in `schema.ts`.
  */
 export const POOL_ROUTING_STRATEGIES = ["least_loaded", "round_robin", "random"] as const;
-export type PoolRoutingStrategyValue = (typeof POOL_ROUTING_STRATEGIES)[number];
+type PoolRoutingStrategyValue = (typeof POOL_ROUTING_STRATEGIES)[number];
 
 export interface PoolStrategySetting {
   strategy: PoolRoutingStrategyValue;
@@ -478,7 +478,7 @@ export const MAX_BATCH_PROBE_TARGETS = 100;
  */
 export const PROVIDER_PROBE_BATCH_CONCURRENCY = 4;
 
-export interface NetworkPoolAgentReleaser {
+interface NetworkPoolAgentReleaser {
   releasePool(poolId: string, tenantId: string): Promise<void>;
 }
 export interface NetworkPoolConfig {

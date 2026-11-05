@@ -162,11 +162,14 @@ export function ThinkingSelect({
   value,
   onChange,
   disabled,
+  size = "md",
   id = "probe-thinking-effort",
 }: {
   readonly value: ProbeReasoningEffort;
   readonly onChange: (value: ProbeReasoningEffort) => void;
   readonly disabled?: boolean;
+  /** Smaller height for a toolbar/header row; `md` for a form. */
+  readonly size?: "sm" | "md";
   /** Distinct per call site: the section header and the Add-Model dialog can be
    * mounted at once, and two triggers sharing one DOM id is invalid. */
   readonly id?: string;
@@ -174,15 +177,64 @@ export function ThinkingSelect({
   return (
     <div
       title="Reasoning effort every test in this section sends. Auto leaves the model's own reasoning default in place."
-      className="min-w-74 shrink-0"
+      className="min-w-74 shrink-0 max-sm:min-w-56"
     >
       <Select
         id={id}
         aria-label="Thinking effort"
         value={value}
         disabled={disabled}
+        size={size}
         onValueChange={(next) => onChange(next as ProbeReasoningEffort)}
         options={probeThinkingOptions()}
+      />
+    </div>
+  );
+}
+
+/** Which rows the Models grid shows. `all` is the default; `free` hides every
+ * row the provider does not publish as free tier. */
+export type ModelShowFilter = "all" | "free";
+
+/** The display filter options, in the order the selector renders them. */
+export function modelShowFilterOptions(): { value: ModelShowFilter; label: string }[] {
+  return [
+    { value: "all", label: "All models" },
+    { value: "free", label: "Free tier" },
+  ];
+}
+
+/** The "Show" filter in the Models card header, next to the Thinking effort
+ * selector. `all` shows every registered model; `free` narrows the grid to the
+ * provider's free-tier rows so the rest are hidden. */
+export function ShowSelect({
+  value,
+  onChange,
+  disabled,
+  size = "md",
+  id = "models-show-filter",
+}: {
+  readonly value: ModelShowFilter;
+  readonly onChange: (value: ModelShowFilter) => void;
+  readonly disabled?: boolean;
+  /** Smaller height for a toolbar/header row; `md` for a form. */
+  readonly size?: "sm" | "md";
+  /** Distinct per call site, same rule as `ThinkingSelect`. */
+  readonly id?: string;
+}): ReactNode {
+  return (
+    <div
+      title="Which models to show. Free tier hides every row the provider does not publish as free."
+      className="min-w-46 shrink-0 max-sm:min-w-40"
+    >
+      <Select
+        id={id}
+        aria-label="Show models"
+        value={value}
+        disabled={disabled}
+        size={size}
+        onValueChange={(next) => onChange(next as ModelShowFilter)}
+        options={modelShowFilterOptions()}
       />
     </div>
   );
@@ -228,6 +280,7 @@ export function AddModelModal({
   const [thinking, setThinking] = useState<ProbeReasoningEffort>("auto");
   const [testState, setTestState] = useState<"idle" | "testing" | "passed" | "failed">("idle");
   const [testError, setTestError] = useState("");
+  const [testMeta, setTestMeta] = useState<Readonly<Record<string, unknown>> | null>(null);
   const [draft, setDraft] = useState<ModelMetadataDraft>(newModelDraft);
 
   const trimmed = modelId.trim();
@@ -244,12 +297,27 @@ export function AddModelModal({
     if (!normalized) return;
     setTestState("testing");
     setTestError("");
+    setTestMeta(null);
+    // Qoder's IDE surface is the only transport that echoes the real serving
+    // model (provider_model/target) in its raw_usage, so a probe against it
+    // reports what actually ran instead of the opaque roster key.
+    const qoderIde = providerId === "qoder" || providerId === "qodercn";
     probe.mutate(
-      { providerId, request: { modelId: normalized, wireFamily, reasoningEffort: thinking, serviceKind: "llm" } },
+      {
+        providerId,
+        request: {
+          modelId: normalized,
+          wireFamily,
+          reasoningEffort: thinking,
+          serviceKind: "llm",
+          ...(qoderIde ? { surface: "ide" } : {}),
+        },
+      },
       {
         onSuccess: (result) => {
           if (result.ok) {
             setTestState("passed");
+            setTestMeta(result.providerMetadata ?? null);
           } else {
             setTestState("failed");
             setTestError(result.error ?? "Model probe failed");
@@ -398,6 +466,23 @@ export function AddModelModal({
         {testState === "passed" && (
           <Banner tone="success" live="status">
             Model test passed — ready to add.
+            {testMeta !== null && (
+              <span className="grid gap-1 mt-2 min-w-0">
+                {Object.entries(testMeta)
+                  .filter(([, value]) => value !== undefined && value !== null && value !== "")
+                  .map(([key, value]) => (
+                    <span key={key} className="flex items-center gap-2 min-w-0">
+                      <span className="shrink-0 text-micro text-text-tertiary">{key}</span>
+                      <span
+                        className="truncate font-mono text-micro text-text-secondary"
+                        title={String(value)}
+                      >
+                        {String(value)}
+                      </span>
+                    </span>
+                  ))}
+              </span>
+            )}
           </Banner>
         )}
         {testState === "failed" && (
@@ -684,9 +769,12 @@ function ModelCard({
   readonly deletePending: boolean;
 }): ReactNode {
   const gatewayTest = useGatewaySignedModelTest();
+  const probeConsole = useProbeModel();
   const setEnabled = useSetModelEnabled();
   const [copied, setCopied] = useState(false);
   const [probeResult, setProbeResult] = useState<{ ok: boolean; latencyMs: number } | null>(null);
+  const [probeMeta, setProbeMeta] = useState<Readonly<Record<string, unknown>> | null>(null);
+  const [showMetaDetails, setShowMetaDetails] = useState(false);
   const scheduleCopyReset = useTrackedTimeout();
 
   // The routable id for this model under the section's thinking setting. The
@@ -701,8 +789,78 @@ function ModelCard({
   const copyId = `${providerId}/${qualifiedId}`;
   const pendingLabel = serviceKind === "websearch" ? "Searching…" : "Thinking…";
   const runProbe = () => {
-    void gatewayTest.test(copyId).then((result) => {
+    // Qoder's probe console path defaults to the IDE surface, which echoes the
+    // real serving model metadata (provider_model/target); the gateway test
+    // path only sees the opaque roster echo (`auto`/`lite`). For Qoder the
+    // console probe is the trusted source, so use it directly.
+    setShowMetaDetails(false);
+    const qoder = providerId === "qoder" || providerId === "qodercn";
+    if (qoder) {
+      probeConsole.mutate(
+        { providerId, request: { modelId: model.modelId, serviceKind: "llm" } },
+        {
+          onSuccess: (result) => {
+            setProbeResult({ ok: result.ok, latencyMs: result.latencyMs });
+            setProbeMeta(result.providerMetadata ?? null);
+            if (!result.ok) {
+              toast.error(
+                `${providerId}/${qualifiedId} test failed`,
+                result.error ?? "Unknown error",
+              );
+              return;
+            }
+            const sample = result.sample ?? "";
+            const reported = result.reportedModel?.trim() ?? "";
+            const meta = result.providerMetadata;
+            const metaEntries = meta
+              ? Object.entries(meta).filter(([, value]) => value !== undefined && value !== null && value !== "")
+              : [];
+            toast.successRich(
+              `${qualifiedId} · END ${formatProbeDuration(result.latencyMs)}`,
+              <span className="grid gap-2 min-w-0">
+                {reported ? (
+                  <Inline gap="6px" align="center" className="min-w-0">
+                    <Cog size={12} aria-hidden="true" className="shrink-0 text-text-tertiary" />
+                    <span className="truncate font-mono text-badge text-text-secondary" title={reported}>
+                      {reported}
+                    </span>
+                  </Inline>
+                ) : null}
+                {metaEntries.length > 0 ? (
+                  <span className="grid gap-1 min-w-0">
+                    {metaEntries.map(([key, value]) => (
+                      <Inline key={key} gap="6px" align="center" className="min-w-0">
+                        <span className="shrink-0 text-micro text-text-tertiary">{key}</span>
+                        <span
+                          className="truncate font-mono text-micro text-text-secondary"
+                          title={String(value)}
+                        >
+                          {String(value)}
+                        </span>
+                      </Inline>
+                    ))}
+                  </span>
+                ) : null}
+                <span>{sample || "No sample text in the response."}</span>
+              </span>,
+              [reported, sample].filter(Boolean).join("\n") || "No sample text in the response.",
+            );
+          },
+          onError: (err) => {
+            setProbeResult({ ok: false, latencyMs: 0 });
+            setProbeMeta(null);
+            toast.error(
+              `${providerId}/${qualifiedId} test failed`,
+              (err as { message?: string }).message ?? "Model probe failed",
+            );
+          },
+        },
+      );
+      return;
+    }
+    void gatewayTest.test(copyId, model.outputLimit ?? undefined).then((result) => {
       setProbeResult({ ok: result.ok, latencyMs: result.latencyMs });
+      setProbeMeta(null);
       if (!result.ok) {
         toast.error(
           `${providerId}/${qualifiedId} test failed`,
@@ -908,21 +1066,21 @@ function ModelCard({
           <Button
             variant="secondary"
             size="sm"
-            disabled={gatewayTest.testing}
+            disabled={gatewayTest.testing || probeConsole.isPending}
             onClick={runProbe}
             aria-label={`Test ${qualifiedId}`}
             title={
-              gatewayTest.testing
+              gatewayTest.testing || probeConsole.isPending
                 ? `Probing ${qualifiedId}…`
                 : probeResult?.ok
-                  ? `Last probe OK in ${formatProbeDuration(probeResult.latencyMs)} — click to re-test`
+                  ? `Last probe OK in ${formatProbeDuration(probeResult.latencyMs)} — click to re-test${probeMeta ? `\n${Object.entries(probeMeta).filter(([, v]) => v !== undefined && v !== null && v !== "").map(([k, v]) => `${k}: ${String(v)}`).join("\n")}` : ""}`
                   : probeResult
                     ? "Last probe failed — click to retry"
                     : `Test ${qualifiedId}`
             }
             className="flex-1 justify-center"
             icon={
-              gatewayTest.testing ? (
+              gatewayTest.testing || probeConsole.isPending ? (
                 <Loader2 size={12} className="animate-spin" />
               ) : probeResult ? (
                 probeResult.ok ? (
@@ -939,7 +1097,7 @@ function ModelCard({
               )
             }
           >
-            {gatewayTest.testing
+            {gatewayTest.testing || probeConsole.isPending
               ? pendingLabel
               : probeResult?.ok
                 ? formatProbeDuration(probeResult.latencyMs)
@@ -973,6 +1131,42 @@ function ModelCard({
             />
           )}
         </div>
+        {probeMeta !== null && (
+          <div className="grid gap-1 pt-1 min-w-0">
+            {(() => {
+              const entries = Object.entries(probeMeta).filter(
+                ([, value]) => value !== undefined && value !== null && value !== "",
+              );
+              if (entries.length === 0) return null;
+              const visible = showMetaDetails ? entries : entries.slice(0, 1);
+              return (
+                <>
+                  {visible.map(([key, value]) => (
+                    <div key={key} className="flex items-center gap-2 min-w-0">
+                      <span className="shrink-0 text-micro text-text-tertiary">{key}</span>
+                      <span
+                        className="truncate font-mono text-micro text-text-secondary"
+                        title={String(value)}
+                      >
+                        {String(value)}
+                      </span>
+                    </div>
+                  ))}
+                  {entries.length > 1 ? (
+                    <button
+                      type="button"
+                      className="mt-0.5 w-fit text-micro font-semibold text-text-tertiary hover:text-text-primary cursor-pointer bg-transparent border-0 p-0"
+                      aria-expanded={showMetaDetails}
+                      onClick={() => setShowMetaDetails((open) => !open)}
+                    >
+                      {showMetaDetails ? "(close)" : `(show more · ${entries.length - 1} more)`}
+                    </button>
+                  ) : null}
+                </>
+              );
+            })()}
+          </div>
+        )}
       </div>
     </>
   );
@@ -1003,12 +1197,15 @@ export function ModelGrid({
   providerId,
   models,
   thinkingEffort,
+  showFilter = "all",
   serviceKind = "llm",
   searchCapable = false,
 }: {
   readonly providerId: string;
   readonly models: readonly ModelCatalogEntry[];
   readonly thinkingEffort: ProbeReasoningEffort;
+  /** `free` hides every row the provider does not publish as free tier. */
+  readonly showFilter?: ModelShowFilter;
   readonly serviceKind?: "llm" | "websearch";
   readonly searchCapable?: boolean;
 }): ReactNode {
@@ -1026,11 +1223,15 @@ export function ModelGrid({
   // routed. `enabled` defaults to true for a row written before the column
   // existed, matching the backend's own reading.
   const isRoutable = (model: ModelCatalogEntry): boolean => model.enabled !== false;
+  // The Show filter applies before grouping, so a hidden row never reaches any
+  // section — including the disabled group at the end.
+  const visibleModels =
+    showFilter === "free" ? models.filter((model) => model.freeTier === true) : models;
   const groups = MODEL_GROUPS.map((group) => ({
     ...group,
-    rows: models.filter((model) => isRoutable(model) && group.matches(model.source)),
+    rows: visibleModels.filter((model) => isRoutable(model) && group.matches(model.source)),
   })).filter((group) => group.rows.length > 0);
-  const disabledRows = models.filter((model) => !isRoutable(model));
+  const disabledRows = visibleModels.filter((model) => !isRoutable(model));
   const renderCard = (model: ModelCatalogEntry) => (
     <MemoModelCard
       key={`${model.modelId}::${model.route}`}

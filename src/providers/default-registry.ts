@@ -5,7 +5,7 @@
 import {
   GENERIC_API_KEY_SPECS,
 } from "./configured-openai-providers";
-import { createDiscoveryBackedProviderCapabilities } from "./bundled-discovery-providers";
+import { createDiscoveryBackedProviderCapabilities, discoveryBackedCapabilities } from "./bundled-discovery-providers";
 import { createApiKeyAdapter } from "./configured-provider";
 import type { ApiKeyProviderSpec } from "./configured-provider";
 import { oauthCapability, quotaCapability, type ProviderModuleCapabilities } from "./provider-capabilities";
@@ -131,39 +131,6 @@ function qoderDiscovery(
 }
 
 
-/**
- * Builds the `loadAdapter` + `loadModelDiscovery` pair every plain bearer
- * provider needs.
- *
- * Only the base URL differs between them, so both halves are shared: the
- * adapter is the generic spec and the discovery call is a bearer
- * `GET {base}/models`. Keeping them in one function is what stops the pairing
- * from drifting — registering a provider with one half and not the other is
- * exactly how `gmi`, `nvidia`, and `fireworks` came to ship with no catalog
- * *and* no discovery, which is a provider that lists zero models with no way to
- * fetch any. `test/providers/generic-provider-completeness.test.ts` holds both.
- */
-function discoveryBacked(
-  providerId: string,
-  spec: ApiKeyProviderSpec,
-): ProviderModuleCapabilities {
-  return {
-    // The registry map is what discovery and probing read
-    // (`discoveryPathsFor`), while the spec's copy is what the adapter
-    // dispatches on. Setting only the spec leaves a discovered model resolving
-    // its wire from the generic default instead of the path the adapter will
-    // actually call, which is how a probe verifies one endpoint while dispatch
-    // hits another.
-    ...(spec.endpoint_paths_by_wire_family === undefined
-      ? {}
-      : { endpointPathsByWireFamily: spec.endpoint_paths_by_wire_family }),
-    loadAdapter: async () => createApiKeyAdapter(spec),
-    loadModelDiscovery: openAIModelDiscovery(providerId, {
-      headers: (credential) => ({ authorization: `Bearer ${credential}` }),
-    }),
-  };
-}
-
 function openAIModelDiscovery(
   providerId: string,
   options?: {
@@ -235,7 +202,10 @@ export const PROVIDER_CAPABILITIES = {
   },
   codex: {
     loadAdapter: async () => (await import("./integrations/codex/codex")).createCodexAdapter({ provider_id: "codex" }),
-    loadModels: async () => (await import("./integrations/codex/codex")).CODEX_MODELS,
+    loadModels: async () => {
+      const { CODEX_MODELS, CODEX_SEARCH_MODELS } = await import("./integrations/codex/codex");
+      return [...CODEX_MODELS, ...CODEX_SEARCH_MODELS];
+    },
     loadAuthentication: oauthCapability(() => import("./integrations/codex/codex-oauth"), "codexOAuthClient", { withRefresher: true }),
     loadQuotaCollector: quotaCapability(() => import("./integrations/codex/codex-quota"), "fetchCodexQuota"),
     loadModelDiscovery: async () => async ({ credential, fetcher }) =>
@@ -268,12 +238,25 @@ export const PROVIDER_CAPABILITIES = {
   },
   antigravity: {
     loadAdapter: async () => (await import("./integrations/antigravity/antigravity")).antigravityAdapter,
-    loadModels: async () => (await import("./integrations/antigravity/antigravity")).ANTIGRAVITY_MODELS,
+    loadModels: async () => {
+      const { ANTIGRAVITY_MODELS, ANTIGRAVITY_SEARCH_MODELS } = await import("./integrations/antigravity/antigravity");
+      return [...ANTIGRAVITY_MODELS, ...ANTIGRAVITY_SEARCH_MODELS];
+    },
     loadAuthentication: oauthCapability(() => import("./integrations/antigravity/antigravity-oauth"), "antigravityOAuthClient", { withRefresher: true }),
     loadQuotaCollector: quotaCapability(() => import("./integrations/antigravity/antigravity-quota"), "fetchAntigravityQuota"),
     loadModelDiscovery: async () => async ({ baseUrl, credential, fetcher }) => {
-      const { discoverAntigravityModels } = await import("./integrations/antigravity/antigravity-protocol");
-      return discoverAntigravityModels(credential, { baseUrl, ...(fetcher ? { fetcher } : {}) });
+      const { discoverAntigravityModels, loadAntigravityProject } = await import("./integrations/antigravity/antigravity-protocol");
+      // The reference client resolves the project before catalog calls; the
+      // live backend accepts both, but sending it matches the captured wire.
+      const projectId = await loadAntigravityProject(credential, {
+        ...(baseUrl === undefined ? {} : { baseUrl }),
+        ...(fetcher ? { fetcher } : {}),
+      }).catch(() => undefined);
+      return discoverAntigravityModels(credential, {
+        baseUrl,
+        ...(fetcher ? { fetcher } : {}),
+        ...(projectId === undefined ? {} : { projectId }),
+      });
     },
   },
   muse: {
@@ -617,6 +600,27 @@ export const PROVIDER_CAPABILITIES = {
     // and Z.AI publishes no refresh grant for it (`refresh "none"` upstream).
     loadAuthentication: oauthCapability(() => import("./integrations/zcode/oauth"), "zcodeOAuthClient"),
   },
+  "zcode-start": {
+    // Free plan surface: an Anthropic-Messages endpoint that only accepts the
+    // dressed ZCode client request (see the integration). The credential is a
+    // ZCode login JWT — pasted, or minted by the sign-in flow below.
+    loadAdapter: async () =>
+      createApiKeyAdapter(
+        (await import("./integrations/zcode-start-plan/provider")).ZCODE_START_PLAN_SPEC,
+      ),
+    loadModels: async () =>
+      (await import("./integrations/zcode-start-plan/provider")).ZCODE_START_PLAN_MODELS,
+    // The device flow stores the issued ZCode login JWT, not a Coding Plan key.
+    loadAuthentication: oauthCapability(
+      () => import("./integrations/zcode-start-plan/oauth"),
+      "zcodeStartPlanOAuthClient",
+    ),
+    // Keep each reported entitlement and activation/reset window separate.
+    loadQuotaCollector: quotaCapability(
+      () => import("./integrations/zcode-start-plan/quota"),
+      "fetchZcodeStartPlanQuota",
+    ),
+  },
   "factory": {
     loadAdapter: async () => (await import("./integrations/factory/factory")).factoryAdapter,
     // Factory publishes no model-listing endpoint — the roster is a client-side
@@ -765,7 +769,7 @@ export const PROVIDER_CAPABILITIES = {
   // synced account sees whatever the plan currently serves. The catalog keeps
   // the provider usable before anyone syncs.
   dashscope: {
-    ...discoveryBacked("dashscope", GENERIC_API_KEY_SPECS.dashscope),
+    ...discoveryBackedCapabilities("dashscope", GENERIC_API_KEY_SPECS.dashscope, openAIModelDiscovery),
     loadModels: async () => (await import("./integrations/dashscope-models")).DASHSCOPE_MODELS,
   },
 

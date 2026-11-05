@@ -30,7 +30,7 @@ const ROUTING_BOUNDS = {
   maxInflightPerProxy: PROVIDER_ROUTING_MAX_INFLIGHT_BOUNDS,
 } as const;
 
-export function createProviderDetailOperations(deps: ProviderDetailConfig) {
+function createProviderDetailOperations(deps: ProviderDetailConfig) {
   const operations = {
     async getRouting(
       access: AccessDecision | undefined,
@@ -100,6 +100,13 @@ export function createProviderDetailOperations(deps: ProviderDetailConfig) {
       ) {
         throw new ConsoleDomainError("invalid_request", 400, "userAgent must be a header value up to 4096 characters");
       }
+      if (
+        patch.customUserAgent !== undefined &&
+        patch.customUserAgent !== null &&
+        (patch.customUserAgent.length > 4096 || /[\u0000-\u001f\u007f]/.test(patch.customUserAgent))
+      ) {
+        throw new ConsoleDomainError("invalid_request", 400, "customUserAgent must be a header value up to 4096 characters, or null");
+      }
       const updated = await deps.store.updateRouting(providerId, a.tenantId, patch);
       await deps.auditSink?.record({
         access: a,
@@ -157,6 +164,7 @@ const updateRoutingBody = t.Object({
   usageFloorUnit: t.Optional(t.Union([t.Literal("credit"), t.Literal("percent")])),
   skipProxy: t.Optional(t.Boolean()),
   userAgent: t.Optional(t.String({ minLength: 0, maxLength: 4096 })),
+  customUserAgent: t.Optional(t.Nullable(t.String({ minLength: 0, maxLength: 4096 }))),
 });
 
 

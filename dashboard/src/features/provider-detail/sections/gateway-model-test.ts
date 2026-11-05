@@ -24,8 +24,11 @@ export interface GatewayModelTestResult {
 }
 
 const TEST_TIMEOUT_MS = 20_000;
-const TEST_MAX_TOKENS = 32;
-const TEST_PROMPT = "ping";
+// Same probe prompt the model test always used (see buildProbeCanonicalRequest):
+// it passes content-policy review and produces a useful sample — the model
+// identifies itself and states its knowledge cutoff, instead of echoing a
+// canned reply.
+const TEST_PROMPT = "What model are you, and what is your knowledge cutoff date? Answer in one sentence.";
 
 export function useGatewaySignedModelTest() {
   const keys = useApiKeys();
@@ -33,7 +36,10 @@ export function useGatewaySignedModelTest() {
   const [testing, setTesting] = useState(false);
 
   const test = useCallback(
-    async (model: string): Promise<GatewayModelTestResult> => {
+    async (
+      model: string,
+      maxTokens?: number,
+    ): Promise<GatewayModelTestResult> => {
       const defaultKey = (keys.data ?? []).find(
         (key) => key.enabled && key.revokedAt === undefined && key.isDefault,
       );
@@ -75,7 +81,11 @@ export function useGatewaySignedModelTest() {
           body: JSON.stringify({
             model,
             messages: [{ role: "user", content: TEST_PROMPT }],
-            max_tokens: TEST_MAX_TOKENS,
+            // Use the model's catalog output limit when known, otherwise omit the
+            // field so the gateway applies its own default. A hard-coded small
+            // ceiling made reasoning-heavy models exhaust the budget on the
+            // thinking phase and return an empty answer ("No sample text").
+            ...(maxTokens === undefined ? {} : { max_tokens: maxTokens }),
             stream: false,
           }),
         });

@@ -20,6 +20,7 @@ import type {
   SharedChildrenPageOptions,
 } from "../../persistence/stores/api-key-store";
 import {
+  API_KEY_BAN_REASONS,
   BAN_DURATION_CHOICES,
   DEFAULT_BAN_MINUTES,
   generateApiKeySecret,
@@ -141,6 +142,9 @@ const SHARED_CHILD_SORT_COLUMNS = new Set<SharedChildSortColumn>([
   "enabled",
 ]);
 
+/** The offered ban durations as a set of minute values, hoisted once. */
+const BAN_DURATION_MINUTES = new Set(BAN_DURATION_CHOICES.map((choice) => choice.minutes));
+
 /** Parses and bounds the paginated share-child list query. */
 function parseSharedChildrenQuery(query: URLSearchParams): SharedChildrenPageOptions {
   const limitRaw = query.get("limit");
@@ -173,24 +177,23 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
         const topLevel = records.filter(
           (record) => record.revokedAt === undefined && record.parentKeyId === undefined,
         );
-        // A share template's own counter never moves for child traffic, so
-        // reporting it raw would show a template as untouched while the gateway
-        // is refusing its recipients on the parent budget. Report the figure
-        // the gateway actually enforces: the template's counter plus every
-        // telemetry total the family ever recorded — revoked/deleted children
-        // included (their spend is already spent), so the number survives
-        // cleanup and matches the share page.
+        // A share template's own counter is the live family accumulator now:
+        // every recipient commit adds to it (see ApiKeyAdmissionService
+        // commitUsage), so reporting it raw gives the enforced family total.
+        // No telemetry add-on is needed, and adding it here would double-count.
         return Promise.all(
           topLevel.map(async (record) => {
             const response = sanitizeApiKeyResponse(record);
             if (record.keyMode !== "share") return response;
-            const family = await config.store
-              .sumFamilyTelemetryConsumed(authorized.tenantId, record.id)
-              .catch(() => 0);
-            return { ...response, tokensConsumed: response.tokensConsumed + family };
+            return response;
           }),
-        );
-      },
+      );
+    },
+    async listActiveBannedKeys(access: AccessDecision | undefined): Promise<ApiKeyResponse[]> {
+      const authorized = requireTenantScope(access, "dashboard:read");
+      const records = await config.store.listActiveBanned(authorized.tenantId);
+      return records.map(sanitizeApiKeyResponse);
+    },
     /** Persists a new credential order. `keyIds` must name every top-level key
         the tenant has, so a partial list cannot silently renumber rows. */
     async reorderKeys(access: AccessDecision | undefined, keyIds: readonly string[]): Promise<void> {
@@ -977,8 +980,7 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
       // clamping would answer a request for 90 days with a week and report
       // success.
       const chosenMinutes = request.minutes === undefined ? DEFAULT_BAN_MINUTES : request.minutes;
-      const allowed = new Set(BAN_DURATION_CHOICES.map((choice) => choice.minutes));
-      if (!allowed.has(chosenMinutes)) {
+      if (!BAN_DURATION_MINUTES.has(chosenMinutes)) {
         throw new ConsoleDomainError(
           "invalid_request",
           400,
@@ -1000,11 +1002,27 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
         access: authorized,
         action: "api_key.banned",
         target: keyId,
-        detail: { reason, ...(bannedUntil === null ? { permanent: true } : { bannedUntil: bannedUntil.toISOString() }) },
+        detail: {
+          reason,
+          // The human-readable label is derived server-side from the machine
+          // `reason`, so the audit trail cannot be skewed by a client-authored
+          // label. Unknown reasons (custom text) simply carry no label; the
+          // free-text `reason` above is still recorded verbatim.
+          ...(API_KEY_BAN_REASONS.find((r) => r.value === reason)?.label === undefined
+            ? {}
+            : { reasonLabel: API_KEY_BAN_REASONS.find((r) => r.value === reason)!.label }),
+          ...(bannedUntil === null ? { permanent: true } : { bannedUntil: bannedUntil.toISOString() }),
+        },
       });
-      const record = await config.store.get(authorized.tenantId, keyId);
-      if (!record) throw new ConsoleDomainError("key_not_found", 404, "Key not found");
-      return sanitizeApiKeyResponse(record);
+      // The ban mutates the row already fetched; derive the response from that
+      // record instead of re-fetching after the write. Match the store's own
+      // mapping: a `null` (permanent) `bannedUntil` is omitted, not carried.
+      return sanitizeApiKeyResponse({
+        ...current,
+        bannedAt: new Date(),
+        banReason: reason,
+        ...(bannedUntil ? { bannedUntil } : {}),
+      });
     },
     async unbanKey(
       access: AccessDecision | undefined,
@@ -1022,9 +1040,11 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
         action: "api_key.unbanned",
         target: keyId,
       });
-      const record = await config.store.get(authorized.tenantId, keyId);
-      if (!record) throw new ConsoleDomainError("key_not_found", 404, "Key not found");
-      return sanitizeApiKeyResponse(record);
+      // Unban clears all three ban columns and re-enables the key; derive the
+      // response from the pre-fetch instead of re-fetching after the write.
+      const { bannedAt: _bannedAt, banReason: _banReason, bannedUntil: _bannedUntil, ...currentRest } = current;
+      const unbannedRecord: ApiKeyRecord = { ...currentRest, enabled: true };
+      return sanitizeApiKeyResponse(unbannedRecord);
     },
   };
   return operations;
@@ -1094,6 +1114,13 @@ export function createApiKeyRoutes(config: ApiKeyConfig): AnyElysia {
     .get("/", async ({ request, set }) => {
       try {
         return await factory.listKeys(config.accessResolver(request));
+      } catch (error) {
+        return errorResponse(error, set, "API-key operation failed");
+      }
+    })
+    .get("/banned", async ({ request, set }) => {
+      try {
+        return await factory.listActiveBannedKeys(config.accessResolver(request));
       } catch (error) {
         return errorResponse(error, set, "API-key operation failed");
       }
@@ -1213,7 +1240,9 @@ export function createApiKeyRoutes(config: ApiKeyConfig): AnyElysia {
       {
         body: t.Object({
           reason: t.String(),
-          reasonLabel: t.Optional(t.String()),
+          // `reasonLabel` is deliberately not accepted: the audit label is
+          // derived server-side from `reason` (see `banKey`), so a client
+          // cannot author the human-readable audit entry.
           minutes: t.Optional(t.Union([t.Number({ minimum: 1 }), t.Null()])),
         }),
       },

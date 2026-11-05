@@ -207,7 +207,13 @@ class TraeAdapter implements ProviderAdapter {
      * hash) and thread it through.
      */
     const sessionId = request.session_id ?? resolvePromptCacheKey(request, context);
-    const body = buildTraeChatBody(modelId, request, this.realm, sessionId);
+    const body = buildTraeChatBody(
+      modelId,
+      request,
+      this.realm,
+      sessionId,
+      candidate.output_limit ?? undefined,
+    );
     // The cache estimator is scoped per (session, model): upstream cache keys
     // are model-specific, so two models sharing a conversation id must not
     // treat each other's identical prefixes as hits.
@@ -473,7 +479,9 @@ class TraeAdapter implements ProviderAdapter {
     const record = usageFromProvider(usage);
     if (record === undefined) return undefined;
     // Trae's agent surface never reports prompt-cache hits; for repeated
-    // prefixes we estimate them locally (see trae-cache.ts).
+    // prefixes we estimate them locally (see trae-cache.ts). Then the
+    // operator's cache mode decides whether a hit makes the whole input count
+    // as cached.
     return estimateTraeSessionCache(record, sessionId, messages);
   }
 

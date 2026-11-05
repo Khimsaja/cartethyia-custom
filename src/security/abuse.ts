@@ -57,7 +57,7 @@ const BAN_ROUTE_KEY = "#ban";
  * `banThreshold` is both the identity-wide escalation threshold and the
  * highest count either ring must keep observable.
  */
-export interface IpAbuseAttempt {
+interface IpAbuseAttempt {
   readonly identity: string;
   readonly route: string;
   readonly now: number;
@@ -67,7 +67,7 @@ export interface IpAbuseAttempt {
 }
 
 /** What one admission step decided. */
-export interface IpAbuseOutcome {
+interface IpAbuseOutcome {
   /** The identity was already banned; nothing was incremented. */
   readonly banned: boolean;
   /** Attempts now in this route's window, including this one. `0` when banned. */
@@ -115,13 +115,13 @@ export interface IpAbuseStore {
   checkAndRecord(attempt: IpAbuseAttempt): Promise<IpAbuseOutcome>;
 }
 
-export interface IpAbuseProtectionServiceOptions {
+interface IpAbuseProtectionServiceOptions {
   readonly maxRequestsPerWindow?: number;
   readonly banThreshold?: number;
   readonly banDurationMs?: number;
 }
 
-export interface InMemoryIpAbuseStoreOptions {
+interface InMemoryIpAbuseStoreOptions {
   readonly windowMs?: number;
   readonly clock?: () => number;
   /** Distinct (identity, route) keys tracked before the oldest is evicted. */
@@ -201,7 +201,7 @@ export class InMemoryIpAbuseStore implements IpAbuseStore {
       typeof windowOrOptions === "number" ? { windowMs: windowOrOptions } : windowOrOptions;
     this.windowMs = options.windowMs ?? 60_000;
     this.clock = options.clock ?? (() => Date.now());
-    // 10k keys is a few MB even at the default 240 RPM ring size; the previous
+    // 10k keys is a few MB even at the default 540 RPM ring size; the previous
     // 100k bound could reach ~190 MB, and a fan-out over unique source IPs is
     // the one input that can actually reach it.
     this.maxKeys = options.maxKeys ?? 10_000;
@@ -382,14 +382,14 @@ export class IpAbuseProtectionService {
   ) {
     if (!store)
       throw new Error("IpAbuseProtectionService requires a store — fail-closed, not no-op");
-    // 240 requests per 60 s window = 4 RPS/IP steady-state cap. Aligns
-    // with the documented default: unset env → 240 RPM per IP, not
+    // 540 requests per 60 s window = 9 RPS/IP steady-state cap. Aligns
+    // with the documented default: unset env → 540 RPM per IP, not
     // unlimited. Operators raise or lower via IP_RATE_MAX_PER_WINDOW.
-    this.maxRequestsPerWindow = opts.maxRequestsPerWindow ?? 240;
+    this.maxRequestsPerWindow = opts.maxRequestsPerWindow ?? 540;
     // A ban only makes sense once the limit was breached, so the threshold is
     // clamped above the cap: below it, escalation would be unreachable (the
     // count can never exceed `maxRequestsPerWindow` without being rejected).
-    this.banThreshold = Math.max(opts.banThreshold ?? 480, this.maxRequestsPerWindow + 1);
+    this.banThreshold = Math.max(opts.banThreshold ?? 1080, this.maxRequestsPerWindow + 1);
     this.banDurationMs = opts.banDurationMs ?? 60 * 60 * 1000;
   }
 

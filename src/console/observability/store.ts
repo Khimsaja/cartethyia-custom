@@ -165,6 +165,9 @@ function mapUsageRequestItem(
     // Why the drawer is empty for this request — see the contract field. This is
     // what makes the blank panels diagnosable without server logs.
     ...(event.payloadCaptureState ? { payloadCaptureState: event.payloadCaptureState } : {}),
+    // Degenerate stop (short output ended by an ordinary `stop`) — carried so
+    // the request detail can flag the pattern.
+    ...(event.degenerateStop ? { degenerateStop: true } : {}),
   };
 }
 async function resolveProxyLabel(
@@ -205,7 +208,7 @@ function percentile(sorted: readonly number[], fraction: number): number {
   return Math.round(sorted[index] ?? 0);
 }
 
-export interface UsagePerformanceSummary {
+interface UsagePerformanceSummary {
   avgResolveMs: number;
   avgDurationMs: number;
   latencyP50Ms: number;
@@ -537,7 +540,7 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
         input: bucket.inputTokens,
         // `cached` is the cached share of the prompt: the SQL reader sums
         // cached_input_tokens, which is the same number the old JS loop used.
-        cached: bucket.inputTokens,
+        cached: bucket.cachedInputTokens,
         output: bucket.outputTokens,
       });
     }

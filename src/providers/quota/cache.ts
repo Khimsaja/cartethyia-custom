@@ -319,6 +319,35 @@ export async function invalidateQuotaCache(
 }
 
 /**
+ * Drops many accounts from one lens in a single pass.
+ *
+ * The batch-delete route clears several accounts' quota caches at once. The
+ * in-process tier is swept once (one `keys()` pass), and Redis is cleared with
+ * one pipeline, so the cost does not scale with per-account round trips.
+ */
+export async function invalidateQuotaCaches(
+  lens: string,
+  accountIds: readonly string[],
+  redis: RedisClient | undefined,
+): Promise<void> {
+  if (accountIds.length === 0) return;
+  const keys = accountIds.map((accountId) => quotaKey(lens, accountId));
+  const keySet = new Set(keys);
+  for (const key of inMemoryQuotaCache.keys()) {
+    if (keySet.has(key)) inMemoryQuotaCache.delete(key);
+  }
+  if (redis === undefined) return;
+  try {
+    const pipeline = redis.pipeline();
+    for (const key of keys) pipeline.del(key);
+    await pipeline.exec().catch(() => undefined);
+  } catch (error) {
+    metrics.quota_cache_invalidate_failed.inc(1);
+    log.warn("quota cache batch invalidate failed", { lens, error: String(error) });
+  }
+}
+
+/**
  * Drops one account from EVERY cache lens. Global accounts are shared, but a
  * release-N writer may have written the same account under a per-tenant lens,
  * so a global mutation clears all of them rather than assuming which lens this

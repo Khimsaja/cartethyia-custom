@@ -20,12 +20,12 @@ import {
 import { DEFAULT_PROVIDER_MAX_INFLIGHT } from "../../persistence/schema";
 import { resolveTenantOverride } from "../../persistence/tenant-scope";
 import {
-  type RouteCandidate,
   type ComboDefinition,
   type PoolRoutingSetting,
   type ProviderRoutingMap,
   type RouteSnapshot,
   type SnapshotBuilder,
+  type RoutedCandidate,
 } from "./route-model";
 import { DEFAULT_PROXY_SKIP_PROVIDER_IDS } from "../../providers/provider-metadata";
 import { buildClaudeCliUserAgent } from "../../providers/operations/custom-cli-headers";
@@ -83,18 +83,6 @@ export function cliMappingSourceKeys(toolId: string, sourceModel: string): reado
  * owned by that exact same tenant, and its candidates carry that tenant id
  * — `RoutingEngine.plan()` filters candidates by the requesting tenant.
  */
-
-type RouteCandidateWithHealth = RouteCandidate & {
-  health_status?: "cooldown" | "model_cooldown" | "disabled";
-  cooldown_kind?: "hard" | "soft";
-  /**
-   * Epoch milliseconds at which this candidate's cooling window ends, when one
-   * is in force. Routing-internal: it is what lets `plan()` report a real reset
-   * on the all-accounts-cooling answer, and it never reaches a client verbatim —
-   * only the derived `retry-after` does.
-   */
-  cooldown_until?: number;
-};
 
 const HARD_COOLDOWN_CATEGORIES: Readonly<Record<string, true>> = {
   quota_exhausted: true,
@@ -246,6 +234,7 @@ interface MergedModelRow {
   providerId: string;
   modelId: string;
   wireFamily: WireFamily;
+  dialect?: string | null;
   serviceKind: ServiceKind;
   endpointPath: string;
   modalities: unknown;
@@ -270,6 +259,7 @@ function mergeModelCatalog(
       providerId: row.providerId,
       modelId: row.modelId,
       wireFamily: row.wireFamily as WireFamily,
+      ...(row.dialect === null ? {} : { dialect: row.dialect }),
       serviceKind: row.serviceKind as ServiceKind,
       endpointPath: row.endpointPath,
       modalities: row.modalities,
@@ -309,6 +299,7 @@ const MODEL_COLUMNS = {
   providerId: models.providerId,
   modelId: models.modelId,
   wireFamily: models.wireFamily,
+  dialect: models.dialect,
   serviceKind: models.serviceKind,
   endpointPath: models.endpointPath,
   modalities: models.modalities,
@@ -363,6 +354,7 @@ const ROUTING_COLUMNS = {
   enabled: providerRoutingSettings.enabled,
   skipProxy: providerRoutingSettings.skipProxy,
   userAgent: providerRoutingSettings.userAgent,
+  customUserAgent: providerRoutingSettings.customUserAgent,
 } as const;
 
 const POOL_COLUMNS = {
@@ -607,6 +599,7 @@ class RouteCatalogRepository {
         enabled: row.enabled,
         skipProxy: row.skipProxy,
         userAgent: row.userAgent,
+        customUserAgent: row.customUserAgent,
       };
     }
     /** Tenant-specific setting wins over global; an unconfigured provider
@@ -627,6 +620,12 @@ class RouteCatalogRepository {
     function resolveUserAgent(providerId: string, rowTenantId: string | null): string | undefined {
       const tenantSetting = rowTenantId ? providerRouting[rowTenantId]?.[providerId]?.userAgent : undefined;
       const globalSetting = providerRouting.__global__?.[providerId]?.userAgent;
+      const tenantCustom = rowTenantId ? providerRouting[rowTenantId]?.[providerId]?.customUserAgent : undefined;
+      const globalCustom = providerRouting.__global__?.[providerId]?.customUserAgent;
+      // An operator-set custom User-Agent overrides the native identity when it
+      // is non-empty; absent custom falls back to the native route identity.
+      const custom = resolveTenantOverride(tenantCustom, globalCustom, undefined);
+      if (custom !== undefined && custom !== null && custom.trim() !== "") return custom.trim();
       return resolveRouteUserAgent(providerId, tenantSetting, globalSetting);
     }
 
@@ -733,7 +732,7 @@ class RouteCatalogRepository {
       accountsByProvider.set(account.providerId, list);
     }
 
-    const candidates: RouteCandidateWithHealth[] = [];
+    const candidates: RoutedCandidate[] = [];
     // Per-build memoization (2026-10-26): resolveNetworkPools,
     // resolveMaxInflight, resolveUserAgent and providerLimitFor are pure
     // functions of (providerId, tenantId) over data loaded once per build,
@@ -787,10 +786,11 @@ class RouteCatalogRepository {
               const tenantPools = resolveNetworkPools(model.providerId, tenantOwnerId);
               if (!tenantPools) continue;
               emittedPoolAccount = true;
-              const tenantCandidate: RouteCandidateWithHealth = {
+              const tenantCandidate: RoutedCandidate = {
                 provider_id: model.providerId,
                 model_id: model.modelId,
                 wire_family: model.wireFamily as WireFamily,
+                ...(model.dialect == null ? {} : { dialect: model.dialect }),
                 service_kind: model.serviceKind,
                 endpoint: model.endpointPath,
                 ...(model.outputLimit == null ? {} : { output_limit: model.outputLimit }),
@@ -827,10 +827,11 @@ class RouteCatalogRepository {
           for (const tId of configuredPoolTenants) {
             const tenantPools = memoNetworkPools(model.providerId, tId);
             if (tenantPools) {
-              const tenantCandidate: RouteCandidateWithHealth = {
+              const tenantCandidate: RoutedCandidate = {
                 provider_id: model.providerId,
                 model_id: model.modelId,
                 wire_family: model.wireFamily as WireFamily,
+                ...(model.dialect == null ? {} : { dialect: model.dialect }),
                 service_kind: model.serviceKind,
                 endpoint: model.endpointPath,
                 ...(model.outputLimit == null ? {} : { output_limit: model.outputLimit }),
@@ -856,10 +857,11 @@ class RouteCatalogRepository {
         const networkPools = providerRequiresAccount
           ? undefined
           : memoNetworkPools(model.providerId, providerTenantId);
-        const candidate: RouteCandidateWithHealth = {
+        const candidate: RoutedCandidate = {
           provider_id: model.providerId,
           model_id: model.modelId,
           wire_family: model.wireFamily as WireFamily,
+          ...(model.dialect == null ? {} : { dialect: model.dialect }),
           service_kind: model.serviceKind,
           endpoint: model.endpointPath,
           ...(model.outputLimit == null ? {} : { output_limit: model.outputLimit }),
@@ -899,10 +901,11 @@ class RouteCatalogRepository {
         }
         const networkPools = memoNetworkPools(model.providerId, rowTenantId);
         const routeUserAgent = memoUserAgent(model.providerId, rowTenantId);
-        const candidate: RouteCandidateWithHealth = {
+        const candidate: RoutedCandidate = {
           provider_id: model.providerId,
           model_id: model.modelId,
           wire_family: model.wireFamily as WireFamily,
+          ...(model.dialect == null ? {} : { dialect: model.dialect }),
           service_kind: model.serviceKind,
           endpoint: model.endpointPath,
           ...(model.outputLimit == null ? {} : { output_limit: model.outputLimit }),

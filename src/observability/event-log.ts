@@ -59,6 +59,12 @@ export interface TelemetryEventRecord {
   readonly hasContent?: boolean | null;
   /** Why the drawer payloads are empty, or `captured`; absent when unrecorded. */
   readonly payloadCaptureState?: string | null;
+  /**
+   * True for a completed request whose output was far smaller than the model's
+   * ceiling and which ended with an ordinary `stop` (a "degenerate stop").
+   * NULL/unset for everything else.
+   */
+  readonly degenerateStop?: boolean;
 }
 
 function asString(value: unknown): string | null {
@@ -112,6 +118,7 @@ function normalize(raw: Record<string, unknown>): TelemetryEventRecord | undefin
     firstContentDeltaAtMs: asNumber(raw["firstContentDeltaAtMs"]),
     lastEventAtMs: asNumber(raw["lastEventAtMs"]),
     hasContent: typeof raw["hasContent"] === "boolean" ? raw["hasContent"] : null,
+    ...(raw["degenerateStop"] === true ? { degenerateStop: true } : {}),
   };
 }
 
@@ -258,7 +265,7 @@ export async function readTelemetryEvents(): Promise<TelemetryEventRecord[]> {
   return events;
 }
 
-export interface EventQuery {
+interface EventQuery {
   readonly tenantId?: string;
   readonly since?: Date;
   /**
@@ -395,7 +402,7 @@ export async function queryTelemetryEvents(query: EventQuery): Promise<Telemetry
   return events;
 }
 
-export interface EventTotals {
+interface EventTotals {
   requests: number;
   succeeded: number;
   failed: number;

@@ -1,13 +1,15 @@
 /**
- * Fase A quick-wins — one test file covering all 7 changes:
+ * Fase A quick-wins — one test file covering 6 changes:
  *
  * 1. X-Stainless-Retry-Count: 0 (claude-credentials)
  * 2. Never send context-1m on subscription credentials (claude-betas)
  * 3. Cap stop_sequences at 4 (claude.ts)
  * 4. Codex prompt_cache_retention passthrough (codex request + adapter)
  * 5. Antigravity usageLabel (antigravity-protocol)
- * 6. Antigravity forced-choice restatement (antigravity)
  * 7. Adopt-on-rejection (client-version-resolver + claude)
+ *
+ * (Item 6 — Antigravity forced-choice restatement — was a placeholder and is
+ * removed; it asserted nothing and gave false coverage credit.)
  */
 import { describe, expect, test } from "bun:test";
 
@@ -152,28 +154,17 @@ describe("5. Antigravity usageLabel", () => {
   });
 
   test("returns profile for known Gemini wire id", () => {
-    const profile = getAntigravityModelWireProfile("gemini-3-flash-agent");
+    const profile = getAntigravityModelWireProfile("gemini-3.8-flash-medium");
     expect(profile).toBeDefined();
-    expect(profile?.modelEnum).toBe("MODEL_PLACEHOLDER_M132");
+    expect(profile?.modelEnum).toBe("MODEL_PLACEHOLDER_M319");
+    expect(profile?.maxOutputTokens).toBe(65536);
   });
-});
 
-// ─── 6. Antigravity forced-choice restatement ──────────────────────────────
-
-// The restatement is internal to buildAntigravityEnvelope; we test the
-// observable behavior via the module's exported helpers. The directive text
-// constant is not exported, so we assert on the protocol-level contract:
-// a forced tool choice on a Gemini route produces a trailing user turn.
-
-describe("6. Antigravity forced-choice restatement", () => {
-  test("ANTIGRAVITY_FORCED_TOOL_DIRECTIVE constant is a non-empty string", () => {
-    // The directive is module-private; we assert the behavior through the
-    // wire profile and the exported constant. The restatement logic is
-    // covered by the antigravity envelope builder test if one exists, or
-    // by the protocol-level assertion that the directive text is present.
-    // For now, assert the constant exists and is meaningful.
-    // This is a placeholder for the real envelope-level test.
-    expect(true).toBe(true); // Covered by integration test below
+  test("returns Claude modelEnum from the live roster", () => {
+    const sonnet = getAntigravityModelWireProfile("claude-sonnet-4-6");
+    expect(sonnet?.modelEnum).toBe("MODEL_PLACEHOLDER_M35");
+    const opus = getAntigravityModelWireProfile("claude-opus-4-6-thinking");
+    expect(opus?.modelEnum).toBe("MODEL_PLACEHOLDER_M26");
   });
 });
 

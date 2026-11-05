@@ -18,7 +18,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { QODER_REALMS, type QoderRealm } from "./qoder-realm";
+import { QODER_REALMS, QODER_UA_CLI, type QoderRealm } from "./qoder-realm";
 import {
   base64UrlEncode,
   nonEmptyTrimmedString,
@@ -111,9 +111,7 @@ export function readQoderUserInfo(body: Record<string, unknown>): QoderUserInfo 
 }
 
 /** Global/intl endpoints. Kept as the default realm's values, unchanged. */
-export const QODER_LOGIN_URL = "https://qoder.com/device/selectAccounts" as const;
 export const QODER_DEVICE_TOKEN_URL = "https://openapi.qoder.sh/api/v1/deviceToken/poll" as const;
-export const QODER_USERINFO_URL = "https://openapi.qoder.sh/api/v1/userinfo" as const;
 
 /**
  * Per-realm device endpoints, derived from `QODER_REALMS`.
@@ -227,14 +225,20 @@ function parseDeviceState(value: string | undefined): QoderDeviceState | undefin
  * Random PKCE verifier in the exact alphabet the desktop IDE uses.
  *
  * The IDE's `startDeviceFlow` draws the verifier from
- * `ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~` (43–128
- * chars). Using the same alphabet keeps the login byte-for-byte identical to
- * the desktop client, which the approval server may use to fingerprint the
- * requesting client.
+ * `ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~`. Using
+ * the same alphabet keeps the login byte-for-byte identical to the desktop
+ * client, which the approval server may use to fingerprint the requesting
+ * client. Length is fixed at 64 — RFC 7636 §4.1 requires [43,128]; a fixed
+ * length avoids a non-cryptographic length while the content comes entirely
+ * from the CSPRNG (`randomBytes`) below.
  */
 function qoderIdeVerifier(): string {
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
-  const length = 43 + Math.floor(Math.random() * 86);
+  // RFC 7636 §4.1: verifier length must be within [43,128]; fixed here. Content
+  // comes from the CSPRNG (randomBytes) below. `67` (alphabet length) does not
+  // divide 256, so the `%` mapping has a negligible modulo bias (~21/256 per
+  // char) — irrelevant for a 64-char secret with ~388 bits of input entropy.
+  const length = 64;
   const bytes = randomBytes(length);
   let out = "";
   for (let i = 0; i < length; i += 1) {
@@ -380,7 +384,7 @@ export class QoderOAuthClient extends OAuthDeviceFlow {
     try {
       response = await this.fetchFn(url, {
         method: "GET",
-        headers: { accept: "application/json", "user-agent": "Go-http-client/2.0" },
+        headers: { accept: "application/json", "user-agent": QODER_UA_CLI },
         signal: AbortSignal.timeout(POLL_TIMEOUT_MS),
       });
     } catch (error) {
@@ -463,7 +467,7 @@ export class QoderOAuthClient extends OAuthDeviceFlow {
         headers: {
           authorization: `Bearer ${accessToken}`,
           accept: "application/json",
-          "user-agent": "Go-http-client/2.0",
+          "user-agent": QODER_UA_CLI,
         },
         signal: AbortSignal.timeout(POLL_TIMEOUT_MS),
       });
@@ -498,7 +502,7 @@ export class QoderOAuthClient extends OAuthDeviceFlow {
         headers: {
           "content-type": "application/json",
           accept: "application/json",
-          "user-agent": "Go-http-client/2.0",
+          "user-agent": QODER_UA_CLI,
         },
         body: JSON.stringify({
           refresh_token: refreshToken,
