@@ -238,9 +238,13 @@ function seedPath(): string {
 /**
  * Mints a fresh native identity: wipe the seed (under the lock), run the
  * bridge, capture the identity AND the seed it wrote. The seed is required
- * for later replay of this same native identity. Returns `null` when the
- * bridge fails; falls back to the generated identity only when no bridge
- * exists.
+ * for later replay of this same native identity. When no bridge exists, or
+ * when the bridge run fails (crash, unexpected network response,
+ * unparsable output), it falls back to the generated identity instead of
+ * failing: the bridge is a best-effort identity source, and live controls
+ * showed machine identity does not gate daily CREDITS grants, so a failing
+ * bridge must not fail the whole flow. The `null` in the return type is
+ * retained for callers that already handle it.
  */
 export function mintQoderNativeIdentity(accountId: string): { identity: QoderNativeIdentity; seed: string } | null {
   const bridge = pickBridge();
@@ -255,7 +259,7 @@ export function mintQoderNativeIdentity(accountId: string): { identity: QoderNat
       `exec 9>${WSL_LOCK}; flock 9; rm -f ${WSL_SEED}; ${WSL_BIN} ${ENV_CODE}`,
     );
     const identity = parseBridgeLine(out);
-    if (!identity) { log.warn("[qoder] wsl mint failed"); return null; }
+    if (!identity) { log.warn("[qoder] wsl mint failed — using generated identity fallback"); return { identity: mintQoderGeneratedIdentity(accountId), seed: "" }; }
     const seed = wsl(`cat ${WSL_SEED}`);
     return { identity, seed };
   }
@@ -269,7 +273,7 @@ export function mintQoderNativeIdentity(accountId: string): { identity: QoderNat
     try { spawnSync("rm", ["-f", seed]); } catch { /* ignore */ }
     const r = spawnSync(exe, [ENV_CODE], { encoding: "utf8", timeout: 25_000 });
     const identity = parseBridgeLine(String(r.stdout ?? ""));
-    if (!identity) { log.warn("[qoder] elf mint failed"); return null; }
+    if (!identity) { log.warn("[qoder] elf mint failed — using generated identity fallback"); return { identity: mintQoderGeneratedIdentity(accountId), seed: "" }; }
     return { identity, seed: existsSync(seed) ? readFileSync(seed, "utf8") : "" };
   }
 
@@ -287,7 +291,7 @@ export function mintQoderNativeIdentity(accountId: string): { identity: QoderNat
       timeout: 25_000,
     });
     const identity = parseBridgeLine(String(r.stdout ?? ""));
-    if (!identity) { log.warn("[qoder] macho mint failed"); return null; }
+    if (!identity) { log.warn("[qoder] macho mint failed — using generated identity fallback"); return { identity: mintQoderGeneratedIdentity(accountId), seed: "" }; }
     return { identity, seed: existsSync(seed) ? readFileSync(seed, "utf8") : "" };
   }
 
@@ -304,7 +308,7 @@ export function mintQoderNativeIdentity(accountId: string): { identity: QoderNat
       env: { ...process.env, LD_LIBRARY_PATH: join(umidMiniDir(), "lib", "x86_64-linux-gnu") },
     });
     const identity = parseBridgeLine(String(r.stdout ?? ""));
-    if (!identity) { log.warn("[qoder] mini-elf mint failed"); return null; }
+    if (!identity) { log.warn("[qoder] mini-elf mint failed — using generated identity fallback"); return { identity: mintQoderGeneratedIdentity(accountId), seed: "" }; }
     return { identity, seed: existsSync(seed) ? readFileSync(seed, "utf8") : "" };
   }
 
@@ -312,7 +316,7 @@ export function mintQoderNativeIdentity(accountId: string): { identity: QoderNat
   const exe = join(umidpackDir(), "runtime-info.exe");
   const r = spawnSync(exe, [ENV_CODE], { encoding: "utf8", timeout: 30_000, windowsHide: true, cwd: umidpackDir() });
   const identity = parseBridgeLine(String(r.stdout ?? ""));
-  if (!identity) { log.warn("[qoder] pe mint failed"); return null; }
+  if (!identity) { log.warn("[qoder] pe mint failed — using generated identity fallback"); return { identity: mintQoderGeneratedIdentity(accountId), seed: "" }; }
   return { identity, seed: "" };
 }
 
