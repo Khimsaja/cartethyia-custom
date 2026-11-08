@@ -268,6 +268,85 @@ export function normalizeAntigravityToolSchema(schema: unknown): unknown {
 }
 
 /**
+ * Flattens JSON-Schema constructs the Antigravity upstream rejects.
+ *
+ * Verified live (2026-11-05): the Claude-route upstream validates tool
+ * schemas as strict JSON Schema draft 2020-12 and refuses every `anyOf` /
+ * `oneOf` / multi-type `type: [...]` declaration — even a degenerate
+ * `anyOf` of two identical string schemas, and even at the root. The Gemini
+ * builder's sanitizer keeps those constructs (Gemini itself accepts them), so
+ * a tool that declares a union (e.g. OMP's `task` tool's `model` field)
+ * ships an invalid schema and the upstream 400s the whole request with
+ * `tools.N.custom.input_schema: JSON schema is invalid`.
+ *
+ * The rewrite replaces `anyOf`/`oneOf` with the single most permissive
+ * alternative's type (string when a choice is a string, otherwise any
+ * surviving type), and a multi-type `type: [...]` with its first entry —
+ * the most permissive shape a strict single-type validator can express.
+ * Recurses through `properties` and `items`.
+ */
+export function flattenAntigravitySchema(schema: unknown): unknown {
+  if (!isRecord(schema)) return schema;
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(schema)) {
+    if (key === "anyOf" || key === "oneOf") {
+      if (!Array.isArray(child)) continue;
+      const chosen = child.map((entry) => flattenAntigravitySchema(entry)).find(isRecord);
+      if (chosen === undefined) continue;
+      if (typeof chosen["type"] === "string") out["type"] = chosen["type"];
+      for (const [nestedKey, nestedValue] of Object.entries(chosen)) {
+        if (nestedKey === "type") continue;
+        out[nestedKey] = nestedValue;
+      }
+      continue;
+    }
+    if (key === "type" && Array.isArray(child)) {
+      const first = child.find((entry): entry is string => typeof entry === "string");
+      if (first !== undefined) out["type"] = first;
+      continue;
+    }
+    if (key === "properties" && isRecord(child)) {
+      out["properties"] = Object.fromEntries(
+        Object.entries(child).map(([name, entry]) => [name, flattenAntigravitySchema(entry)]),
+      );
+      continue;
+    }
+    if (key === "items" && Array.isArray(child)) {
+      out["items"] = child.map((entry) => flattenAntigravitySchema(entry));
+      continue;
+    }
+    if (key === "items" && isRecord(child)) {
+      out["items"] = flattenAntigravitySchema(child);
+      continue;
+    }
+    out[key] = child;
+  }
+  return out;
+}
+
+/**
+ * Applies both tool-schema normalizations (unwrap `parametersJsonSchema`,
+ * flatten rejected union constructs) and reports whether anything changed.
+ *
+ * When flattening is a no-op, the *original* reference is returned so the
+ * request-level helper can detect an unchanged request without a deep compare.
+ */
+export function normalizeAntigravityToolSchemaForWire(schema: unknown): {
+  readonly schema: unknown;
+  readonly changed: boolean;
+} {
+  const unwrapped = normalizeAntigravityToolSchema(schema);
+  const flattened = flattenAntigravitySchema(unwrapped);
+  const unwrapChanged = unwrapped !== schema;
+  const flattenChanged =
+    flattened !== unwrapped && JSON.stringify(flattened) !== JSON.stringify(unwrapped);
+  return {
+    schema: flattenChanged ? flattened : unwrapped,
+    changed: unwrapChanged || flattenChanged,
+  };
+}
+
+/**
  * Normalizes every declared tool's schema on a canonical request, returning a
  * shallow copy of the request when anything changed and the original object
  * otherwise.
@@ -286,12 +365,48 @@ export function normalizeAntigravityToolSchemas(request: CanonicalRequest): Cano
   if (tools === undefined || tools.length === 0) return request;
   let changed = false;
   const normalized = tools.map((tool) => {
-    const schema = normalizeAntigravityToolSchema(tool.jsonSchema);
-    if (schema === tool.jsonSchema) return tool;
+    const { schema, changed: schemaChanged } = normalizeAntigravityToolSchemaForWire(tool.jsonSchema);
+    if (!schemaChanged) return tool;
     changed = true;
     return { ...tool, jsonSchema: schema };
   });
   return changed ? { ...request, tools: normalized } : request;
+}
+
+/**
+ * Drops replayed reasoning blocks that carry no signature on a Claude route.
+ *
+ * The Claude-route upstream requires every `thinking` block in a replayed
+ * assistant turn to carry a `signature`; an unsigned block is rejected with
+ * `400 messages.N.content.0.thinking.signature: Field required`. Chat-surface
+ * clients (e.g. OMP) replay reasoning as a bare `reasoning_content` string
+ * that has no signature — there is nothing to forward, and sending it as an
+ * unsigned `thought` part guarantees the 400.
+ *
+ * The reference client solves this with a `drop-unsigned-thinking` compat flag
+ * on `google-antigravity` (donor `anthropic.kdl:743-748`): a thinking block
+ * without a signature is simply not replayed. This mirrors that behavior —
+ * reasoning with a real signature still replays; reasoning without one is
+ * dropped so the upstream never sees an unsigned `thinking` part.
+ */
+export function dropAntigravityUnsignedReasoning(
+  request: CanonicalRequest,
+  isClaudeRoute: boolean,
+): CanonicalRequest {
+  if (!isClaudeRoute) return request;
+  const messages = request.messages;
+  let changed = false;
+  const next = messages.map((message) => {
+    if (message.role !== "assistant") return message;
+    const content = message.content.filter((part) => {
+      if (part.kind !== "reasoning") return true;
+      if (part.signature !== undefined) return true;
+      changed = true;
+      return false;
+    });
+    return changed ? { ...message, content } : message;
+  });
+  return changed ? { ...request, messages: next } : request;
 }
 
 // Last-good-endpoint stickiness

@@ -20,7 +20,8 @@ import { join } from "node:path";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { GatewayError } from "../../../protocol/gateway-error";
-import type { CanonicalEvent, CanonicalRequest, CanonicalStopReason } from "../../../protocol/canonical-model";
+import type { CanonicalEvent, CanonicalRequest, CanonicalStopReason, UsageRecord } from "../../../protocol/canonical-model";
+import type { ProviderCaptureExchange } from "../../provider-contracts";
 import { usageFromProvider } from "../../provider-usage";
 import { getQoderVersion } from "../../operations/client-versions";
 import { qoderMachineOs, qoderMachineHostname } from "../../operations/cli-platform";
@@ -440,6 +441,65 @@ export function qoderGrpcMetadata(auth: QoderAuth, modelId = ""): grpc.Metadata 
   return metadata;
 }
 
+/**
+ * gRPC metadata headers safe to persist in the provider-request panel.
+ *
+ * Mirrors the HTTP capture allowlist (`CAPTURED_REQUEST_HEADERS` in
+ * `transport/dispatch/attempt-finalize.ts`): session/identity framing is kept,
+ * but credentials are never stored. `authorization` (the Bearer job token) is
+ * deliberately excluded — the HTTP wrapper never captures it, and the gRPC
+ * capture must not either.
+ */
+const GRPC_CAPTURED_HEADERS = [
+  "x-request-id",
+  "x-session-id",
+  "cosy-version",
+  "cosy-clienttype",
+  "cosy-machineos",
+  "cosy-machinehostname",
+  "x-opencode-client",
+  "x-opencode-session",
+  "x-opencode-session-id",
+  "x-opencode-parent-session-id",
+  "x-opencode-request",
+  "x-opencode-project",
+  "x-conversation-id",
+  "x-conversation-request-id",
+  "x-conversation-message-id",
+  "x-root-request-id",
+  "x-trace-id",
+  "traceparent",
+  "b3",
+] as const;
+
+/**
+ * A gRPC exchange is not a `fetch`, so the HTTP capture wrapper never sees it.
+ * The adapter fills the sink directly with a faithful rendering of the proto
+ * call: the request line (grpc method, host, allowlisted metadata, and the
+ * translated body) and a deferred response that resolves to the collected
+ * stream summary.
+ */
+export function captureQoderGrpcRequest(
+  request: Record<string, unknown>,
+  metadata: grpc.Metadata,
+  realm: QoderRealm,
+): Record<string, unknown> {
+  const host = qoderGrpcHost(realm);
+  const map = metadata.getMap() as Record<string, string | string[]>;
+  const headers: Record<string, string> = {};
+  for (const name of GRPC_CAPTURED_HEADERS) {
+    const value = map[name];
+    if (value === undefined) continue;
+    headers[name] = Array.isArray(value) ? value.join(", ") : String(value);
+  }
+  return {
+    method: "POST",
+    url: `grpc://${host}/model.chat.ChatService/ChatCompletionStream`,
+    headers,
+    body: request,
+  };
+}
+
 /** Maps a proto `finish_reason` to the canonical stop reason. */
 function mapFinishReason(raw: string | undefined): CanonicalStopReason | undefined {
   switch (raw) {
@@ -450,6 +510,10 @@ function mapFinishReason(raw: string | undefined): CanonicalStopReason | undefin
       return "tool_use";
     case "length":
       return "length";
+    case "error":
+      return "error";
+    case "refusal":
+      return "refusal";
     default:
       return undefined;
   }
@@ -466,6 +530,7 @@ export async function* qoderGrpcToCanonicalEvents(
   metadata: grpc.Metadata,
   realm: QoderRealm,
   signal: AbortSignal,
+  capture?: ProviderCaptureExchange,
 ): AsyncGenerator<CanonicalEvent> {
   const ChatService = qoderGrpcClient();
   const host = qoderGrpcHost(realm);
@@ -483,6 +548,122 @@ export async function* qoderGrpcToCanonicalEvents(
     // clients reject content after the finish reason. A second terminal is
     // skipped too (the upstream can re-emit the finish frame).
     let finished = false;
+    // Last usage chunk seen; attached to the terminal event (the upstream
+    // streams usage after the finish-reason chunk, and a standalone `usage`
+    // event after terminal breaks strict Messages encoders).
+    let pendingUsage: UsageRecord | undefined;
+    /** Whether the terminal already carried the pending usage. */
+    let terminalEmitted = false;
+    // Capture sinks fed from the same `for await` loop that drives production
+    // events (see `feedCapture`). Declared here so the loop below can call
+    // them; they are assigned when capture is enabled.
+    let feedCapture: ((chunk: unknown) => void) | undefined;
+    let flushToolCalls: (() => void) | undefined;
+    if (capture !== undefined) {
+      capture.request = captureQoderGrpcRequest(request, metadata, realm);
+      capture.response = new Promise((resolve) => {
+        const summary: Record<string, unknown> = {
+          transport: "grpc",
+          chunks: 0,
+          answer_chars: 0,
+          reasoning_chars: 0,
+          tool_calls: 0,
+          models: [] as string[],
+          usage: undefined,
+          stop_reason: undefined,
+          status_code: 0,
+          // Materialized response content (bounded): the text the model
+          // emitted, the reasoning trace, and the tool calls that were
+          // announced. This is what Request Detail shows instead of a bare
+          // statistics block.
+          text: "",
+          reasoning: "",
+          toolCalls: [] as Array<{ index: number; id?: string; name?: string; arguments?: string }>,
+        };
+        // Per-index tool-call fragments (the upstream streams one call at a
+        // time: id + empty args, then argument fragments, index always 0).
+        const toolCallsByIndex = new Map<number, { id?: string; name?: string; arguments?: string }>();
+        const MAX_TEXT_CHARS = 16_000;
+        const MAX_TOOL_CALLS = 50;
+        const MAX_TOOL_ARGS_CHARS = 2_000;
+        // The summary is fed from the SAME `for await` loop that drives the
+        // production event stream (see `feedCapture` below) — a separate
+        // `data` listener raced the iterator and saw nothing (or a different
+        // decode), so tool calls and text never made it into the capture.
+        feedCapture = (chunk: unknown) => {
+          const rec = chunk as Record<string, unknown>;
+          summary["chunks"] = (summary["chunks"] as number) + 1;
+          const model = rec["model"];
+          if (typeof model === "string" && model.length > 0) {
+            const models = summary["models"] as string[];
+            if (!models.includes(model)) models.push(model);
+          }
+          const usage = rec["usage"];
+          if (usage !== undefined && typeof usage === "object") summary["usage"] = usage;
+          const choices = Array.isArray(rec["choices"]) ? (rec["choices"] as Array<Record<string, unknown>>) : [];
+          for (const choice of choices) {
+            const delta = choice["delta"] as Record<string, unknown> | undefined;
+            const content = delta?.["content"];
+            if (typeof content === "string" && content.length > 0) {
+              summary["answer_chars"] = (summary["answer_chars"] as number) + content.length;
+              const text = summary["text"] as string;
+              if (text.length < MAX_TEXT_CHARS) {
+                summary["text"] = (text + content).slice(0, MAX_TEXT_CHARS);
+              }
+            }
+            const reasoning = delta?.["reasoning_content"];
+            if (typeof reasoning === "string" && reasoning.length > 0) {
+              summary["reasoning_chars"] = (summary["reasoning_chars"] as number) + reasoning.length;
+              const reasoningText = summary["reasoning"] as string;
+              if (reasoningText.length < MAX_TEXT_CHARS) {
+                summary["reasoning"] = (reasoningText + reasoning).slice(0, MAX_TEXT_CHARS);
+              }
+            }
+            const calls = delta?.["tool_calls"];
+            if (Array.isArray(calls) && calls.length > 0) {
+              summary["tool_calls"] = (summary["tool_calls"] as number) + calls.length;
+              for (const rawTc of calls) {
+                const tc = fromProtoStruct(rawTc);
+                const index = typeof tc["index"] === "number" ? (tc["index"] as number) : 0;
+                const entry = toolCallsByIndex.get(index) ?? {};
+                const declaredId = tc["id"];
+                if (typeof declaredId === "string" && declaredId.trim().length > 0) entry.id = declaredId.trim();
+                const fn = (tc["function"] ?? {}) as Record<string, unknown>;
+                const name = fn["name"];
+                if (typeof name === "string" && name.trim().length > 0) entry.name = name.trim();
+                const args = fn["arguments"];
+                if (typeof args === "string" && args.length > 0) {
+                  entry.arguments = ((entry.arguments ?? "") + args).slice(0, MAX_TOOL_ARGS_CHARS);
+                }
+                toolCallsByIndex.set(index, entry);
+              }
+            }
+            const finish = choice["finish_reason"];
+            if (typeof finish === "string" && finish.length > 0) summary["stop_reason"] = finish;
+          }
+        };
+        flushToolCalls = () => {
+          const entries = [...toolCallsByIndex.entries()]
+            .sort((a, b) => a[0] - b[0])
+            .slice(0, MAX_TOOL_CALLS)
+            .map(([index, entry]) => ({ index, ...entry }));
+          if (entries.length > 0) summary["toolCalls"] = entries;
+        };
+        stream.on("status", (s: { code?: number; details?: string }) => {
+          summary["status_code"] = s.code ?? 0;
+          summary["grpc_message"] = s.details ?? "";
+        });
+        stream.on("error", (err: Error) => {
+          summary["error"] = err.message;
+          flushToolCalls?.();
+          resolve(summary);
+        });
+        stream.on("end", () => {
+          flushToolCalls?.();
+          resolve(summary);
+        });
+      });
+    }
 
     const abortHandler = () => {
       aborted = true;
@@ -502,6 +683,8 @@ export async function* qoderGrpcToCanonicalEvents(
       const fragmentState: QoderToolFragmentState = {};
       for await (const chunk of stream) {
         if (aborted || signal.aborted) break;
+        // Feed the capture summary from this same chunk (single consumer).
+        feedCapture?.(chunk);
         // The upstream names the model it actually ran in the chunk's `model`
         // field. Surface it once as `response_start` so probes and telemetry
         // can report the real echoed model (the gRPC surface has no HTTP body
@@ -599,24 +782,45 @@ export async function* qoderGrpcToCanonicalEvents(
               yield {
                 type: "terminal",
                 sequence_number: nextSeq(),
-                state: stop === "stop" || stop === "tool_use" ? "complete" : "failed",
+                // `tool_use` and `refusal` are *successful* terminal verdicts:
+                // the model decided to call a tool / declined to answer, but the
+                // response itself is valid — `complete`, never `failed`. A
+                // `failed` state here made attempt-finalize treat a healthy tool
+                // turn as an upstream failure ("empty-handed") and replay it.
+                // A key `error` (or `length`) is the failed case.
+                state: stop === "stop" || stop === "tool_use" || stop === "refusal" ? "complete" : "failed",
                 stop_reason: stop,
                 provider_stop_reason: choice.finish_reason,
+                // The upstream streams `usage` in a trailing chunk *after* the
+                // finish-reason chunk. A separate `usage` event after the
+                // terminal is rejected by strict Anthropic Messages encoders
+                // (the 2.7.8 regression), so the usage is carried here on the
+                // terminal instead — exactly like the IDE surface does.
+                ...(pendingUsage === undefined ? {} : { usage: pendingUsage }),
               };
+              if (pendingUsage !== undefined) terminalEmitted = true;
             }
           }
         }
-        if (chunk.usage && !finished) {
+        if (chunk.usage) {
           const usage = usageFromProvider(chunk.usage);
           if (usage !== undefined) {
-            yield { type: "usage", sequence_number: nextSeq(), usage };
+            // Keep the last usage chunk; it is attached to the terminal above
+            // (and only if no terminal ever arrives, emitted as a standalone
+            // event at stream end).
+            pendingUsage = usage;
           }
         }
       }
       // Tool-call deltas are emitted as they arrive — there is no end-of-stream
       // buffer to flush; the terminal event is yielded by the finish-reason
       // branch above (or synthesized by the caller if the stream ends without
-      // one).
+      // one). If no terminal carried the pending usage (the stream ended
+      // without a finish reason), emit it as a standalone event so telemetry
+      // still sees the upstream's numbers.
+      if (!terminalEmitted && pendingUsage !== undefined) {
+        yield { type: "usage", sequence_number: nextSeq(), usage: pendingUsage };
+      }
     } catch (err: any) {
       const status = err?.code;
       const details = err?.details ?? err?.message ?? "";
@@ -644,7 +848,7 @@ export async function* qoderGrpcToCanonicalEvents(
             "quota_exceeded",
             429,
             "Qoder quota exhausted on the gRPC surface (request {requestId})",
-            {},
+            { providerCode: "quota_exceeded" },
             "upstream",
           );
         }

@@ -14,6 +14,7 @@ import { resolveAccountQuotaCooldownMs } from "../config/cooldowns";
  * runs a few KB; 4000 keeps the whole thing while bounding a hostile body.
  */
 const MAX_UPSTREAM_ERROR_BYTES = 4000;
+export { MAX_UPSTREAM_ERROR_BYTES };
 export {
   parseRetryAfter,
   parseRateLimitReset,
@@ -22,6 +23,32 @@ export {
   parseProviderResetDuration,
   parseAbsoluteResetTimestamp,
 } from "../protocol/upstream-parsing";
+/**
+ * Extracts only the human-readable text from an upstream error body —
+ * `message`/`msg`/`error` fields — deliberately skipping `code`/identifier
+ * values. Used by `upstreamMessageAsIs` to decide whether the upstream
+ * actually supplied a message: a symbolic code like `"permission_error"` is
+ * an identifier, not prose, so it must not count as passthrough text.
+ */
+export function extractUpstreamMessageText(body: unknown): string {
+  let raw = "";
+  if (typeof body === "string") raw = body;
+  else if (isRecord(body)) {
+    if (typeof body.error === "string" && body.error.trim()) raw = body.error;
+    else {
+      const envelope = isRecord(body.error) ? body.error : body;
+      const message = (envelope as Record<string, unknown>).message;
+      if (typeof message === "string" && message.trim()) raw = message;
+      else if (typeof body.msg === "string" && body.msg.trim()) raw = body.msg;
+      else if (typeof (envelope as Record<string, unknown>).msg === "string" && String((envelope as Record<string, unknown>).msg).trim())
+        raw = String((envelope as Record<string, unknown>).msg);
+      else if (typeof (envelope as Record<string, unknown>).error === "string" && String((envelope as Record<string, unknown>).error).trim())
+        raw = String((envelope as Record<string, unknown>).error);
+    }
+  }
+  return raw.replace(/[\r\n]+/g, " ").trim();
+}
+
 /** Extracts a bounded, newline-free provider message from any error envelope. */
 export function extractUpstreamMessage(body: unknown): string {
   let raw = "";
@@ -696,6 +723,25 @@ const AUTH_ERROR_IDENTIFIERS: ReadonlySet<string> = new Set([
   "insufficient_key_scope",
   "model_not_allowed_for_key",
 ]);
+
+/**
+ * Qoder job-token verdicts that are NOT credential evidence.
+ *
+ * A PAT (`pt-…`) is exchanged for a short-lived job token (`jt-…`). When the
+ * job token expires mid-flight the upstream answers `{"code":"105","message":
+ * "Login expired"}` (403). The PAT is still valid — re-exchanging it mints a
+ * fresh job token — so treating this as `auth_invalidated` parked a healthy
+ * account as "Re-login required". It stays `authentication_failed` (retryable;
+ * the next attempt re-runs the PAT exchange) but without `credentialEvidence`,
+ * so the account is never disabled or cooled on it.
+ */
+const QODER_JOB_TOKEN_EXPIRED: ReadonlySet<string> = new Set([
+  "105",
+  "login expired",
+  "login_expired",
+  "job token expired",
+  "jobtoken expired",
+]);
 const PLATFORM_ERROR_IDENTIFIERS: ReadonlySet<string> = new Set([
   "server_error",
   "internal_error",
@@ -809,6 +855,16 @@ export function classifyUpstreamError(
       origin: "upstream",
       rateLimitScope: "provider",
     };
+  // Qoder job-token expiry (`105` / "Login expired") is recoverable by
+  // re-exchanging the PAT — never credential evidence (see
+  // `QODER_JOB_TOKEN_EXPIRED`).
+  if (normalized !== undefined && QODER_JOB_TOKEN_EXPIRED.has(normalized)) {
+    return {
+      code: "authentication_failed",
+      status: status === 403 || status === 401 ? status : 403,
+      origin: "upstream",
+    };
+  }
   if (normalized !== undefined && AUTH_ERROR_IDENTIFIERS.has(normalized)) {
     let authStatus: number;
     if (status === 401 || status === 403) authStatus = status;
@@ -919,17 +975,15 @@ export async function mapUpstreamHttpError(response: Response, providerId: strin
     : isContextLengthFailure(parsedBody)
       ? { code: "context_length_exceeded" as const, status: 413, origin: "upstream" as const }
       : classifyUpstreamError(response.status, identifier);
-  const extracted = extractUpstreamMessage(parsedBody ?? text);
-  let message =
-    extracted.length > 0
-      ? extracted
-      : text.trim() || `Provider returned HTTP ${response.status}.`;
+  const upstreamText = upstreamMessageAsIs(parsedBody ?? text, "");
+  let message = upstreamText.message || `Provider returned HTTP ${response.status}.`;
   // A bare "Provider returned HTTP <5xx>" tells the operator nothing actionable;
   // platform-unavailable fallbacks get the same human sign-off every other
-  // gateway error carries. The raw upstream body stays in `details.raw` for
-  // diagnostics either way.
+  // gateway error carries — but only when the upstream supplied no text of its
+  // own. The raw upstream body stays in `details.raw` for diagnostics either way.
   if (
     classification.code === "platform_unavailable" &&
+    !upstreamText.hadUpstreamText &&
     message === `Provider returned HTTP ${response.status}.`
   ) {
     message = `The provider's service is temporarily unavailable (HTTP ${response.status}) (request {requestId}). Your request did not go through — wait a moment and try again. Hold tight ☁️`;
@@ -949,6 +1003,7 @@ export async function mapUpstreamHttpError(response: Response, providerId: strin
     ...(reportedProviderCode ? { providerCode: reportedProviderCode } : {}),
     ...(requestId ? { upstreamRequestId: requestId } : {}),
     raw: text.slice(0, MAX_UPSTREAM_ERROR_BYTES),
+    ...(upstreamText.hadUpstreamText ? { upstreamMessageAsIs: true } : {}),
     ...(retryAfterMs === null || retryAfterMs === undefined ? {} : { retryAfterMs }),
     ...(queuedWaitMs !== undefined
       ? { reason: "upstream-queued", cooldownMs: queuedWaitMs }
@@ -969,6 +1024,57 @@ export function extractHtmlTitle(html: string): string {
     if (title) return title;
   }
   return html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 160);
+}
+
+/** The public bound on an upstream message surface. */
+export const MAX_UPSTREAM_MESSAGE_LENGTH = 500;
+
+/**
+ * Extracts the upstream's own text from an error body, "as-is".
+ *
+ * The upstream error passthrough contract: when a failure is unknown or
+ * unparseable, the client should see whatever the upstream actually said,
+ * not a generalized 502 sentence. Structured JSON envelopes already flow
+ * through `extractUpstreamMessage`; this helper extends the same idea to the
+ * shapes that used to lose the text entirely — HTML error pages (their
+ * `<title>` is often the only readable thing) and plain-text bodies.
+ *
+ * The returned message is bounded to 500 chars (D44) and newline-collapsed,
+ * matching `sanitizePublicDetail` per-string bound; `details.raw` keeps the
+ * full 4000. `hadUpstreamText` distinguishes "the upstream said something"
+ * from "we synthesized a fallback", so callers can keep their human sign-off
+ * only when there is genuinely no upstream text.
+ */
+export function upstreamMessageAsIs(
+  body: unknown,
+  fallback: string,
+): { message: string; hadUpstreamText: boolean } {
+  const raw = typeof body === "string" ? body : "";
+  const looksLikeHtml = raw.includes("<") && raw.includes(">");
+  // HTML error pages first: the structured extractor passes a string through
+  // verbatim, which would surface raw markup instead of the readable `<title>`
+  // (or a tag-stripped excerpt when the page has no title).
+  if (looksLikeHtml) {
+    const title = extractHtmlTitle(raw);
+    if (title.length > 0) {
+      return {
+        message: title.replace(/[\r\n]+/g, " ").trim().slice(0, MAX_UPSTREAM_MESSAGE_LENGTH),
+        hadUpstreamText: true,
+      };
+    }
+  }
+  const structured = extractUpstreamMessageText(body);
+  if (structured.length > 0) {
+    return { message: structured.slice(0, MAX_UPSTREAM_MESSAGE_LENGTH), hadUpstreamText: true };
+  }
+  const text = raw.trim();
+  if (text.length > 0) {
+    return {
+      message: text.replace(/[\r\n]+/g, " ").trim().slice(0, MAX_UPSTREAM_MESSAGE_LENGTH),
+      hadUpstreamText: true,
+    };
+  }
+  return { message: fallback, hadUpstreamText: false };
 }
 
 /** Throws a typed transport error when an upstream returns an HTML error page. */

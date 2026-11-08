@@ -39,7 +39,7 @@ import { setPendingUsageSource } from "../security/api-key-auth";
 import { HealthEventFlushBuffer, setHealthEventBuffer } from "../persistence/health-event-flush";
 import { subscribePeerSettingsRevisions } from "../persistence/settings-revision";
 import { deleteExpiredSessions } from "../console/auth/session-service";
-import { InMemoryIpAbuseStore, IpAbuseProtectionService, RedisIpAbuseStore } from "../security/abuse";
+import { InMemoryIpAbuseStore, IpAbuseProtectionService, RedisIpAbuseStore, type IpAbuseStore } from "../security/abuse";
 import { checkReadiness } from "../persistence/readiness";
 import { ProxyRequestPreparer } from "../transport/request/preparer";
 import { AutoModelScorer } from "../transport/routing/auto-model";
@@ -105,6 +105,8 @@ export interface ProductionDeps {
   proxyPreparer: ProxyRequestPreparer;
   networkBindingFactory: ValidatedNetworkBindingFactory;
   ipAbuseProtection: IpAbuseProtectionService;
+  /** The abuse store backing manual IP bans and the ban list. */
+  ipAbuseStore: IpAbuseStore;
   readiness: () => Promise<ReadinessCheckResult>;
   scheduledTasks: ScheduledTaskRegistry;
   poolAgentResolver: PoolAgentResolver;
@@ -612,6 +614,11 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
     name: "client-version-monitor",
     intervalMs: CLIENT_VERSION_MONITOR_INTERVAL_MS,
     initialDelayMs: CLIENT_VERSION_INITIAL_DELAY_MS,
+    // Pure outbound reads with no shared rows/files: they must not be gated
+    // by the process-wide busy latch, or a nearly-continuous heavy sweep
+    // (quota-refresh) starves this monitor at its single initial tick and
+    // every 30-minute interval after it.
+    skipGate: true,
     run: refreshProviderClientVersions,
   });
 
@@ -625,13 +632,13 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
   // first open after an expiry always blocks on the provider.
   //
   // It also carries the daily check-in ride-along: each account refreshed
-  // here gets its once-per-day WorkBuddy/CodeBuddy credit grant claimed in
+  // here gets its once-per-day CodeBuddy credit grant claimed in
   // the same pass (one attempt per account per day, guarded by a day
   // marker), so no second timer duplicates the credential resolution.
   //
   // Registered in **every** mode, not only when Redis is present: gating it on
   // Redis would cost Lite proactive quota warming and the check-in ride-along
-  // above that claims the once-per-day WorkBuddy/CodeBuddy credit grant. The
+  // above that claims the once-per-day CodeBuddy credit grant. The
   // whole sweep chain accepts `RedisClient | undefined` and falls back to the
   // in-process TTL cache and an in-process day marker, so Redis is an
   // optimization here rather than a precondition — which is exactly what
@@ -759,6 +766,7 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
     }),
     networkBindingFactory,
     ipAbuseProtection,
+    ipAbuseStore: ipStore,
     readiness,
     scheduledTasks,
     poolAgentResolver,

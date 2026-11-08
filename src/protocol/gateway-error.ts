@@ -230,6 +230,7 @@ const PUBLIC_ERROR_DETAIL_KEYS = new Set([
   "status",
   "upstreamRequestId",
   "upstreamStatus",
+  "upstreamMessageAsIs",
   "maxInflight",
   "weight",
 ]);

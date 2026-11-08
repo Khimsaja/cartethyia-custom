@@ -97,9 +97,13 @@ test("each backend has matching baseline and incremental migrations", () => {
     "0042_add_telemetry_degenerate_stop.sql",
     // TipRouter local 0043 (auth-escalation counters) collides with the
     // upstream 0043 (custom user agent): the upstream file was renamed to
-    // 0044 in staging so both migrations apply on upgrade.
+    // 0044 in staging so both migrations apply on upgrade. Upstream 2.7.9
+    // adds 0044/0045, which collide with the renamed 0044 — they are
+    // renumbered forward to 0046/0047 so the ledger never sees a retired id.
     "0043_add_auth_escalation_counters.sql",
     "0044_add_provider_custom_user_agent.sql",
+    "0046_add_models_warning_metadata.sql",
+    "0047_migrate_workbuddy_to_codebuddy.sql",
   ];
   expect(postgres).toEqual(expected);
   expect(sqlite).toEqual(expected);

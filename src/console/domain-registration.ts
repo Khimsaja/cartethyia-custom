@@ -37,6 +37,8 @@ import { createLiveRoutes } from "./observability/live";
 import { createLogRoutes } from "./observability/logs";
 import { createAuditRoutes } from "./audit/routes";
 import { DrizzleAuditReadStore } from "./audit/store";
+import { createIpBanRoutes } from "./ip-bans/routes";
+import type { IpAbuseStore } from "../security/abuse";
 import { createPerformanceRoutes } from "./observability/performance";
 import { createUpdateRoutes } from "./updates/routes";
 import { createRemoteSupportRoutes } from "./remote-support/routes";
@@ -56,6 +58,7 @@ import {
   createAccountExportCredentialsResolver,
   createAccountSecretResolver,
 } from "../providers/operations/provider-credential-service";
+import { refreshAccountStatus } from "../providers/operations/account-refresh-status";
 import { syncByokProvider } from "../providers/operations/provider-catalog-service";
 import { DrizzleApiKeyStore } from "../persistence/stores/api-key-store";
 import { DrizzleModelTemplateStore } from "../persistence/stores/model-template-store";
@@ -84,6 +87,11 @@ import type { ConsoleAccessResolver } from "./auth/access";
 export interface ConsoleDomainContext {
   readonly db: CartethyiaDatabase;
   readonly accessResolver: ConsoleAccessResolver;
+  /**
+   * The IP-abuse store backing manual IP bans and the live ban list. Absent
+   * (reduced compositions) means the IP-ban routes are not offered.
+   */
+  readonly ipAbuseStore?: IpAbuseStore;
   readonly providerRegistry: ProviderRegistry;
   readonly bundledModelCatalog: BundledProviderCatalog;
   readonly networkBindingFactory: ValidatedNetworkBindingFactory;
@@ -161,6 +169,17 @@ export function registerConsoleDomains(
     resolveRefresher: (id) => ctx.providerRegistry.resolveRefresher(id),
     refreshService: ctx.oauthRefreshService,
   });
+  /** Manual OAuth token refresh for the catalog route (area 04). */
+  const refreshAccountStatusForConsole = (accountId: string, opts?: { readonly origin?: "ui" | "sweep" | "dispatch" }) =>
+    refreshAccountStatus(
+      {
+        db: ctx.db,
+        refreshService: ctx.oauthRefreshService,
+        resolveRefresher: (id) => ctx.providerRegistry.resolveRefresher(id),
+      },
+      accountId,
+      opts,
+    );
   const providerCatalogStore = new DrizzleProviderCatalogStore(ctx.db, {
     telemetryBuffer: ctx.telemetryBuffer,
     bundledModelCatalog: ctx.bundledModelCatalog,
@@ -240,6 +259,7 @@ export function registerConsoleDomains(
       };
     },
     snapshotInvalidator: ctx.routeSnapshotService,
+    redis: ctx.redis,
     readAccountInflight: async (providerId, tenantId) =>
       ctx.readRoutingAccountInflight ? ctx.readRoutingAccountInflight(providerId, tenantId) : [],
   });
@@ -274,6 +294,12 @@ export function registerConsoleDomains(
     service: createRemoteSupportService({ port: resolvePort() }),
   }));
   console.use(createAuditRoutes({ store: auditReadStore, accessResolver: ctx.accessResolver }));
+  if (ctx.ipAbuseStore) {
+    console.use(createIpBanRoutes({
+      accessResolver: ctx.accessResolver,
+      store: ctx.ipAbuseStore,
+    }));
+  }
   // InferHub market data. On demand only: a route fetches when its snapshot is
   // past its freshness window, so a page nobody opens causes no upstream calls.
   const inferhubKeys = createInferhubKeyStore(ctx.db);
@@ -290,6 +316,7 @@ export function registerConsoleDomains(
     redis: ctx.redis,
     snapshotInvalidator: ctx.routeSnapshotService,
     resolveExportCredentials,
+    refreshAccountStatus: refreshAccountStatusForConsole,
     // Without this, a custom provider only becomes dispatchable after a
     // restart: boot registers BYOK rows once, and the catalog routes are the
     syncByokProvider: (providerId) =>

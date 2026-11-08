@@ -250,6 +250,7 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
     ...(leaseOwnership === undefined ? {} : { leaseOwnership }),
     ...(continuationScope === undefined ? {} : { continuationScope }),
     ...(wrappedOutboundFetch ? { captureProviderBody: captureBody } : {}),
+    ...(providerCapture ? { providerCapture } : {}),
   });
   // `ProviderAdapter.dispatch` is declared to return a non-nullable
   // `AsyncIterable`, so an adapter that returned `undefined` would be a
