@@ -73,7 +73,10 @@ if (existsSync(outPath)) {
 const accountId = args.values["account-id"] || `claim300-${randomUUID()}`;
 const label = args.values.label || accountId;
 
-// ---- 1. UMID: mint or replay (must keep the seed!) ---------------------
+// ---- 1. Identity: mint or replay -----------------------------------------
+// 2.7.9 removed the vendored UMID bridge: the OS-derived identity is
+// deterministic per host + account, so minting IS the replay — there is no
+// seed to keep anymore.
 let identity: QoderNativeIdentity;
 let nativeSeed: string;
 if (args.values.seed) {
@@ -85,16 +88,8 @@ if (args.values.seed) {
   identity = replayed;
   nativeSeed = args.values.seed;
 } else {
-  const minted = mintQoderNativeIdentity(accountId);
-  if (!minted) {
-    console.error(
-      "no native UMID bridge available on this host; refusing to fall back to a " +
-        "generated identity (claim300 must be backed by a genuine vendor identity)",
-    );
-    process.exit(1);
-  }
-  identity = minted.identity;
-  nativeSeed = minted.seed;
+  identity = mintQoderNativeIdentity(accountId);
+  nativeSeed = "";
 }
 if (!nativeSeed) {
   console.warn("! seed empty — on this host the identity is not replayable; keep the account on this machine");

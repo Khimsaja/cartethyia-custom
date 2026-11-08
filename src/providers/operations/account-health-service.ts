@@ -205,7 +205,6 @@ export async function recordAccountFailure(
         cooldownUntil: providerAccounts.cooldownUntil,
         // Required by the auto-disable toggle (tenant-level preference read)
         // and by the tier-aware cooldown rules (plan → tier).
-        providerId: providerAccounts.providerId,
         tenantId: providerAccounts.tenantId,
         quotaPlan: providerAccounts.quotaPlan,
       })

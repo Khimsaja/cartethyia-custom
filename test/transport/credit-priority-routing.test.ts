@@ -194,6 +194,8 @@ test("plan() batch-loads quota once for all candidates instead of one DB read pe
   );
   expect(selects).toBe(1);
   expect(plan.candidates.map((entry) => entry.provider_account_id)).toEqual(ids);
+});
+
 describe("unregistered model passthrough", () => {
   test("a qualified provider/model not in the catalog routes via the provider's sibling candidate", async () => {
     // `qoder/not-in-catalog` is absent from the snapshot, but `qoder` has a
