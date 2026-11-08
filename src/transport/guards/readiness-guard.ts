@@ -29,16 +29,16 @@ export function createDependencyReadinessMiddleware(deps: ReadinessMiddlewareDep
       if (readiness.status !== "ready") {
         // A probe that timed out under load says nothing about the dependencies —
         // it could not get a backend in time, usually because the process is
-        // saturated. Surface that as overload, not as a broken dependency. A
-        // hard failure (connection refused, migrations missing) keeps the
-        // dependency message, which tells the operator what to actually fix.
+        // saturated. Fail open: the timeout is usually the event loop busy
+        // rebuilding the route snapshot, not a down database (the probe's own
+        // comment in persistence/readiness.ts says the same). Shedding here
+        // turned a transient slow probe into a buyer-facing 503 storm on a
+        // host with ample headroom, so let the request run — it still has its
+        // own deadlines. A hard failure (connection refused, migrations
+        // missing) keeps the dependency message below, which tells the
+        // operator what to actually fix.
         if (readiness.reason?.endsWith("timed out")) {
-          throw new GatewayError(
-            "overloaded",
-            503,
-            "The gateway is overloaded (request {requestId}); retry shortly. It's not you, it's us — back in a moment ☕️",
-            { retryAfterMs: 1_000 },
-          );
+          return;
         }
         throw new GatewayError("platform_unavailable", 503, "The gateway's dependencies are not ready, so no request can be served (request {requestId}). Retry shortly; if it persists, check the database and coordination backend. Warming up — back in a moment ☕️");
       }

@@ -30,6 +30,7 @@ import {
 } from "../../providers/quota/refresh";
 import { selectAccountTestEgress } from "./account-test-egress";
 import type { ValidatedFetch } from "../../network/outbound-fetch";
+import { withDirectFallback } from "../../network/fetch-with-direct-fallback";
 import type { ProviderId } from "../../providers/provider-contracts";
 import {
   DAILY_CHECKIN_PROVIDER_IDS,
@@ -1168,9 +1169,14 @@ export function registerAccountQuotaTenantRoutes(
       let result: QoderCreditClaimResult;
       try {
         const credential = await refreshDeps.resolveCredential(account.providerId as ProviderId, account.id);
-        const fetcher = networkBindingFactory
+        const poolFetcher = networkBindingFactory
           ? await dailyCheckinEgressForPass({ db, networkBindingFactory })(account.id, access.tenantId)
-          : globalThis.fetch;
+          : null;
+        // Pool egress to Qoder's API throws for every account (2026-11-05:
+        // 60/60 manual claims failed) while direct egress answers in <1s.
+        // Retry each pool-backed request directly when the pool leg throws
+        // or answers with a proxy-side status, instead of failing the claim.
+        const fetcher = poolFetcher ? withDirectFallback(poolFetcher) : globalThis.fetch;
         result = await claimQoderCredits({ db, providerId: account.providerId, accountId: account.id, credential, fetcher });
       } catch {
         set.status = 502;

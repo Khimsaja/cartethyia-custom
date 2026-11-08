@@ -82,6 +82,13 @@ export function resolveQoderTransport(
   // Free-tier rows (`lite`) are refused on gRPC with `quota exceeded` (116);
   // they must use the legacy COSY surface.
   if (chosen === "grpc" && modelConfig.is_free === true) return "cosy";
+  // `qfmodel` (Qwen3.8-Flash) is billed, so `is_free` stays unset — but the
+  // whole TipRouter pool is free accounts, and a free account dispatching
+  // qfmodel on gRPC is refused with `quota exceeded` (116). The legacy COSY
+  // surface honours the upstream free promotion (0.0x) for this slot, so
+  // route qfmodel there until the pool has paid accounts. (TipRouter local
+  // patch 2026-11-05; re-apply after upstream merges.)
+  if (chosen === "grpc" && modelConfig.id === "qfmodel") return "cosy";
   return chosen;
 }
 

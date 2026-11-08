@@ -8,7 +8,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { consoleRequest } from "../../../data/api";
 import { mapWithConcurrency } from "../../../lib/concurrency";
@@ -111,6 +111,15 @@ export function AccountsList({
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [sort, setSort] = useState<AccountSortValue>("added-asc");
+  // Rendering every account at once (930 rows on Qoder) is what freezes the
+  // provider detail page: mount, scroll, and tap all pay for the full DOM,
+  // and the search box above the list becomes unreachable while the browser
+  // is busy. Only a window is rendered; "Show more" grows it. Same pattern
+  // as the ApiKeysPanel 50-card window.
+  const [shownCount, setShownCount] = useState(50);
+  useEffect(() => {
+    setShownCount(50);
+  }, [query, sort]);
   const [bulkBusy, setBulkBusy] = useState(false);
   /**
    * "Test all" progress, as tested-of-total.
@@ -139,6 +148,8 @@ export function AccountsList({
     copy.sort((a, b) => direction * compareAccounts(a, b, key));
     return copy;
   }, [filtered, sort]);
+
+  const windowAccounts = useMemo(() => sorted.slice(0, shownCount), [sorted, shownCount]);
 
   const selectedAccounts = useMemo(
     () => accounts.filter((account) => account.kind !== "pool" && selected.has(account.id)),
@@ -484,7 +495,7 @@ const TEST_ALL_CONCURRENCY = 3;
                 : "This provider has no accounts yet."
             }
           />
-        ) : sorted.map((account) => (
+        ) : windowAccounts.map((account) => (
           <AccountRow
             key={account.id}
             providerId={providerId}
@@ -497,11 +508,24 @@ const TEST_ALL_CONCURRENCY = 3;
           />
         ))}
       </div>
+      {filtered.length > windowAccounts.length ? (
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="text-badge text-text-tertiary whitespace-nowrap">
+            Showing {windowAccounts.length} of {filtered.length}
+          </span>
+          <Button variant="secondary" size="sm" onClick={() => setShownCount((count) => count + 50)}>
+            Show 50 more
+          </Button>
+          <Button variant="secondary" size="sm" onClick={() => setShownCount(filtered.length)}>
+            Show all
+          </Button>
+        </div>
+      ) : null}
       <div
         className="flex items-center justify-between text-badge text-text-tertiary"
       >
         <span>
-          Showing {filtered.length} account{filtered.length === 1 ? "" : "s"}
+          Showing {windowAccounts.length} account{windowAccounts.length === 1 ? "" : "s"}
           {normalizedQuery ? ` (filtered from ${accounts.length})` : ""}
         </span>
       </div>

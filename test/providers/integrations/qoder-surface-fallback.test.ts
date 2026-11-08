@@ -84,6 +84,10 @@ describe("Qoder transport selection", () => {
     expect(resolveQoderTransport(undefined, { id: "lite", display_name: "Lite-Qwen-3.7-Plus", max_input_tokens: 1_000_000, is_vl: true, is_reasoning: false, is_free: true })).toBe("cosy");
   });
 
+  test("`qfmodel` (Qwen3.8-Flash) uses legacy COSY: free accounts are refused with 116 on gRPC", () => {
+    expect(resolveQoderTransport(undefined, { id: "qfmodel", display_name: "Qwen3.8-Flash", max_input_tokens: 1_000_000, is_vl: true, is_reasoning: true })).toBe("cosy");
+  });
+
   test("explicit `cosy` override forces legacy for any model", () => {
     expect(resolveQoderTransport("cosy", { id: "dmodel", display_name: "DeepSeek", max_input_tokens: 1_000_000, is_vl: true, is_reasoning: true })).toBe("cosy");
   });

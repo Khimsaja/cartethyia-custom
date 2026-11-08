@@ -275,6 +275,13 @@ export function validateCompatibilityProfile(profile: CompatibilityProfile): voi
     // Explicit gateway-identity opt-in for BYOK rows (mirrors
     // `ApiKeyProviderSpec.gatewayUserAgent` for bundled specs).
     gateway_user_agent: true,
+    // Read by `provider-catalog-service.ts` at BYOK registration:
+    // `false` drops OpenAI prompt-cache controls (`prompt_cache_key`)
+    // from the payload. Strict upstreams (Maritaca, nafnaf) 400/422 on
+    // unknown parameters (Maritaca 422 "extra fields not permitted",
+    // 2026-11-06). Without this entry a console edit carrying the flag
+    // 400s as "unknown compatibility_profile field".
+    prompt_cache: true,
   };
   for (const k of Object.keys(profile)) {
     if (!allowed[k]) {

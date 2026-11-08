@@ -33,9 +33,9 @@ import {
   parseModelReference,
   routeCandidateIndex,
 } from "./candidate-index";
-import { totalRemainingCredit, type ProviderQuotaWindow } from "../../providers/quota/quota-contracts";
-import { getCachedQuotaEntry, quotaLens } from "../../providers/quota/cache";
-import { readQuotaSnapshot } from "../../providers/quota/snapshot";
+import { totalRemainingCredit, type ProviderQuotaResult, type ProviderQuotaWindow } from "../../providers/quota/quota-contracts";
+import { getCachedQuotaEntries, getCachedQuotaEntry, quotaLens } from "../../providers/quota/cache";
+import { readQuotaSnapshot, readQuotaSnapshots } from "../../providers/quota/snapshot";
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import type { RedisClient } from "../../persistence/redis";
 import { sharedClaudeSlowLanes } from "../../providers/integrations/claude/claude-slow-lane";
@@ -433,13 +433,80 @@ export class RoutingEngine {
   }
 
   /**
+   * Batch-preloads quota for every candidate account in one pass, so `plan()`
+   * never fans out into one cache read + one DB read per candidate.
+   *
+   * Why this exists (2026-11-05): the per-candidate fallback in
+   * `applyUsageFloorToCandidate` reads the persisted quota snapshot from
+   * Postgres whenever the quota cache misses — and the cache is cold for
+   * ~99% of accounts (Redis held 44 `quota:v5:*` keys for ~5.7k routable
+   * accounts; the refresh sweep covers 40 accounts/min against a 900 s TTL,
+   * so it can never warm the fleet). One chat request evaluates hundreds to
+   * thousands of candidates via unbounded `Promise.all`, so a single request
+   * fired that many concurrent pool acquires; the 40-connection pool
+   * saturated (`waiting` 10k–41k, idle 0 ~75% of the time) and every
+   * DB-dependent step — key lookups, readiness probes, routing itself —
+   * queued for seconds (a 5-token probe took 34.7 s). Batching turns the
+   * whole evaluation into one Redis MGET per lens + one `WHERE id IN (...)`
+   * SELECT, with identical quota values feeding the same ordering.
+   *
+   * The map holds an explicit `undefined` for accounts with no quota
+   * anywhere, so callers can distinguish "checked, nothing" (`has` true)
+   * from "not preloaded" (`has` false, keep the old per-candidate path).
+   */
+  private async preloadQuotas(
+    candidates: readonly RouteCandidate[],
+    tenantId: string | null,
+  ): Promise<Map<string, ProviderQuotaResult | undefined>> {
+    const byAccount = new Map<string, ProviderQuotaResult | undefined>();
+    const idsByLens = new Map<string, string[]>();
+    const seen = new Set<string>();
+    for (const candidate of candidates) {
+      const accountId = candidate.provider_account_id;
+      if (accountId === undefined || seen.has(accountId)) continue;
+      seen.add(accountId);
+      const lens = quotaLens(candidate.tenant_id ?? tenantId);
+      const ids = idsByLens.get(lens);
+      if (ids === undefined) idsByLens.set(lens, [accountId]);
+      else ids.push(accountId);
+    }
+    const missing: string[] = [];
+    for (const [lens, ids] of idsByLens) {
+      const cached = await getCachedQuotaEntries(lens, ids, this.redis).catch(
+        () => new Map<string, { quota: ProviderQuotaResult }>(),
+      );
+      for (const accountId of ids) {
+        const entry = cached.get(accountId);
+        if (entry !== undefined) byAccount.set(accountId, entry.quota);
+        else missing.push(accountId);
+      }
+    }
+    if (missing.length > 0 && this.db !== undefined) {
+      const stored = await readQuotaSnapshots(this.db, missing).catch(
+        () => new Map<string, { quota: ProviderQuotaResult }>(),
+      );
+      for (const accountId of missing) {
+        byAccount.set(accountId, stored.get(accountId)?.quota);
+      }
+    } else {
+      for (const accountId of missing) byAccount.set(accountId, undefined);
+    }
+    return byAccount;
+  }
+
+  /**
    * Stamps one candidate with its provider's usage floor + quota windows (the
    * per-candidate half of the old `applyUsageFloor`).
+   *
+   * `preloadedQuotas` (from `preloadQuotas`) answers the quota lookup from
+   * the batch instead of doing per-candidate cache + DB I/O. Without it the
+   * old path runs unchanged.
    */
   private async applyUsageFloorToCandidate(
     candidate: RouteCandidate,
     snapshot: RouteSnapshot,
     tenantId: string | null,
+    preloadedQuotas?: ReadonlyMap<string, ProviderQuotaResult | undefined>,
   ): Promise<RouteCandidate> {
     const accountId = candidate.provider_account_id;
     if (accountId === undefined) return candidate;
@@ -448,21 +515,26 @@ export class RoutingEngine {
       candidate.provider_id,
       candidate.tenant_id ?? tenantId,
     );
-    const cached = await getCachedQuotaEntry(
-      quotaLens(candidate.tenant_id ?? tenantId),
-      accountId,
-      this.redis,
-    ).catch(() => undefined);
-    // The live cache is authoritative when warm; when it is cold (e.g. right
-    // after a restart, before the sweep re-reads accounts), fall back to the
-    // persisted quota snapshot — the durable source of truth — so routing
-    // still prefers accounts that actually have remaining credit. The snapshot
-    // is never fresher than the cache, but a stale balance beats an unknown
-    // one for ordering, and the sweep refreshes it on schedule.
-    let quota = cached?.quota;
-    if (quota === undefined && this.db !== undefined) {
-      const stored = await readQuotaSnapshot(this.db, accountId).catch(() => null);
-      quota = stored?.quota;
+    let quota: ProviderQuotaResult | undefined;
+    if (preloadedQuotas?.has(accountId)) {
+      quota = preloadedQuotas.get(accountId);
+    } else {
+      const cached = await getCachedQuotaEntry(
+        quotaLens(candidate.tenant_id ?? tenantId),
+        accountId,
+        this.redis,
+      ).catch(() => undefined);
+      // The live cache is authoritative when warm; when it is cold (e.g. right
+      // after a restart, before the sweep re-reads accounts), fall back to the
+      // persisted quota snapshot — the durable source of truth — so routing
+      // still prefers accounts that actually have remaining credit. The snapshot
+      // is never fresher than the cache, but a stale balance beats an unknown
+      // one for ordering, and the sweep refreshes it on schedule.
+      quota = cached?.quota;
+      if (quota === undefined && this.db !== undefined) {
+        const stored = await readQuotaSnapshot(this.db, accountId).catch(() => null);
+        quota = stored?.quota;
+      }
     }
     const rawWindows = quota?.windows;
     // The cache is authoritative when it has a reading; when it does not,
@@ -751,9 +823,15 @@ export class RoutingEngine {
     // single per-candidate decision. `plan()` then sorts once by rank and
     // hands the full `decisions` map downstream, so no later layer re-derives
     // a competing ordering.
+    //
+    // Quota is preloaded once for all candidates first (one Redis MGET per
+    // lens + one batched SELECT): the per-candidate cache/DB fallback would
+    // otherwise fan out into thousands of concurrent pool acquires per
+    // request and saturate the Postgres pool (2026-11-05).
+    const preloadedQuotas = await this.preloadQuotas(matching, tid);
     const evaluations = await Promise.all(
       matching.map(async (candidate) => {
-        const stamped = await this.applyUsageFloorToCandidate(candidate, snapshot, tid);
+        const stamped = await this.applyUsageFloorToCandidate(candidate, snapshot, tid, preloadedQuotas);
         return this.evaluateCandidate(stamped, snapshot, tid, requiredCapabilities);
       }),
     );

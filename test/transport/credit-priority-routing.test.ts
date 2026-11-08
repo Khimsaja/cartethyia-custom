@@ -11,6 +11,7 @@ import { RoutingEngine } from "../../src/transport/routing/router";
 import { sharedClaudeSlowLanes } from "../../src/providers/integrations/claude/claude-slow-lane";
 import type { RouteCandidate, RouteSnapshot } from "../../src/transport/routing/route-model";
 import type { ProviderQuotaWindow } from "../../src/providers/quota/quota-contracts";
+import type { CartethyiaDatabase } from "../../src/persistence/db-handle";
 
 function candidate(id: string, extra: Record<string, unknown> = {}): RouteCandidate {
   return {
@@ -145,4 +146,52 @@ test("credit only breaks ties inside a rank; slow-lane still orders after fresh"
       unifiedResetAtSec: Math.floor(Date.now() / 1000) + 3600,
     });
   }
+});
+
+interface FakeChain {
+  from: (table: unknown) => FakeChain;
+  where: (...args: unknown[]) => FakeChain;
+  limit: (...args: unknown[]) => FakeChain;
+  then: <T1 = readonly unknown[], T2 = never>(
+    onfulfilled?: ((value: readonly unknown[]) => T1 | PromiseLike<T1>) | null,
+    onrejected?: ((reason: unknown) => T2 | PromiseLike<T2>) | null,
+  ) => PromiseLike<T1 | T2>;
+}
+
+/**
+ * Regression test for the 2026-11-05 pool starvation: `plan()` evaluated
+ * every matching candidate via unbounded `Promise.all`, and each candidate's
+ * quota fallback issued its own `SELECT quota_snapshot ... WHERE id = $1`
+ * whenever the quota cache missed — which was ~99% of accounts (Redis held
+ * 44 `quota:v5:*` keys for ~5.7k routable accounts). One request therefore
+ * fired hundreds of concurrent pool acquires; the 40-connection pool sat at
+ * `waiting` 10k–41k, idle 0, ~75% of the time, and a 5-token probe took
+ * 34.7 s. The batch preload must turn the whole evaluation into a single
+ * batched SELECT, with identical ordering (no quota anywhere → input order).
+ */
+test("plan() batch-loads quota once for all candidates instead of one DB read per candidate", async () => {
+  let selects = 0;
+  const makeChain = (): FakeChain => {
+    const chain: FakeChain = {
+      from: () => chain,
+      where: () => chain,
+      limit: () => chain,
+      then: (onfulfilled, onrejected) => Promise.resolve([]).then(onfulfilled, onrejected),
+    };
+    return chain;
+  };
+  const countingDb = {
+    select: (_fields: unknown) => {
+      selects += 1;
+      return makeChain();
+    },
+  } as unknown as CartethyiaDatabase;
+  const ids = Array.from({ length: 60 }, (_, i) => `a-${i}`);
+  const engine = new RoutingEngine(undefined, undefined, countingDb);
+  const plan = await engine.plan(
+    "qoder-model",
+    snapshot(ids.map((id) => candidate(id))),
+  );
+  expect(selects).toBe(1);
+  expect(plan.candidates.map((entry) => entry.provider_account_id)).toEqual(ids);
 });

@@ -29,6 +29,7 @@ import type {
 const compatibilityProfileSchema = t.Object({
   cli_identity: t.Optional(t.Boolean()),
   gateway_user_agent: t.Optional(t.Boolean()),
+  prompt_cache: t.Optional(t.Boolean()),
   extra_headers: t.Optional(t.Record(t.String(), t.String())),
   extra_query_params: t.Optional(t.Record(t.String(), t.String())),
   endpoint_paths_by_wire_family: t.Optional(
