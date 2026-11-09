@@ -664,8 +664,6 @@ export class RoutingEngine {
         quota = snap.quota;
       }
     }
-      }
-    }
     const rawWindows = quota?.windows;
     // The cache is authoritative when it has a reading; when it does not,
     // keep whatever the candidate already carried (the credit ordering reads

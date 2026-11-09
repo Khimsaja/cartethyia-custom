@@ -14,6 +14,7 @@ import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { deriveSqliteBaseline } from "../../scripts/tools/generate-sqlite";
 import { DrizzleModelRoutingStore } from "../../src/console/routing/model/store";
 import { resolvePackagePath } from "../../src/config/package-paths";

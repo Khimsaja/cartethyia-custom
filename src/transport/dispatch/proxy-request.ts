@@ -27,6 +27,7 @@ import {
   parseCapturedBody,
   terminalFailure,
 } from "./attempt-finalize";
+import { shouldCaptureProviderBodyForRequest } from "./capture-policy";
 import { runAttemptLoop } from "./attempt-loop";
 import { projectForRoute, routeCapabilitiesFor } from "../../protocol/translation/capabilities";
 import { dispatchStreamingAttempt } from "./streaming/stream";

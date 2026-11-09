@@ -1471,15 +1471,16 @@ const ACCOUNT_ERROR_RULES: readonly AccountErrorRule[] = [
     // TipRouter local patch (not upstream): a WAF prompt block says this
     // prompt was refused by the upstream firewall, so the account is not at
     // fault and must not be mutated: `mutatesAccount` is false and the
-    // deadline is left null. The category is `policy_blocked` because the
-    // request was refused on policy grounds — not because the credential is
-    // invalid — and the caller can fix it by changing the prompt. Placed
-    // before `credential-rejected`: a bare 403 + account evidence would
-    // otherwise claim it as a credential rejection.
+    // deadline is left null. The category is `policy_blocked_invalid_request`
+    // because the refusal is a verdict on the request, not the credential —
+    // the caller can fix it by changing the prompt. (Upstream 2.8.0 removed
+    // the plain `policy_blocked` category; this is its request-verdict
+    // successor.) Placed before `credential-rejected`: a bare 403 + account
+    // evidence would otherwise claim it as a credential rejection.
     name: "waf-prompt-rejection",
     match: (s) => s.wafPromptRejection,
     decide: (s) =>
-      s.result("policy_blocked", "cooldown", 0, null, s.reason("Request blocked by the provider WAF"), false),
+      s.result("policy_blocked_invalid_request", "cooldown", 0, null, s.reason("Request blocked by the provider WAF"), false),
   },
   // Upstream 2.8.0 extracted the GitHub rules (incl. copilot-not-licensed)
   // into provider-rules/github.ts; the inline local copy is superseded.

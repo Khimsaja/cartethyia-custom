@@ -43,7 +43,7 @@ import type { AdmissionLease } from "../../../security/admission/contracts";
 import type { NetworkPoolSelector } from "../../../network/pool/selector";
 import type { TelemetryBatchBuffer } from "../../../observability/telemetry-buffer";
 import type { ProviderExchangeCapture } from "../attempt-finalize";
-import { resolveCaptureModeForRequest } from "../capture-policy";
+import { resolveCaptureModeForRequest, shouldCaptureProviderBodyForRequest } from "../capture-policy";
 import { resolveTenantImageClampMaxBytes, readTenantSystemPromptsForDispatch } from "../../request/tenant-preferences";
 import { resolveTenantSystemPrompt } from "../../request/system-prompt-injection";
 import { isWrappedInjectionProvider } from "../../../console/system-prompt/contracts";
@@ -179,6 +179,18 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
     prepared.authorization.snapshot.tenant_id,
     state,
   );
+  // Whether this attempt's provider body will be captured: the adapter
+  // streams the request body when it will not be persisted (see
+  // postUpstreamJson `streamBody`), and keeps the string body capture can
+  // read when it will. Resolved via the state-memoized preference, so this
+  // shares the read `buildDispatchNetworkBindings` already made above.
+  const captureBody = deps.networkBindingFactory
+    ? await shouldCaptureProviderBodyForRequest(
+        deps.db,
+        prepared.authorization.snapshot.tenant_id,
+        state,
+      )
+    : false;
   // Same memoized ceiling the non-streaming path resolves, read before the
   // dispatch context is built so a stream gets the same limit as a normal
   // request rather than silently falling back to the deployment default.
@@ -221,7 +233,7 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
     ...bindings,
     ...(leaseOwnership === undefined ? {} : { leaseOwnership }),
     ...(continuationScope === undefined ? {} : { continuationScope }),
-    ...(wrappedOutboundFetch ? { captureProviderBody: captureBody } : {}),
+    ...(deps.networkBindingFactory === undefined ? {} : { captureProviderBody: captureBody }),
     ...(providerCapture ? { providerCapture } : {}),
   });
   // `ProviderAdapter.dispatch` is declared to return a non-nullable
