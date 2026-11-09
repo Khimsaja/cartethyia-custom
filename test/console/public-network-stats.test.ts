@@ -101,6 +101,9 @@ describe("public-network-stats", () => {
     }
     // A 429 is client-side throttling, not an error: excluded everywhere.
     events.push({ model: "deepseek-v4.1-flash", minutesAgo: 30, status: "failed", httpStatus: 429 });
+    // A 499 is a client abort (buyer closed the connection mid-stream),
+    // also not a gateway/upstream error: excluded everywhere.
+    events.push({ model: "deepseek-v4.1-flash", minutesAgo: 30, status: "cancelled", httpStatus: 499 });
     for (let i = 0; i < 38; i++) {
       events.push({ model: "glm-5-3-flash", minutesAgo: 30, status: "completed", inputTokens: 100, outputTokens: 10 });
     }
@@ -149,6 +152,8 @@ describe("public-network-stats", () => {
     const events: SeedEvent[] = [];
     for (let i = 0; i < 58; i++) events.push({ model: "a", minutesAgo: 30, status: "completed" });
     for (let i = 0; i < 2; i++) events.push({ model: "a", minutesAgo: 30, status: "failed", httpStatus: 500 });
+    // A 499 client abort inside the 1h window: excluded from health too.
+    events.push({ model: "a", minutesAgo: 30, status: "cancelled", httpStatus: 499 });
     // Older than the 1h window: counts toward 24h totals, not toward health.
     events.push({ model: "a", minutesAgo: 120, status: "completed" });
     events.push({ model: "b", minutesAgo: 30, status: "completed" });

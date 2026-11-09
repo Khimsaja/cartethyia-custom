@@ -29,7 +29,8 @@ export interface PublicModelHealth {
 export interface PublicNetworkStats {
   /** Rolling window the numbers cover. */
   readonly window: "24h";
-  /** Requests in the window, excluding 429 rate-limit rejections (client-side throttling, not errors). */
+  /** Requests in the window, excluding 429 rate-limit rejections and 499
+   * client aborts (both buyer-side, not gateway/upstream errors). */
   readonly requests: number;
   /** Requests that completed successfully. */
   readonly ok: number;
@@ -121,9 +122,11 @@ async function queryPublicNetworkStats(db: DatabaseHandle): Promise<PublicNetwor
     // File-level hour filtering is coarse; enforce the exact window here.
     const at = new Date(e.createdAt).getTime();
     if (at < since24hMs) continue;
-    // 429s are client-side throttling, not errors: excluded everywhere,
-    // matching the old SQL's `http_status IS DISTINCT FROM 429`.
-    if (e.httpStatus === 429) continue;
+    // 429s are client-side throttling and 499s are client aborts (the
+    // buyer closed the connection mid-stream): neither is a gateway or
+    // upstream failure, so both are excluded everywhere, matching the
+    // old SQL's `http_status IS DISTINCT FROM 429`.
+    if (e.httpStatus === 429 || e.httpStatus === 499) continue;
     const model = e.requestedModel && e.requestedModel.length > 0 ? e.requestedModel : "unknown";
     const succeeded = e.status === "completed";
     requests++;

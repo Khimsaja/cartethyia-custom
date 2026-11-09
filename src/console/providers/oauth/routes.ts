@@ -1,5 +1,5 @@
 import { providerAccounts, providerOauthStates } from "../../../persistence/schema";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull, or, sql } from "drizzle-orm";
 import { encryptCredential, hashSecret } from "../../../security/crypto";
 import type { CartethyiaDatabase } from "../../../persistence/db-handle";
 import type { OAuthExchangeResult, OAuthLoginClient } from "../../../providers/authentication/oauth-flow-store";
@@ -11,7 +11,12 @@ import { log } from "../../../observability/logger";
 import { GatewayError } from "../../../protocol/gateway-error";
 import { Elysia, t, type AnyElysia } from "elysia";
 import { ConsoleDomainError, errorResponse, requireScope } from "../../shared/errors";
-import { generateOAuthState, generatePkcePair } from "../../../providers/authentication/oauth-flow-store";
+import {
+  generateOAuthState,
+  generatePkcePair,
+  nonEmptyTrimmedString,
+  record,
+} from "../../../providers/authentication/oauth-flow-store";
 import type { OAuthFlowStorage } from "../../../providers/authentication/oauth-flow-store";
 import type { OAuthCallbackListener } from "./callback-listener";
 import { validateIssuedAccessToken } from "../../../providers/authentication/jwt-validator";
@@ -46,6 +51,26 @@ export function oauthIdentityFingerprint(input: {
   return hashSecret(resolved ? label : input.refresh);
 }
 
+/**
+ * The stable per-account identity a login carries in `auth_state`, when the
+ * provider binds one there (Qoder stores its user id; Trae does the same).
+ *
+ * A display label is not that identity: two different accounts can share one
+ * ("Maryanto Sinaga" on every account of a Workspace batch), and keying the
+ * re-login merge on the label alone made the second login silently replace
+ * the first row instead of adding its own. The user id is stable across
+ * logins of the same account and distinct across accounts, so it is what
+ * separates "same account again" from "another account with the same name".
+ *
+ * `undefined` when the flow learned no user id: those logins keep the
+ * label-based identity exactly as before.
+ *
+ * Test seam: exported so the rule can be pinned without a database.
+ */
+export function oauthStableUserId(input: OAuthExchangeResult): string | undefined {
+  return nonEmptyTrimmedString(record(input.auth_state)?.userId);
+}
+
 export class DrizzleOAuthAccountStore implements OAuthAccountStore {
   constructor(private readonly db: CartethyiaDatabase) {}
 
@@ -54,7 +79,12 @@ export class DrizzleOAuthAccountStore implements OAuthAccountStore {
     providerId: string,
     input: { readonly label: string } & OAuthExchangeResult,
   ): Promise<PersistedOAuthAccount> {
-    const credentialFingerprint = oauthIdentityFingerprint({ ...input, providerId });
+    const legacyFingerprint = oauthIdentityFingerprint({ ...input, providerId });
+    // A login that carries a stable per-account id is keyed on it first: two
+    // accounts that share a display label are two accounts, and a re-login of
+    // the same account must find its own row even after the label changed.
+    const stableUserId = oauthStableUserId(input);
+    const stableFingerprint = stableUserId === undefined ? undefined : hashSecret(stableUserId);
     const sameAccount = and(
       eq(providerAccounts.providerId, providerId),
       // The identity index coalesces a null tenant to a sentinel, so "same
@@ -62,7 +92,12 @@ export class DrizzleOAuthAccountStore implements OAuthAccountStore {
       tenantId === null
         ? isNull(providerAccounts.tenantId)
         : eq(providerAccounts.tenantId, tenantId),
-      eq(providerAccounts.credentialFingerprint, credentialFingerprint),
+      stableFingerprint === undefined
+        ? eq(providerAccounts.credentialFingerprint, legacyFingerprint)
+        : or(
+            eq(providerAccounts.credentialFingerprint, legacyFingerprint),
+            eq(providerAccounts.credentialFingerprint, stableFingerprint),
+          ),
     );
     const credentialCiphertext = encryptCredential(input.access);
     const refreshCiphertext = encryptCredential(input.refresh);
@@ -71,11 +106,39 @@ export class DrizzleOAuthAccountStore implements OAuthAccountStore {
     try {
       return await this.db.transaction(async (tx) => {
         const existing = await tx
-          .select({ id: providerAccounts.id })
+          .select({
+            id: providerAccounts.id,
+            credentialFingerprint: providerAccounts.credentialFingerprint,
+            authState: providerAccounts.authState,
+          })
           .from(providerAccounts)
           .where(sameAccount)
-          .limit(1);
-        const existingId = existing[0]?.id;
+          .limit(2);
+        // The identity index makes each fingerprint unique per provider and
+        // tenant, so at most one row can match each of the two fingerprints.
+        // Prefer the row keyed on the stable identity: it is the account this
+        // login belongs to. A legacy row only matches an account that has not
+        // logged in since this fix, and its stored user id decides whether it
+        // is the same account (update it) or another account that merely
+        // shares the label (leave it alone and insert a new row).
+        const stableMatch = existing.find(
+          (row) =>
+            stableFingerprint !== undefined && row.credentialFingerprint === stableFingerprint,
+        );
+        const legacyMatch = existing.find(
+          (row) => row.credentialFingerprint === legacyFingerprint,
+        );
+        const matched = stableMatch ?? legacyMatch;
+        const matchedUserId =
+          matched === undefined
+            ? undefined
+            : nonEmptyTrimmedString(record(matched.authState)?.userId);
+        const sameIdentity =
+          matched !== undefined &&
+          (stableUserId === undefined ||
+            matchedUserId === undefined ||
+            matchedUserId === stableUserId);
+        const existingId = matched !== undefined && sameIdentity ? matched.id : undefined;
         if (existingId !== undefined) {
           // A re-login replaces the account it belongs to rather than adding a
           // second row: the same email is the same account, and the newer
@@ -92,6 +155,10 @@ export class DrizzleOAuthAccountStore implements OAuthAccountStore {
               // concurrent rename cannot lose to the login.
               label: sql`CASE WHEN lower(trim(${providerAccounts.label})) = lower(trim(${providerAccounts.providerId})) THEN ${input.label} ELSE ${providerAccounts.label} END`,
               credentialCiphertext,
+              // Migrate the row onto the stable identity when the login
+              // carries one, so the next login of a same-named account no
+              // longer matches this row by its label alone.
+              credentialFingerprint: stableFingerprint ?? legacyFingerprint,
               credentialKind: "oauth",
               status: "active",
               consecutiveFailures: 0,
@@ -127,7 +194,7 @@ export class DrizzleOAuthAccountStore implements OAuthAccountStore {
             label: input.label,
             credentialKind: "oauth",
             credentialCiphertext,
-            credentialFingerprint,
+            credentialFingerprint: stableFingerprint ?? legacyFingerprint,
             status: "active",
             ...(input.auth_state === undefined ? {} : { authState: input.auth_state }),
           })

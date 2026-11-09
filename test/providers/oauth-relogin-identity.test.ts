@@ -12,7 +12,7 @@
  * something that merely happens to be present.
  */
 import { describe, expect, test } from "bun:test";
-import { oauthIdentityFingerprint } from "../../src/console/providers/oauth/routes";
+import { oauthIdentityFingerprint, oauthStableUserId } from "../../src/console/providers/oauth/routes";
 
 type FingerprintInput = Parameters<typeof oauthIdentityFingerprint>[0];
 
@@ -75,5 +75,23 @@ describe("oauth re-login identity", () => {
     const first = result({ label: "cursor", access: "jwt-a", refresh: "jwt-a" });
     const second = result({ label: "cursor", access: "jwt-b", refresh: "jwt-b" });
     expect(oauthIdentityFingerprint({ ...first, providerId: "cursor" })).not.toBe(oauthIdentityFingerprint({ ...second, providerId: "cursor" }));
+  });
+});
+
+describe("oauth stable identity", () => {
+  test("a user id in auth_state is the stable identity", () => {
+    const a = result({ label: "Maryanto Sinaga", auth_state: { userId: "user-1", machineId: "m1" } });
+    const b = result({ label: "Maryanto Sinaga", auth_state: { userId: "user-1", machineId: "m2" } });
+    const c = result({ label: "Maryanto Sinaga", auth_state: { userId: "user-2", machineId: "m1" } });
+    expect(oauthStableUserId(a)).toBe("user-1");
+    expect(oauthStableUserId(a)).toBe(oauthStableUserId(b));
+    expect(oauthStableUserId(a)).not.toBe(oauthStableUserId(c));
+  });
+
+  test("no user id in auth_state means no stable identity", () => {
+    expect(oauthStableUserId(result({}))).toBeUndefined();
+    expect(oauthStableUserId(result({ auth_state: { machineId: "m1" } }))).toBeUndefined();
+    expect(oauthStableUserId(result({ auth_state: { userId: "   " } }))).toBeUndefined();
+    expect(oauthStableUserId(result({ auth_state: { userId: 42 } }))).toBeUndefined();
   });
 });
