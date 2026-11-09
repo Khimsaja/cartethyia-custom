@@ -14,9 +14,9 @@ import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { deriveSqliteBaseline } from "../../scripts/tools/generate-sqlite";
 import { DrizzleModelRoutingStore } from "../../src/console/routing/model/store";
+import { resolvePackagePath } from "../../src/config/package-paths";
 import { applySqliteMigrations, buildSqliteHandle, createSqliteDatabase } from "../../src/persistence/db-sqlite";
 import {
   acceptedBaselineSchemaMarkers,
@@ -25,7 +25,7 @@ import {
 } from "../../src/persistence/migrate";
 import { tenants } from "../../src/persistence/schema";
 
-const committed = readFileSync(resolve(process.cwd(), "migrations", "lite-sqlite3", "0000_baseline.sql"), "utf8");
+const committed = readFileSync(resolvePackagePath("migrations", "lite-sqlite3", "0000_baseline.sql"), "utf8");
 
 function migratedDatabase(): Database {
   const db = new Database(":memory:");
@@ -100,8 +100,13 @@ test("each backend has matching baseline and incremental migrations", () => {
     // 0044 in staging so both migrations apply on upgrade. Upstream 2.7.9
     // adds 0044/0045, which collide with the renamed 0044 — they are
     // renumbered forward to 0046/0047 so the ledger never sees a retired id.
+    // Upstream 2.8.0 adds only 0046_add_accounts_quota_plan_fetched_at.sql:
+    // its 0043/0044/0045 are byte-identical to the renamed local files, so
+    // the merge kept the local names (rename detection) and no duplicate
+    // no-op migration re-entered the tree.
     "0043_add_auth_escalation_counters.sql",
     "0044_add_provider_custom_user_agent.sql",
+    "0046_add_accounts_quota_plan_fetched_at.sql",
     "0046_add_models_warning_metadata.sql",
     "0047_migrate_workbuddy_to_codebuddy.sql",
   ];
@@ -110,7 +115,7 @@ test("each backend has matching baseline and incremental migrations", () => {
 });
 
 test("the committed SQLite baseline matches the generator output", () => {
-  const source = readFileSync(resolve(process.cwd(), "migrations", "full-postgres", "0000_baseline.sql"), "utf8");
+  const source = readFileSync(resolvePackagePath("migrations", "full-postgres", "0000_baseline.sql"), "utf8");
   expect(committed).toBe(deriveSqliteBaseline(source));
 });
 

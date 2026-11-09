@@ -25,17 +25,26 @@ import {
   type RequiredCapability,
 } from "../../protocol/translation/capabilities";
 import { planAllowsCandidate } from "./plan-gate";
+import { accountReservePct, routingStickyWarmMs, routingStickyMaxSessions } from "../../config/routing";
+import type { NormalizedQuotaFact } from "./route-model";
 import { InMemoryAdmissionController, admissionKey } from "./admission";
 import { ReservationManager } from "./reservations";
-import { createRoundRobinMap, RoundRobinState } from "./round-robin";
+import { createRoundRobinMap, RoundRobinState, StickySessionStore } from "./round-robin";
+import { drainScore, isInReserve } from "./drain-reserve";
 import {
   lookupRouteCandidates,
   parseModelReference,
   routeCandidateIndex,
 } from "./candidate-index";
-import { totalRemainingCredit, type ProviderQuotaResult, type ProviderQuotaWindow } from "../../providers/quota/quota-contracts";
-import { getCachedQuotaEntries, getCachedQuotaEntry, quotaLens } from "../../providers/quota/cache";
-import { readQuotaSnapshot, readQuotaSnapshots } from "../../providers/quota/snapshot";
+import {
+  totalRemainingCredit,
+  totalRemainingPercent,
+  type ProviderQuotaResult,
+  type ProviderQuotaWindow,
+} from "../../providers/quota/quota-contracts";
+import { getCachedQuotaEntries, quotaLens, type CachedQuotaEntry } from "../../providers/quota/cache";
+import { readQuotaSnapshots } from "../../providers/quota/snapshot";
+import type { ProviderQuotaResultSnapshot } from "../../persistence/schema";
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import type { RedisClient } from "../../persistence/redis";
 import { sharedClaudeSlowLanes } from "../../providers/integrations/claude/claude-slow-lane";
@@ -89,6 +98,179 @@ export function filterCandidateQuotaWindows(
 }
 
 /**
+ * Global freshness horizon for persisted quota/plan evidence. A plan or
+ * snapshot older than this is downgraded to `unknown` by routing instead of
+ * being trusted indefinitely. First cut uses one global value (not
+ * provider-specific); see proposal locked decision #4.
+ */
+export const QUOTA_FRESHNESS_HORIZON_MS = 6 * 60 * 60 * 1000;
+
+/** The account's total remaining absolute credit, or `null` when unknown. */
+function accountRemainingCredit(candidate: RoutedCandidate): number | null {
+  const windows = candidate.quota_windows;
+  if (windows === undefined || windows.length === 0) return null;
+  return totalRemainingCredit(windows);
+}
+
+/**
+ * Evaluates whether the candidate sits below its configured usage floor.
+ * Mirrors the legacy ordering heuristic (credit vs lowest independent percent),
+ * but returns a tri-state used for proactive exclusion under the unified
+ * routing engine.
+ */
+function usageFloorStateFor(candidate: RoutedCandidate): "above" | "below" | "unknown" {
+  const floor = candidate.usage_floor;
+  if (floor === null || floor === undefined || floor <= 0) return "unknown";
+  if (candidate.free_tier === true) return "above";
+  const windows = candidate.quota_windows;
+  if (windows === undefined || windows.length === 0) return "unknown";
+  if (candidate.usage_floor_unit === "credit") {
+    const credit = accountRemainingCredit(candidate);
+    if (credit === null) return "unknown";
+    return credit >= floor ? "above" : "below";
+  }
+  const percent = totalRemainingPercent(windows);
+  if (percent === null) return "unknown";
+  return percent >= floor ? "above" : "below";
+}
+
+/** Earliest stated reset across exhausted windows, when any carries one. */
+function exhaustedResetMs(windows: readonly ProviderQuotaWindow[] | undefined): number | undefined {
+  if (windows === undefined) return undefined;
+  let earliest: number | undefined;
+  for (const window of windows) {
+    if (window.resetsAt === null || window.resetsAt === undefined) continue;
+    const at = Date.parse(window.resetsAt);
+    if (!Number.isFinite(at)) continue;
+    if (earliest === undefined || at < earliest) earliest = at;
+  }
+  return earliest;
+}
+
+/** True when every relevant quota window for the candidate is known-spent. */
+function allWindowsExhausted(windows: readonly ProviderQuotaWindow[]): boolean {
+  if (windows.length === 0) return false;
+  for (const window of windows) {
+    if (window.accounting === "pooled") {
+      const remaining = window.remaining;
+      if (remaining !== null && remaining !== undefined && remaining > 0) return false;
+      const limit = window.limit;
+      if (limit !== null && limit !== undefined) {
+        const used = window.used;
+        if (used !== null && used !== undefined && used < limit) return false;
+        if (used === null && window.remainingPercent !== null && window.remainingPercent > 0) {
+          return false;
+        }
+      } else if (window.remainingPercent !== null && window.remainingPercent > 0) {
+        return false;
+      } else if (remaining === null && window.used === null) {
+        // No evidence of either remaining or used — not provably spent.
+        return false;
+      } else if (remaining !== null && limit === null) {
+        // Remaining=0 but no limit: cannot prove the pool is exhausted without
+        // knowing the total. This is the "credit window without a known ceiling"
+        // shape — treat as unknown, not exhausted.
+        return false;
+      }
+    } else {
+      const remainingPercent = window.remainingPercent;
+      if (remainingPercent !== null && remainingPercent > 0) return false;
+      if (remainingPercent === null) {
+        // Unknown independent window: cannot prove exhaustion.
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+/**
+ * Derives the normalized quota fact the routing decision engine evaluates.
+ */
+function normalizeQuotaFact(
+  candidate: RoutedCandidate,
+  cacheEntry: { readonly fetchedAt: string | null; readonly quota: ProviderQuotaResult } | null | undefined,
+  snapshotEntry: { readonly fetchedAt: string; readonly quota: ProviderQuotaResult } | null | undefined,
+  now = Date.now(),
+): NormalizedQuotaFact {
+  const windows = candidate.quota_windows;
+  const source =
+    cacheEntry?.quota !== undefined
+      ? cacheEntry.quota.error === null
+        ? ("live_cache" as const)
+        : ("unsupported" as const)
+      : snapshotEntry?.quota !== undefined
+        ? snapshotEntry.quota.error === null
+          ? ("snapshot" as const)
+          : ("unsupported" as const)
+        : ("none" as const);
+
+  // Freshness: only live-cache and snapshot evidence carries an observed-at.
+  const observedSrc =
+    cacheEntry?.quota !== undefined && cacheEntry.quota.error === null
+      ? cacheEntry
+      : snapshotEntry?.quota !== undefined && snapshotEntry.quota.error === null
+        ? snapshotEntry
+        : null;
+  const rawObservedAt = observedSrc?.fetchedAt;
+  const observedAt =
+    rawObservedAt === null || rawObservedAt === undefined ? Number.NaN : Date.parse(rawObservedAt);
+  const hasObservedAt = Number.isFinite(observedAt) && observedAt > 0;
+  // Stale is only meaningful when we have an observation timestamp to judge.
+  // Without one (candidate-stamped windows, no cache/snapshot metadata) there
+  // is nothing to mark stale, so the windows remain usable evidence.
+  const isStale = hasObservedAt && now - observedAt > QUOTA_FRESHNESS_HORIZON_MS;
+
+  const usageFloorState = usageFloorStateFor(candidate);
+  // Stale evidence is downgraded to unknown — the freshness horizon (locked
+  // decision #4) means routing must not trust a weeks-old balance for either
+  // exhaustion or floor decisions.
+  if (isStale) {
+    return {
+      quotaState: "unknown",
+      quotaSource: source,
+      quotaObservedAt: hasObservedAt ? observedAt : null,
+      isStale: true,
+      usageFloorState: "unknown",
+    };
+  }
+  if (windows === undefined || windows.length === 0) {
+    return {
+      quotaState: "unknown",
+      quotaSource: source,
+      quotaObservedAt: hasObservedAt ? observedAt : null,
+      isStale: false,
+      usageFloorState,
+    };
+  }
+  if (usageFloorState === "below") {
+    return {
+      quotaState: "exhausted",
+      quotaSource: source,
+      quotaObservedAt: hasObservedAt ? observedAt : null,
+      isStale,
+      usageFloorState,
+    };
+  }
+  if (allWindowsExhausted(windows)) {
+    return {
+      quotaState: "exhausted",
+      quotaSource: source,
+      quotaObservedAt: hasObservedAt ? observedAt : null,
+      isStale,
+      usageFloorState,
+    };
+  }
+  return {
+    quotaState: "available",
+    quotaSource: source,
+    quotaObservedAt: hasObservedAt ? observedAt : null,
+    isStale,
+    usageFloorState,
+  };
+}
+
+/**
  * Routing priority for an account's remaining allowance when two candidates sit
  * in the same rank group: positive remaining credit first, then unknown, then
  * known-zero last. Free-tier models skip the preference entirely — a free model
@@ -101,6 +283,23 @@ function creditPriority(candidate: RoutedCandidate): number {
   const credit = totalRemainingCredit(windows);
   if (credit === null) return 0;
   return credit > 0 ? 1 : -1;
+}
+
+/**
+ * Hot-window guard: true when the account's most-urgent window is ≥85% used.
+ * A nearly exhausted short window means an imminent mid-session block, so these
+ * candidates rank behind cooler siblings no matter their drain score — overflow
+ * lands on the next-most-urgent cool account instead.
+ */
+function hotWindow(windows: readonly ProviderQuotaWindow[] | undefined): boolean {
+  if (windows === undefined || windows.length === 0) return false;
+  for (const window of windows) {
+    const used = window.usedPercent;
+    if (typeof used === "number" && Number.isFinite(used) && used >= 85) return true;
+    const remaining = window.remainingPercent;
+    if (typeof remaining === "number" && Number.isFinite(remaining) && remaining <= 15) return true;
+  }
+  return false;
 }
 
 /**
@@ -299,13 +498,6 @@ export class EligibilityEvaluator {
       return { eligible: true, reason: "cooldown", candidate, ...spreadDeadline(candidate.cooldown_until) };
     return { eligible: true, reason: "healthy", candidate };
   }
-
-  filter(candidates: readonly RouteCandidate[]): readonly RouteCandidate[] {
-    return candidates
-      .map((c) => this.evaluate(c))
-      .filter((d) => d.eligible)
-      .map((d) => d.candidate);
-  }
 }
 
 export class RoutingEngine {
@@ -313,6 +505,7 @@ export class RoutingEngine {
   private readonly _roundRobinByProvider = createRoundRobinMap();
   private readonly eligibility = new EligibilityEvaluator();
   private readonly reservations = new ReservationManager();
+  private readonly sticky = new StickySessionStore(routingStickyMaxSessions());
 
   constructor(
     private readonly admission: AdmissionController = new InMemoryAdmissionController(),
@@ -433,80 +626,20 @@ export class RoutingEngine {
   }
 
   /**
-   * Batch-preloads quota for every candidate account in one pass, so `plan()`
-   * never fans out into one cache read + one DB read per candidate.
-   *
-   * Why this exists (2026-11-05): the per-candidate fallback in
-   * `applyUsageFloorToCandidate` reads the persisted quota snapshot from
-   * Postgres whenever the quota cache misses — and the cache is cold for
-   * ~99% of accounts (Redis held 44 `quota:v5:*` keys for ~5.7k routable
-   * accounts; the refresh sweep covers 40 accounts/min against a 900 s TTL,
-   * so it can never warm the fleet). One chat request evaluates hundreds to
-   * thousands of candidates via unbounded `Promise.all`, so a single request
-   * fired that many concurrent pool acquires; the 40-connection pool
-   * saturated (`waiting` 10k–41k, idle 0 ~75% of the time) and every
-   * DB-dependent step — key lookups, readiness probes, routing itself —
-   * queued for seconds (a 5-token probe took 34.7 s). Batching turns the
-   * whole evaluation into one Redis MGET per lens + one `WHERE id IN (...)`
-   * SELECT, with identical quota values feeding the same ordering.
-   *
-   * The map holds an explicit `undefined` for accounts with no quota
-   * anywhere, so callers can distinguish "checked, nothing" (`has` true)
-   * from "not preloaded" (`has` false, keep the old per-candidate path).
-   */
-  private async preloadQuotas(
-    candidates: readonly RouteCandidate[],
-    tenantId: string | null,
-  ): Promise<Map<string, ProviderQuotaResult | undefined>> {
-    const byAccount = new Map<string, ProviderQuotaResult | undefined>();
-    const idsByLens = new Map<string, string[]>();
-    const seen = new Set<string>();
-    for (const candidate of candidates) {
-      const accountId = candidate.provider_account_id;
-      if (accountId === undefined || seen.has(accountId)) continue;
-      seen.add(accountId);
-      const lens = quotaLens(candidate.tenant_id ?? tenantId);
-      const ids = idsByLens.get(lens);
-      if (ids === undefined) idsByLens.set(lens, [accountId]);
-      else ids.push(accountId);
-    }
-    const missing: string[] = [];
-    for (const [lens, ids] of idsByLens) {
-      const cached = await getCachedQuotaEntries(lens, ids, this.redis).catch(
-        () => new Map<string, { quota: ProviderQuotaResult }>(),
-      );
-      for (const accountId of ids) {
-        const entry = cached.get(accountId);
-        if (entry !== undefined) byAccount.set(accountId, entry.quota);
-        else missing.push(accountId);
-      }
-    }
-    if (missing.length > 0 && this.db !== undefined) {
-      const stored = await readQuotaSnapshots(this.db, missing).catch(
-        () => new Map<string, { quota: ProviderQuotaResult }>(),
-      );
-      for (const accountId of missing) {
-        byAccount.set(accountId, stored.get(accountId)?.quota);
-      }
-    } else {
-      for (const accountId of missing) byAccount.set(accountId, undefined);
-    }
-    return byAccount;
-  }
-
-  /**
    * Stamps one candidate with its provider's usage floor + quota windows (the
    * per-candidate half of the old `applyUsageFloor`).
    *
-   * `preloadedQuotas` (from `preloadQuotas`) answers the quota lookup from
-   * the batch instead of doing per-candidate cache + DB I/O. Without it the
-   * old path runs unchanged.
+   * `quotaCache` / `snapshotMap` are the batch maps built by `plan()` (one
+   * Redis MGET per lens + one batched SELECT for the accounts the cache did
+   * not answer), so no per-candidate cache + DB I/O fans out into thousands
+   * of concurrent pool acquires per request (2026-11-05 pool flood).
    */
   private async applyUsageFloorToCandidate(
     candidate: RouteCandidate,
     snapshot: RouteSnapshot,
     tenantId: string | null,
-    preloadedQuotas?: ReadonlyMap<string, ProviderQuotaResult | undefined>,
+    quotaCache: ReadonlyMap<string, CachedQuotaEntry>,
+    snapshotMap: ReadonlyMap<string, ProviderQuotaResultSnapshot>,
   ): Promise<RouteCandidate> {
     const accountId = candidate.provider_account_id;
     if (accountId === undefined) return candidate;
@@ -515,25 +648,22 @@ export class RoutingEngine {
       candidate.provider_id,
       candidate.tenant_id ?? tenantId,
     );
-    let quota: ProviderQuotaResult | undefined;
-    if (preloadedQuotas?.has(accountId)) {
-      quota = preloadedQuotas.get(accountId);
-    } else {
-      const cached = await getCachedQuotaEntry(
-        quotaLens(candidate.tenant_id ?? tenantId),
-        accountId,
-        this.redis,
-      ).catch(() => undefined);
-      // The live cache is authoritative when warm; when it is cold (e.g. right
-      // after a restart, before the sweep re-reads accounts), fall back to the
-      // persisted quota snapshot — the durable source of truth — so routing
-      // still prefers accounts that actually have remaining credit. The snapshot
-      // is never fresher than the cache, but a stale balance beats an unknown
-      // one for ordering, and the sweep refreshes it on schedule.
-      quota = cached?.quota;
-      if (quota === undefined && this.db !== undefined) {
-        const stored = await readQuotaSnapshot(this.db, accountId).catch(() => null);
-        quota = stored?.quota;
+    const cached = quotaCache.get(accountId);
+    // The live cache is authoritative when warm; when it is cold (e.g. right
+    // after a restart, before the sweep re-reads accounts), fall back to the
+    // persisted quota snapshot — the durable source of truth — so routing
+    // still prefers accounts that actually have remaining credit. The snapshot
+    // is never fresher than the cache, but a stale balance beats an unknown
+    // one for ordering, and the sweep refreshes it on schedule.
+    let quota = cached?.quota;
+    let stored: { readonly fetchedAt: string; readonly quota: ProviderQuotaResult } | null = null;
+    if (quota === undefined) {
+      const snap = snapshotMap.get(accountId);
+      if (snap !== undefined) {
+        stored = { fetchedAt: snap.fetchedAt, quota: snap.quota };
+        quota = snap.quota;
+      }
+    }
       }
     }
     const rawWindows = quota?.windows;
@@ -544,14 +674,32 @@ export class RoutingEngine {
       rawWindows === undefined
         ? undefined
         : candidate.provider_id === "zcode-start" ? rawWindows : filterCandidateQuotaWindows(rawWindows, candidate);
-    return {
+    const stamped: RoutedCandidate = {
       ...candidate,
       ...(setting?.usageFloor == null
         ? {}
         : { usage_floor: setting.usageFloor, usage_floor_unit: setting.usageFloorUnit }),
-      ...(quotaWindows === undefined ? {} : { quota_windows: quotaWindows }),
+      // When no cache/snapshot evidence exists, keep the candidate's own
+      // stamped windows (unit tests and in-memory fixture route this way).
+      ...(quotaWindows === undefined
+        ? candidate.quota_windows === undefined
+          ? {}
+          : { quota_windows: candidate.quota_windows }
+        : { quota_windows: quotaWindows }),
       ...(quota?.source === "zcode-start" && quota.error === null ? { quota_entitlements_known: true } : {}),
+      // Drain urgency and reserve are derived from the same windows the credit
+      // ordering already reads. They are ordering preferences, never
+      // exclusions: an account in reserve or with a zero drain score stays
+      // eligible and routed.
+      ...(quotaWindows === undefined && candidate.quota_windows === undefined
+        ? {}
+        : { drain_score: drainScore(quotaWindows ?? candidate.quota_windows) }),
+      ...(quotaWindows === undefined && candidate.quota_windows === undefined
+        ? {}
+        : { in_reserve: isInReserve(quotaWindows ?? candidate.quota_windows, accountReservePct()) }),
     };
+    const fact = normalizeQuotaFact(stamped, cached, stored);
+    return { ...stamped, quota_fact: fact };
   }
 
   /**
@@ -598,6 +746,24 @@ export class RoutingEngine {
         },
       };
     }
+    // Unified decision engine: normalized quota/plan fact.
+    const fact = candidate.quota_fact;
+    if (fact !== undefined) {
+      if (fact.quotaState === "exhausted" || fact.usageFloorState === "below") {
+        const reset = exhaustedResetMs(candidate.quota_windows);
+        return {
+          candidate,
+          decision: {
+            eligible: false,
+            rank: ROUTING_RANK.SATURATED,
+            reason: "quota_exhausted",
+            floor_blocked: fact.usageFloorState === "below",
+            saturated: false,
+            ...(reset === undefined ? {} : { cooldown_until: reset }),
+          },
+        };
+      }
+    }
     // Plan gate (free plan).
     if (!planAllowsCandidate(candidate)) {
       return {
@@ -624,11 +790,54 @@ export class RoutingEngine {
         };
       }
     }
+    // A soft cooldown is a deprioritization, not an exclusion: the evaluator
+    // returned it eligible (so a single-account deployment still routes), but
+    // it must still behind every fresh/slow sibling. Without this branch the
+    // candidate falls through to the quota classification below, which labels
+    // it FRESH_KNOWN/FRESH_UNKNOWN and lets it sort ahead of healthy accounts —
+    // the "still hit a cooled-down account, never failed over" report. The raw
+    // `reason` stays `"cooldown"` so `ELIGIBILITY_REASON_LABELS` and the
+    // envelope `reasons` stream are untouched, and the reset deadline rides
+    // along for the all-cooling 429 answer.
+    if (eligibility.reason === "cooldown") {
+      return {
+        candidate,
+        decision: {
+          eligible: true,
+          rank: ROUTING_RANK.COOLING,
+          reason: "cooldown",
+          ...(eligibility.cooldown_until !== undefined
+            ? { cooldown_until: eligibility.cooldown_until }
+            : {}),
+        },
+      };
+    }
+    // Unified engine: unknown quota is eligible but lower-rank than known-available.
+    if (fact !== undefined) {
+      if (fact.quotaState === "unknown") {
+        return {
+          candidate,
+          decision: {
+            eligible: true,
+            rank: ROUTING_RANK.FRESH_UNKNOWN,
+            reason: "quota_unknown",
+          },
+        };
+      }
+      return {
+        candidate,
+        decision: {
+          eligible: true,
+          rank: ROUTING_RANK.FRESH_KNOWN,
+          reason: "healthy",
+        },
+      };
+    }
     return {
       candidate,
       decision: {
         eligible: true,
-        rank: ROUTING_RANK.FRESH,
+        rank: ROUTING_RANK.FRESH_KNOWN,
         reason: "healthy",
       },
     };
@@ -650,11 +859,11 @@ export class RoutingEngine {
     let i = 0;
     while (i < eligible.length) {
       const cur = eligible[i]!;
-      const rank = decisions.get(admissionKey(cur))?.rank ?? ROUTING_RANK.FRESH;
+      const rank = decisions.get(admissionKey(cur))?.rank ?? ROUTING_RANK.FRESH_KNOWN;
       let j = i + 1;
       while (j < eligible.length) {
         const next = eligible[j]!;
-        const nextRank = decisions.get(admissionKey(next))?.rank ?? ROUTING_RANK.FRESH;
+        const nextRank = decisions.get(admissionKey(next))?.rank ?? ROUTING_RANK.FRESH_KNOWN;
         if (
           next.provider_id !== cur.provider_id ||
           next.model_id !== cur.model_id ||
@@ -746,7 +955,7 @@ export class RoutingEngine {
       const decision = pinnedDecisions.find((d) => d.candidate === candidate);
       decisions.set(admissionKey(candidate), {
         eligible: true,
-        rank: ROUTING_RANK.FRESH,
+        rank: ROUTING_RANK.FRESH_KNOWN,
         reason: "healthy",
         ...(decision?.cooldown_until !== undefined
           ? { cooldown_until: decision.cooldown_until }
@@ -771,6 +980,7 @@ export class RoutingEngine {
     allowCliMappings = false,
     keyId?: string,
     continuationAffinity?: RouteContinuationAffinity,
+    sessionId?: string,
   ): Promise<RoutePlan> {
     const tid = tenantId ?? null;
     const { resolved, matching, unmatchedMembers } = this.resolveMatchingCandidates(
@@ -824,14 +1034,48 @@ export class RoutingEngine {
     // hands the full `decisions` map downstream, so no later layer re-derives
     // a competing ordering.
     //
-    // Quota is preloaded once for all candidates first (one Redis MGET per
-    // lens + one batched SELECT): the per-candidate cache/DB fallback would
-    // otherwise fan out into thousands of concurrent pool acquires per
-    // request and saturate the Postgres pool (2026-11-05).
-    const preloadedQuotas = await this.preloadQuotas(matching, tid);
+    // Quota evidence is read in batch before the per-candidate pass: one
+    // in-memory/Redis `MGET` per lens and one DB query for the accounts the
+    // cache did not answer, instead of a serial round trip per candidate. The
+    // per-candidate stamping below then consumes the shared maps, keeping the
+    // live-cache-authoritative / snapshot-fallback semantics identical.
+    const quotaCacheByAccount = new Map<string, CachedQuotaEntry>();
+    const lensToAccounts = new Map<string, string[]>();
+    for (const candidate of matching) {
+      const accountId = candidate.provider_account_id;
+      if (accountId === undefined) continue;
+      const lens = quotaLens(candidate.tenant_id ?? tid);
+      const accounts = lensToAccounts.get(lens);
+      if (accounts === undefined) lensToAccounts.set(lens, [accountId]);
+      else accounts.push(accountId);
+    }
+    for (const [lens, accountIds] of lensToAccounts) {
+      const entries = await getCachedQuotaEntries(lens, accountIds, this.redis).catch(
+        () => new Map<string, CachedQuotaEntry>(),
+      );
+      for (const [accountId, entry] of entries) quotaCacheByAccount.set(accountId, entry);
+    }
+    const snapshotByAccount = new Map<string, ProviderQuotaResultSnapshot>();
+    if (this.db !== undefined) {
+      const needingSnapshot = matching
+        .map((candidate) => candidate.provider_account_id)
+        .filter((accountId): accountId is string => accountId !== undefined && !quotaCacheByAccount.has(accountId));
+      if (needingSnapshot.length > 0) {
+        const snaps = await readQuotaSnapshots(this.db, needingSnapshot).catch(
+          () => new Map<string, ProviderQuotaResultSnapshot>(),
+        );
+        for (const [accountId, snap] of snaps) snapshotByAccount.set(accountId, snap);
+      }
+    }
     const evaluations = await Promise.all(
       matching.map(async (candidate) => {
-        const stamped = await this.applyUsageFloorToCandidate(candidate, snapshot, tid, preloadedQuotas);
+        const stamped = await this.applyUsageFloorToCandidate(
+          candidate,
+          snapshot,
+          tid,
+          quotaCacheByAccount,
+          snapshotByAccount,
+        );
         return this.evaluateCandidate(stamped, snapshot, tid, requiredCapabilities);
       }),
     );
@@ -888,7 +1132,9 @@ export class RoutingEngine {
 
     // Every eligible candidate cooling and no healthy/slow sibling → 429.
     const healthyCount = [...decisions.values()].filter(
-      (d) => d.eligible && (d.reason === "healthy" || d.reason === "slow"),
+      (d) =>
+        d.eligible &&
+        (d.reason === "healthy" || d.reason === "slow" || d.reason === "quota_unknown"),
     ).length;
     if (healthyCount === 0) {
       throw accountsRateLimitedError(
@@ -899,13 +1145,50 @@ export class RoutingEngine {
     }
 
     // Single sort by rank (fresh → slow → cooling → saturated), stable. Within
-    // the same rank, accounts with remaining credit come first unless the model
-    // is free tier, which routes to any account.
+    // the same rank, ordered by credit → reserve → hot-window guard → measured
+    // usage → drain → round-robin. The drain score chases quota about to expire
+    // unused; reserve yields to non-reserve siblings; a hot primary window (≥85%
+    // used) defers to cooler accounts so overflow lands on a cool sibling.
+    const reservePct = accountReservePct();
+    const stickyWarmMs = routingStickyWarmMs();
+    const stickyEntry = stickyWarmMs > 0 ? this.sticky.get(eligible[0]?.provider_id ?? "", sessionId) : undefined;
+    const stickyAccountId = stickyEntry?.accountId;
+    const stickyWarm = stickyEntry !== undefined && Date.now() - stickyEntry.lastUsedAtMs < stickyWarmMs;
     eligible = [...eligible].sort((left, right) => {
-      const leftRank = decisions.get(admissionKey(left))?.rank ?? ROUTING_RANK.FRESH;
-      const rightRank = decisions.get(admissionKey(right))?.rank ?? ROUTING_RANK.FRESH;
+      const leftRank = decisions.get(admissionKey(left))?.rank ?? ROUTING_RANK.FRESH_KNOWN;
+      const rightRank = decisions.get(admissionKey(right))?.rank ?? ROUTING_RANK.FRESH_KNOWN;
       if (leftRank !== rightRank) return leftRank - rightRank;
-      return creditPriority(right) - creditPriority(left);
+      // A free-tier model routes to any account: skip every quota-derived
+      // preference (credit, reserve, hot-window, drain) so the original order
+      // is preserved. Sticky warm pins still apply — they are about prompt
+      // cache warmth, not quota.
+      const bothFree = left.free_tier === true && right.free_tier === true;
+      // Sticky warm pin: within the warm window the account that last served
+      // this session wins outright (explicit pins always win).
+      const leftSticky = left.provider_account_id === stickyAccountId;
+      const rightSticky = right.provider_account_id === stickyAccountId;
+      if (leftSticky !== rightSticky) {
+        if (stickyEntry?.explicit === true) return leftSticky ? -1 : 1;
+        if (stickyWarm) return leftSticky ? -1 : 1;
+      }
+      if (bothFree) return 0;
+      const leftReserve = (left as RoutedCandidate).in_reserve ??
+        isInReserve(left.quota_windows, reservePct);
+      const rightReserve = (right as RoutedCandidate).in_reserve ??
+        isInReserve(right.quota_windows, reservePct);
+      if (leftReserve !== rightReserve) return leftReserve ? 1 : -1;
+      const leftPriority = (left as RoutedCandidate).account_priority ?? 0;
+      const rightPriority = (right as RoutedCandidate).account_priority ?? 0;
+      if (leftPriority !== rightPriority) return rightPriority - leftPriority;
+      const leftHot = hotWindow(left.quota_windows);
+      const rightHot = hotWindow(right.quota_windows);
+      if (leftHot !== rightHot) return leftHot ? 1 : -1;
+      const credit = creditPriority(right) - creditPriority(left);
+      if (credit !== 0) return credit;
+      const leftDrain = (left as RoutedCandidate).drain_score ?? 0;
+      const rightDrain = (right as RoutedCandidate).drain_score ?? 0;
+      if (leftDrain !== rightDrain) return rightDrain - leftDrain;
+      return 0;
     });
 
     // Provider routing rotates accounts within the same rank group only; it can
@@ -914,6 +1197,13 @@ export class RoutingEngine {
     eligible = this.applyProviderRoutingSorted(eligible, decisions, snapshot, tid);
 
     const chosen = eligible[0]!;
+    // Record which account served this session so a follow-up request within the
+    // warm window can prefer it (prompt-cache warmth). Explicit operator pins are
+    // recorded as explicit so they win even past the warm window.
+    if (sessionId !== undefined && chosen.provider_account_id !== undefined) {
+      const explicitPin = continuationAffinity?.providerAccountId === chosen.provider_account_id;
+      this.sticky.set(chosen.provider_id, sessionId, chosen.provider_account_id, explicitPin);
+    }
     return {
       revision: snapshot.revision,
       candidates: eligible,

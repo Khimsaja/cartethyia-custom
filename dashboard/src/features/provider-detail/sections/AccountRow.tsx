@@ -23,7 +23,12 @@ import { Dialog } from "../../../components/ui/dialog";
 import { Input } from "../../../components/ui/input";
 import { Inline } from "../../../components/ui/inline";
 import { Stack } from "../../../components/ui/stack";
-import { formatResetDistance, quotaPillSummary, quotaWindowState } from "../../../lib/format/quota";
+import {
+  formatResetDistance,
+  isGrokHeaderQuotaWindow,
+  quotaPillSummary,
+  quotaWindowState,
+} from "../../../lib/format/quota";
 import { toast } from "../../../lib/toast";
 import { usePoolHealthEvents, usePoolProviderProbe } from "../../../hooks/network";
 import { EmptyState, LoadingState, ErrorState } from "../../../components/ui/state";
@@ -45,10 +50,31 @@ function QuotaPill({
 }: {
   readonly windows: readonly QuotaWindow[] | undefined;
 }): ReactNode {
-  const summary = quotaPillSummary(windows ?? []);
-  const inactive = windows?.filter((window) => quotaWindowState(window) !== "current") ?? [];
+  const all = (windows ?? []).filter((window) => !isGrokHeaderQuotaWindow(window));
+  const sessionWindows = all.filter((window) => window.kind === "session_active");
+  const summary = quotaPillSummary(all.filter((window) => window.kind !== "session_active"));
+  const inactive = all.filter((window) => quotaWindowState(window) !== "current" && window.kind !== "session_active");
+  // Live countdown for session-active pills: re-render once a minute so the
+  // "Expires in Nh Nm" text tracks wall-clock time without polling the backend.
+  const [, setCountdownTick] = useState(0);
+  useEffect(() => {
+    if (sessionWindows.length === 0) return;
+    const id = setInterval(() => setCountdownTick((t) => t + 1), 30_000);
+    return () => clearInterval(id);
+  }, [sessionWindows.length]);
   return (
     <>
+      {sessionWindows.map((window, index) => (
+        <span
+          key={`session-active:${window.modelIds?.join(",") ?? window.label}:${index}`}
+          className="inline-flex items-center gap-2.5 max-w-full px-3.5 py-1 border border-inner-border rounded-chip bg-surface-1 text-text-secondary text-badge leading-normal whitespace-nowrap"
+          data-tone="accent"
+          title={`Session is locked to ${window.modelIds?.join(", ") ?? "this model"} until it expires`}
+        >
+          <span className="text-text-tertiary text-micro font-semibold uppercase tracking-label">Session</span>
+          {window.modelIds?.join(", ") ?? window.label} · {formatResetDistance(window.resetsAt, false)}
+        </span>
+      ))}
       {summary.text !== null && (
         <span className="inline-flex items-center gap-2.5 max-w-full px-3.5 py-1 border border-inner-border rounded-chip bg-surface-1 text-text-secondary text-badge leading-normal whitespace-nowrap" data-tone={summary.low ? "warn" : undefined} title={summary.hasCredits ? `${trimNumber(summary.remaining)} credits available` : "Current model grants and account-wide quota limits"}>
           <span className="text-text-tertiary text-micro font-semibold uppercase tracking-label">Quota</span>
