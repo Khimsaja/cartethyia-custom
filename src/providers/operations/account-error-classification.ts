@@ -1092,6 +1092,30 @@ export function classifyAccountError(
     );
   }
 
+  // Free-pi ad-gate refusal (2026-11-10): the upstream pauses free
+  // completions when no ad impression is registered for the session
+  // ("Ads aren't showing for this account"). The credential is fine — the
+  // session simply has not shown ads — so this must never read as
+  // `auth_invalidated` (which it fell through to before, parking healthy
+  // accounts as "Re-login required" and cooling them on the auth lane).
+  // `server_error` cools the whole account briefly; the adapter already
+  // retried once with a fresh ad-registered session, so a refusal that
+  // lands here again means the upstream genuinely has no ads for the
+  // account right now. Ten minutes, not thirty: ad inventory refreshes on
+  // the order of minutes, and a longer park would keep a healthy account
+  // out of rotation for no reason.
+  if (providerId === "freepi" && providerCode === "ads_required") {
+    const cooldownMs = 10 * 60_000;
+    return result(
+      "server_error",
+      "cooldown",
+      cooldownMs,
+      new Date(Date.now() + cooldownMs),
+      reason("Free-pi ads required (no ad impression for this session)"),
+      origin === "upstream",
+    );
+  }
+
   // Quota-shaped provider codes/messages (e.g. xAI's
   const quotaSignal =
     !priceRefusal &&

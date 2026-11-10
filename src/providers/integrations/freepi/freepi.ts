@@ -47,6 +47,41 @@ interface FreepiAdapterOptions {
   readonly fetch?: typeof fetch;
 }
 
+/**
+ * True when the failure is the upstream's ad gate: no ad impression is
+ * registered for the session, so free completions are paused. The code rides
+ * in `details.providerCode` (HTTP error path) or `details.upstream_code`
+ * (SSE error frames); the prose fallback covers callers that only kept the
+ * message.
+ */
+function isAdsRequiredError(err: unknown): boolean {
+  if (err instanceof GatewayError) {
+    const details = err.details as Record<string, unknown> | undefined;
+    for (const key of ["providerCode", "upstream_code"] as const) {
+      const value = details?.[key];
+      if (typeof value === "string" && value.toLowerCase() === "ads_required") return true;
+    }
+    const message = err.message.toLowerCase();
+    if (message.includes("ads_required") || message.includes("ads aren't showing")) return true;
+  }
+  return false;
+}
+
+/**
+ * Mirrors the stream encoder's client-visibility rule
+ * (`src/transport/dispatch/streaming/encoder.ts`): a prelude that carries no
+ * client-renderable content (response_start, usage, extension deltas) does
+ * not commit the attempt, so a failure after only a prelude may still be
+ * retried without duplicating anything the buyer saw.
+ */
+function isClientVisibleEvent(event: CanonicalEvent): boolean {
+  if (event.type === "tool_call_delta" || event.type === "tool_result") return true;
+  if (event.type === "content_delta") {
+    return event.content.kind !== "extension";
+  }
+  return event.type === "terminal" && event.state === "complete";
+}
+
 export class FreepiAdapter implements ProviderAdapter {
   readonly provider_id: ProviderId;
   private readonly fetchFn: typeof fetch;
@@ -113,7 +148,6 @@ export class FreepiAdapter implements ProviderAdapter {
     }
     const secret = readCredentialSecret(context.credential, "Free-pi credential is required");
     const modelId = candidate.model_id || request.model;
-    const lifecycle = createUpstreamDeadlineLifecycle(context);
     const outboundFetch =
       (context.outbound_fetch as unknown as typeof fetch | undefined) ?? this.fetchFn;
 
@@ -122,35 +156,59 @@ export class FreepiAdapter implements ProviderAdapter {
     const sessionKey = resolvePromptCacheKey(request, context);
     const cacheSessionKey = sessionKey === undefined ? undefined : `${modelId}:${sessionKey}`;
 
-    const sessionId = await this.#ensureSession(secret, outboundFetch);
-    const headers = buildFreepiHeaders(secret, true, sessionId);
     const url = `${FREEPI_BASE_URL}${FREEPI_CHAT_PATH}`;
 
-    try {
-      const response = await outboundFetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-        signal: lifecycle.signal,
-      });
-      if (!response.ok) throw await mapUpstreamHttpError(response, this.provider_id);
-      if (!response.body) {
-        throw new GatewayError("platform_unavailable", 502, "Free-pi returned empty body (request {requestId}). The upstream came back empty-handed — retry 🌙", {}, "upstream");
+    // A session whose ad registration lapsed (or never landed — the upstream
+    // had no ad inventory when it was first created) answers every chat with
+    // `ads_required`, and the session id is cached forever, so without a
+    // retry the account fails until the gateway restarts. Drop the stale id
+    // and try once with a fresh ad-registered session; a second refusal
+    // means the upstream genuinely has no ads for the account right now.
+    // The retry is skipped once any client-visible content was already
+    // yielded, so a mid-stream refusal can never duplicate streamed content
+    // (a bare response_start prelude does not count — see
+    // isClientVisibleEvent).
+    let retriedAds = false;
+    for (;;) {
+      const lifecycle = createUpstreamDeadlineLifecycle(context);
+      const sessionId = await this.#ensureSession(secret, outboundFetch);
+      const headers = buildFreepiHeaders(secret, true, sessionId);
+      let yieldedVisible = false;
+      try {
+        const response = await outboundFetch(url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+          signal: lifecycle.signal,
+        });
+        if (!response.ok) throw await mapUpstreamHttpError(response, this.provider_id);
+        if (!response.body) {
+          throw new GatewayError("platform_unavailable", 502, "Free-pi returned empty body (request {requestId}). The upstream came back empty-handed — retry 🌙", {}, "upstream");
+        }
+        lifecycle.release();
+        for await (const event of this.#events(
+          response.body as ReadableStream<Uint8Array>,
+          lifecycle.signal,
+          request.model,
+          cacheSessionKey,
+          request.messages,
+        )) {
+          if (isClientVisibleEvent(event)) yieldedVisible = true;
+          yield event;
+        }
+        return;
+      } catch (err: unknown) {
+        const abortError = abortGatewayError(lifecycle, err, context.abort_signal);
+        if (abortError) throw abortError;
+        if (!retriedAds && !yieldedVisible && isAdsRequiredError(err)) {
+          retriedAds = true;
+          this.#sessionByCredential.delete(secret);
+          continue;
+        }
+        throw err;
+      } finally {
+        lifecycle.release();
       }
-      lifecycle.release();
-      yield* this.#events(
-        response.body as ReadableStream<Uint8Array>,
-        lifecycle.signal,
-        request.model,
-        cacheSessionKey,
-        request.messages,
-      );
-    } catch (err: unknown) {
-      const abortError = abortGatewayError(lifecycle, err, context.abort_signal);
-      if (abortError) throw abortError;
-      throw err;
-    } finally {
-      lifecycle.release();
     }
   }
 

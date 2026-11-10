@@ -238,5 +238,12 @@ export function throwFreepiUpstreamError(code: unknown, message: unknown): never
   if (codeStr === "upstream_error") {
     throw new GatewayError("platform_unavailable", 502, `${msg} (request {requestId}). The upstream model host errored. 🌙`, { upstream_code: codeStr }, "upstream");
   }
+  // Ad-gate refusal: the session has shown no ads, so free completions are
+  // paused. The code rides in `providerCode` as well as `upstream_code` so
+  // the account classifier can tell it apart from a dead credential (it
+  // used to fall through to `auth_invalidated`).
+  if (codeStr === "ads_required") {
+    throw new GatewayError("platform_unavailable", 502, `${msg} (request {requestId}). The free-pi upstream refused the request. 🌙`, { upstream_code: codeStr, providerCode: codeStr }, "upstream");
+  }
   throw new GatewayError("platform_unavailable", 502, `${msg} (request {requestId}). The free-pi upstream refused the request. 🌙`, { upstream_code: codeStr }, "upstream");
 }
