@@ -59,7 +59,7 @@ export async function fetchFreepiQuota(
         percentWindow(
           "usd_daily",
           "Daily USD budget",
-          remaining,
+          limit > 0 ? ((limit - remaining) / limit) * 100 : 0,
           refillAt === undefined ? null : text(refillAt),
           limit - remaining,
           limit,
@@ -77,7 +77,7 @@ export async function fetchFreepiQuota(
         percentWindow(
           "credits_daily",
           "Daily credits",
-          remaining,
+          limit > 0 ? ((limit - remaining) / limit) * 100 : 0,
           refillAt === undefined ? null : text(refillAt),
           limit - remaining,
           limit,
