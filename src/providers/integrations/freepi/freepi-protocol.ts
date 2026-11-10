@@ -5,7 +5,7 @@
 // terminated by `[DONE]`. Errors come as HTTP status + JSON
 // `{code, message, error: {code, message}}`.
 //
-// The client (0.6.14) sends `model` (the catalog id), `messages`, `stream`,
+// The client (0.6.16) sends `model` (the catalog id), `messages`, `stream`,
 // and optionally `max_tokens`; the upstream resolves the catalog id to the
 // real model and echoes it in each chunk (`choices[0].delta.model`).
 

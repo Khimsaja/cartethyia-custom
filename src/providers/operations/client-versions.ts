@@ -345,8 +345,8 @@ export const VERSION_SOURCES = {
   freepi: {
     key: "freepi",
     // The free-pi CLI version — the `x-client-version` the gateway reports.
-    // Fallback = the unpacked 0.6.14 bundle; npm discovery replaces it.
-    fallback: "0.6.14",
+    // Fallback = the unpacked 0.6.16 bundle; npm discovery replaces it.
+    fallback: "0.6.16",
     sources: [{ url: "https://registry.npmjs.org/free-pi-cli/latest" }],
   },
   perch: {
