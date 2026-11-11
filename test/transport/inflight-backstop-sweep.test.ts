@@ -104,3 +104,56 @@ test("the sweep touches only what is overdue", () => {
   // later release can still find it.
   expect(store.get(new Request("https://example.test/v1/chat/completions"))).toBeUndefined();
 });
+
+test("hard-grace evicts the whole state, not just the gauge entries", () => {
+  const store = new ProxyRequestStateStore(undefined);
+  const request = new Request("https://example.test/v1/chat/completions", { method: "POST" });
+  const state = store.initialize(request, Date.now(), 1_000);
+  state.startProviderFlight();
+  expect(store.activeCount()).toBe(1);
+  expect(store.statesCount()).toBe(1);
+  expect(store.get(request)).toBe(state);
+  // Before the fix the sweep only deleted the in-flight gauge rows, leaving
+  // the controller — and through its signal listeners, the dispatch context
+  // and the parsed prompt — pinned for the life of the process.
+  store.sweepOverdueInFlight(Date.now() + HARD_GRACE_MS + 5_000, GRACE_MS, HARD_GRACE_MS);
+  expect(store.inFlightCount()).toBe(0);
+  expect(store.activeCount()).toBe(0);
+  expect(store.statesCount()).toBe(0);
+  expect(store.get(request)).toBeUndefined();
+  expect(state.abortController.signal.aborted).toBe(true);
+});
+
+test("a stale pre-flight state is evicted, a live one is not", () => {
+  const store = new ProxyRequestStateStore(undefined);
+  const staleRequest = new Request("https://example.test/v1/chat/completions", { method: "POST" });
+  const stale = store.initialize(staleRequest, Date.now(), 1_000);
+  const liveRequest = new Request("https://example.test/v1/chat/completions", { method: "POST" });
+  store.initialize(liveRequest, Date.now(), 600_000);
+  expect(store.statesCount()).toBe(2);
+  expect(store.activeCount()).toBe(2);
+  // Inside the grace window the stale one is still alive: its handler may
+  // still return and clean it up itself.
+  store.sweepOverdueInFlight(Date.now(), GRACE_MS, HARD_GRACE_MS);
+  expect(store.statesCount()).toBe(2);
+  // Past deadline plus hard grace with no flight ever started, it is dead.
+  store.sweepOverdueInFlight(Date.now() + HARD_GRACE_MS + 5_000, GRACE_MS, HARD_GRACE_MS);
+  expect(store.statesCount()).toBe(1);
+  expect(store.activeCount()).toBe(1);
+  expect(store.get(staleRequest)).toBeUndefined();
+  expect(store.get(liveRequest)).toBeDefined();
+  expect(stale.abortController.signal.aborted).toBe(true);
+});
+
+test("a healthy flight keeps its state registered across sweeps", () => {
+  const store = new ProxyRequestStateStore(undefined);
+  const request = new Request("https://example.test/v1/chat/completions", { method: "POST" });
+  const state = store.initialize(request, Date.now(), 600_000);
+  state.startProviderFlight();
+  store.sweepOverdueInFlight(Date.now(), GRACE_MS, HARD_GRACE_MS);
+  expect(store.inFlightCount()).toBe(1);
+  expect(store.activeCount()).toBe(1);
+  expect(store.statesCount()).toBe(1);
+  expect(store.get(request)).toBe(state);
+  expect(state.abortController.signal.aborted).toBe(false);
+});

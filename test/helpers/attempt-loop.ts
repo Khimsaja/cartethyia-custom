@@ -40,6 +40,7 @@ export function attemptState(requestId: string, deadlineMs = Date.now() + 600_00
     abortController: new AbortController(),
     startProviderFlight: () => undefined,
     releaseIngressBody: () => undefined,
+    releaseCanonicalMessages: () => undefined,
     extendDeadline: () => undefined,
     cleanup: () => undefined,
   };

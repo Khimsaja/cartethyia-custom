@@ -58,6 +58,7 @@ import type { IpAbuseProtectionService } from "../security/abuse";
 import type { ReadinessCheckResult } from "../persistence/readiness";
 import type { RouteSnapshotService } from "../transport/routing/route-model";
 import type { TrustedProxyBoundary } from "../config/network";
+import { log } from "../observability/logger";
 import { resolveClientIdentity } from "../security/ip-boundary";
 import type { ValidatedNetworkBindingFactory } from "../network/pool/resolver";
 import { metrics } from "../observability/metrics";
@@ -325,6 +326,15 @@ export function createGatewayApp(deps: GatewayAppDeps) {
   // narrowed rather than reached through the union — a shell composition
   // without the registry simply skips the backstop, exactly as before.
   const backstopTasks = "scheduledTasks" in deps ? deps.scheduledTasks : undefined;
+  // Decisive gauge for the 2026-11-11 heap-retention diagnosis: the leak is
+  // a request state that outlives its request, so the three counts must move
+  // together — `states` tracks live requests, `inFlight` the gauge, `active`
+  // the controller registry. A `states` count that climbs monotonically
+  // while `inFlight` oscillates with traffic proves the leak; a flat
+  // `states` beside a climbing RSS points at legitimate long-stream
+  // accumulation instead. Logged once a minute beside RSS so the curve can
+  // be read off the journal without a second probe.
+  let lastStateCountLogAt = 0;
   backstopTasks?.register({
     name: "inflight-backstop",
     intervalMs: INFLIGHT_BACKSTOP_INTERVAL_MS,
@@ -337,6 +347,18 @@ export function createGatewayApp(deps: GatewayAppDeps) {
         INFLIGHT_BACKSTOP_GRACE_MS,
         INFLIGHT_BACKSTOP_HARD_GRACE_MS,
       );
+      const now = Date.now();
+      if (now - lastStateCountLogAt >= 60_000) {
+        lastStateCountLogAt = now;
+        const mem = process.memoryUsage();
+        log.info("[inflight] request-state counts", {
+          states: requestStateStore.statesCount(),
+          active: requestStateStore.activeCount(),
+          inFlight: requestStateStore.inFlightCount(),
+          rssMb: Math.round(mem.rss / 1048576),
+          heapUsedMb: Math.round(mem.heapUsed / 1048576),
+        });
+      }
     },
   });
   const app = new Elysia({ precompile: resolveElysiaPrecompile() })

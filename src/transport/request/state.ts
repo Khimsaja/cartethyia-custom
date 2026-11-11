@@ -89,6 +89,27 @@ export interface ProxyRequestState {
    * reclaimed, instead of being held for the request's lifetime.
    */
   releaseIngressBody(): void;
+  /**
+   * Drops the heavy content of the canonical request once dispatch no longer
+   * needs it.
+   *
+   * The parsed prompt is the largest per-request value, and the request state
+   * is what every retention path ends at: the dispatch context carries the
+   * whole state as `request_identity`, and the in-flight registry holds the
+   * controller whose signal listeners close over that context. A state that
+   * outlives its request therefore pins the full prompt until the backstop
+   * sweep evicts it. Releasing the messages (and the other large content
+   * fields) as soon as the attempt loop returns bounds what a retained state
+   * can pin to a few scalars.
+   *
+   * Only the small fields post-dispatch readers need survive: `model`,
+   * `source_surface`, `stream`, and `reasoning` (telemetry + the content
+   * verdict). Everything else is replaced, never mutated in place: the
+   * projected dispatch copies are shallow spreads, so their own `messages`
+   * property keeps the original array and a mid-stream Responses retry still
+   * re-dispatches the full request.
+   */
+  releaseCanonicalMessages(): void;
   /** Inbound method/path are retained for structured Console Log events. */
   ingressMethod?: string;
   ingressPath?: string;
@@ -219,8 +240,42 @@ function subscribeInFlightSnapshot(
   };
 }
 
+/**
+ * Drops the heavy content fields of a canonical request, keeping only the
+ * small scalars post-dispatch readers need (`model`, `source_surface`,
+ * `stream`, `reasoning`, `generation_controls`).
+ *
+ * Property replacement, never array mutation: the projected dispatch copies
+ * are shallow spreads, so their own `messages` property keeps the original
+ * array and a mid-stream retry still re-dispatches the full request. The
+ * object itself is mutated (not replaced) so every holder of this exact
+ * object — the state, the prepared request, the finalizer's input — sees the
+ * slimmed request at once.
+ */
+function slimCanonicalRequestInPlace(request: CanonicalRequest): void {
+  request.messages = [];
+  // The optional fields are deleted rather than set to undefined: the
+  // project compiles with exactOptionalPropertyTypes, so `undefined` is not
+  // a valid value for them, and a deleted property reads as undefined to
+  // every reader anyway.
+  delete request.system;
+  delete request.instructions;
+  delete request.tools;
+  delete request.provider_options;
+  delete request.conversation;
+}
+
 export class ProxyRequestStateStore {
   private readonly states = new WeakMap<Request, ProxyRequestState>();
+  /**
+   * Request-id index of the same states, for the backstop sweep and for the
+   * state-count gauge. The WeakMap above cannot be enumerated or counted,
+   * and the sweep only ever learns a request id — so without this index an
+   * overdue flight's state is unreachable exactly when it most needs to be
+   * evicted. Entries are removed by `cleanup()` alongside the WeakMap entry,
+   * so this map holds a state only while its request is alive.
+   */
+  private readonly statesById = new Map<string, ProxyRequestState>();
   private readonly liveControllers = new Map<string, AbortController>();
   /**
    * The in-flight gauge is derived from the same map that owns a request's
@@ -236,6 +291,11 @@ export class ProxyRequestStateStore {
 
   activeCount(): number {
     return this.liveControllers.size;
+  }
+
+  /** Live request-state count for this store. */
+  statesCount(): number {
+    return this.statesById.size;
   }
 
   inFlightSnapshot(): InFlightSnapshot {
@@ -264,9 +324,17 @@ export class ProxyRequestStateStore {
    * the fetch and lets the request's own `cleanup` run, which drops the
    * flight's entry with it. A request nothing observes — a half-closed socket
    * that neither pulls, cancels, nor aborts — never runs that cleanup, so
-   * after a further grace window the sweep drops the entry itself: the fetch
-   * is already torn down by the abort, and a permanently wrong number is the
-   * exact defect this backstop exists to end. Logged, never silent.
+   * after a further grace window the sweep evicts the state itself: it calls
+   * `cleanup()` (which drops the `liveControllers` entry, clears the
+   * deadline timer, and unregisters the state) instead of merely deleting
+   * the gauge entries. Deleting the gauges alone left the controller — and
+   * through its signal listeners, the dispatch context and the parsed prompt
+   * it carries as `request_identity` — pinned for the life of the process,
+   * which is exactly the heap growth this backstop exists to end. The same
+   * eviction applies to a state that never started a flight but is past its
+   * deadline plus the hard grace: its handler either returned (and
+   * `afterResponse` cleaned it) or is parked on an await the deadline abort
+   * already fired into. Logged, never silent.
    */
   sweepOverdueInFlight(nowMs: number, graceMs: number, hardGraceMs: number): number {
     for (const [requestId, deadline] of this.inFlightDeadlines) {
@@ -282,15 +350,50 @@ export class ProxyRequestStateStore {
       }
     }
     let forced = 0;
+    let evictedStates = 0;
+    // Collect first: cleanup() mutates the gauge maps, so evicting inside
+    // the iteration would skip entries.
+    const overdue: string[] = [];
     for (const [requestId, deadline] of this.inFlightDeadlines) {
       if (nowMs < deadline + hardGraceMs) continue;
+      overdue.push(requestId);
+    }
+    for (const requestId of overdue) {
+      const state = this.statesById.get(requestId);
+      if (state !== undefined) {
+        try {
+          state.cleanup();
+          evictedStates += 1;
+        } catch {
+          // Eviction must not break the sweep for the remaining flights.
+        }
+      }
       this.inFlightDeadlines.delete(requestId);
       this.inFlightIps.delete(requestId);
       forced += 1;
     }
-    if (forced > 0) {
+    // Pre-flight states are not in the gauge maps above, so the loop cannot
+    // see them — but their deadline still bounds their life. Collect the
+    // stale ones the same way and evict them too.
+    const stale: string[] = [];
+    for (const [requestId, state] of this.statesById) {
+      if (this.inFlightDeadlines.has(requestId)) continue;
+      if (nowMs < state.deadlineMs + hardGraceMs) continue;
+      stale.push(requestId);
+    }
+    for (const requestId of stale) {
+      const state = this.statesById.get(requestId);
+      if (state === undefined) continue;
+      try {
+        state.cleanup();
+        evictedStates += 1;
+      } catch {
+        // Eviction must not break the sweep for the remaining states.
+      }
+    }
+    if (forced > 0 || evictedStates > 0) {
       log.error(
-        `[inflight-backstop] force-releasing ${forced} flight(s): abort did not release them within ${hardGraceMs}ms`,
+        `[inflight-backstop] force-releasing ${forced} flight(s): abort did not release them within ${hardGraceMs}ms (${evictedStates} state(s) evicted)`,
       );
     }
     return forced;
@@ -370,6 +473,17 @@ export class ProxyRequestStateStore {
       releaseIngressBody: () => {
         state.ingressBody = undefined;
       },
+      releaseCanonicalMessages: () => {
+        // Slim every canonical request object the state owns. The prepared
+        // request usually carries a different object than the parsed one, so
+        // both are slimmed; when they are the same object the second call is
+        // a no-op on already-empty fields.
+        if (state.canonicalRequest !== undefined) slimCanonicalRequestInPlace(state.canonicalRequest);
+        const prepared = state.preparedRequest;
+        if (prepared !== undefined && prepared.canonicalRequest !== state.canonicalRequest) {
+          slimCanonicalRequestInPlace(prepared.canonicalRequest);
+        }
+      },
       ingressMethod: request.method,
       ingressPath: fastPathname(request.url),
       extendDeadline: (ms: number) => {
@@ -402,6 +516,7 @@ export class ProxyRequestStateStore {
         } catch {
         }
         this.liveControllers.delete(state.requestId);
+        this.statesById.delete(state.requestId);
         clearTimeout(timer);
         timer = undefined;
         try {
@@ -416,6 +531,7 @@ export class ProxyRequestStateStore {
       },
     };
     this.liveControllers.set(state.requestId, abortController);
+    this.statesById.set(state.requestId, state);
     this.tracker?.track(state.requestId);
     this.states.set(request, state);
     // A client disconnect must evict this state even when no lifecycle path

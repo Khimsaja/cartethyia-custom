@@ -396,7 +396,7 @@ export async function runAttemptLoop<TResult, TAdapter>(
       // upstream resources; the lease and reservation are held from here on.
       bindingEstablished = true;
       state.startProviderFlight();
-      return await input.attempt({
+      const result = await input.attempt({
         candidate,
         credential,
         adapter,
@@ -408,6 +408,14 @@ export async function runAttemptLoop<TResult, TAdapter>(
           leasesRetained = true;
         },
       });
+      // The attempt loop is done: no further attempt will rebuild an
+      // upstream request from this prompt, so the parsed messages can go.
+      // Streaming responses keep their own projected copy (a shallow spread
+      // whose `messages` property still points at the original array), so a
+      // mid-stream retry still re-dispatches the full request; the state
+      // itself keeps only the scalars telemetry still reads.
+      state.releaseCanonicalMessages();
+      return result;
     } catch (error) {
       // A drain aborts the controller, so a mid-flight attempt unwinds here as
       // an abort. Surface the typed shutdown error (503 shutting_down, reason
