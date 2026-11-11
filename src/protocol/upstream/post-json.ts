@@ -18,7 +18,12 @@
  * bigint) falls back to the string path, so no caller silently changes wire
  * bytes. It is also off whenever the attempt's provider body will be
  * captured (`capture_provider_body`), because capture reads the string body
- * to persist it — a stream has no string to read.
+ * to persist it — a stream has no string to read. Note the validated fetch
+ * (`createValidatedFetch` → `dial()`) buffers a stream body into bytes to
+ * measure content-length before sending, so on that path a streamed body
+ * never reaches the socket and provides no memory benefit — and its
+ * serializer generator's frame can retain the payload after the request
+ * ends. Callers on the validated-fetch path should leave `streamBody` off.
  * `bodyEncoder` lets a provider send the same body with non-JSON encoding
  * (e.g. zstd, which the Grok Build CLI does). When omitted, the JSON string is
  * sent as-is.
@@ -125,15 +130,34 @@ function* jsonChunks(value: unknown): Generator<string> {
 /** A pull-driven byte stream over the JSON pieces of `payload`. */
 function jsonBodyStream(payload: Record<string, unknown>): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
-  const pieces = jsonChunks(payload);
+  // Held in a `let` so the serializer can be dropped once the stream is
+  // drained or cancelled. A completed generator's frame still references
+  // the payload, and the pull closure itself is retained by the runtime's
+  // native fetch state after the fetch ends — so merely completing the
+  // generator does not free the payload. Releasing the reference here is
+  // what lets the payload be collected even while the stream object lives on.
+  let pieces: Generator<string> | undefined = jsonChunks(payload);
   return new ReadableStream<Uint8Array>({
     pull(controller) {
+      if (pieces === undefined) {
+        controller.close();
+        return;
+      }
       const next = pieces.next();
       if (next.done) {
+        pieces = undefined;
         controller.close();
         return;
       }
       controller.enqueue(encoder.encode(next.value));
+    },
+    cancel() {
+      // An abandoned upload must not park the payload in a suspended
+      // serializer: settle it and drop the reference so the payload is
+      // freed even if the runtime keeps the stream object itself alive
+      // after the fetch ends.
+      pieces?.return(undefined);
+      pieces = undefined;
     },
   });
 }
@@ -148,23 +172,37 @@ export async function postUpstreamJson(
   bodyEncoder?: (payload: Record<string, unknown>) => string | Uint8Array<ArrayBuffer>,
 ): Promise<{ res: Response; signal: AbortSignal; release: () => void }> {
   const lifecycle = createUpstreamDeadlineLifecycle(context);
+  // The fetch must stay abortable through the request signal for the whole
+  // stream lifetime. The lifecycle signal alone stops forwarding that abort
+  // as soon as `release()` runs (right after headers arrive), so a client
+  // that disconnects mid-stream never aborts the upstream fetch: the
+  // runtime keeps the request body stream — and the payload it serializes —
+  // alive indefinitely. Combining the request signal keeps the fetch
+  // abortable; the deadline arm is still released by `release()`.
+  const fetchSignal = AbortSignal.any([context.abort_signal, lifecycle.signal]);
   try {
+    // A stream is only created when it will actually be sent as the body.
+    // When a `bodyEncoder` is present the body is the encoder output, so
+    // building a stream here would create a serializer that is never drained
+    // or cancelled — its frame would retain the payload indefinitely.
     const stream =
-      options?.streamBody === true && isPlainJsonValue(payload, new Set())
+      bodyEncoder === undefined &&
+      options?.streamBody === true &&
+      isPlainJsonValue(payload, new Set())
         ? jsonBodyStream(payload)
         : undefined;
     const res = await outboundFetch(fetchUrl, {
       method: "POST",
       headers,
       body: bodyEncoder ? bodyEncoder(payload) : (stream ?? JSON.stringify(payload)),
-      signal: lifecycle.signal,
+      signal: fetchSignal,
       // Undici-style fetch implementations require this for stream bodies;
       // the validated fetch ignores unknown init fields.
       ...(stream ? ({ duplex: "half" } as RequestInit) : {}),
     });
     return {
       res,
-      signal: lifecycle.signal,
+      signal: fetchSignal,
       release: lifecycle.release,
     };
   } catch (error: unknown) {
