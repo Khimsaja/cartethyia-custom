@@ -408,6 +408,14 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
           await finishAbortedPull(controller);
           return;
         }
+        // The first event may already be the terminal one (enqueued by
+        // start()): the turn is over, so do not park on the upstream
+        // waiting for a body that will never close.
+        if (pipeline.terminal !== undefined) {
+          finalizer.settleUpstreamIterator();
+          await finalizer.finalizeStream(controller);
+          return;
+        }
         try {
           // A canonical event may be intentionally invisible on the
           // selected client surface (for example xAI's encrypted
@@ -439,7 +447,25 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
               return;
             }
             sawUpstreamActivity = true;
-            if (pipeline.enqueueEvent(result.value, controller)) return;
+            const enqueued = pipeline.enqueueEvent(result.value, controller);
+            // The turn is over once the terminal event is on the client
+            // stream: surface encoders reject anything after it, so no
+            // later upstream event can ever be delivered. Do not park on
+            // the upstream waiting for it to close its body — an upstream
+            // that holds the SSE connection open after its terminal event
+            // otherwise pins the whole dispatch graph (prompt, generator
+            // frame, fetch body) until the stall watchdog fires minutes
+            // later, which is the heap growth under agent traffic.
+            // Settle the iterator first so its return() is already queued
+            // when release aborts the fetch and cancels the reader;
+            // finalizeStream then records the terminal outcome exactly as
+            // the generator-return path does.
+            if (pipeline.terminal !== undefined) {
+              finalizer.settleUpstreamIterator();
+              await finalizer.finalizeStream(controller);
+              return;
+            }
+            if (enqueued) return;
             // The guard terminated the stream early: stop consuming. Pulling
             // on would keep the runaway upstream alive and bill tokens the
             // client was already told are not coming.
