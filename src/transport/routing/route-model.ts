@@ -629,13 +629,13 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
    * rebuild that fails (a minute-burst of 500 internal_error across all
    * models on 2026-10-26, with nothing in the journal) falls back to it
    * instead of throwing to the data plane; the next invalidation retries
-   * the build. This is the stale-serve half of the 2026-10-26 fix, kept
-   * while the debounce half is retired: upstream 2.7.3 requires an
-   * invalidation to be visible on the next request (cooldown eviction,
-   * route updates), which a debounced rebuild delays up to 5 s — and
-   * upstream's own tests lock that immediacy. The storm half is covered
-   * instead by the mutatesAccount invalidation gate (non-mutating reports
-   * never invalidate) plus the memoized rebuild.
+   * the build. Since the 2026-11-11 OOM fix it is also the snapshot
+   * served while a debounced rebuild runs: invalidate() no longer drops
+   * the cache, so requests keep getting the previous snapshot (stale by
+   * at most one debounce window) instead of each paying a full rebuild.
+   * Upstream 2.7.3 immediacy is relaxed by exactly that window — the
+   * price of stopping the rebuild storm that OOM-killed the gateway on
+   * 2026-11-11 (15.6 GB RSS, a build every ~20-40 s from health churn).
    */
   private lastGood: RouteSnapshot | undefined;
   /**
@@ -670,7 +670,7 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
     private readonly builder: SnapshotBuilder,
     options: { readonly rebuildDebounceMs?: number } = {},
   ) {
-    this.rebuildDebounceMs = options.rebuildDebounceMs ?? 20000;
+    this.rebuildDebounceMs = options.rebuildDebounceMs ?? 30000;
     // Peers' mutations arrive once per process, not per instance: the handler
     // schedules a background rebuild, which is the only one there is.
     this.unsubscribe = subscribeRoutingInvalidation(() => {
@@ -751,8 +751,11 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
   }
 
   async getSnapshot(): Promise<RouteSnapshot> {
-    // G-02: serve the last-completed snapshot while a rebuild runs, so the
-    // page-open request path never pays the catalog build. Only a cold start
+    // Serve the current snapshot while a rebuild runs, so the request
+    // path never pays the catalog build. Since the 2026-11-11 OOM fix,
+    // invalidate() no longer drops the cache: this is also how a stale
+    // (at most one debounce window old) snapshot is served while the
+    // coalesced background rebuild is still in flight. Only a cold start
     // (no snapshot at all) falls through to a synchronous build here.
     if (this.snapshot) return this.snapshot;
     try {
@@ -805,22 +808,20 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
 
   async invalidate(): Promise<RoutingRevision> {
     this.revision += 1;
-    // Upstream semantics (2.7.3): drop the cache so the next getSnapshot()
-    // rebuilds lazily. Dashboard mutations only need the new revision token
-    // — they must not pay a dozen Postgres round-trips inside the mutating
-    // request — but the rebuild itself is no longer deferred: a debounced
-    // rebuild delayed cooldown eviction and route updates up to 5 s, which
-    // breaks upstream's immediate-invalidation guarantee and its tests.
-    // Storm protection comes from the mutatesAccount gate plus the
-    // memoized rebuild, not from serving stale routing.
-    this.snapshot = undefined;
-    // SINGLEFLIGHT_XREV: local invalidate does not schedule a rebuild (the
-    // next getSnapshot rebuilds lazily, immediately), but an invalidate that
-    // lands while a build is in flight must not be lost: mark the follow-up
-    // as owed so the settling build repays it, debounced, at the latest
-    // revision. Without this, a mid-build mutation would be served stale
-    // until some unrelated write rebuilt.
-    if (this.building !== undefined) this.rebuildPending = true;
+    // Coalesced rebuild (2026-11-11 OOM fix): the cache is NOT dropped
+    // here. The previous snapshot keeps serving (lastGood) until the
+    // single debounced background rebuild at the latest revision lands,
+    // so a burst of invalidates (health churn ~100/min, boot sweeps)
+    // collapses into one build per window instead of one build per
+    // event — the storm that grew RSS ~1.5 GB/min to a 15.6 GB OOM-kill.
+    // Visibility is delayed by at most the debounce window plus one
+    // build; an invalidation is never lost (scheduleRebuild repays a
+    // mid-build invalidate via rebuildPending), and the snapshot is
+    // never stale forever. Dashboard mutations only need the new
+    // revision token — they must not pay a dozen Postgres round-trips
+    // inside the mutating request — and the rebuild itself is now
+    // deferred, not lazy-immediate.
+    this.scheduleRebuild();
     // Broadcast, because `reusePort` runs several gateway processes and each
     // holds its own snapshot: a console write handled by one of them left the
     // others serving pre-write routing until something else invalidated them.
@@ -842,13 +843,31 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
 
   private async build(revision: RoutingRevision): Promise<RouteSnapshot> {
     const startedAt = Date.now();
+    const before = process.memoryUsage();
+    const memMb = (usage: NodeJS.MemoryUsage): { rssMb: number; heapUsedMb: number } => ({
+      rssMb: Math.round(usage.rss / 1048576),
+      heapUsedMb: Math.round(usage.heapUsed / 1048576),
+    });
+    // Rebuilds are logged start-to-finish: before the 2026-11-11 OOM fix
+    // they were 100% silent in the journal, so a rebuild storm (a build
+    // every ~20-40 s, ~1 GB per snapshot) was invisible until the kernel
+    // killed the process. Duration, candidate count, and RSS/heap on both
+    // sides make the next storm visible in the first minute.
+    log.info("[snapshot] rebuild started", { revision, ...memMb(before) });
     try {
-      return await this.buildInner(revision);
+      const snapshot = await this.buildInner(revision);
+      log.info("[snapshot] rebuild completed", {
+        revision,
+        durationMs: Date.now() - startedAt,
+        candidates: snapshot.candidates.length,
+        ...memMb(process.memoryUsage()),
+      });
+      return snapshot;
     } catch (error) {
       log.error(
         "[snapshot] rebuild failed",
         error instanceof Error ? error : undefined,
-        { revision, durationMs: Date.now() - startedAt, thrownType: typeof error },
+        { revision, durationMs: Date.now() - startedAt, thrownType: typeof error, ...memMb(process.memoryUsage()) },
       );
       throw error;
     }
