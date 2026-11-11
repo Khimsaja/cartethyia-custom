@@ -167,8 +167,12 @@ if (boot) {
   boot.deps.scheduledTasks.start();
   // Warm the route snapshot before the first request lands: the first /v1/*
   // request otherwise pays the full catalog build synchronously (ten+ SELECTs).
-  // A failure here is a soft miss — the next request rebuilds as before.
-  void boot.deps.snapshotService.getSnapshot().catch((error: unknown) => {
+  // Retried with backoff — a single failed attempt (e.g. a saturated
+  // Postgres pool at boot, 2026-11-11) must not leave the snapshot cold
+  // until a request pays for it. A failure here is a soft miss — the next
+  // request rebuilds as before. warmup() never rejects; the catch is a
+  // last-resort guard for a bug inside the retry loop itself.
+  void boot.deps.snapshotService.warmup().catch((error: unknown) => {
     log.warn("[startup] initial route snapshot warm failed", error as Error);
   });
   if (!globalThis.__cartethyiaSignalsRegistered) {
@@ -184,6 +188,23 @@ if (boot) {
       log.error(
         "[process] unhandled rejection (kept alive)",
         reason instanceof Error ? reason : new Error(String(reason)),
+      );
+    });
+    // A Postgres session killed mid-transaction (FATAL 25P03, idle-in-
+    // transaction timeout) surfaces as a synchronous throw out of the
+    // socket read handler when the killed session belongs to a checked-out
+    // client: pg-pool removes its error listener on checkout and only
+    // re-emits 'error' for idle clients, and a checked-out client with no
+    // query in flight has no error listener — so EventEmitter throws
+    // instead of rejecting a promise, and the unhandledRejection handler
+    // above never sees it. On 2026-11-11 that throw killed the listener
+    // (systemd restarted it). The dead session is already gone and the
+    // pool drops the client, so absorbing keeps one dead session from
+    // becoming an outage; the failure stays visible in the error log.
+    process.on("uncaughtException", (error) => {
+      log.error(
+        "[process] uncaught exception (kept alive)",
+        error instanceof Error ? error : new Error(String(error)),
       );
     });
     // An in-place update signals SIGUSR2 before swapping the image so the old

@@ -612,6 +612,15 @@ function deepFreeze<T>(obj: T): T {
   return obj;
 }
 
+/** Delays between boot warm-up retries of the first snapshot build. */
+const WARMUP_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000];
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    if (typeof timer.unref === "function") timer.unref();
+  });
+
 export class InMemoryRouteSnapshotService implements RouteSnapshotService {
   private revision: RoutingRevision = 0;
   private snapshot: RouteSnapshot | undefined;
@@ -756,6 +765,42 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
       if (this.lastGood !== undefined) return this.lastGood;
       throw error;
     }
+  }
+
+  /**
+   * Boot warm-up: retry the first snapshot build until it succeeds or the
+   * attempts run out. The previous one-shot warm in main.ts left the
+   * snapshot cold whenever the first build failed (2026-11-11: the
+   * Postgres pool was saturated at boot, so the first /v1/models after a
+   * restart paid a ~20 s synchronous build). Never throws: an exhausted
+   * warm-up only logs, and the next request rebuilds as before.
+   */
+  async warmup(
+    options: { attempts?: number; delaysMs?: readonly number[] } = {},
+  ): Promise<void> {
+    const delaysMs =
+      options.delaysMs !== undefined && options.delaysMs.length > 0
+        ? options.delaysMs
+        : WARMUP_RETRY_DELAYS_MS;
+    const attempts = Math.max(1, options.attempts ?? delaysMs.length + 1);
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      if (attempt > 0) {
+        await sleep(delaysMs[Math.min(attempt - 1, delaysMs.length - 1)] ?? 5_000);
+      }
+      try {
+        await this.getSnapshot();
+        if (attempt > 0) {
+          log.info(`[startup] route snapshot warmed on attempt ${attempt + 1}`);
+        }
+        return;
+      } catch (error) {
+        log.warn(
+          `[startup] route snapshot warm failed (attempt ${attempt + 1}/${attempts})`,
+          error as Error,
+        );
+      }
+    }
+    log.warn("[startup] route snapshot warm exhausted; the first request will build it");
   }
 
   async invalidate(): Promise<RoutingRevision> {
