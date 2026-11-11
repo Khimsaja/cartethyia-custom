@@ -712,6 +712,7 @@ export interface AccountErrorSignals {
   readonly inferhubNoCapacity: boolean;
   readonly wafPromptRejection: boolean;
   readonly freebuffFreeModeRefusal: boolean;
+  readonly qoderAgentLimit: boolean;
   readonly deploymentInfraError: boolean;
   readonly quotaSignal: boolean;
   readonly policyRejection: boolean;
@@ -1031,6 +1032,21 @@ export function classifyAccountError(
     (providerCode === "free_mode_client_check_failed" ||
       lower.includes("free_mode_client_check_failed") ||
       lower.includes("developer message role is not supported"));
+  // TipRouter local patch (not upstream): a Qoder agent-limit refusal is
+  // a verdict on the (account, model) pair, not on the credential. Qoder
+  // answers `{"code":"115","message":"{\"agentLimitResetTime\":<ms>}"}`
+  // when the account's agent quota for the slot is exhausted; the named
+  // reset is created_at + 30 days, so it must NEVER become a cooldown.
+  // The failure is transient per-request — the same account answered the
+  // same lite slot 7 seconds after a 115 on 2026-11-11 — so the account
+  // must never flip to auth_invalidated/disabled the way ~141 OAuth
+  // accounts did during the 09:00 WIB wave (the classifier had no 115
+  // arm, so the bare 403 fell through to a credential verdict). Matched
+  // on the code when it is parsed out and on the body text when it is
+  // not (Qoder codes are usually matched on body text; see the 112 arm).
+  const qoderAgentLimit =
+    (providerId === "qoder" || providerId === "qodercn") &&
+    (providerCode === "115" || lower.includes("agentlimitresettime"));
   // Deployment/proxy infrastructure errors (DEPLOYMENT_DISABLED, etc.) are
   // transport-level proxy pool failures, not account quota exhaustion.
   // Mutating the account parks it for an hour while the pool itself stays
@@ -1418,6 +1434,7 @@ export function classifyAccountError(
     inferhubNoCapacity,
     wafPromptRejection,
     freebuffFreeModeRefusal,
+    qoderAgentLimit,
     deploymentInfraError,
     quotaSignal,
     policyRejection,
@@ -1566,6 +1583,38 @@ const ACCOUNT_ERROR_RULES: readonly AccountErrorRule[] = [
     match: (s) => s.freebuffFreeModeRefusal,
     decide: (s) =>
       s.result("policy_blocked_invalid_request", "cooldown", 0, null, s.reason("Request refused by freebuff free mode (unsupported role)"), false),
+  },
+  {
+    // TipRouter local patch (not upstream): Qoder's agent-limit refusal
+    // (`{"code":"115","message":"{\"agentLimitResetTime\":...}"}`) says
+    // this (account, model) pair is throttled right now, not that the
+    // credential died. Classified `rate_limit_transient` so the writer
+    // scopes it to the model pair: the account stays active for its other
+    // models and the pair rests 10 minutes. Fixed window on purpose —
+    // the reset the upstream names is created_at + 30 days, which must
+    // never park a working account for a month; the failure is transient
+    // per-request (same account, same slot, success 7 s after a 115 on
+    // 2026-11-11), so 10 minutes is the damping, not a sentence. The
+    // model scope also keeps the auto-disable intercept off this arm:
+    // without it a streak of 115s could disable the account. Placed
+    // before `credential-rejected` (same reason as the WAF/freebuff
+    // rules above): a bare 403 + account evidence would otherwise claim
+    // it as a credential rejection.
+    name: "qoder-agent-limit",
+    match: (s) => s.qoderAgentLimit,
+    decide: (s) => {
+      const cooldownMs = 10 * 60_000;
+      return s.result(
+        "rate_limit_transient",
+        "cooldown",
+        cooldownMs,
+        new Date(Date.now() + cooldownMs),
+        s.reason("Qoder agent limit for this model"),
+        s.origin === "upstream" && s.modelId !== undefined,
+        false,
+        true,
+      );
+    },
   },
   // Upstream 2.8.0 extracted the GitHub rules (incl. copilot-not-licensed)
   // into provider-rules/github.ts; the inline local copy is superseded.
