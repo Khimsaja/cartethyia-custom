@@ -13,11 +13,12 @@
  */
 import { GatewayError, explainGatewayError, formatPublicErrorMessage, publicErrorOrigin, publicGatewayErrorDetails } from "../../../protocol/gateway-error";
 import { classifyTerminalOutcome } from "../../failure-policy";
-import type { CanonicalEvent } from "../../../protocol/canonical-model";
+import type { CanonicalEvent, CanonicalRequest } from "../../../protocol/canonical-model";
 import type { CartethyiaDatabase } from "../../../persistence/db-handle";
 import type { NetworkPoolSelector } from "../../../network/pool/selector";
 import type { TelemetryBatchBuffer } from "../../../observability/telemetry-buffer";
 import type { ProxyRequestState } from "../../request/state";
+import { slimCanonicalRequestInPlace } from "../../request/state";
 import type { PreparedProxyRequest } from "../../request/preparer";
 import type { AdmissionLease } from "../../../security/admission/contracts";
 import type { Reservation } from "../../routing/route-model";
@@ -60,6 +61,15 @@ interface StreamFinalizeInput {
   readonly state: ProxyRequestState;
   readonly deps: StreamFinalizeDeps;
   readonly prepared: PreparedProxyRequest;
+  /**
+   * The projected copy dispatched to this candidate: a shallow spread whose
+   * `messages` still points at the original array, kept so a mid-stream
+   * Responses retry can re-dispatch the full request. Once the stream is
+   * released no retry can run, so the copy is slimmed there — otherwise the
+   * retained stream graph pins the whole prompt through the adapter's
+   * generator chain even after the state's own canonical request is slimmed.
+   */
+  readonly dispatchRequest?: CanonicalRequest | undefined;
   readonly candidate: StreamCandidateIdentity;
   readonly lease: AdmissionLease;
   readonly reservation: Reservation;
@@ -116,6 +126,15 @@ export class StreamFinalizer {
    * abort handler instead.
    */
   pullActive = false;
+  /**
+   * Called once when `releaseStreamResources` runs, so the stream's owner
+   * can sever its own closed-over references (projected dispatch request,
+   * upstream iterator, pipeline) that this finalizer does not own. The
+   * stream's closures stay reachable for as long as the Response lives;
+   * without this hook they would pin megabytes of dispatch context per
+   * attempt.
+   */
+  onStreamReleased?: () => void;
   /** Backstop timer for an abort whose release was deferred to another reader. */
   private releaseBackstop: ReturnType<typeof setTimeout> | undefined;
 
@@ -138,6 +157,11 @@ export class StreamFinalizer {
    * of the stall bound.
    */
   readonly streamStallTimeoutMs: number;
+  /**
+   * Max time without a consumer pull before the stream is treated as
+   * abandoned (see `startClientKeepalive`). Resolved once per stream.
+   */
+  readonly streamNoPullTimeoutMs: number;
 
   private readonly input: StreamFinalizeInput;
   private readonly pipeline: StreamEventPipeline;
@@ -148,18 +172,27 @@ export class StreamFinalizer {
   private streamSettled = false;
   private streamErrorPromise: Promise<void> | undefined;
   private streamReleased = false;
+  /** Wall time of the last consumer pull (or stream construction). */
+  private lastPullAtMs = Date.now();
   // Stable callback identity for paired abort-listener registration/removal.
   private readonly handleAbort = (): void => this.onStreamAbort();
 
   constructor(input: StreamFinalizeInput, pipeline: StreamEventPipeline, timeouts: {
     stallTimeoutMs: number;
     firstChunkTimeoutMs: number;
+    noPullTimeoutMs: number;
   }) {
     this.input = input;
     this.pipeline = pipeline;
     this.streamStallTimeoutMs = timeouts.stallTimeoutMs;
     this.streamFirstChunkTimeoutMs = timeouts.firstChunkTimeoutMs;
+    this.streamNoPullTimeoutMs = timeouts.noPullTimeoutMs;
     input.state.abortController.signal.addEventListener("abort", this.handleAbort, { once: true });
+  }
+
+  /** Records consumer demand: called on every `pull()` of the stream. */
+  recordPullActivity(): void {
+    this.lastPullAtMs = Date.now();
   }
 
   /**
@@ -251,6 +284,21 @@ export class StreamFinalizer {
         this.clearClientKeepaliveTimer();
         return;
       }
+      // A consumer that stopped pulling has abandoned the stream: the
+      // upstream may keep producing (and the stall watchdog keeps re-arming
+      // on every read), so without this the flight lives until the upstream
+      // finishes — minutes of retained prompt, transcript, and timers per
+      // vanished client. A pull pending on a slow upstream does not count:
+      // `pullActive` means the consumer is waiting, so only a stream with
+      // no reader at all is reaped. The budget is deliberately shorter than
+      // the stall bound: it bounds abandonment, not upstream silence.
+      if (!this.pullActive && Date.now() - this.lastPullAtMs > this.streamNoPullTimeoutMs) {
+        this.clearClientKeepaliveTimer();
+        state.abortController.abort(
+          new DOMException("client abandoned the stream (no pull for the no-pull budget)", "AbortError"),
+        );
+        return;
+      }
       // Do not accumulate comments when the consumer is applying
       // backpressure; the next pull will resume normal streaming.
       if (controller.desiredSize !== null && controller.desiredSize > 0)
@@ -285,7 +333,24 @@ export class StreamFinalizer {
    */
   onStreamAbort(): void {
     const { state } = this.input;
-    if (state.completed || this.streamSettled) return;
+    if (state.completed || this.streamSettled) {
+      // The outcome is already recorded (a sweep eviction or an earlier
+      // terminal path), but the stream graph still has to go: a late abort
+      // after eviction used to return here without releasing anything, which
+      // left the finalizer, pipeline, and prompt retained for the life of
+      // the process. The release is idempotent, so a stream that already
+      // released is a no-op.
+      this.settleUpstreamIterator();
+      if (this.streamController !== undefined) {
+        try {
+          this.streamController.close();
+        } catch {
+          // The consumer may have cancelled while the abort was handled.
+        }
+      }
+      void this.releaseStreamResources();
+      return;
+    }
     const reason = state.abortController.signal.reason;
     const drain = drainAbortReason(reason);
     const clientDisconnect =
@@ -390,6 +455,15 @@ export class StreamFinalizer {
     if (this.streamReleased) return;
     this.streamReleased = true;
     const { state, deps, prepared, lease, reservation, proxySlot } = this.input;
+    // Free the prompt first, before the lease release below: a lease release
+    // parked behind a hanging provider can delay the `finally` indefinitely,
+    // and the projected dispatch copy is the one holder the attempt loop's
+    // release never reaches (it is a separate object whose `messages` still
+    // points at the original array). Slimming here bounds what a retained
+    // stream graph can pin to a few scalars even if the Response itself
+    // outlives the release.
+    state.releaseCanonicalMessages();
+    if (this.input.dispatchRequest !== undefined) slimCanonicalRequestInPlace(this.input.dispatchRequest);
     // The deferred-release backstop has done its job — or the reader it
     // deferred to beat it here. Either way the timer must not outlive the
     // release, and an unref'd timer left armed would fire into a released
@@ -426,6 +500,12 @@ export class StreamFinalizer {
       // rejection above previously skipped cleanup entirely, leaking the
       // in-flight flight until the backstop sweep minutes later.
       state.cleanup();
+      // The transcript and response copy were already consumed by the
+      // terminal capture above (or never will be, on the abort backstop),
+      // so drop them here: the stream's closures retain this finalizer —
+      // and through it the pipeline — for as long as the Response lives.
+      this.pipeline.release();
+      this.onStreamReleased?.();
     }
   }
 

@@ -50,7 +50,7 @@ import { isWrappedInjectionProvider } from "../../../console/system-prompt/contr
 import { proxySuccessHeaders, buildUpstreamDispatchContext, buildDispatchNetworkBindings } from "../upstream";
 import type { AttemptLeaseOwnership } from "../leases";
 import type { ProviderContinuationScope } from "../../../providers/provider-contracts";
-import { resolveStreamFirstChunkTimeoutMs, resolveStreamStallTimeoutMs, resolveUpstreamTimeoutMs } from "../../../config/timeouts";
+import { resolveStreamFirstChunkTimeoutMs, resolveStreamNoPullTimeoutMs, resolveStreamStallTimeoutMs, resolveUpstreamTimeoutMs } from "../../../config/timeouts";
 import type { ProxyRequestState } from "../../request/state";
 import type { PreparedProxyRequest } from "../../request/preparer";
 import { drainAbortReason } from "../../shutdown-notice";
@@ -273,7 +273,7 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
   // A Responses-family wire may deliver a prelude with no client-renderable
   // content; the retry guard below keys on this flag.
   const recoverableResponsesPrelude = candidate.wire_family === "responses";
-  const pipeline = new StreamEventPipeline(
+  let pipeline = new StreamEventPipeline(
     canonicalRequest.source_surface,
     canonicalRequest.source_surface === "completion"
       ? {
@@ -304,6 +304,7 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
       reservation,
       proxySlot,
       providerCapture,
+      dispatchRequest,
       getIterator: () => iterator,
       ttfbFields,
       ...(leaseOwnership === undefined ? {} : { leaseOwnership }),
@@ -312,11 +313,12 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
     {
       stallTimeoutMs: resolveStreamStallTimeoutMs(),
       firstChunkTimeoutMs: resolveStreamFirstChunkTimeoutMs(),
+      noPullTimeoutMs: resolveStreamNoPullTimeoutMs(),
     },
   );
 
   let preContentRetryCount = 0;
-  const retryUncommittedResponsesPrelude = async (): Promise<boolean> => {
+  let retryUncommittedResponsesPrelude = async (): Promise<boolean> => {
     if (
       !recoverableResponsesPrelude ||
       pipeline.hasClientVisibleEvent ||
@@ -339,6 +341,28 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
     state.upstreamDispatchStartedAtMs = Date.now();
     return true;
   };
+
+  // Severs the stream closures' references to the dispatch context once the
+  // stream is terminal. A retained ReadableStream (its pull/start/cancel
+  // closures stay reachable for as long as the Response lives) otherwise
+  // pins the projected dispatch request with its full messages, the upstream
+  // iterator, and the pipeline — megabytes per streamed attempt, which is
+  // what grew the heap ~400 MB/min under agent traffic. The bindings are
+  // nulled through a cast (not `| null`) so the streaming loop keeps its
+  // non-null types: detach runs only on terminal paths, after the last use,
+  // and `pull` guards on the flag for a late call. The finalizer invokes
+  // this through `onStreamReleased`, so every terminal path funnels here —
+  // including the abort-listener path, where no stream-scope code runs.
+  let streamContextDetached = false;
+  const detachStreamContext = (): void => {
+    if (streamContextDetached) return;
+    streamContextDetached = true;
+    pipeline = null as unknown as typeof pipeline;
+    iterator = null as unknown as typeof iterator;
+    iterable = null as unknown as typeof iterable;
+    retryUncommittedResponsesPrelude = null as unknown as typeof retryUncommittedResponsesPrelude;
+  };
+  finalizer.onStreamReleased = detachStreamContext;
 
   const failureForAbort = (): GatewayError | undefined =>
     finalizer.abortFailure(state.abortController.signal.reason);
@@ -374,6 +398,9 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
       if (!first.done) pipeline.enqueueEvent(first.value, controller);
     },
     async pull(controller) {
+      // The stream is terminal and its context already detached: a late
+      // pull must not touch the nulled bindings.
+      if (streamContextDetached) return;
       finalizer.pullActive = true;
       try {
         if (state.abortController.signal.aborted) {
@@ -397,7 +424,7 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
               result = await nextWithAbort(iterator, state.abortController.signal);
             } catch (err) {
               finalizer.clearStallWatchdog();
-              if (await retryUncommittedResponsesPrelude()) continue;
+              if (!streamContextDetached && (await retryUncommittedResponsesPrelude())) continue;
               throw err;
             }
             finalizer.clearStallWatchdog();
@@ -406,7 +433,7 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
               return;
             }
             if (result.done) {
-              if (await retryUncommittedResponsesPrelude()) continue;
+              if (!streamContextDetached && (await retryUncommittedResponsesPrelude())) continue;
               await finalizer.finalizeStream(controller);
               return;
             }

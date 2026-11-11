@@ -185,6 +185,23 @@ export class StreamEventPipeline {
     };
   }
 
+  /**
+   * Drops the buffered diagnostics content (bounded event transcript and
+   * client-response copy). The terminal capture has already read them by the
+   * time the finalizer releases, so keeping them would only pin megabytes
+   * behind a retained stream. Counters reset with the buffers.
+   */
+  release(): void {
+    this.eventTranscriptHead.length = 0;
+    this.eventTranscriptTail.length = 0;
+    this.eventTranscriptTailStart = 0;
+    this.eventTranscriptHeadBytes = 0;
+    this.eventTranscriptTailBytes = 0;
+    this.clientResponseChunks.length = 0;
+    this.clientResponseLength = 0;
+    this.clientResponseTruncated = false;
+  }
+
   private recordTelemetryEvent(event: CanonicalEvent & { timestamp: number }): void {
     this.totalEventCount += 1;
     // Gated diagnostics: the transcript is only ever read by the terminal

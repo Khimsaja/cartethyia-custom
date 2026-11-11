@@ -183,4 +183,44 @@ describe("stream event pipeline capture-mode gating", () => {
     await new Response(stream).text();
     expect(pipeline.hasClientVisibleEvent).toBe(true);
   });
+
+  test("release drops the buffered transcript and response copy but keeps accounting", async () => {
+    // A retained ReadableStream keeps its finalizer (and through it this
+    // pipeline) alive; release() is the finalizer's way to drop the
+    // megabytes once the terminal capture has already read them.
+    const pipeline = new StreamEventPipeline("chat", { created: 1, include_usage: false }, false);
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        pipeline.enqueueEvent(contentEvent(0), controller);
+        pipeline.enqueueEvent(contentEvent(1), controller);
+        pipeline.enqueueEvent(
+          {
+            type: "terminal",
+            sequence_number: 2,
+            state: "complete",
+            stop_reason: "stop",
+            usage: USAGE,
+          },
+          controller,
+        );
+        pipeline.finishEncoders(controller);
+        controller.close();
+      },
+    });
+    await new Response(stream).text();
+    expect(pipeline.clientResponseText).toContain("event-0-");
+    const before = pipeline.telemetryEventTranscript;
+    const beforeEvents = "_truncated" in before ? before.events : before;
+    expect(beforeEvents.length).toBeGreaterThan(0);
+
+    pipeline.release();
+
+    const after = pipeline.telemetryEventTranscript;
+    const afterEvents = "_truncated" in after ? after.events : after;
+    expect(afterEvents).toHaveLength(0);
+    expect(pipeline.clientResponseText).toBe("");
+    expect(pipeline.eventCount).toBe(3);
+    expect(pipeline.terminal?.state).toBe("complete");
+    expect(pipeline.usage).toEqual(USAGE);
+  });
 });
