@@ -530,9 +530,20 @@ function expiresbuffChatBody(
   // (which is usually the user turn).
   const messages = body["messages"];
   if (Array.isArray(messages)) {
+    // Free mode rejects any `developer` role message
+    // (`free_mode_client_check_failed`: "The developer message role is not
+    // supported."). The canonical encoder emits `request.instructions` as
+    // developer messages, so rewrite them to `system` here: the upstream
+    // already accepts multiple system messages (the worker template plus
+    // the caller's own system turns), and the content is preserved
+    // verbatim. Without this every request carrying instructions failed
+    // on all 10 accounts (2026-11-10/11, last_error `auth_invalidated`).
+    const rewritten = (
+      messages as Array<Record<string, unknown>>
+    ).map((m) => (m?.role === "developer" ? { ...m, role: "system" } : m));
     body["messages"] = [
       { role: "system", content: FREEBUFF_WORKER_SYSTEM_PROMPT },
-      ...messages,
+      ...rewritten,
     ];
   } else {
     body["messages"] = [{ role: "system", content: FREEBUFF_WORKER_SYSTEM_PROMPT }];

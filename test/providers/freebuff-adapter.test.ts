@@ -177,6 +177,32 @@ describe("Freebuff adapter dispatch", () => {
     expect(texts).toBe("Hello");
   });
 
+  test("rewrites developer instructions to system for free mode", async () => {
+    // Free mode rejects any `developer` role message
+    // (`free_mode_client_check_failed`). The canonical encoder emits
+    // `request.instructions` as developer messages, so the adapter must
+    // rewrite them to `system` — the upstream already accepts multiple
+    // system messages — while preserving the text verbatim.
+    const seen: Array<{ url: string; init: RequestInit }> = [];
+    const adapter = createFreebuffAdapter();
+    const request = canonicalRequest();
+    request.instructions = [{ kind: "text", text: "answer concisely" }];
+    const events: unknown[] = [];
+    for await (const ev of adapter.dispatch(request, dispatchTarget(), await dispatchContext(seen))) {
+      events.push(ev);
+    }
+    const chatCall = seen.find((c) => c.url.includes("/chat/completions"));
+    expect(chatCall).toBeDefined();
+    const body = JSON.parse(String(chatCall!.init.body)) as Record<string, unknown>;
+    const messages = body["messages"] as Array<{ role: string; content: string }>;
+    expect(messages.some((m) => m.role === "developer")).toBe(false);
+    expect(messages[0]?.role).toBe("system");
+    expect(messages[0]?.content).toBe(FREEBUFF_WORKER_SYSTEM_PROMPT);
+    const rewritten = messages.find((m) => m.content === "answer concisely");
+    expect(rewritten?.role).toBe("system");
+    expect(messages.find((m) => m.role === "user")?.content).toContain("say hello");
+  });
+
   test("dispatching a virtual id resolves the roster key's handle", async () => {
     const seen: Array<{ url: string; init: RequestInit }> = [];
     const adapter = createFreebuffAdapter();

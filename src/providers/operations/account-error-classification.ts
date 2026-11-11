@@ -711,6 +711,7 @@ export interface AccountErrorSignals {
   readonly priceRefusal: boolean;
   readonly inferhubNoCapacity: boolean;
   readonly wafPromptRejection: boolean;
+  readonly freebuffFreeModeRefusal: boolean;
   readonly deploymentInfraError: boolean;
   readonly quotaSignal: boolean;
   readonly policyRejection: boolean;
@@ -1017,6 +1018,19 @@ export function classifyAccountError(
   const wafPromptRejection =
     lower.includes("web application firewall") ||
     (lower.includes("attack signature") && statusCode === 403);
+  // TipRouter local patch (not upstream): a free-mode shape refusal is a
+  // verdict on the *request*, not on the account. Freebuff free mode
+  // answers `{"error":"free_mode_client_check_failed","message":"The
+  // developer message role is not supported."}` for any request carrying a
+  // `developer` role message. The credential is fine, so it must never
+  // flip the account to auth_invalidated/disabled. The encoder fix in
+  // freebuff.ts stops the shape from being sent at all; this signal is
+  // the safety net for any other free-mode shape refusal.
+  const freebuffFreeModeRefusal =
+    providerId === "freebuff" &&
+    (providerCode === "free_mode_client_check_failed" ||
+      lower.includes("free_mode_client_check_failed") ||
+      lower.includes("developer message role is not supported"));
   // Deployment/proxy infrastructure errors (DEPLOYMENT_DISABLED, etc.) are
   // transport-level proxy pool failures, not account quota exhaustion.
   // Mutating the account parks it for an hour while the pool itself stays
@@ -1403,6 +1417,7 @@ export function classifyAccountError(
     priceRefusal,
     inferhubNoCapacity,
     wafPromptRejection,
+    freebuffFreeModeRefusal,
     deploymentInfraError,
     quotaSignal,
     policyRejection,
@@ -1533,6 +1548,24 @@ const ACCOUNT_ERROR_RULES: readonly AccountErrorRule[] = [
     match: (s) => s.wafPromptRejection,
     decide: (s) =>
       s.result("policy_blocked_invalid_request", "cooldown", 0, null, s.reason("Request blocked by the provider WAF"), false),
+  },
+  {
+    // TipRouter local patch (not upstream): a free-mode shape refusal says
+    // this request was refused for carrying a role the free mode does not
+    // support (`free_mode_client_check_failed` — "The developer message
+    // role is not supported."). The credential is fine, so the account
+    // must not be mutated: `mutatesAccount` is false and the deadline is
+    // left null. The category is `policy_blocked_invalid_request`
+    // because the refusal is a verdict on the request, not the
+    // credential. Placed before `credential-rejected` (same reason as the
+    // WAF rule above): a bare 403 + account evidence would otherwise
+    // claim it as a credential rejection. The encoder fix in freebuff.ts
+    // stops the developer role from being sent at all, so this arm is a
+    // safety net for any other free-mode shape refusal.
+    name: "freebuff-free-mode-refusal",
+    match: (s) => s.freebuffFreeModeRefusal,
+    decide: (s) =>
+      s.result("policy_blocked_invalid_request", "cooldown", 0, null, s.reason("Request refused by freebuff free mode (unsupported role)"), false),
   },
   // Upstream 2.8.0 extracted the GitHub rules (incl. copilot-not-licensed)
   // into provider-rules/github.ts; the inline local copy is superseded.
