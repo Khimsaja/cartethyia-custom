@@ -289,6 +289,12 @@ test("release drops the prepared plan and upstream iterator so a retained finali
   void finalizer;
   expect(state.preparedRequest).toBeUndefined();
   Bun.gc(true);
+  // Bun 1.4.2 keeps the helper's async frame (and the objects it closed
+  // over) alive until the next tick after the await unwinds; a zero-delay
+  // sleep lets that frame drop before the second collection. Bun 1.4.4
+  // collects on the first pass, but the sleep is harmless there.
+  await Bun.sleep(0);
+  Bun.gc(true);
   expect(weakPrepared.deref()).toBeUndefined();
   expect(weakGenerator.deref()).toBeUndefined();
   expect(weakDispatch.deref()).toBeUndefined();
