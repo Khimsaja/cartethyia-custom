@@ -252,7 +252,7 @@ function subscribeInFlightSnapshot(
  * object — the state, the prepared request, the finalizer's input — sees the
  * slimmed request at once.
  */
-function slimCanonicalRequestInPlace(request: CanonicalRequest): void {
+export function slimCanonicalRequestInPlace(request: CanonicalRequest): void {
   request.messages = [];
   // The optional fields are deleted rather than set to undefined: the
   // project compiles with exactOptionalPropertyTypes, so `undefined` is not

@@ -92,6 +92,21 @@ export function resolveStreamFirstChunkTimeoutMs(): number {
   );
 }
 
+/**
+ * Max time a stream goes without the consumer pulling before it is treated
+ * as abandoned and aborted. Defaults to 120s: a live consumer drains every
+ * chunk promptly (highWaterMark 0), while a client that vanished mid-flight
+ * stops pulling entirely. A pull pending on a slow upstream does not count
+ * against this budget — the stall watchdog governs upstream silence — so a
+ * legitimately slow reasoning stream is never cut short by it.
+ */
+export function resolveStreamNoPullTimeoutMs(): number {
+  return readInt(
+    "CARTETHYIA_STREAM_NO_PULL_TIMEOUT_MS",
+    CONFIG_SPEC.CARTETHYIA_STREAM_NO_PULL_TIMEOUT_MS,
+  );
+}
+
 /** Base delay for candidate-failover backoff (full-jitter exponential). Default 100ms. */
 export function resolveFallbackRetryBaseMs(): number {
   return readInt("CARTETHYIA_FALLBACK_RETRY_BASE_MS", CONFIG_SPEC.CARTETHYIA_FALLBACK_RETRY_BASE_MS);

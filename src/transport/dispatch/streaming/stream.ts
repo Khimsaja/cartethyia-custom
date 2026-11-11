@@ -402,6 +402,7 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
       // pull must not touch the nulled bindings.
       if (streamContextDetached) return;
       finalizer.pullActive = true;
+      finalizer.recordPullActivity();
       try {
         if (state.abortController.signal.aborted) {
           await finishAbortedPull(controller);
