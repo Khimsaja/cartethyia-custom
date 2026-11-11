@@ -439,6 +439,11 @@ export class StreamFinalizer {
    * would keep gateway capacity occupied after the client is gone.
    */
   settleUpstreamIterator(): void {
+    // Release drops `input.getIterator` (see `releaseStreamResources`), so a
+    // late abort/cancel after release has no iterator left to settle — and
+    // must not throw on the deleted field. Settle-before-release is the only
+    // valid order: `cancel()` settles, then releases.
+    if (this.streamReleased) return;
     try {
       const settlement = this.input.getIterator().return?.();
       if (settlement) {
@@ -507,6 +512,32 @@ export class StreamFinalizer {
       this.pipeline.release();
       this.onStreamReleased?.();
     }
+    // Drop the per-attempt plan, dispatch copy, upstream iterator, and
+    // provider capture. Slimming the prompt above is not enough: the
+    // prepared request carries the ordered eligible candidates (~20k
+    // objects for a popular model), the iterator is the provider's async
+    // generator with its frame, and the capture holds the translated
+    // exchange — all still reachable through this finalizer for as long
+    // as the Response lives. The scalars telemetry needs (candidate
+    // identity, lease ids) stay on the input; nothing reads the dropped
+    // fields after release, which is always the last step of every
+    // terminal path. The fields are readonly on the input interface, so
+    // they are nulled through a cast, the same pattern `detachStreamContext`
+    // uses for the stream-scope bindings.
+    const mutableInput = this.input as unknown as {
+      prepared?: PreparedProxyRequest;
+      dispatchRequest?: CanonicalRequest;
+      getIterator?: () => AsyncIterator<CanonicalEvent>;
+      providerCapture?: ProviderExchangeCapture;
+    };
+    // Deleted rather than set to undefined: the project compiles with
+    // exactOptionalPropertyTypes, so `undefined` is not a valid value for
+    // these fields — the same reason `slimCanonicalRequestInPlace` deletes
+    // rather than assigns.
+    delete mutableInput.prepared;
+    delete mutableInput.dispatchRequest;
+    delete mutableInput.getIterator;
+    delete mutableInput.providerCapture;
   }
 
   /**

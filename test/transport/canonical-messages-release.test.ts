@@ -135,3 +135,47 @@ test("release is a no-op without a canonical request", () => {
   expect(() => state.releaseCanonicalMessages()).not.toThrow();
   expect(state.canonicalRequest?.messages).toEqual([]);
 });
+
+test("cleanup drops the prepared plan and staged capture, not just the prompt", () => {
+  const store = new ProxyRequestStateStore(undefined);
+  const state = store.initialize(
+    new Request("https://example.test/v1/chat/completions", { method: "POST" }),
+    Date.now(),
+    60_000,
+  );
+  state.canonicalRequest = bigRequest();
+  // The prepared request carries the ordered eligible candidates (tens of
+  // thousands of objects for a popular model) plus the plan; the staged
+  // capture holds the translated exchange. A state retained past its
+  // request — an abort-signal listener or a stream closure keeps it
+  // reachable for as long as the Response lives — used to pin all three
+  // even after the prompt itself was slimmed, because cleanup() never
+  // touched them.
+  state.preparedRequest = {
+    canonicalRequest: bigRequest(),
+    authorization: {} as never,
+    candidate: {} as never,
+    eligibleRouteCandidates: Array.from({ length: 100 }, (_, i) => ({ id: i })) as never,
+    plan: {} as never,
+    caller: {} as never,
+    estimatedInputTokens: 0,
+    estimatedOutputTokens: 0,
+    deadlineMs: Date.now() + 60_000,
+    routingEngine: {} as never,
+    admissionService: {} as never,
+  };
+  state.payloadCapture = { request: { body: "x".repeat(1000) } } as never;
+  state.ingressBody = { messages: [{ role: "user", content: "x".repeat(1000) }] };
+
+  state.cleanup();
+
+  expect(state.canonicalRequest?.messages).toEqual([]);
+  expect(state.preparedRequest).toBeUndefined();
+  expect(state.payloadCapture).toBeUndefined();
+  expect(state.ingressBody).toBeUndefined();
+  // Telemetry scalars survive: the model is what late readers still need.
+  expect(state.canonicalRequest?.model).toBe("bansos/test");
+  expect(store.statesCount()).toBe(0);
+  // Cleanup is idempotent: a second call must not throw.
+  expect(() => state.cleanup()).not.toThrow();
+});

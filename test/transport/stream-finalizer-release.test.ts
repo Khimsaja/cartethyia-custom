@@ -27,7 +27,7 @@ import { StreamFinalizer } from "../../src/transport/dispatch/streaming/finalize
 import { StreamEventPipeline } from "../../src/transport/dispatch/streaming/encoder";
 import { ProxyRequestStateStore } from "../../src/transport/request/state";
 import type { ProxyRequestState } from "../../src/transport/request/state";
-import type { CanonicalRequest } from "../../src/protocol/canonical-model";
+import type { CanonicalEvent, CanonicalRequest } from "../../src/protocol/canonical-model";
 import type { PreparedProxyRequest } from "../../src/transport/request/preparer";
 import type { CartethyiaDatabase } from "../../src/persistence/db-handle";
 import type { AdmissionLease } from "../../src/security/admission/contracts";
@@ -115,6 +115,19 @@ function makeState(): { store: ProxyRequestStateStore; state: ProxyRequestState 
   return { store, state };
 }
 
+// Builds the upstream iterator in its own scope; see the note in the
+// WeakRef test below for why the getter must not share a scope with the
+// test's other closures.
+function makeUpstreamIterator(): {
+  getIterator: () => AsyncGenerator<CanonicalEvent>;
+  weakGenerator: WeakRef<AsyncGenerator<CanonicalEvent>>;
+} {
+  const generator = (async function* (): AsyncGenerator<CanonicalEvent> {
+    yield { type: "message_start", sequence_number: 1 };
+  })();
+  return { getIterator: () => generator, weakGenerator: new WeakRef(generator) };
+}
+
 test("release slims the projected dispatch copy, not just the state request", async () => {
   const { store, state } = makeState();
   const canonical = bigRequest();
@@ -190,4 +203,93 @@ test("the no-pull reaper aborts a stream the consumer abandoned", async () => {
   expect(store.statesCount()).toBe(0);
   expect(dispatchRequest.messages).toEqual([]);
   expect(state.canonicalRequest?.messages).toEqual([]);
+});
+
+test("release drops the prepared plan and upstream iterator so a retained finalizer pins only scalars", async () => {
+  // Everything the release must drop is built inside this helper: once it
+  // returns, the only strong references left are the finalizer itself
+  // (kept alive on purpose — a retained stream graph is the leak's
+  // precondition) and the state. If the finalizer still held the prepared
+  // plan or the upstream iterator, the WeakRefs would stay alive and the
+  // test would fail.
+  async function buildAndRelease(): Promise<{
+    finalizer: StreamFinalizer;
+    state: ProxyRequestState;
+    weakPrepared: WeakRef<object>;
+    weakGenerator: WeakRef<AsyncGenerator>;
+    weakDispatch: WeakRef<object>;
+  }> {
+    const { state } = makeState();
+    const canonical = bigRequest();
+    state.canonicalRequest = canonical;
+    const dispatchRequest: CanonicalRequest = { ...canonical };
+    // A plan with thousands of eligible candidates is what the 11 Nov
+    // heap showed a retained finalizer pinning per streamed attempt.
+    const prepared = {
+      canonicalRequest: canonical,
+      eligibleRouteCandidates: Array.from({ length: 500 }, (_, i) => ({ id: i })),
+      routingEngine: { release: async () => undefined },
+    } as unknown as PreparedProxyRequest;
+    state.preparedRequest = prepared;
+    // The iterator getter is built in its own scope on purpose: in Bun,
+    // closures created in the same scope share one lexical environment, so
+    // if `getIterator` and the sibling `ttfbFields` closure below were
+    // created side by side, the surviving `ttfbFields` would keep the
+    // generator alive through the shared environment even after the
+    // finalizer deleted its own `getIterator` reference. The production
+    // call site has the same sharing, but the finalizer can only drop its
+    // own references — this test measures exactly that.
+    const { getIterator, weakGenerator } = makeUpstreamIterator();
+    const pipeline = new StreamEventPipeline("chat", { created: 1, include_usage: false }, false);
+    const finalizer = new StreamFinalizer(
+      {
+        state,
+        deps: {
+          db: undefined as unknown as CartethyiaDatabase,
+          poolSelector: undefined,
+          telemetryBuffer: undefined,
+          snapshotService: undefined,
+        },
+        prepared,
+        dispatchRequest,
+        candidate: {
+          providerId: "test-provider",
+          modelId: "test-model",
+          accountId: undefined,
+          accountLabel: undefined,
+          networkPoolId: undefined,
+        },
+        lease: undefined as unknown as AdmissionLease,
+        reservation: undefined as unknown as Reservation,
+        proxySlot: undefined,
+        providerCapture: {
+          request: { method: "POST", url: "https://example.test", headers: {}, body: "x".repeat(1000) },
+          response: Promise.resolve(null),
+        } as unknown as ProviderExchangeCapture,
+        getIterator,
+        ttfbFields: () => ({}),
+      },
+      pipeline,
+      { stallTimeoutMs: 360_000, firstChunkTimeoutMs: 200_000, noPullTimeoutMs: 120_000 },
+    );
+    await finalizer.releaseStreamResources();
+    return {
+      finalizer,
+      state,
+      weakPrepared: new WeakRef(prepared),
+      weakGenerator,
+      weakDispatch: new WeakRef(dispatchRequest),
+    };
+  }
+
+  const { finalizer, state, weakPrepared, weakGenerator, weakDispatch } = await buildAndRelease();
+  // Keep the finalizer alive: the point is that the plan is collectable
+  // even while the finalizer itself is still reachable from a retained
+  // stream.
+  void finalizer;
+  expect(state.preparedRequest).toBeUndefined();
+  Bun.gc(true);
+  expect(weakPrepared.deref()).toBeUndefined();
+  expect(weakGenerator.deref()).toBeUndefined();
+  expect(weakDispatch.deref()).toBeUndefined();
 });

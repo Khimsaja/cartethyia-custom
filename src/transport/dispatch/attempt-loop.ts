@@ -561,6 +561,13 @@ export async function runAttemptLoop<TResult, TAdapter>(
       }
       if (terminalAttempt) {
         metrics.proxy_requests_total.inc(1, { status: cancelled ? "cancelled" : "failed" });
+        // No further attempt will rebuild an upstream request from this
+        // prompt: the loop exits here, so the parsed messages can go now
+        // instead of waiting for the finalizer or the backstop sweep — a
+        // failed request used to keep its full prompt in the state until
+        // then, and a state retained past its request pins it for the life
+        // of the process.
+        state.releaseCanonicalMessages();
         throw normalizeEscapeError(error, state.abortController.signal);
       }
       // A failed combo member stays flagged for this request. Move it behind
@@ -639,5 +646,7 @@ export async function runAttemptLoop<TResult, TAdapter>(
     }));
   }
   metrics.proxy_requests_total.inc(1, { status: "failed" });
+  // The loop is exhausted: no attempt remains to rebuild from this prompt.
+  state.releaseCanonicalMessages();
   throw normalizeEscapeError(lastError, state.abortController.signal);
 }

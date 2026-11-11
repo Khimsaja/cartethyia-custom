@@ -502,6 +502,29 @@ export class ProxyRequestStateStore {
       cleanup: () => {
         if (cleaned) return;
         cleaned = true;
+        // Release the heavy payload first: a state retained past its
+        // request (an abort-signal listener or a stream closure keeps it
+        // reachable for as long as the Response lives) otherwise pins the
+        // full prompt, the prepared plan with its ~20k eligible
+        // candidates, and the staged capture for the life of the process.
+        // Telemetry and payload capture already ran before cleanup on
+        // every normal path; the sweep evicts only dead flights, whose
+        // staged capture is already lost. The canonical release runs
+        // before dropping the prepared request because it slims the
+        // prepared request's canonical copy too.
+        try {
+          state.releaseCanonicalMessages();
+        } catch {
+        }
+        try {
+          state.releaseIngressBody();
+        } catch {
+        }
+        // Deleted rather than set to undefined: the project compiles with
+        // exactOptionalPropertyTypes, so `undefined` is not a valid value
+        // for these fields.
+        delete state.preparedRequest;
+        delete state.payloadCapture;
         // Every step is guarded: one throwing cleanup must not skip the
         // remaining cleanups, the abort, or the map eviction (leak).
         try {
