@@ -56,7 +56,22 @@ interface InvalidationNotice {
   readonly key?: string;
   /** Originating process, so the publisher can ignore its own echo. */
   readonly origin: string;
+  /**
+   * Routing-namespace only: which tier triggered the invalidation.
+   * Omitted by publishers from before the two-tier gate (rolling deploys)
+   * — subscribers default those to "operator", the safe side.
+   */
+  readonly kind?: RoutingInvalidationKind;
 }
+
+/**
+ * Which tier of route-snapshot invalidation a notice belongs to.
+ *
+ * "operator" is a console write or anything a human did that must be
+ * visible quickly; "background" is automatic health/probe churn. The
+ * tiers differ only in scheduling delay — never in what gets built.
+ */
+export type RoutingInvalidationKind = "operator" | "background";
 
 /** Per-process identity, so a publisher ignores its own broadcast. */
 const ORIGIN = `${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
@@ -167,17 +182,26 @@ export function publishInvalidation(notice: Omit<InvalidationNotice, "origin">):
  *
  * Separate from {@link publishInvalidation} only in readability: the snapshot
  * is not a keyed cache entry, so it has no namespace key to name. Peers drop
- * their whole snapshot and rebuild lazily.
+ * their whole snapshot and rebuild lazily. The notice carries the tier, so
+ * peers rebuild on the same tier the origin did — an operator edit on one
+ * process does not sit for the background window on the others.
  */
-export function publishRoutingInvalidation(): void {
-  publishInvalidation({ namespace: "routing" });
+export function publishRoutingInvalidation(kind: RoutingInvalidationKind = "operator"): void {
+  publishInvalidation({ namespace: "routing", kind });
 }
 
-/** Subscribes to peer route-snapshot invalidations. */
-export function subscribeRoutingInvalidation(handler: () => void): () => void {
+/**
+ * Subscribes to peer route-snapshot invalidations.
+ *
+ * The handler receives the originating tier; notices from publishers that
+ * predate the two-tier gate carry no tier and arrive as "operator".
+ */
+export function subscribeRoutingInvalidation(
+  handler: (kind: RoutingInvalidationKind) => void,
+): () => void {
   return subscribeInvalidation((notice) => {
     if (notice.namespace !== "routing") return;
-    handler();
+    handler(notice.kind ?? "operator");
   });
 }
 

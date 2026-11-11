@@ -61,7 +61,7 @@ export async function recordPoolDispatchOutcome(
     readonly errorOrigin?: string;
     /** The provider the attempt dialed; used to clear its stale egress marker on success. */
     readonly providerId?: string;
-    readonly snapshotInvalidator?: { invalidate(): unknown };
+    readonly snapshotInvalidator?: { invalidate(): unknown; invalidateBackground?(): unknown };
   },
 ): Promise<void> {
   const category = input.succeeded ? undefined : poolFaultCategory(input.error, input.errorOrigin);
@@ -172,7 +172,7 @@ export async function recordPoolDispatchOutcome(
       ...(lastSuccessAt ? { lastSuccessAt: lastSuccessAt.toISOString() } : {}),
     });
   }
-  if (statusChanged) await input.snapshotInvalidator?.invalidate();
+  if (statusChanged) await input.snapshotInvalidator?.invalidateBackground?.();
 }
 
 /** Disables a proxy pool after a proxy-origin payment or authentication failure. */
@@ -180,7 +180,7 @@ export async function disablePoolForProxyHttpStatus(
   db: CartethyiaDatabase,
   poolId: string,
   statusCode: number,
-  snapshotInvalidator?: { invalidate(): unknown },
+  snapshotInvalidator?: { invalidate(): unknown; invalidateBackground?(): unknown },
 ): Promise<boolean> {
   const failure =
     statusCode === 402
@@ -233,7 +233,7 @@ export async function disablePoolForProxyHttpStatus(
     lastErrorCategory: failure.category,
     lastErrorAt: now.toISOString(),
   });
-  await snapshotInvalidator?.invalidate();
+  await snapshotInvalidator?.invalidateBackground?.();
   return true;
 }
 

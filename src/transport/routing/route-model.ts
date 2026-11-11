@@ -389,7 +389,28 @@ export interface Reservation {
 export interface RouteSnapshotService {
   getSnapshot(): Promise<RouteSnapshot>;
   invalidate(): Promise<RoutingRevision>;
+  /**
+   * Health/probe-triggered invalidation: a single account or pool flipping
+   * state, a probe recovering an account, a quota refresh healing one.
+   * These arrive continuously (~100/min of health churn) and almost never
+   * change routing for any given request, so they rebuild on the
+   * BACKGROUND tier — batched into one rebuild per background window
+   * instead of one per event. The pending invalidation is never lost: the
+   * background timer guarantees a rebuild, and an operator invalidate
+   * pulls it forward. See InMemoryRouteSnapshotService below.
+   */
+  invalidateBackground(): Promise<RoutingRevision>;
 }
+
+/**
+ * Which tier of invalidation a rebuild request belongs to.
+ *
+ * "operator" is a console write or anything a human did that must be
+ * visible quickly; "background" is automatic health/probe churn. The
+ * tiers differ only in scheduling delay — never in what gets built.
+ * Alias of the notice tier in the shared cache, so the two stay one type.
+ */
+export type SnapshotInvalidationKind = RoutingInvalidationKind;
 
 /** One admission decision: whether the candidate got a slot, and why not. */
 export interface AdmissionDecision {
@@ -596,7 +617,11 @@ export function accountsRateLimitedError(
 
 
 
-import { publishRoutingInvalidation, subscribeRoutingInvalidation } from "../../persistence/shared-cache";
+import {
+  publishRoutingInvalidation,
+  subscribeRoutingInvalidation,
+  type RoutingInvalidationKind,
+} from "../../persistence/shared-cache";
 
 export type SnapshotBuilder = () => Promise<
   Omit<RouteSnapshot, "revision" | "created_at"> & { created_at?: number }
@@ -668,14 +693,25 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
 
   constructor(
     private readonly builder: SnapshotBuilder,
-    options: { readonly rebuildDebounceMs?: number } = {},
+    options: {
+      readonly rebuildDebounceMs?: number;
+      readonly backgroundDebounceMs?: number;
+    } = {},
   ) {
     this.rebuildDebounceMs = options.rebuildDebounceMs ?? 30000;
+    // The background tier defaults to the operator window: callers that do
+    // not configure it (notably the test suite) keep today's behavior
+    // exactly. Production passes a much longer window at the boot site.
+    this.backgroundDebounceMs = options.backgroundDebounceMs ?? this.rebuildDebounceMs;
     // Peers' mutations arrive once per process, not per instance: the handler
     // schedules a background rebuild, which is the only one there is.
-    this.unsubscribe = subscribeRoutingInvalidation(() => {
+    // The notice carries the originating tier, so a peer rebuilds on the
+    // same tier the origin did — an operator edit on one process does not
+    // sit for the background window on the others.
+    this.unsubscribe = subscribeRoutingInvalidation((kind) => {
       this.revision += 1;
-      this.scheduleRebuild();
+      this.invalidationsSinceLastBuild += 1;
+      this.scheduleRebuild(kind);
     });
   }
 
@@ -684,6 +720,34 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
 
   /** Wall-clock debounce for coalescing invalidate bursts. */
   private readonly rebuildDebounceMs: number;
+  /**
+   * Wall-clock debounce for the background tier (health/probe
+   * invalidations). Defaults to the operator window, so callers that do
+   * not configure it — notably the test suite — keep today's behavior
+   * exactly. Production passes a much longer window at the boot site:
+   * health churn is continuous, so a 5-minute batching window caps
+   * background rebuilds at 12/hour instead of one per ~35 s.
+   */
+  private readonly backgroundDebounceMs: number;
+  /**
+   * Which tier the pending rebuild timer belongs to. An operator
+   * invalidation shortens a pending background timer to the operator
+   * window (see scheduleRebuild); a background one never lengthens an
+   * operator timer.
+   */
+  private rebuildTimerKind: SnapshotInvalidationKind | undefined;
+  /**
+   * Tier owed by an invalidation that landed while a build was in flight.
+   * Operator wins: a background follow-up must not delay an operator
+   * change that arrived during the same build.
+   */
+  private pendingKind: SnapshotInvalidationKind | undefined;
+  /**
+   * Invalidations (both tiers, local and peer) since the last build
+   * started. Logged with each rebuild so the next storm shows its churn
+   * per build, not only its build rate.
+   */
+  private invalidationsSinceLastBuild = 0;
 
   /**
    * Schedules a background rebuild at the current revision. Debounced: while a
@@ -691,8 +755,14 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
    * pending rebuild picks up the latest. Single-flight by construction — the
    * rebuild itself reuses {@link building}, so concurrent callers share one
    * promise, whatever its revision tag.
+   *
+   * Two tiers share the one timer. A background invalidation is batched on
+   * the long window; an operator invalidation shortens a pending
+   * background timer to the operator window, so a console edit never waits
+   * out a health batch. A background invalidation never lengthens a
+   * pending operator timer.
    */
-  private scheduleRebuild(): void {
+  private scheduleRebuild(kind: SnapshotInvalidationKind): void {
     if (this.stopped) return;
     // SINGLEFLIGHT_XREV: a build already in flight owns the next rebuild.
     // An invalidate landing mid-build only marks a follow-up as owed — it
@@ -703,17 +773,36 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
     // returning on the timer alone would swallow this invalidation.
     if (this.building !== undefined) {
       this.rebuildPending = true;
+      if (kind === "operator" || this.pendingKind === undefined) {
+        this.pendingKind = kind;
+      }
       return;
     }
-    if (this.rebuildTimer !== undefined) return;
+    if (this.rebuildTimer !== undefined) {
+      if (kind === "operator" && this.rebuildTimerKind === "background") {
+        // Pull the pending background rebuild forward: the operator's
+        // change must be visible within the operator window, not the
+        // background one. The background invalidation is not lost — the
+        // rebuilt snapshot picks up the latest revision either way.
+        clearTimeout(this.rebuildTimer);
+        this.rebuildTimer = undefined;
+        this.rebuildTimerKind = undefined;
+      } else {
+        return;
+      }
+    }
+    const delayMs =
+      kind === "operator" ? this.rebuildDebounceMs : this.backgroundDebounceMs;
+    this.rebuildTimerKind = kind;
     this.rebuildTimer = setTimeout(() => {
       this.rebuildTimer = undefined;
+      this.rebuildTimerKind = undefined;
       void this.rebuildNow().catch((error: unknown) => {
         // A background rebuild failure is a soft miss: requests served the
         // last-completed snapshot, and the next invalidation retries.
         log.warn("[route-snapshot] background rebuild failed", error as Error);
       });
-    }, this.rebuildDebounceMs);
+    }, delayMs);
     if (typeof this.rebuildTimer.unref === "function") this.rebuildTimer.unref();
   }
 
@@ -740,10 +829,15 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
         // SINGLEFLIGHT_XREV: repay exactly one follow-up for every
         // invalidate that landed while this build ran, at the latest
         // revision. Debounced via scheduleRebuild so a fresh burst still
-        // coalesces instead of chaining builds.
+        // coalesces instead of chaining builds. The follow-up keeps the
+        // owed tier: a background-only burst is repaid on the background
+        // window, an operator change that arrived mid-build on the
+        // operator one.
         if (this.rebuildPending && !this.stopped) {
           this.rebuildPending = false;
-          this.scheduleRebuild();
+          const kind = this.pendingKind ?? "operator";
+          this.pendingKind = undefined;
+          this.scheduleRebuild(kind);
         }
       })
       .catch(() => {});
@@ -808,6 +902,7 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
 
   async invalidate(): Promise<RoutingRevision> {
     this.revision += 1;
+    this.invalidationsSinceLastBuild += 1;
     // Coalesced rebuild (2026-11-11 OOM fix): the cache is NOT dropped
     // here. The previous snapshot keeps serving (lastGood) until the
     // single debounced background rebuild at the latest revision lands,
@@ -821,13 +916,43 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
     // revision token — they must not pay a dozen Postgres round-trips
     // inside the mutating request — and the rebuild itself is now
     // deferred, not lazy-immediate.
-    this.scheduleRebuild();
+    this.scheduleRebuild("operator");
     // Broadcast, because `reusePort` runs several gateway processes and each
     // holds its own snapshot: a console write handled by one of them left the
     // others serving pre-write routing until something else invalidated them.
     // Peers drop their copy on receipt and rebuild lazily, same as here — the
-    // notice carries no data, so there is nothing to deserialize.
-    publishRoutingInvalidation();
+    // notice carries the tier, so peers rebuild on the same tier.
+    publishRoutingInvalidation("operator");
+    return this.revision;
+  }
+
+  /**
+   * Background-tier invalidation, for automatic health/probe churn: one
+   * account recovering or cooling, one pool flipping status, a quota
+   * refresh healing or parking an account. These arrive at ~100/min and
+   * each one alone almost never changes routing — a single account
+   * joining or leaving a provider that still has hundreds usable — so
+   * they batch into one rebuild per background window (5 min in
+   * production) instead of one per event.
+   *
+   * Why time-batching, not content-based "materiality": there is no cheap
+   * oracle for whether a health event changes routing — the only way to
+   * know is the rebuild itself, which reads the whole catalog. The
+   * batching bound is what matters: at most 12 background rebuilds/hour
+   * no matter how hard health flaps, and a pending one is never lost —
+   * the timer guarantees the rebuild, an operator invalidate pulls it
+   * forward, and a mid-build one is repaid as a follow-up. Staleness is
+   * bounded by the background window plus one build: a recovered account
+   * stays invisible for at most that long (it only costs a little
+   * capacity), and a newly-dead account stays listed for at most that
+   * long (the dispatcher already fails over within a request when an
+   * attempt against it fails, so it costs latency, not failures).
+   */
+  async invalidateBackground(): Promise<RoutingRevision> {
+    this.revision += 1;
+    this.invalidationsSinceLastBuild += 1;
+    this.scheduleRebuild("background");
+    publishRoutingInvalidation("background");
     return this.revision;
   }
 
@@ -835,6 +960,8 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
   stop(): void {
     this.stopped = true;
     this.rebuildPending = false;
+    this.pendingKind = undefined;
+    this.rebuildTimerKind = undefined;
     if (this.rebuildTimer !== undefined) {
       clearTimeout(this.rebuildTimer);
       this.rebuildTimer = undefined;
@@ -844,30 +971,58 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
   private async build(revision: RoutingRevision): Promise<RouteSnapshot> {
     const startedAt = Date.now();
     const before = process.memoryUsage();
-    const memMb = (usage: NodeJS.MemoryUsage): { rssMb: number; heapUsedMb: number } => ({
+    // Churn since the last build started: how many invalidations this one
+    // build is absorbing. Reset here (not on completion) so a burst that
+    // lands mid-build is counted against the follow-up, not this build.
+    const invalidations = this.invalidationsSinceLastBuild;
+    this.invalidationsSinceLastBuild = 0;
+    const memMb = (usage: NodeJS.MemoryUsage): { rssMb: number; heapUsedMb: number; heapTotalMb: number } => ({
       rssMb: Math.round(usage.rss / 1048576),
       heapUsedMb: Math.round(usage.heapUsed / 1048576),
+      heapTotalMb: Math.round(usage.heapTotal / 1048576),
     });
     // Rebuilds are logged start-to-finish: before the 2026-11-11 OOM fix
     // they were 100% silent in the journal, so a rebuild storm (a build
     // every ~20-40 s, ~1 GB per snapshot) was invisible until the kernel
     // killed the process. Duration, candidate count, and RSS/heap on both
     // sides make the next storm visible in the first minute.
-    log.info("[snapshot] rebuild started", { revision, ...memMb(before) });
+    log.info("[snapshot] rebuild started", { revision, invalidations, ...memMb(before) });
     try {
       const snapshot = await this.buildInner(revision);
+      const after = process.memoryUsage();
+      // Revisions that landed while this build ran: they are what the
+      // follow-up rebuild (if any) still owes. A large number here with a
+      // small invalidations count means the churn arrived mid-build, not
+      // in the batching window — the signature of a storm the gate did
+      // not absorb.
+      const revisionsSkipped = this.revision - revision;
       log.info("[snapshot] rebuild completed", {
         revision,
         durationMs: Date.now() - startedAt,
         candidates: snapshot.candidates.length,
-        ...memMb(process.memoryUsage()),
+        invalidations,
+        revisionsSkipped,
+        ...memMb(after),
       });
+      // Retention tripwire, not an auto-capture: writing a heap snapshot
+      // from inside the process that is already over 6 GB risks pushing
+      // it over the edge (a V8 heap snapshot is itself a multi-GB
+      // allocation + serialization). Log the manual capture command
+      // instead — an operator runs it via the Bun inspector on the live
+      // process, or restarts with the profiler attached.
+      if (after.rss > 6 * 1024 * 1024 * 1024) {
+        log.warn(
+          "[snapshot] RSS over 6 GB after rebuild — capture a heap snapshot " +
+            "via the Bun inspector before restarting (see docs), then stop the gateway",
+          { revision, ...memMb(after) },
+        );
+      }
       return snapshot;
     } catch (error) {
       log.error(
         "[snapshot] rebuild failed",
         error instanceof Error ? error : undefined,
-        { revision, durationMs: Date.now() - startedAt, thrownType: typeof error, ...memMb(process.memoryUsage()) },
+        { revision, durationMs: Date.now() - startedAt, thrownType: typeof error, invalidations, ...memMb(process.memoryUsage()) },
       );
       throw error;
     }

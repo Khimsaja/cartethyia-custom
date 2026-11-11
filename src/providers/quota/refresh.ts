@@ -69,7 +69,7 @@ export interface QuotaRefreshDeps {
   /** Marks a stored api_key credential with the upstream-distinguishable envelope. */
   readonly markApiKeyCredential?: (providerId: string, credential: string) => Promise<string>;
   /** Invalidates the route snapshot when a stamped figure may exclude an account. */
-  readonly snapshotInvalidator?: { invalidate(): unknown } | undefined;
+  readonly snapshotInvalidator?: { invalidate(): unknown; invalidateBackground?(): unknown } | undefined;
 }
 
 /** Bound on concurrently tracked single-flight quota refreshes; keys are account ids, so the real bound is the account count. */
@@ -151,7 +151,7 @@ export async function recordAccountCheck(
   db: CartethyiaDatabase,
   accountId: string,
   outcome: { ok: boolean; error?: string | null; category?: string | null },
-  snapshotInvalidator?: { invalidate(): unknown },
+  snapshotInvalidator?: { invalidate(): unknown; invalidateBackground?(): unknown },
 ): Promise<void> {
   if (outcome.ok) {
     // A successful quota refresh is the freshest evidence about the account's
@@ -194,7 +194,7 @@ export async function recordAccountCheck(
         })
         .where(eq(providerAccounts.id, accountId))
         .returning({ id: providerAccounts.id });
-      if (healed.length > 0) await snapshotInvalidator?.invalidate();
+      if (healed.length > 0) await snapshotInvalidator?.invalidateBackground?.();
       return;
     }
     await db
@@ -248,7 +248,7 @@ export async function recordAccountCheck(
       cooldownUntil: new Date(Date.now() + QUOTA_FAILURE_COOLDOWN_MS),
       fromStatus: "active",
     });
-    if (parked) await snapshotInvalidator?.invalidate();
+    if (parked) await snapshotInvalidator?.invalidateBackground?.();
   }
 }
 

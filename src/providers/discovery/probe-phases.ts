@@ -740,7 +740,7 @@ export function buildProbeCanonicalRequest(args: {
  */
 export async function recordProbeHealth(args: {
   readonly db: CartethyiaDatabase;
-  readonly invalidator: { invalidate(): unknown } | undefined;
+  readonly invalidator: { invalidate(): unknown; invalidateBackground?(): unknown } | undefined;
   readonly accountId: string | undefined;
   readonly dispatchError: unknown;
   /**
@@ -782,7 +782,7 @@ export async function recordProbeHealth(args: {
     // cooldown with a state nothing recovers from.
     await recordAccountFailure(db, accountId, failure, failureEvidence)
       .then((classification) => {
-        if (classification?.mutatesAccount && classification?.routesVisible) void invalidator?.invalidate();
+        if (classification?.mutatesAccount && classification?.routesVisible) void invalidator?.invalidateBackground?.();
       })
       .catch(() => {});
   }
@@ -793,7 +793,7 @@ export async function recordProbeHealth(args: {
   if (failure === undefined && accountId) {
     await recordAccountSuccess(db, accountId)
       .then((recovered) => {
-        if (recovered) void invalidator?.invalidate();
+        if (recovered) void invalidator?.invalidateBackground?.();
       })
       .catch(() => {});
   }

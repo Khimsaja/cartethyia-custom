@@ -884,7 +884,7 @@ export interface AttemptHealthReport {
   readonly modelId?: string;
   readonly error?: unknown;
   readonly evidence?: AccountFailureEvidence;
-  readonly snapshotService?: { invalidate(): unknown };
+  readonly snapshotService?: { invalidate(): unknown; invalidateBackground?(): unknown };
 }
 
 /**
@@ -1001,7 +1001,7 @@ export async function reportAttemptOutcome(
   if (!report.accountId) return;
   if (report.error === undefined) {
     const recovered = await recordAccountSuccess(db, report.accountId).catch(() => false);
-    if (recovered) await report.snapshotService?.invalidate();
+    if (recovered) await report.snapshotService?.invalidateBackground?.();
     return;
   }
   const classification = await recordAccountFailure(db, report.accountId, report.error, {
@@ -1011,7 +1011,7 @@ export async function reportAttemptOutcome(
   // Gated on `routesVisible`, not on `mutatesAccount`: a model cooldown changes
   // routing, while a repeated report with the same deadline or a streak-only
   // write does not.
-  if (classification?.mutatesAccount && classification?.routesVisible) await report.snapshotService?.invalidate();
+  if (classification?.mutatesAccount && classification?.routesVisible) await report.snapshotService?.invalidateBackground?.();
 }
 
 export async function listAccountHealthEvents(

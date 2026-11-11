@@ -266,6 +266,15 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
       const catalog = await resolveBundledCatalog();
       await refreshActiveProviderCatalogs(db, registry, catalog);
     }),
+    // Two-tier gating (2026-11-11 OOM-kill follow-up): the 30 s debounce
+    // from the first fix only slowed the rebuild storm ~2.5x — RSS still
+    // grew ~600 MB/min, ~1 rebuild per 35-40 s from health churn
+    // (~100 invalidations/min). Operator window 90 s: a console edit is
+    // still visible within ~2 min including the ~5 s build. Background
+    // window 300 s: health/probe churn is batched to at most 12 rebuilds
+    // per hour no matter how hard it flaps. Class defaults stay 30 s so
+    // the test suite keeps today's behavior exactly.
+    { rebuildDebounceMs: 90_000, backgroundDebounceMs: 300_000 },
   );
   const routingEngine = new RoutingEngine(
     redis ? new RedisAdmissionController(redis) : undefined,
@@ -390,7 +399,7 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
     run: async () => {
       const recovered = await sweepExpiredCooldowns(db);
       const poolRecovered = await sweepExpiredPoolCooldowns(db);
-      if (recovered > 0 || poolRecovered > 0) await snapshotService.invalidate();
+      if (recovered > 0 || poolRecovered > 0) await snapshotService.invalidateBackground();
     },
   });
   const payloadCapture = new TelemetryPayloadCapture(db);
