@@ -273,14 +273,17 @@ export function createValidatedFetch(options: ValidatedFetchOptions = {}): Valid
     if (input instanceof Request && init.headers === undefined) {
       requestInit.headers = new Headers(input.headers);
     }
-    // Release a large request body once it has been handed to the dial: the
+    // Release the request body once it has been handed to the dial: the
     // bytes are already with the fetch, but holding `requestInit.body` (and
-    // the caller's `init.body`) across the await parks a multi-MB payload in
-    // this frame for the whole upstream wait — and forever if the fetch hangs
-    // (heap diag9: a 10 MB body retained via this frame, rooted by Bun's
-    // StrongRootBlock). Small bodies are kept so 307/308 replays stay exact.
+    // the caller's `init.body`) across the await parks the payload in this
+    // frame for the whole upstream wait — and forever if the fetch hangs
+    // (heap diag9/diag10: the body retained via this frame). Unconditional:
+    // a length gate undercounts 2-byte strings (diag10: a 1.2 MB body is
+    // ~619k UTF-16 units, below a 1M gate), and 307/308 replays of a POST
+    // body effectively never occur for these upstreams (a failed replay is
+    // retried by the attempt loop).
     const dropLargeBody = (): void => {
-      if (typeof requestInit.body === "string" && requestInit.body.length > 1_000_000) {
+      if (requestInit.body !== undefined && requestInit.body !== null) {
         const slim: RequestInit = { ...requestInit };
         delete slim.body;
         requestInit = slim;
