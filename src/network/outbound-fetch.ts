@@ -161,25 +161,34 @@ async function dial(
       body = bytes;
     }
   }
-  if (dispatcher !== undefined) {
-    return await socksFetch(url, {
-      ...init,
-      headers,
-      // Same buffered-body rule as the fetch path below: a measured stream
-      // body must be replaced by its bytes, or the SOCKS dial sends a drained
-      // body. (Merge note: upstream 2.7.3 added this branch without it.)
-      ...(body === undefined ? {} : { body }),
-      dispatcher,
-    });
-  }
-  return await fetchFn(url, {
-    ...init,
-    headers,
-    // `body` is only overridden when it was buffered above; spreading an
-    // explicit `undefined` would trip `exactOptionalPropertyTypes`.
-    ...(body === undefined ? {} : { body }),
-    ...(proxyUrl === undefined ? {} : { proxy: proxyUrl }),
-  });
+  const fetchPromise =
+    dispatcher !== undefined
+      ? socksFetch(url, {
+          ...init,
+          headers,
+          // Same buffered-body rule as the fetch path below: a measured stream
+          // body must be replaced by its bytes, or the SOCKS dial sends a drained
+          // body. (Merge note: upstream 2.7.3 added this branch without it.)
+          ...(body === undefined ? {} : { body }),
+          dispatcher,
+        })
+      : fetchFn(url, {
+          ...init,
+          headers,
+          // `body` is only overridden when it was buffered above; spreading an
+          // explicit `undefined` would trip `exactOptionalPropertyTypes`.
+          ...(body === undefined ? {} : { body }),
+          ...(proxyUrl === undefined ? {} : { proxy: proxyUrl }),
+        });
+  // Release the request body now: the bytes are handed to fetch. Holding
+  // `init`/`body` across the await parks the payload in this frame for the
+  // whole upstream wait — and forever if the fetch hangs (heap diag9: a
+  // 10 MB body retained via this frame, rooted by Bun's StrongRootBlock).
+  body = undefined;
+  const slimInit: RequestInit = { ...init };
+  delete slimInit.body;
+  init = slimInit;
+  return await fetchPromise;
 }
 
 /**
@@ -264,6 +273,22 @@ export function createValidatedFetch(options: ValidatedFetchOptions = {}): Valid
     if (input instanceof Request && init.headers === undefined) {
       requestInit.headers = new Headers(input.headers);
     }
+    // Release a large request body once it has been handed to the dial: the
+    // bytes are already with the fetch, but holding `requestInit.body` (and
+    // the caller's `init.body`) across the await parks a multi-MB payload in
+    // this frame for the whole upstream wait — and forever if the fetch hangs
+    // (heap diag9: a 10 MB body retained via this frame, rooted by Bun's
+    // StrongRootBlock). Small bodies are kept so 307/308 replays stay exact.
+    const dropLargeBody = (): void => {
+      if (typeof requestInit.body === "string" && requestInit.body.length > 1_000_000) {
+        const slim: RequestInit = { ...requestInit };
+        delete slim.body;
+        requestInit = slim;
+        const slimInit: RequestInit = { ...init };
+        delete slimInit.body;
+        init = slimInit;
+      }
+    };
     for (let hop = 0; hop <= maxRedirects; hop += 1) {
       if (url.protocol !== "http:" && url.protocol !== "https:")
         throw new TypeError("unsupported outbound URL protocol");
@@ -315,7 +340,9 @@ export function createValidatedFetch(options: ValidatedFetchOptions = {}): Valid
         // itself, so the runtime fetch must NOT be given `proxy` here — that
         // would make it attempt a CONNECT tunnel against the relay, which a
         // serverless front door refuses (400).
-        response = await dial(relay.url, relay.init, fetchFn, undefined);
+        const relayDial = dial(relay.url, relay.init, fetchFn, undefined);
+        dropLargeBody();
+        response = await relayDial;
       } else {
         const method = (requestInit.method ?? "GET").toUpperCase();
         const hasBody = requestInit.body !== undefined && requestInit.body !== null;
@@ -325,9 +352,13 @@ export function createValidatedFetch(options: ValidatedFetchOptions = {}): Valid
         // Node http(s) client (post SSRF validation). Every other case keeps
         // the existing fetch path.
         if ((method === "GET" || method === "HEAD") && hasBody && !socksAgent && options.fetchFn === undefined) {
-          response = await nodeDial(url, requestInit);
+          const nodeDialPromise = nodeDial(url, requestInit);
+          dropLargeBody();
+          response = await nodeDialPromise;
         } else {
-          response = await dial(url, requestInit, fetchFn, proxyUrl, socksAgent ? socksDispatcherFor(socksAgent) : undefined, socksFetch);
+          const dialPromise = dial(url, requestInit, fetchFn, proxyUrl, socksAgent ? socksDispatcherFor(socksAgent) : undefined, socksFetch);
+          dropLargeBody();
+          response = await dialPromise;
         }
       }
       if (response.status < 300 || response.status >= 400) {
