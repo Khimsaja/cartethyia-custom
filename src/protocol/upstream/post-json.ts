@@ -182,6 +182,19 @@ export async function postUpstreamJson(
   const fetchSignal = AbortSignal.any([context.abort_signal, lifecycle.signal]);
   // Hoisted so the catch can cancel a stream the fetch abandoned mid-drain.
   let stream: ReadableStream<Uint8Array> | undefined;
+  // If the fetch is aborted (client disconnect / deadline), the body stream
+  // must be cancelled so its serializer generator settles and releases the
+  // payload. Without this, the runtime's native fetch state retains the
+  // pull closure — and the whole payload it serializes — for the life of
+  // the process, even though the fetch itself is gone. The catch below
+  // covers a failed fetch; this covers an aborted one.
+  fetchSignal.addEventListener(
+    "abort",
+    () => {
+      void stream?.cancel().catch(() => undefined);
+    },
+    { once: true },
+  );
   try {
     // A stream is only created when it will actually be sent as the body.
     // When a `bodyEncoder` is present the body is the encoder output, so

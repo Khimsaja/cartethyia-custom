@@ -436,6 +436,228 @@ export function memoizePair<R>(
   };
 }
 
+/**
+ * Per-build routing data the candidate resolvers read. Passed explicitly so
+ * the resolvers are module-level pure functions: nested inside
+ * `loadRouteCatalogSnapshot` they closed over the build's scope, and a
+ * retained resolver pinned the whole build scope — including the
+ * `candidates` array — in memory after the build finished (heap7: a
+ * 350k-entry candidate array held by the build scope via a root-held
+ * `resolveMaxInflightPerProxy` closure). Module-level resolvers close over
+ * nothing per-build, so a finished build's scope is collectable once its
+ * snapshot is replaced.
+ */
+type RouteCatalogResolverInputs = {
+  providerRouting: Record<string, Record<string, ProviderRoutingMap[string][string]>>;
+  configuredPoolTenants: ReadonlySet<string>;
+  activePoolsByTenant: ReadonlyMap<
+    string,
+    ReadonlyArray<{
+      id: string;
+      maxInflight: number;
+      weight: number;
+      dedicatedProviderId: string | null;
+    }>
+  >;
+  dedicatedProvidersByTenant: ReadonlyMap<string, ReadonlySet<string>>;
+  poolRouting: Readonly<Record<string, PoolRoutingSetting>>;
+};
+
+/** Tenant-specific setting wins over global; an unconfigured provider
+ * falls back to `DEFAULT_PROXY_SKIP_PROVIDER_IDS`, mirroring the same
+ * default `DrizzleProviderDetailStore.getRouting` reports to the API —
+ * so the dashboard's displayed default and the real dispatch decision
+ * never disagree. */
+function resolveSkipProxy(
+  inputs: RouteCatalogResolverInputs,
+  providerId: string,
+  rowTenantId: string | null,
+): boolean {
+  const effectiveTenantId = rowTenantId;
+  const tenantSetting = effectiveTenantId ? inputs.providerRouting[effectiveTenantId]?.[providerId] : undefined;
+  const globalSetting = inputs.providerRouting.__global__?.[providerId];
+  return resolveTenantOverride(
+    tenantSetting?.skipProxy,
+    globalSetting?.skipProxy,
+    DEFAULT_PROXY_SKIP_PROVIDER_IDS.has(providerId),
+  );
+}
+
+function resolveUserAgent(
+  inputs: RouteCatalogResolverInputs,
+  providerId: string,
+  rowTenantId: string | null,
+): string | undefined {
+  const tenantSetting = rowTenantId ? inputs.providerRouting[rowTenantId]?.[providerId]?.userAgent : undefined;
+  const globalSetting = inputs.providerRouting.__global__?.[providerId]?.userAgent;
+  const tenantCustom = rowTenantId ? inputs.providerRouting[rowTenantId]?.[providerId]?.customUserAgent : undefined;
+  const globalCustom = inputs.providerRouting.__global__?.[providerId]?.customUserAgent;
+  // An operator-set custom User-Agent overrides the native identity when it
+  // is non-empty; absent custom falls back to the native route identity.
+  const custom = resolveTenantOverride(tenantCustom, globalCustom, undefined);
+  if (custom !== undefined && custom !== null && custom.trim() !== "") return custom.trim();
+  return resolveRouteUserAgent(providerId, tenantSetting, globalSetting);
+}
+
+/** Provider-wide concurrency ceiling shared by every account of the provider.
+ * Tenant setting wins over global, mirroring skipProxy. A stored `null`
+ * is the explicit unlimited choice; so is the default — a provider with no
+ * routing row at all is unlimited too, because an operator who never
+ * configured a ceiling asked for none. */
+function resolveMaxInflight(
+  inputs: RouteCatalogResolverInputs,
+  providerId: string,
+  rowTenantId: string | null,
+): number | undefined {
+  const tenantSetting = rowTenantId
+    ? inputs.providerRouting[rowTenantId]?.[providerId]?.maxInflight
+    : undefined;
+  const globalSetting = inputs.providerRouting.__global__?.[providerId]?.maxInflight;
+  const resolved = tenantSetting ?? globalSetting;
+  if (resolved === null) return undefined;
+  return resolved ?? DEFAULT_PROVIDER_MAX_INFLIGHT ?? undefined;
+}
+
+/**
+ * This provider's per-pool inflight ceiling, from Routing Strategy.
+ * `undefined` means unlimited — the default, and the state of every
+ * provider nobody has configured. A stored `null` is the same choice made
+ * explicitly; the two are deliberately indistinguishable downstream so the
+ * hot path never branches on which one it read.
+ */
+function resolveMaxInflightPerProxy(
+  inputs: RouteCatalogResolverInputs,
+  providerId: string,
+  rowTenantId: string | null,
+): number | undefined {
+  const tenantSetting = rowTenantId
+    ? inputs.providerRouting[rowTenantId]?.[providerId]?.maxInflightPerProxy
+    : undefined;
+  const globalSetting = inputs.providerRouting.__global__?.[providerId]?.maxInflightPerProxy;
+  return tenantSetting ?? globalSetting ?? undefined;
+}
+
+/** Every active pool the account's tenant owns — dispatch picks the
+ * least-loaded/non-cooldown one per request (`tryAcquireAvailablePool`),
+ * never an admin-pinned single pool. An exclusive assignment narrows
+ * this set: a provider with dedicated pools uses ONLY those, and every
+ * other provider loses them from its own set. */
+function resolveNetworkPools(
+  inputs: RouteCatalogResolverInputs,
+  providerId: string,
+  rowTenantId: string | null,
+):
+  | {
+      ids: readonly string[];
+      limits: Record<string, number>;
+      weights: Record<string, number>;
+      routing?: PoolRoutingSetting & { tenantId: string };
+    }
+  | undefined {
+  if (!rowTenantId || resolveSkipProxy(inputs, providerId, rowTenantId)) return undefined;
+  if (!inputs.configuredPoolTenants.has(rowTenantId)) return undefined;
+  const tenantPools = inputs.activePoolsByTenant.get(rowTenantId) ?? [];
+  // Exclusive assignment: a provider with dedicated pools uses ONLY
+  // those, and every other provider loses them from its own set — a
+  // dedicated pool never also serves the shared group. A provider
+  // without an assignment keeps exactly the shared pools, so this
+  // filter is a no-op until the first assignment exists.
+  const pools = inputs.dedicatedProvidersByTenant.get(rowTenantId)?.has(providerId)
+    ? tenantPools.filter((pool) => pool.dedicatedProviderId === providerId)
+    : tenantPools.filter((pool) => pool.dedicatedProviderId === null);
+  const limits: Record<string, number> = {};
+  const weights: Record<string, number> = {};
+  for (const pool of pools) {
+    limits[pool.id] = pool.maxInflight;
+    weights[pool.id] = pool.weight;
+  }
+  const routing = inputs.poolRouting[rowTenantId];
+  return {
+    ids: pools.map((pool) => pool.id),
+    limits,
+    weights,
+    ...(routing ? { routing: { tenantId: rowTenantId, ...routing } } : {}),
+  };
+}
+
+/** The candidate fragment for a provider ceiling, empty when unlimited —
+ * so an unconfigured provider's candidate is byte-for-byte what it was. */
+function providerLimitFor(
+  inputs: RouteCatalogResolverInputs,
+  providerId: string,
+  rowTenantId: string | null,
+): { network_pool_provider_limit?: number } {
+  const limit = resolveMaxInflightPerProxy(inputs, providerId, rowTenantId);
+  return limit === undefined ? {} : { network_pool_provider_limit: limit };
+}
+
+/**
+ * The field set shared by every `RoutedCandidate` literal in the fan-out
+ * below. The four sites used to re-declare the same ~15-field shape, so a
+ * field added to one had to be added to all four. `opts` carries only the
+ * deltas that genuinely differ per site; health stamping is deliberately
+ * NOT merged here — it happens at each site (inside the pool-account
+ * literal, never for configured-pool tenants, conditional for public,
+ * after construction for account rows), and collapsing those branches
+ * would change routing.
+ */
+function buildCandidateBase(
+  inputs: RouteCatalogResolverInputs,
+  model: MergedModelRow,
+  capabilityProfile: Record<string, boolean>,
+  opts: {
+    readonly tenantId: string | null;
+    /** `false` emits `requires_account: false` (credential-less route). */
+    readonly requiresAccount?: boolean;
+    readonly ownerTenantId?: string | null;
+    readonly userAgent?: string;
+    readonly accountId?: string;
+    readonly proOnly?: boolean;
+    readonly accountPlan?: string | null;
+    readonly maxInflight?: number;
+    readonly pools?: {
+      readonly ids: readonly string[];
+      readonly limits: Record<string, number>;
+      readonly weights: Record<string, number>;
+      /** `undefined` (from `resolveNetworkPools`) means no routing strategy. */
+      readonly routing?: (PoolRoutingSetting & { tenantId: string }) | undefined;
+    };
+  },
+): RoutedCandidate {
+  return {
+    provider_id: model.providerId,
+    model_id: model.modelId,
+    wire_family: model.wireFamily as WireFamily,
+    ...(model.dialect == null ? {} : { dialect: model.dialect }),
+    service_kind: model.serviceKind,
+    endpoint: model.endpointPath,
+    ...(model.outputLimit == null ? {} : { output_limit: model.outputLimit }),
+    capability_profile: capabilityProfile,
+    ...(opts.userAgent === undefined ? {} : { user_agent: opts.userAgent }),
+    tenant_id: opts.tenantId,
+    ...(model.freeTier === true ? { free_tier: true } : {}),
+    // Public credential-less candidates have no account to own them.
+    owner_tenant_id: opts.ownerTenantId ?? null,
+    ...(opts.accountId === undefined ? {} : { provider_account_id: opts.accountId }),
+    ...(opts.proOnly === true ? { pro_only: true } : {}),
+    ...(opts.accountPlan === null || opts.accountPlan === undefined
+      ? {}
+      : { account_plan: opts.accountPlan }),
+    ...(opts.maxInflight === undefined ? {} : { max_inflight: opts.maxInflight }),
+    ...(opts.requiresAccount === false ? { requires_account: false as const } : {}),
+    ...(opts.pools
+      ? {
+          network_pool_ids: opts.pools.ids,
+          network_pool_required: true,
+          network_pool_limits: opts.pools.limits,
+          network_pool_weights: opts.pools.weights,
+          ...(opts.pools.routing ? { network_pool_routing: opts.pools.routing } : {}),
+          ...providerLimitFor(inputs, model.providerId, opts.tenantId),
+        }
+      : {}),
+  };
+}
+
 class RouteCatalogRepository {
   constructor(private readonly db: CartethyiaDatabase) {}
 
@@ -602,186 +824,16 @@ class RouteCatalogRepository {
         customUserAgent: row.customUserAgent,
       };
     }
-    /** Tenant-specific setting wins over global; an unconfigured provider
-     * falls back to `DEFAULT_PROXY_SKIP_PROVIDER_IDS`, mirroring the same
-     * default `DrizzleProviderDetailStore.getRouting` reports to the API —
-     * so the dashboard's displayed default and the real dispatch decision
-     * never disagree. */
-    function resolveSkipProxy(providerId: string, rowTenantId: string | null): boolean {
-      const effectiveTenantId = rowTenantId;
-      const tenantSetting = effectiveTenantId ? providerRouting[effectiveTenantId]?.[providerId] : undefined;
-      const globalSetting = providerRouting.__global__?.[providerId];
-      return resolveTenantOverride(
-        tenantSetting?.skipProxy,
-        globalSetting?.skipProxy,
-        DEFAULT_PROXY_SKIP_PROVIDER_IDS.has(providerId),
-      );
-    }
-    function resolveUserAgent(providerId: string, rowTenantId: string | null): string | undefined {
-      const tenantSetting = rowTenantId ? providerRouting[rowTenantId]?.[providerId]?.userAgent : undefined;
-      const globalSetting = providerRouting.__global__?.[providerId]?.userAgent;
-      const tenantCustom = rowTenantId ? providerRouting[rowTenantId]?.[providerId]?.customUserAgent : undefined;
-      const globalCustom = providerRouting.__global__?.[providerId]?.customUserAgent;
-      // An operator-set custom User-Agent overrides the native identity when it
-      // is non-empty; absent custom falls back to the native route identity.
-      const custom = resolveTenantOverride(tenantCustom, globalCustom, undefined);
-      if (custom !== undefined && custom !== null && custom.trim() !== "") return custom.trim();
-      return resolveRouteUserAgent(providerId, tenantSetting, globalSetting);
-    }
-
-    /** Provider-wide concurrency ceiling shared by every account of the provider.
-     * Tenant setting wins over global, mirroring skipProxy. A stored `null`
-     * is the explicit unlimited choice; so is the default — a provider with no
-     * routing row at all is unlimited too, because an operator who never
-     * configured a ceiling asked for none. */
-    function resolveMaxInflight(
-      providerId: string,
-      rowTenantId: string | null,
-    ): number | undefined {
-      const tenantSetting = rowTenantId
-        ? providerRouting[rowTenantId]?.[providerId]?.maxInflight
-        : undefined;
-      const globalSetting = providerRouting.__global__?.[providerId]?.maxInflight;
-      const resolved = tenantSetting ?? globalSetting;
-      if (resolved === null) return undefined;
-      return resolved ?? DEFAULT_PROVIDER_MAX_INFLIGHT ?? undefined;
-    }
-
-    /**
-     * This provider's per-pool inflight ceiling, from Routing Strategy.
-     * `undefined` means unlimited — the default, and the state of every
-     * provider nobody has configured. A stored `null` is the same choice made
-     * explicitly; the two are deliberately indistinguishable downstream so the
-     * hot path never branches on which one it read.
-     */
-    function resolveMaxInflightPerProxy(
-      providerId: string,
-      rowTenantId: string | null,
-    ): number | undefined {
-      const tenantSetting = rowTenantId
-        ? providerRouting[rowTenantId]?.[providerId]?.maxInflightPerProxy
-        : undefined;
-      const globalSetting = providerRouting.__global__?.[providerId]?.maxInflightPerProxy;
-      return tenantSetting ?? globalSetting ?? undefined;
-    }
-
-    /** Every active pool the account's tenant owns — dispatch picks the
-     * least-loaded/non-cooldown one per request (`tryAcquireAvailablePool`),
-     * never an admin-pinned single pool. An exclusive assignment narrows
-     * this set: a provider with dedicated pools uses ONLY those, and every
-     * other provider loses them from its own set. */
-    function resolveNetworkPools(
-      providerId: string,
-      rowTenantId: string | null,
-    ):
-      | {
-          ids: readonly string[];
-          limits: Record<string, number>;
-          weights: Record<string, number>;
-          routing?: PoolRoutingSetting & { tenantId: string };
-        }
-      | undefined {
-      if (!rowTenantId || resolveSkipProxy(providerId, rowTenantId)) return undefined;
-      if (!configuredPoolTenants.has(rowTenantId)) return undefined;
-      const tenantPools = activePoolsByTenant.get(rowTenantId) ?? [];
-      // Exclusive assignment: a provider with dedicated pools uses ONLY
-      // those, and every other provider loses them from its own set — a
-      // dedicated pool never also serves the shared group. A provider
-      // without an assignment keeps exactly the shared pools, so this
-      // filter is a no-op until the first assignment exists.
-      const pools = dedicatedProvidersByTenant.get(rowTenantId)?.has(providerId)
-        ? tenantPools.filter((pool) => pool.dedicatedProviderId === providerId)
-        : tenantPools.filter((pool) => pool.dedicatedProviderId === null);
-      const limits: Record<string, number> = {};
-      const weights: Record<string, number> = {};
-      for (const pool of pools) {
-        limits[pool.id] = pool.maxInflight;
-        weights[pool.id] = pool.weight;
-      }
-      const routing = poolRouting[rowTenantId];
-      return {
-        ids: pools.map((pool) => pool.id),
-        limits,
-        weights,
-        ...(routing ? { routing: { tenantId: rowTenantId, ...routing } } : {}),
-      };
-    }
-
-    /** The candidate fragment for a provider ceiling, empty when unlimited —
-     * so an unconfigured provider's candidate is byte-for-byte what it was. */
-    function providerLimitFor(
-      providerId: string,
-      rowTenantId: string | null,
-    ): { network_pool_provider_limit?: number } {
-      const limit = resolveMaxInflightPerProxy(providerId, rowTenantId);
-      return limit === undefined ? {} : { network_pool_provider_limit: limit };
-    }
-
-    /**
-     * The field set shared by every `RoutedCandidate` literal in the fan-out
-     * below. The four sites used to re-declare the same ~15-field shape, so a
-     * field added to one had to be added to all four. `opts` carries only the
-     * deltas that genuinely differ per site; health stamping is deliberately
-     * NOT merged here — it happens at each site (inside the pool-account
-     * literal, never for configured-pool tenants, conditional for public,
-     * after construction for account rows), and collapsing those branches
-     * would change routing.
-     */
-    function buildCandidateBase(
-      model: MergedModelRow,
-      capabilityProfile: Record<string, boolean>,
-      opts: {
-        readonly tenantId: string | null;
-        /** `false` emits `requires_account: false` (credential-less route). */
-        readonly requiresAccount?: boolean;
-        readonly ownerTenantId?: string | null;
-        readonly userAgent?: string;
-        readonly accountId?: string;
-        readonly proOnly?: boolean;
-        readonly accountPlan?: string | null;
-        readonly maxInflight?: number;
-        readonly pools?: {
-          readonly ids: readonly string[];
-          readonly limits: Record<string, number>;
-          readonly weights: Record<string, number>;
-          /** `undefined` (from `resolveNetworkPools`) means no routing strategy. */
-          readonly routing?: (PoolRoutingSetting & { tenantId: string }) | undefined;
-        };
-      },
-    ): RoutedCandidate {
-      return {
-        provider_id: model.providerId,
-        model_id: model.modelId,
-        wire_family: model.wireFamily as WireFamily,
-        ...(model.dialect == null ? {} : { dialect: model.dialect }),
-        service_kind: model.serviceKind,
-        endpoint: model.endpointPath,
-        ...(model.outputLimit == null ? {} : { output_limit: model.outputLimit }),
-        capability_profile: capabilityProfile,
-        ...(opts.userAgent === undefined ? {} : { user_agent: opts.userAgent }),
-        tenant_id: opts.tenantId,
-        ...(model.freeTier === true ? { free_tier: true } : {}),
-        // Public credential-less candidates have no account to own them.
-        owner_tenant_id: opts.ownerTenantId ?? null,
-        ...(opts.accountId === undefined ? {} : { provider_account_id: opts.accountId }),
-        ...(opts.proOnly === true ? { pro_only: true } : {}),
-        ...(opts.accountPlan === null || opts.accountPlan === undefined
-          ? {}
-          : { account_plan: opts.accountPlan }),
-        ...(opts.maxInflight === undefined ? {} : { max_inflight: opts.maxInflight }),
-        ...(opts.requiresAccount === false ? { requires_account: false as const } : {}),
-        ...(opts.pools
-          ? {
-              network_pool_ids: opts.pools.ids,
-              network_pool_required: true,
-              network_pool_limits: opts.pools.limits,
-              network_pool_weights: opts.pools.weights,
-              ...(opts.pools.routing ? { network_pool_routing: opts.pools.routing } : {}),
-              ...providerLimitFor(model.providerId, opts.tenantId),
-            }
-          : {}),
-      };
-    }
+    // The resolvers are module-level pure functions (see
+    // `RouteCatalogResolverInputs`): they take the per-build routing data
+    // explicitly instead of closing over this scope.
+    const resolverInputs: RouteCatalogResolverInputs = {
+      providerRouting,
+      configuredPoolTenants,
+      activePoolsByTenant,
+      dedicatedProvidersByTenant,
+      poolRouting,
+    };
 
     // Group usable accounts per provider (not per provider-tenant). Built-in
     // providers are `tenant_id IS NULL` but their accounts are per-tenant, so
@@ -807,9 +859,15 @@ class RouteCatalogRepository {
     // 50k candidates). Sharing the resolved values is output-identical:
     // candidates only read them, and the snapshot is deep-frozen before
     // it is served. See the module-level memoizePair helper.
-    const memoNetworkPools = memoizePair(resolveNetworkPools);
-    const memoMaxInflight = memoizePair(resolveMaxInflight);
-    const memoUserAgent = memoizePair(resolveUserAgent);
+    const memoNetworkPools = memoizePair((providerId, tenantId) =>
+      resolveNetworkPools(resolverInputs, providerId, tenantId),
+    );
+    const memoMaxInflight = memoizePair((providerId, tenantId) =>
+      resolveMaxInflight(resolverInputs, providerId, tenantId),
+    );
+    const memoUserAgent = memoizePair((providerId, tenantId) =>
+      resolveUserAgent(resolverInputs, providerId, tenantId),
+    );
     // Yield counter for the fan-out loop below.
     let yieldCounter = 0;
     const FANOUT_YIELD_EVERY = 8192;
@@ -848,10 +906,10 @@ class RouteCatalogRepository {
             for (const [poolId, pas] of tenantPoolAccounts) {
               const first = pas[0];
               if (!first) continue;
-              const tenantPools = resolveNetworkPools(model.providerId, tenantOwnerId);
+              const tenantPools = resolveNetworkPools(resolverInputs, model.providerId, tenantOwnerId);
               if (!tenantPools) continue;
               emittedPoolAccount = true;
-              const tenantCandidate = buildCandidateBase(model, capabilityProfile, {
+              const tenantCandidate = buildCandidateBase(resolverInputs, model, capabilityProfile, {
                 tenantId: tenantOwnerId,
                 requiresAccount: false,
                 pools: {
@@ -884,7 +942,7 @@ class RouteCatalogRepository {
           for (const tId of configuredPoolTenants) {
             const tenantPools = memoNetworkPools(model.providerId, tId);
             if (tenantPools) {
-              const tenantCandidate = buildCandidateBase(model, capabilityProfile, {
+              const tenantCandidate = buildCandidateBase(resolverInputs, model, capabilityProfile, {
                 tenantId: tId,
                 requiresAccount: false,
                 pools: {
@@ -903,7 +961,7 @@ class RouteCatalogRepository {
         const networkPools = providerRequiresAccount
           ? undefined
           : memoNetworkPools(model.providerId, providerTenantId);
-        const candidate = buildCandidateBase(model, capabilityProfile, {
+        const candidate = buildCandidateBase(resolverInputs, model, capabilityProfile, {
           tenantId: providerTenantId,
           // A provider that requires an account but has none is unusable: the
           // public candidate is stamped disabled below. A genuinely
@@ -931,7 +989,7 @@ class RouteCatalogRepository {
         }
         const networkPools = memoNetworkPools(model.providerId, rowTenantId);
         const routeUserAgent = memoUserAgent(model.providerId, rowTenantId);
-        const candidate = buildCandidateBase(model, capabilityProfile, {
+        const candidate = buildCandidateBase(resolverInputs, model, capabilityProfile, {
           tenantId: rowTenantId,
           accountId: account.id,
           // The account's owning tenant (null = shared pool-wide) — the bucket
