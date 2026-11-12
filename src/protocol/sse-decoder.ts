@@ -133,6 +133,28 @@ export async function* decodeSseEvents(
   };
   signal?.addEventListener("abort", onAbort, { once: true });
 
+  // Race the read against the abort signal so a hung upstream cannot park
+  // this generator on a permanently pending `reader.read()`: `onAbort`
+  // cancels the reader, but if that cancel does not resolve the read
+  // promptly the generator's `.return()` is queued behind it forever, the
+  // `finally` below never runs, and the runtime's native fetch state keeps
+  // the request (including its serialized body) rooted for as long as the
+  // stream lives. The race lets the loop exit the moment the signal fires,
+  // on every abort path (client disconnect, stall watchdog, deadline),
+  // instead of waiting on a read that may never resolve.
+  let abortResolve: (() => void) | undefined;
+  const abortPromise =
+    signal === undefined
+      ? null
+      : new Promise<void>((resolve) => {
+          if (signal.aborted) {
+            resolve();
+            return;
+          }
+          abortResolve = resolve;
+          signal.addEventListener("abort", abortResolve, { once: true });
+        });
+
   /** True when any pending byte is a newline. */
   function hasPendingNewline(): boolean {
     for (const chunk of pending) {
@@ -240,7 +262,17 @@ export async function* decodeSseEvents(
   try {
     while (true) {
       if (signal?.aborted) return;
-      const chunk = await reader.read();
+      const chunk =
+        abortPromise === null
+          ? await reader.read()
+          : await Promise.race([
+              reader.read(),
+              abortPromise.then(
+                () =>
+                  ({ done: true, value: undefined }) as ReadableStreamReadResult<Uint8Array>,
+              ),
+            ]);
+      if (signal?.aborted) return;
       if (chunk.value && chunk.value.byteLength > 0) {
         pending.push(chunk.value);
         pendingBytes += chunk.value.byteLength;
@@ -273,6 +305,7 @@ export async function* decodeSseEvents(
     yield* dispatchEvent();
   } finally {
     signal?.removeEventListener("abort", onAbort);
+    if (abortResolve !== undefined) signal?.removeEventListener("abort", abortResolve);
     // Cancel the upstream body, not just the reader lock: a decoder that
     // exits on [DONE], an error, or a generator `.return()` leaves the
     // Response body stream open, and the runtime's native fetch state keeps
