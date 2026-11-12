@@ -343,10 +343,15 @@ export class InMemoryIpAbuseStore implements IpAbuseStore {
       this.bans.delete(identity);
     }
 
+    // Start every ring at `capacityPerKey`: preallocating `limit + 1` slots
+    // charged every new identity the full window (a 100k limit is ~781 KiB
+    // per key) even when it only ever makes a handful of requests, and the
+    // maps hold those rings until eviction. Grow on demand instead — the
+    // reserve below covers keys that actually hammer past the base ring.
     const window = this.getOrCreate(
       this.counts,
       this.key(identity, route),
-      Math.max(this.capacityPerKey, limit + 1),
+      this.capacityPerKey,
     );
     window.prune(now - this.windowMs);
     // Grow only for keys that actually exceed the base ring: a well-behaved
@@ -367,12 +372,19 @@ export class InMemoryIpAbuseStore implements IpAbuseStore {
     // Escalation counts every attempt against one identity-wide ring, so
     // spreading the same volume over many paths cannot keep each route's count
     // below the threshold.
+    // Same lazy growth as the window ring: start at `capacityPerKey` and
+    // reserve up to the ban threshold only once the ring actually fills, so
+    // an identity that makes a few requests does not preallocate the whole
+    // ban ceiling. The count must still be able to reach `banThreshold`
+    // (a full ring overwrites its oldest slot instead of growing the count),
+    // which the reserve below guarantees.
     const banCounter = this.getOrCreate(
       this.banCounts,
       this.key(identity, BAN_ROUTE_KEY),
-      banThreshold,
+      this.capacityPerKey,
     );
     banCounter.prune(now - this.windowMs);
+    if (banCounter.count() >= banCounter.capacity) banCounter.reserve(banThreshold);
     banCounter.push(now);
     const bannedNow = banCounter.count() >= banThreshold;
     if (bannedNow) {
