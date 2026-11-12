@@ -25,12 +25,18 @@ export async function* sendClaudeMessagesRequest(
   applyRouteUserAgent(headers, context.credential, context.user_agent);
   const outboundFetch = context.outbound_fetch ?? fetchFn;
   const lifecycle = createUpstreamDeadlineLifecycle(context);
-  let response: Response;
+  // The outbound body (often multi-MB) and the upstream Response retain each
+  // other through Bun's fetch: a retained generator frame pins both. Hold
+  // them in mutable locals and drop them once the stream is done so a
+  // retained frame cannot pin the request body (fix #12 pattern).
+  let bodyToSend: string | undefined = outboundBody;
+  let response: Response | undefined;
+  try {
   try {
     response = await outboundFetch(url, {
       method: "POST",
       headers,
-      body: outboundBody,
+      body: bodyToSend,
       signal: lifecycle.signal,
     });
   } catch (error: unknown) {
@@ -40,6 +46,8 @@ export async function* sendClaudeMessagesRequest(
     throw error;
   }
   lifecycle.release();
+  // The request body has been handed to fetch; drop our reference now.
+  bodyToSend = undefined;
   // HTTP status first: a failed status with a JSON body must map through
   // the normal upstream error mapper even when the request asked for a
   // stream. Only `2xx` responses enter SSE parsing below.
@@ -96,4 +104,8 @@ export async function* sendClaudeMessagesRequest(
     );
   }
   yield* claudeResponseToEvents(json, request, isOAuth);
+  } finally {
+    bodyToSend = undefined;
+    response = undefined;
+  }
 }
