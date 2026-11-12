@@ -84,10 +84,14 @@ export interface ApiKeyRecord {
   readonly modelPrefix?: string;
   readonly modelAccessMode?: ApiKeyModelAccessMode;
   readonly modelList?: readonly string[];
+  /** Template this key mirrors; see `api_keys.model_template_id`. */
+  readonly modelTemplateId?: string;
   /** Client-router ids this key refuses; see the schema column for the contract. */
   readonly clientRouterDenylist?: readonly string[];
   readonly createdAt: Date;
   readonly revokedAt?: Date;
+  /** Hard expiry for time-boxed keys; absent means the key never expires. */
+  readonly expiresAt?: Date;
   /** Ban state; see the schema column for the contract. */
   readonly bannedAt?: Date;
   readonly banReason?: string;
@@ -144,6 +148,8 @@ export interface ApiKeyPatch
     | "dailyTokenLimit"
     | "monthlyTokenLimit"
     | "lifetimeTokenBudget"
+    | "modelTemplateId"
+    | "expiresAt"
     | "maxConcurrentRequests"
     | "maxChildren"
     | "bannedAt"
@@ -167,6 +173,10 @@ export interface ApiKeyPatch
   readonly monthlyTokenLimit?: number | null;
   readonly lifetimeTokenBudget?: number | null;
   readonly maxConcurrentRequests?: number | null;
+  /** Null detaches the key from its model template; a string links it. */
+  readonly modelTemplateId?: string | null;
+  /** Null clears a previously set expiry; a date moves it. */
+  readonly expiresAt?: Date | null;
   readonly maxChildren?: number | null;
   /** Ban state; a ban also disables the key, unban clears both columns entirely. */
   readonly bannedAt?: Date | null;
@@ -257,6 +267,8 @@ export interface ApiKeyStore {
   listActiveBanned(tenantId: string): Promise<readonly ApiKeyRecord[]>;
   get(tenantId: string, keyId: string): Promise<ApiKeyRecord | undefined>;
   listChildren(tenantId: string, parentKeyId: string): Promise<readonly ApiKeyRecord[]>;
+  /** Every key in the tenant linked to one model template, oldest first. */
+  listByModelTemplate(tenantId: string, templateId: string): Promise<readonly ApiKeyRecord[]>;
   revokeChildrenByScope(
     tenantId: string,
     parentKeyId: string,
@@ -292,6 +304,12 @@ export interface ApiKeyStore {
   remove(tenantId: string, keyId: string): Promise<boolean>;
   findActiveByHash?(hash: string): Promise<typeof apiKeys.$inferSelect | undefined>;
   findActiveById?(keyId: string): Promise<typeof apiKeys.$inferSelect | undefined>;
+  /**
+   * One live top-level key carrying this label (case-insensitive, trimmed),
+   * if any. Targeted lookup for name-uniqueness checks: `list` is capped,
+   * so scanning it silently misses keys beyond the cap.
+   */
+  findActiveByLabel?(tenantId: string, label: string): Promise<ApiKeyRecord | undefined>;
   sumChildrenConsumed?(parentKeyId: string): Promise<number>;
 }
 
@@ -354,11 +372,13 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
       ...(row.modelPrefix === null ? {} : { modelPrefix: row.modelPrefix }),
       modelAccessMode: row.modelAccessMode,
       ...(row.modelList === null ? {} : { modelList: row.modelList as string[] }),
+      ...(row.modelTemplateId === null ? {} : { modelTemplateId: row.modelTemplateId }),
       ...(row.clientRouterDenylist === null
         ? {}
         : { clientRouterDenylist: row.clientRouterDenylist as string[] }),
       createdAt: row.createdAt,
       ...(row.revokedAt ? { revokedAt: row.revokedAt } : {}),
+      ...(row.expiresAt ? { expiresAt: row.expiresAt } : {}),
       ...(row.bannedAt ? { bannedAt: row.bannedAt } : {}),
       ...(row.banReason ? { banReason: row.banReason } : {}),
       ...(row.bannedUntil ? { bannedUntil: row.bannedUntil } : {}),
@@ -435,6 +455,24 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
         and(
           eq(apiKeys.tenantId, tenantId),
           eq(apiKeys.parentKeyId, parentKeyId),
+        ),
+      )
+      .orderBy(apiKeys.createdAt, apiKeys.id);
+    return this.withPopups(this.db, rows);
+  }
+
+  /** Every key in the tenant linked to one model template, oldest first. */
+  async listByModelTemplate(
+    tenantId: string,
+    templateId: string,
+  ): Promise<readonly ApiKeyRecord[]> {
+    const rows = await this.db
+      .select()
+      .from(apiKeys)
+      .where(
+        and(
+          eq(apiKeys.tenantId, tenantId),
+          eq(apiKeys.modelTemplateId, templateId),
         ),
       )
       .orderBy(apiKeys.createdAt, apiKeys.id);
@@ -574,6 +612,8 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
       modelPrefix: record.modelPrefix ?? null,
       modelAccessMode: record.modelAccessMode ?? "whitelist",
       modelList: record.modelList ?? null,
+      modelTemplateId: record.modelTemplateId ?? null,
+      expiresAt: record.expiresAt ?? null,
       clientRouterDenylist: record.clientRouterDenylist ?? null,
       lifetimeTokensConsumed: record.tokensConsumed,
     });
@@ -645,6 +685,10 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
           ...(patch.modelPrefix !== undefined ? { modelPrefix: patch.modelPrefix } : {}),
           ...(patch.modelAccessMode !== undefined ? { modelAccessMode: patch.modelAccessMode } : {}),
           ...(patch.modelList !== undefined ? { modelList: patch.modelList } : {}),
+          ...(patch.modelTemplateId !== undefined
+            ? { modelTemplateId: patch.modelTemplateId }
+            : {}),
+          ...(patch.expiresAt !== undefined ? { expiresAt: patch.expiresAt } : {}),
           ...(patch.clientRouterDenylist !== undefined
             ? { clientRouterDenylist: patch.clientRouterDenylist }
             : {}),
@@ -780,6 +824,28 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
       .where(and(eq(apiKeys.id, keyId), eq(apiKeys.enabled, true), isNull(apiKeys.revokedAt), notBannedSql()))
       .limit(1);
     return rows[0];
+  }
+
+  async findActiveByLabel(
+    tenantId: string,
+    label: string,
+  ): Promise<ApiKeyRecord | undefined> {
+    const normalized = label.trim().toLowerCase();
+    if (normalized === "") return undefined;
+    const rows = await this.db
+      .select()
+      .from(apiKeys)
+      .where(
+        and(
+          eq(apiKeys.tenantId, tenantId),
+          isNull(apiKeys.revokedAt),
+          isNull(apiKeys.parentKeyId),
+          sql<boolean>`lower(trim(${apiKeys.label})) = ${normalized}`,
+        ),
+      )
+      .limit(1);
+    const [record] = await this.withPopups(this.db, rows);
+    return record;
   }
 
   /**

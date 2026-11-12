@@ -1,17 +1,21 @@
 import {
   Copy,
+  Eye,
   KeyRound,
   Pencil,
   Plus,
   RotateCw,
+  Search,
   Share2,
   Trash2,
+  X,
 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Card, CardBody, CardHeader } from "./ui/card";
 import { Dialog } from "./ui/dialog";
+import { Input } from "./ui/input";
 import { EmptyState, ErrorState, LoadingState } from "./ui/state";
 import { Switch } from "./ui/switch";
 import { ApiKeyForm, oneTimeSecretForMode, type KeyFormInput } from "./ApiKeyForm";
@@ -22,10 +26,10 @@ import { SortableList } from "./SortableList";
 import { toast } from "../lib/toast";
 import { getErrorMessage } from "../data/api";
 import { compactTokens, limitLabel } from "../lib/format/tokens";
+import { filterApiKeys } from "../lib/api-key-search";
 import { useClipboard } from "../hooks/use-clipboard";
 import { useRuntimeSettings, useUpdateRuntimeSettings } from "../hooks/settings";
-import { PowerOff } from "lucide-react";
-import { AlertTriangle, Eye, ShieldOff } from "lucide-react";
+import { AlertTriangle, PowerOff, ShieldOff } from "lucide-react";
 import type { ApiKeyResponse } from "../data/contracts";
 import { BannedKeysDialog } from "./BannedKeysDialog";
 import {
@@ -38,6 +42,23 @@ import {
   useUnbanApiKey,
   useUpdateApiKey,
 } from "../hooks/api-keys";
+import { useModelTemplates } from "../hooks/model-templates";
+
+/** Tone for the expiry fact: red when past, orange when under 7 days. */
+function expiryTone(expiresAt: string | undefined): "err" | "warn" | "default" {
+  if (!expiresAt) return "default";
+  const ts = new Date(expiresAt).getTime();
+  if (Number.isNaN(ts)) return "default";
+  if (ts <= Date.now()) return "err";
+  if (ts - Date.now() < 7 * 24 * 60 * 60 * 1000) return "warn";
+  return "default";
+}
+
+const EXPIRY_TONE_CLASS: Record<"err" | "warn" | "default", string> = {
+  err: "text-red",
+  warn: "text-orange",
+  default: "text-text-secondary",
+};
 
 /**
  * API-key management panel: access, budgets, usage, and share links.
@@ -69,8 +90,15 @@ export function ApiKeysPanel(): ReactNode {
   const [shareTarget, setShareTarget] = useState<ApiKeyResponse | null>(null);
   const [createActions, setCreateActions] = useState<ReactNode>(null);
   const [editActions, setEditActions] = useState<ReactNode>(null);
+  const [keySearch, setKeySearch] = useState("");
 
   const keys = keysQuery.data ?? [];
+  const searching = keySearch.trim().length > 0;
+  const visibleKeys = useMemo(() => filterApiKeys(keys, keySearch), [keys, keySearch]);
+  const templatesQuery = useModelTemplates();
+  const templateNames = new Map(
+    (templatesQuery.data ?? []).map((template) => [template.id, template.name] as const),
+  );
   // Bans are keyed on the client address, so they are cross-tenant: only a
   // platform admin may see or lift one, and the entry point is hidden for
   // everyone else. The endpoint enforces this too — the gate here is UX.
@@ -88,6 +116,15 @@ export function ApiKeysPanel(): ReactNode {
       } else {
         toast.error("Clipboard unavailable on this origin");
       }
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Could not reveal API key."));
+    }
+  };
+
+  const viewApiKey = async (key: ApiKeyResponse) => {
+    try {
+      const { secret } = await revealKey.mutateAsync({ keyId: key.id });
+      setRevealedSecret(secret);
     } catch (error) {
       toast.error(getErrorMessage(error, "Could not reveal API key."));
     }
@@ -169,11 +206,51 @@ export function ApiKeysPanel(): ReactNode {
         ) : (
           // The key list is the tallest thing on the page; bounding it keeps the
           // page chrome in place and scrolls only the rows, like the sidebar.
+          <>
+            <div className="flex items-center gap-3 mb-4">
+              <label className="relative flex-1">
+                <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary" aria-hidden="true" />
+                <Input
+                  value={keySearch}
+                  onChange={(event) => setKeySearch(event.target.value)}
+                  placeholder="Search keys by name, prefix, or model…"
+                  aria-label="Search API keys by name, prefix, or model"
+                  className="pl-9"
+                />
+              </label>
+              {searching ? (
+                <>
+                  <span className="text-badge text-text-tertiary whitespace-nowrap">
+                    {visibleKeys.length} of {keys.length}
+                  </span>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    icon={<X size={13} />}
+                    onClick={() => setKeySearch("")}
+                  >
+                    Clear
+                  </Button>
+                </>
+              ) : null}
+            </div>
+            {visibleKeys.length === 0 ? (
+              <EmptyState
+                title="No API keys match your search"
+                message={`No key name, prefix, or model matches "${keySearch.trim()}".`}
+                icon={<Search size={20} />}
+                action={
+                  <Button variant="secondary" size="sm" onClick={() => setKeySearch("")}>
+                    Clear search
+                  </Button>
+                }
+              />
+            ) : (
           <div className="scroll-region max-h-280 pr-1">
           <SortableList
-            items={keys}
+            items={visibleKeys}
             label="API credentials"
-            disabled={reorderKeys.isPending}
+            disabled={searching || reorderKeys.isPending}
             onReorder={(ids) =>
               reorderKeys.mutate(ids, {
                 onError: (error) =>
@@ -189,8 +266,8 @@ export function ApiKeysPanel(): ReactNode {
                     <strong className="text-body">
                       {key.label || "Unnamed credential"}
                     </strong>
-                    <Badge tone={key.revokedAt ? "err" : key.bannedAt ? "err" : key.enabled ? "ok" : "warn"}>
-                      {key.revokedAt ? "revoked" : key.bannedAt ? "banned" : key.enabled ? "enabled" : "disabled"}
+                    <Badge tone={key.revokedAt ? "err" : key.bannedAt ? "err" : key.expiresAt !== undefined && new Date(key.expiresAt).getTime() <= Date.now() ? "err" : key.enabled ? "ok" : "warn"}>
+                      {key.revokedAt ? "revoked" : key.bannedAt ? "banned" : key.expiresAt !== undefined && new Date(key.expiresAt).getTime() <= Date.now() ? "expired" : key.enabled ? "enabled" : "disabled"}
                     </Badge>
                     {key.bannedAt && !key.revokedAt ? (
                       <Badge tone="err" title={key.banReason ?? "Banned"}>
@@ -225,6 +302,20 @@ export function ApiKeysPanel(): ReactNode {
                     <span className="inline-flex items-center gap-2.5 px-3.5 py-1 border border-inner-border rounded-chip bg-surface-1 text-text-secondary text-badge leading-normal whitespace-nowrap max-medium:justify-between">
                       <span className="text-text-tertiary text-micro font-semibold uppercase tracking-label">RPM</span>
                       {limitLabel(key.requestsPerMinute)}
+                    </span>
+                    <span className="inline-flex items-center gap-2.5 px-3.5 py-1 border border-inner-border rounded-chip bg-surface-1 text-badge leading-normal whitespace-nowrap max-medium:justify-between">
+                      <span className="text-text-tertiary text-micro font-semibold uppercase tracking-label">{key.expiresAt && new Date(key.expiresAt).getTime() <= Date.now() ? "Expired" : "Expires"}</span>
+                      <span className={EXPIRY_TONE_CLASS[expiryTone(key.expiresAt)]}>
+                        {key.expiresAt
+                          ? new Date(key.expiresAt).toLocaleString()
+                          : "Never"}
+                      </span>
+                    </span>
+                    <span className="inline-flex items-center gap-2.5 px-3.5 py-1 border border-inner-border rounded-chip bg-surface-1 text-text-secondary text-badge leading-normal whitespace-nowrap max-medium:justify-between">
+                      <span className="text-text-tertiary text-micro font-semibold uppercase tracking-label">Template</span>
+                      {key.modelTemplateId
+                        ? (templateNames.get(key.modelTemplateId) ?? `${key.modelTemplateId.slice(0, 8)}…`)
+                        : "Custom"}
                     </span>
                   </div>
                   <div className="api-key-facts flex items-center flex-wrap gap-2 mt-3 min-w-0 max-medium:grid max-medium:grid-cols-3 max-medium:gap-2 max-medium:mt-0">
@@ -292,6 +383,17 @@ export function ApiKeysPanel(): ReactNode {
                     <Button
                       variant="secondary"
                       size="sm"
+                      icon={<Eye size={13} />}
+                      onClick={() => void viewApiKey(key)}
+                      disabled={revealKey.isPending}
+                    >
+                      Reveal
+                    </Button>
+                  ) : null}
+                  {!key.revokedAt && key.keyMode !== "share" ? (
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       icon={<Copy size={13} />}
                       onClick={() => void copyApiKey(key)}
                       disabled={revealKey.isPending}
@@ -353,6 +455,8 @@ export function ApiKeysPanel(): ReactNode {
             )}
           />
           </div>
+            )}
+          </>
         )}
       </CardBody>
 

@@ -45,6 +45,7 @@ const CliToolDetail = lazyWithRetry(() => import("./features/cli-tools/CliToolDe
 const ConsoleLogPage = lazyWithRetry(() => import("./features/logs/ConsoleLogPage"), "console-log");
 const Customization = lazyWithRetry(() => import("./features/customization/CustomizationPage"), "customization");
 const Studio = lazyWithRetry(() => import("./features/studio/StudioPage"), "studio");
+const ModelTemplates = lazyWithRetry(() => import("./features/model-templates/ModelTemplatesPage"), "model-templates");
 
 /**
  * Forwards shell-wide session transitions into router navigation. A 401 means
@@ -199,6 +200,8 @@ function ProtectedRoutes(): ReactNode {
               return <Route key={route.key} path={route.path} element={<CliTools />} />;
             case "cli-tool-detail":
               return <Route key={route.key} path={route.path} element={<CliToolDetail />} />;
+            case "model-templates":
+              return <Route key={route.key} path={route.path} element={<ModelTemplates />} />;
             case "settings":
               return <Route key={route.key} path={route.path} element={<Settings />} />;
           }

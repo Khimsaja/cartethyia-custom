@@ -30,6 +30,7 @@ import {
   validateApiKeyRequest,
   parseRequest,
   finitePositive,
+  resolveCreateExpiresAt,
   type CreateApiKeyRequest,
   type CreateApiKeyResponse,
   resolveKeyPrefix,
@@ -42,6 +43,96 @@ import {
 import type { SharedKeyActivityDetail, SharedKeySummary } from "../share/share-usage";
 import { popupImageBytes } from "./share-popup-image";
 
+/**
+ * Resolves a request's template link: `undefined` leaves the key unlinked
+ * (create) or untouched (update), `null` detaches, and a string must name a
+ * template the same tenant owns — a foreign or unknown id is a 400, never a
+ * silent link, so one tenant can never pin keys to another tenant's template.
+ */
+async function resolveModelTemplateLink(
+  config: ApiKeyConfig,
+  tenantId: string,
+  raw: string | null | undefined,
+): Promise<string | null | undefined> {
+  if (raw === undefined || raw === null) return raw;
+  if (typeof raw !== "string" || raw.trim().length === 0)
+    throw new ConsoleDomainError(
+      "invalid_model_template",
+      400,
+      "modelTemplateId must be a model template id",
+    );
+  const template = await config.modelTemplateStore?.get(tenantId, raw);
+  if (!template)
+    throw new ConsoleDomainError(
+      "model_template_not_found",
+      400,
+      "No such model template",
+    );
+  return template.id;
+}
+
+/**
+ * Whether an operator-chosen key label must be unique within the tenant.
+ *
+ * Buyer-facing automation reuses labels on purpose: checkout mints one key
+ * per purchase with the buyer's email as the label, and gacha keys are
+ * labelled `bansos-<email>` — a repeat buyer legitimately holds several
+ * keys with the same label, so email-shaped and bansos/gacha labels are
+ * exempt. A hand-picked name (a handle, a project, a person) is how the
+ * operator tells keys apart in the console, so a second key with the same
+ * name is always a mistake — the console accepted it silently and the two
+ * keys became indistinguishable in every list.
+ */
+const EMAIL_SHAPED_LABEL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function labelNeedsUniqueness(label: string): boolean {
+  const normalized = label.trim().toLowerCase();
+  if (normalized === "") return false;
+  if (EMAIL_SHAPED_LABEL.test(normalized)) return false;
+  if (normalized.startsWith("bansos-") || normalized.startsWith("gacha-")) return false;
+  return true;
+}
+
+/**
+ * Rejects a create/rename whose label another live top-level key already
+ * carries (case-insensitive). Revoked keys free their name for reuse, and
+ * share children are ignored: they are managed through their parent and
+ * never appear as console keys in their own right.
+ */
+async function assertKeyLabelAvailable(
+  config: ApiKeyConfig,
+  tenantId: string,
+  label: string,
+  excludeKeyId?: string,
+): Promise<void> {
+  if (!labelNeedsUniqueness(label)) return;
+  // Prefer the store's targeted lookup: `list` is capped, so scanning it
+  // misses keys beyond the cap and the check would silently let duplicates
+  // through on exactly the large tenants where names matter most. The scan
+  // remains as a fallback for stores without the lookup (test doubles).
+  const findByLabel = config.store.findActiveByLabel?.bind(config.store);
+  let clash = false;
+  if (findByLabel) {
+    const found = await findByLabel(tenantId, label);
+    clash = found !== undefined && found.id !== excludeKeyId;
+  } else {
+    const normalized = label.trim().toLowerCase();
+    const records = await config.store.list(tenantId);
+    clash = records.some(
+      (record) =>
+        record.revokedAt === undefined &&
+        record.parentKeyId === undefined &&
+        record.id !== excludeKeyId &&
+        record.label.trim().toLowerCase() === normalized,
+    );
+  }
+  if (clash)
+    throw new ConsoleDomainError(
+      "key_label_exists",
+      409,
+      `A key named "${label.trim()}" already exists. Choose a different name.`,
+    );
+}
 const SHARED_CHILD_SORT_COLUMNS = new Set<SharedChildSortColumn>([
   "createdAt",
   "label",
@@ -179,7 +270,20 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
     ): Promise<CreateApiKeyResponse> {
       const authorized = requireTenantScope(access, "dashboard:write");
       const scopes = validateApiKeyRequest(request);
+      if (request.extendByDays !== undefined || request.extendByHours !== undefined) {
+        throw new ConsoleDomainError(
+          "invalid_expiry",
+          400,
+          "extendByDays/extendByHours only apply when updating an existing key",
+        );
+      }
+      const createExpiresAt = resolveCreateExpiresAt(request);
       const popupImage = parseSharePopupImage(request.sharePopupImage);
+      const modelTemplateId = await resolveModelTemplateLink(
+        config,
+        authorized.tenantId,
+        request.modelTemplateId,
+      );
       const keyMode = request.keyMode ?? "personal";
       const keyPrefix =
         keyMode === "share"
@@ -191,11 +295,33 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
             ? generateApiKeySecret(keyPrefix)
             : { ...prepareCustomKey(request.key), prefix: keyPrefix }
           : undefined;
+      const label = request.label?.trim() || (keyMode === "share" ? "Share template" : "API key");
+      // Only an explicitly typed name is checked: the fallback labels are
+      // shared by design, and automated buyer labels are exempt inside
+      // assertKeyLabelAvailable itself.
+      if (request.label?.trim())
+        await assertKeyLabelAvailable(config, authorized.tenantId, label);
+      // A key linked to a template without a model list of its own means
+      // the template's list. The console form used to send the link alone
+      // (its picker never copied the models in), leaving the new key with
+      // an empty whitelist that only the template sweep repaired later.
+      // An explicit non-empty list always wins.
+      const templateModels =
+        modelTemplateId != null &&
+        (request.modelList === undefined || request.modelList.length === 0)
+          ? (await config.modelTemplateStore?.get(authorized.tenantId, modelTemplateId))?.models
+          : undefined;
+      const effectiveModelList =
+        request.modelList !== undefined && request.modelList.length > 0
+          ? request.modelList
+          : templateModels !== undefined
+            ? [...templateModels]
+            : request.modelList;
       const record: ApiKeyRecord = {
         id: randomUUID(),
         tenantId: authorized.tenantId,
         enabled: request.enabled ?? true,
-        label: request.label?.trim() || (keyMode === "share" ? "Share template" : "API key"),
+        label,
         keyHash: generated?.hash ?? null,
         keyMode,
         scopes,
@@ -218,11 +344,15 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
         ...(request.monthlyTokenLimit == null ? {} : { monthlyTokenLimit: request.monthlyTokenLimit }),
         ...(request.lifetimeTokenBudget == null ? {} : { lifetimeTokenBudget: request.lifetimeTokenBudget }),
         ...(request.maxConcurrentRequests == null ? {} : { maxConcurrentRequests: request.maxConcurrentRequests }),
+        ...(createExpiresAt === undefined ? {} : { expiresAt: createExpiresAt }),
         ...(request.concurrencyScope !== undefined ? { concurrencyScope: request.concurrencyScope } : {}),
         ...(request.maxChildren == null ? {} : { maxChildren: request.maxChildren }),
         ...(request.modelPrefix === undefined ? {} : { modelPrefix: request.modelPrefix }),
+        ...(modelTemplateId === undefined || modelTemplateId === null
+          ? {}
+          : { modelTemplateId }),
         modelAccessMode: request.modelAccessMode ?? "whitelist",
-        ...(request.modelList === undefined ? {} : { modelList: request.modelList }),
+        ...(effectiveModelList === undefined ? {} : { modelList: effectiveModelList }),
         ...(request.clientRouterDenylist === undefined
           ? {}
           : { clientRouterDenylist: request.clientRouterDenylist }),
@@ -248,6 +378,11 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
     ): Promise<UpdateApiKeyResponse> {
       const authorized = requireTenantScope(access, "dashboard:write");
       const patchRequest = parseRequest(request);
+      const modelTemplateId = await resolveModelTemplateLink(
+        config,
+        authorized.tenantId,
+        patchRequest.modelTemplateId,
+      );
       const current = await config.store.get(authorized.tenantId, keyId);
       if (!current || current.revokedAt !== undefined)
         throw new ConsoleDomainError("key_not_found", 404, "Key not found");
@@ -317,6 +452,53 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
         patchRequest.sharePopupImage === undefined
           ? undefined
           : parseSharePopupImage(patchRequest.sharePopupImage);
+      let expiresAtPatch: { readonly expiresAt: Date | null } | undefined;
+      if (patchRequest.extendByDays !== undefined || patchRequest.extendByHours !== undefined) {
+        if (patchRequest.expiresAt !== undefined)
+          throw new ConsoleDomainError(
+            "invalid_expiry",
+            400,
+            "expiresAt cannot be combined with extendByDays/extendByHours",
+          );
+        if (current.expiresAt === undefined)
+          throw new ConsoleDomainError(
+            "invalid_expiry",
+            400,
+            "This key has no expiry to extend; set expiresAt instead",
+          );
+        const addMs =
+          ((patchRequest.extendByDays ?? 0) * 24 + (patchRequest.extendByHours ?? 0)) * 3_600_000;
+        const base = Math.max(Date.now(), current.expiresAt.getTime());
+        expiresAtPatch = { expiresAt: new Date(base + addMs) };
+      } else if (patchRequest.expiresAt !== undefined) {
+        expiresAtPatch = {
+          expiresAt: patchRequest.expiresAt === null ? null : new Date(patchRequest.expiresAt),
+        };
+      } else if (patchRequest.expiresInDays != null || patchRequest.expiresInHours != null) {
+        const hours = (patchRequest.expiresInDays ?? 0) * 24 + (patchRequest.expiresInHours ?? 0);
+        expiresAtPatch = { expiresAt: new Date(Date.now() + hours * 3_600_000) };
+      }
+      // Renaming onto another live key's name creates the same ambiguity as
+      // a duplicate create, so it takes the same check (excluding this key,
+      // and excluding a pure case change of its own name).
+      if (patchRequest.label !== undefined && patchRequest.label.trim() !== "") {
+        const nextLabel = patchRequest.label.trim();
+        if (nextLabel.toLowerCase() !== current.label.trim().toLowerCase())
+          await assertKeyLabelAvailable(config, authorized.tenantId, nextLabel, keyId);
+      }
+      // Same rule as create, for a fresh link: naming a template without
+      // sending a model list adopts the template's list. An explicit list
+      // (even an empty one) is the operator's deliberate choice and stands.
+      const linkedTemplateModels =
+        typeof modelTemplateId === "string" && patchRequest.modelList === undefined
+          ? (await config.modelTemplateStore?.get(authorized.tenantId, modelTemplateId))?.models
+          : undefined;
+      const effectivePatchModelList =
+        patchRequest.modelList !== undefined
+          ? patchRequest.modelList
+          : linkedTemplateModels !== undefined
+            ? [...linkedTemplateModels]
+            : undefined;
       const updated = await config.store.update(authorized.tenantId, keyId, {
         ...(patchRequest.enabled === undefined ? {} : { enabled: patchRequest.enabled }),
         ...(isDefaultGatewayApiKey(current) ? { isDefault: true } : {}),
@@ -357,8 +539,10 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
         ...(patchRequest.concurrencyScope !== undefined ? { concurrencyScope: patchRequest.concurrencyScope } : {}),
         ...(patchRequest.maxChildren === undefined ? {} : { maxChildren: patchRequest.maxChildren }),
         ...(patchRequest.modelPrefix === undefined ? {} : { modelPrefix: patchRequest.modelPrefix }),
+        ...(expiresAtPatch === undefined ? {} : { expiresAt: expiresAtPatch.expiresAt }),
+        ...(modelTemplateId === undefined ? {} : { modelTemplateId }),
         ...(patchRequest.modelAccessMode === undefined ? {} : { modelAccessMode: patchRequest.modelAccessMode }),
-        ...(patchRequest.modelList === undefined ? {} : { modelList: patchRequest.modelList }),
+        ...(effectivePatchModelList === undefined ? {} : { modelList: effectivePatchModelList }),
         ...(patchRequest.clientRouterDenylist === undefined
           ? {}
           : { clientRouterDenylist: patchRequest.clientRouterDenylist }),
@@ -898,6 +1082,12 @@ const apiKeyBody = t.Object({
   monthlyTokenLimit: t.Optional(t.Union([t.Number(), t.Null()])),
   lifetimeTokenBudget: t.Optional(t.Union([t.Number(), t.Null()])),
   maxConcurrentRequests: t.Optional(t.Union([t.Number(), t.Null()])),
+  expiresAt: t.Optional(t.Union([t.String(), t.Null()])),
+  expiresInDays: t.Optional(t.Union([t.Number(), t.Null()])),
+  expiresInHours: t.Optional(t.Union([t.Number(), t.Null()])),
+  extendByDays: t.Optional(t.Union([t.Number(), t.Null()])),
+  extendByHours: t.Optional(t.Union([t.Number(), t.Null()])),
+  modelTemplateId: t.Optional(t.Union([t.String(), t.Null()])),
   concurrencyScope: t.Optional(literalUnion(API_KEY_CONCURRENCY_SCOPES)),
   modelPrefix: t.Optional(t.String()),
   modelAccessMode: t.Optional(literalUnion(API_KEY_MODEL_ACCESS_MODES)),
