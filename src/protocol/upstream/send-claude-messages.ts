@@ -48,6 +48,18 @@ export async function* sendClaudeMessagesRequest(
   lifecycle.release();
   // The request body has been handed to fetch; drop our reference now.
   bodyToSend = undefined;
+  // The prompt itself is never read again after the transport: the stream
+  // decoder only reads the response, and `claudeResponseToEvents` below
+  // only needs `request.model`. Drop this frame's reference to the request
+  // so the generator cannot pin the full prompt for the life of the
+  // stream (same pattern as BaseProviderAdapter.releaseLargeInputs).
+  // NOTE: do NOT mutate `request` in place (messages = [] / delete) — the
+  // object may be shared across attempts/retries, and clearing it would
+  // starve a retry or a second dispatch of the same request. Reassigning
+  // the local binding only drops this frame's reference.
+  const requestStream = request.stream;
+  const requestModel = request.model;
+  request = { model: requestModel, stream: requestStream, messages: [] } as unknown as CanonicalRequest;
   // HTTP status first: a failed status with a JSON body must map through
   // the normal upstream error mapper even when the request asked for a
   // stream. Only `2xx` responses enter SSE parsing below.

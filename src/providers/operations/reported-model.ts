@@ -94,25 +94,36 @@ export async function readReportedModel(response: Response): Promise<string | un
   try {
     const reader = response.clone().body?.getReader();
     if (reader === undefined) return undefined;
-    let text = "";
-    let bytes = 0;
-    let found: string | undefined;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value === undefined) continue;
-      bytes += value.byteLength;
-      text += new TextDecoder().decode(value, { stream: true });
-      found = modelFromText(text);
-      if (found !== undefined) break;
-      if (bytes >= HEAD_BYTES) break;
+    // Bound the head read: a stalled stream must not park this diagnostic
+    // (and the cloned Response it holds) forever. The first frame normally
+    // arrives in milliseconds; 10s is generous. Cancelling the reader
+    // unblocks a pending `read()` so the loop can exit.
+    const timer = setTimeout(() => {
+      void reader.cancel().catch(() => undefined);
+    }, 10_000);
+    try {
+      let text = "";
+      let bytes = 0;
+      let found: string | undefined;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value === undefined) continue;
+        bytes += value.byteLength;
+        text += new TextDecoder().decode(value, { stream: true });
+        found = modelFromText(text);
+        if (found !== undefined) break;
+        if (bytes >= HEAD_BYTES) break;
+      }
+      // Cancel without awaiting: on a stream whose producer is still running,
+      // `cancel()` settles only once the source cooperates, and a diagnostic must
+      // never hold the request open waiting for that. The reader is dropped either
+      // way, and an unread clone is garbage.
+      void reader.cancel().catch(() => undefined);
+      return found ?? modelFromText(text);
+    } finally {
+      clearTimeout(timer);
     }
-    // Cancel without awaiting: on a stream whose producer is still running,
-    // `cancel()` settles only once the source cooperates, and a diagnostic must
-    // never hold the request open waiting for that. The reader is dropped either
-    // way, and an unread clone is garbage.
-    void reader.cancel().catch(() => undefined);
-    return found ?? modelFromText(text);
   } catch {
     return undefined;
   }

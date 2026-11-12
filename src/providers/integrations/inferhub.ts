@@ -321,7 +321,7 @@ export class InferhubMessagesAdapter implements ProviderAdapter {
     this.baseUrl = (baseUrl ?? INFERHUB_BASE_URL ?? "").replace(/\/+$/, "");
   }
 
-  async *dispatch(
+  dispatch(
     request: CanonicalRequest,
     candidate: ProviderDispatchTarget,
     context: ProviderDispatchContext,
@@ -352,7 +352,12 @@ export class InferhubMessagesAdapter implements ProviderAdapter {
     // credential-derived (it is filtered and round-trips per account), and a
     // per-conversation value does not belong in it.
     Object.assign(outbound.headers, inferhubSessionHeaders(context, request));
-    yield* sendClaudeMessagesRequest(
+    // Deliberately NOT an async generator: a generator frame would pin the
+    // full prompt (`request`) and the translated body (`outbound.body`) for
+    // the whole stream. Returning the executor iterable directly frees this
+    // frame as soon as dispatch returns; the executor slims its own copy
+    // after transport (see sendClaudeMessagesRequest).
+    return sendClaudeMessagesRequest(
       outbound.url,
       outbound.headers,
       outbound.body,
