@@ -255,7 +255,7 @@ export function captureProviderExchange(
         : input instanceof URL
           ? input.toString()
           : input.url;
-    const rawBody = init?.body;
+    let rawBody: BodyInit | null | undefined = init?.body;
     const headers = selectCapturedHeaders(init);
     sink.request = {
       method: init?.method ?? "GET",
@@ -272,7 +272,21 @@ export function captureProviderExchange(
           ? captureRequestBodyBody(rawBody, maxBytes)
           : { body_present: true, body_bytes: capturedBodyByteLength(rawBody) }),
     };
-    const response = await inner(input, init);
+    // Hand the body to inner, then release our references before awaiting:
+    // this async frame holds `rawBody`/`init` across the whole upstream wait,
+    // parking the full payload (heap diag10: a 9.5 MB body retained via this
+    // wrapper's env) even in metadata mode, where sink.request keeps only
+    // body_present/body_bytes. Fixes #7/#8 dropped the body one layer down
+    // (validated fetch) but never touched this wrapper, so the slope never
+    // moved. `init` is not used after this point, so a body-less copy is safe.
+    const responsePromise = inner(input, init);
+    rawBody = undefined;
+    if (init !== undefined) {
+      const slimInit: RequestInit = { ...init };
+      delete slimInit.body;
+      init = slimInit;
+    }
+    const response = await responsePromise;
     sink.response =
       captureBody && shouldCaptureProviderResponse(response)
         ? readBoundedBody(response.clone(), maxBytes).then(parseCapturedBody)
