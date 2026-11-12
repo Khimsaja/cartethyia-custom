@@ -29,6 +29,7 @@ import {
 } from "./attempt-finalize";
 import { shouldCaptureProviderBodyForRequest } from "./capture-policy";
 import { runAttemptLoop } from "./attempt-loop";
+import { slimCanonicalRequestInPlace } from "../request/state";
 import { projectForRoute, routeCapabilitiesFor } from "../../protocol/translation/capabilities";
 import { dispatchStreamingAttempt } from "./streaming/stream";
 import type { ProviderContinuationScope } from "../../providers/provider-contracts";
@@ -282,7 +283,7 @@ export async function handleProviderProxyRequest(
         ...(captureProviderBody === undefined ? {} : { captureProviderBody }),
       });
       if (dispatchRequest.stream) {
-        return dispatchStreamingAttempt({
+        const streamed = dispatchStreamingAttempt({
           state,
           deps,
           prepared,
@@ -304,6 +305,14 @@ export async function handleProviderProxyRequest(
           ...(leaseOwnership === undefined ? {} : { leaseOwnership }),
           ...(continuationScope === undefined ? {} : { continuationScope }),
         });
+        // Free the prompt from this attempt closure's captured canonical
+        // request. The streaming finalizer holds the projected
+        // `attemptRequest` (a different object) for mid-stream retries, so
+        // slimming the canonical here cannot starve a retry — but leaving
+        // it means a retained attempt closure pins the full prompt for the
+        // life of the process (heap leak).
+        slimCanonicalRequestInPlace(dispatchRequest);
+        return streamed;
       }
       // Pool slot ownership belongs to the candidate attempt: the slot was
       // acquired atomically with selection above, and `proxySlot` is
@@ -331,6 +340,13 @@ export async function handleProviderProxyRequest(
       };
       state.upstreamDispatchStartedAtMs = Date.now();
       const { events, firstContentDeltaAtMs } = await dispatch(attemptRequest);
+      // Free the prompt from this attempt closure's captured canonical
+      // request now that the dispatch is done: no further attempt rebuilds
+      // from it, and a retained attempt closure would otherwise pin the
+      // full prompt for the life of the process (heap leak). The adapter
+      // already released its own projected copy; this releases the
+      // canonical the closure itself holds.
+      slimCanonicalRequestInPlace(dispatchRequest);
       const terminal = events.find((event) => event.type === "terminal");
       if (terminal === undefined) throw terminalFailure(undefined);
       const terminalError = terminalFailure(terminal);
