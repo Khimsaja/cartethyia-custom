@@ -310,8 +310,14 @@ export async function handleProviderProxyRequest(
         // `attemptRequest` (a different object) for mid-stream retries, so
         // slimming the canonical here cannot starve a retry — but leaving
         // it means a retained attempt closure pins the full prompt for the
-        // life of the process (heap leak).
+        // life of the process (heap leak). Also slim the prepared
+        // request's canonical: applyTenantPreferences may have returned a
+        // new object, leaving the original (held by `prepared`, which this
+        // closure also captures) still pinning the prompt.
         slimCanonicalRequestInPlace(dispatchRequest);
+        if (prepared.canonicalRequest !== dispatchRequest) {
+          slimCanonicalRequestInPlace(prepared.canonicalRequest);
+        }
         return streamed;
       }
       // Pool slot ownership belongs to the candidate attempt: the slot was
@@ -345,8 +351,12 @@ export async function handleProviderProxyRequest(
       // from it, and a retained attempt closure would otherwise pin the
       // full prompt for the life of the process (heap leak). The adapter
       // already released its own projected copy; this releases the
-      // canonical the closure itself holds.
+      // canonical the closure itself holds. Also slim the prepared
+      // request's canonical, which may be a different object (see above).
       slimCanonicalRequestInPlace(dispatchRequest);
+      if (prepared.canonicalRequest !== dispatchRequest) {
+        slimCanonicalRequestInPlace(prepared.canonicalRequest);
+      }
       const terminal = events.find((event) => event.type === "terminal");
       if (terminal === undefined) throw terminalFailure(undefined);
       const terminalError = terminalFailure(terminal);
