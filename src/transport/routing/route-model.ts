@@ -754,7 +754,13 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
     // has already been superseded. Returning it is fine — the caller asked
     // before the mutation — but caching it would strand the data plane on stale
     // routing until the next write.
-    if (revision === this.revision) this.snapshot = snapshot;
+    if (revision === this.revision) {
+      this.snapshot = snapshot;
+      // The previous snapshot just became garbage. Collect it now: the event
+      // loop is saturated by rebuilds, so the collector rarely gets a clean
+      // window and old snapshots pile up between collections.
+      Bun.gc(true);
+    }
     return snapshot;
   }
 }
