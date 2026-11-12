@@ -1,9 +1,9 @@
 // Routing contracts and snapshots.
 import { GatewayError } from "../../protocol/gateway-error";
-import { log } from "../../observability/logger";
 import { type ServiceKind, type WireFamily } from "../../protocol/canonical-model";
 import type { CallerIdentity } from "../../security/access-control";
 import type { ProviderQuotaWindow } from "../../providers/quota/quota-contracts";
+import { log } from "../../observability/logger";
 
 export type { CallerIdentity };
 
@@ -616,20 +616,6 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
   private revision: RoutingRevision = 0;
   private snapshot: RouteSnapshot | undefined;
   /**
-   * Last successfully built snapshot, kept across invalidations. A lazy
-   * rebuild that fails (a minute-burst of 500 internal_error across all
-   * models on 2026-10-26, with nothing in the journal) falls back to it
-   * instead of throwing to the data plane; the next invalidation retries
-   * the build. This is the stale-serve half of the 2026-10-26 fix, kept
-   * while the debounce half is retired: upstream 2.7.3 requires an
-   * invalidation to be visible on the next request (cooldown eviction,
-   * route updates), which a debounced rebuild delays up to 5 s — and
-   * upstream's own tests lock that immediacy. The storm half is covered
-   * instead by the mutatesAccount invalidation gate (non-mutating reports
-   * never invalidate) plus the memoized rebuild.
-   */
-  private lastGood: RouteSnapshot | undefined;
-  /**
    * The in-flight build, tagged with the revision it is building.
    *
    * The tag is what keeps a mutation from being lost. A build reads the catalog
@@ -648,20 +634,13 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
    * the single latest-revision rebuild. The timer is cleared on `stop()`.
    */
   private rebuildTimer: ReturnType<typeof setTimeout> | undefined;
-  /**
-   * True when an invalidate landed while a build was in flight (SINGLEFLIGHT_XREV):
-   * the settling build owes exactly one debounced follow-up at the latest
-   * revision. Consumed only in rebuildNow()'s finally(), so an invalidation
-   * can never be lost between a build finishing and its follow-up starting.
-   */
-  private rebuildPending = false;
   private stopped = false;
 
   constructor(
     private readonly builder: SnapshotBuilder,
     options: { readonly rebuildDebounceMs?: number } = {},
   ) {
-    this.rebuildDebounceMs = options.rebuildDebounceMs ?? 20000;
+    this.rebuildDebounceMs = options.rebuildDebounceMs ?? 500;
     // Peers' mutations arrive once per process, not per instance: the handler
     // schedules a background rebuild, which is the only one there is.
     this.unsubscribe = subscribeRoutingInvalidation(() => {
@@ -681,22 +660,10 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
    * timer is pending, further invalidates just bump the revision and the
    * pending rebuild picks up the latest. Single-flight by construction — the
    * rebuild itself reuses {@link building}, so concurrent callers share one
-   * promise, whatever its revision tag.
+   * promise for the same revision.
    */
   private scheduleRebuild(): void {
-    if (this.stopped) return;
-    // SINGLEFLIGHT_XREV: a build already in flight owns the next rebuild.
-    // An invalidate landing mid-build only marks a follow-up as owed — it
-    // must NOT start a timer here, or the timer would fire mid-build and
-    // launch a second build on top of the running one (the overlap storm).
-    // This check comes BEFORE the timer-pending guard: if a timer is
-    // already pending, that timer will only join the running build, so
-    // returning on the timer alone would swallow this invalidation.
-    if (this.building !== undefined) {
-      this.rebuildPending = true;
-      return;
-    }
-    if (this.rebuildTimer !== undefined) return;
+    if (this.stopped || this.rebuildTimer !== undefined) return;
     this.rebuildTimer = setTimeout(() => {
       this.rebuildTimer = undefined;
       void this.rebuildNow().catch((error: unknown) => {
@@ -708,36 +675,17 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
     if (typeof this.rebuildTimer.unref === "function") this.rebuildTimer.unref();
   }
 
-  /** Starts (or joins) the single in-flight build. SINGLEFLIGHT_XREV:
-   * joins ANY in-flight build regardless of its revision tag — at most one
-   * build ever runs. Joining an older-revision build is safe: buildInner
-   * only caches when the revision is still current, and invalidations that
-   * landed mid-build are repaid by the follow-up in finally() below. */
+  /** Starts (or joins) the build for the current revision. */
   private rebuildNow(): Promise<RouteSnapshot> {
     const revision = this.revision;
-    if (this.building) return this.building.promise;
+    if (this.building && this.building.revision === revision) return this.building.promise;
     const promise = this.build(revision);
     this.building = { revision, promise };
-    // The finally-chain is a separate promise: without this catch, a failed
-    // build rejects it unhandled even when the caller handles the original
-    // promise (getSnapshot's stale-serve fallback) — bun test / node report
-    // that as a test failure / crash. The original promise is still returned
-    // above, so callers see the real outcome.
-    void promise
-      .finally(() => {
-        // Only the build that is still current may clear the slot; a build
-        // started after a mutation must not be dropped by an older one finishing.
-        if (this.building?.promise === promise) this.building = undefined;
-        // SINGLEFLIGHT_XREV: repay exactly one follow-up for every
-        // invalidate that landed while this build ran, at the latest
-        // revision. Debounced via scheduleRebuild so a fresh burst still
-        // coalesces instead of chaining builds.
-        if (this.rebuildPending && !this.stopped) {
-          this.rebuildPending = false;
-          this.scheduleRebuild();
-        }
-      })
-      .catch(() => {});
+    void promise.finally(() => {
+      // Only the build that is still current may clear the slot; a build
+      // started after a mutation must not be dropped by an older one finishing.
+      if (this.building?.promise === promise) this.building = undefined;
+    });
     return promise;
   }
 
@@ -746,36 +694,17 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
     // page-open request path never pays the catalog build. Only a cold start
     // (no snapshot at all) falls through to a synchronous build here.
     if (this.snapshot) return this.snapshot;
-    try {
-      return await this.rebuildNow();
-    } catch (error) {
-      // A failed lazy rebuild must not 500 the data plane when a previous
-      // snapshot exists: serve it stale instead. Only a boot-time build
-      // with no snapshot yet can still reject to its waiters, and there is
-      // nothing else to serve there.
-      if (this.lastGood !== undefined) return this.lastGood;
-      throw error;
-    }
+    return this.rebuildNow();
   }
 
   async invalidate(): Promise<RoutingRevision> {
     this.revision += 1;
-    // Upstream semantics (2.7.3): drop the cache so the next getSnapshot()
-    // rebuilds lazily. Dashboard mutations only need the new revision token
-    // — they must not pay a dozen Postgres round-trips inside the mutating
-    // request — but the rebuild itself is no longer deferred: a debounced
-    // rebuild delayed cooldown eviction and route updates up to 5 s, which
-    // breaks upstream's immediate-invalidation guarantee and its tests.
-    // Storm protection comes from the mutatesAccount gate plus the
-    // memoized rebuild, not from serving stale routing.
-    this.snapshot = undefined;
-    // SINGLEFLIGHT_XREV: local invalidate does not schedule a rebuild (the
-    // next getSnapshot rebuilds lazily, immediately), but an invalidate that
-    // lands while a build is in flight must not be lost: mark the follow-up
-    // as owed so the settling build repays it, debounced, at the latest
-    // revision. Without this, a mid-build mutation would be served stale
-    // until some unrelated write rebuilt.
-    if (this.building !== undefined) this.rebuildPending = true;
+    // G-02: trigger a BACKGROUND rebuild immediately instead of clearing the
+    // snapshot and making the next request pay. The rebuild is debounced so a
+    // burst of invalidates (a recovery sweep, a cascade of console writes)
+    // coalesces into one rebuild, and it never blocks the mutating request —
+    // a console write does not wait on its own rebuild here.
+    this.scheduleRebuild();
     // Broadcast, because `reusePort` runs several gateway processes and each
     // holds its own snapshot: a console write handled by one of them left the
     // others serving pre-write routing until something else invalidated them.
@@ -788,7 +717,6 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
   /** Stops background rebuilds. Test/teardown helper. */
   stop(): void {
     this.stopped = true;
-    this.rebuildPending = false;
     if (this.rebuildTimer !== undefined) {
       clearTimeout(this.rebuildTimer);
       this.rebuildTimer = undefined;
@@ -796,20 +724,6 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
   }
 
   private async build(revision: RoutingRevision): Promise<RouteSnapshot> {
-    const startedAt = Date.now();
-    try {
-      return await this.buildInner(revision);
-    } catch (error) {
-      log.error(
-        "[snapshot] rebuild failed",
-        error instanceof Error ? error : undefined,
-        { revision, durationMs: Date.now() - startedAt, thrownType: typeof error },
-      );
-      throw error;
-    }
-  }
-
-  private async buildInner(revision: RoutingRevision): Promise<RouteSnapshot> {
     const built = await this.builder();
     const providerRouting: ProviderRoutingMap | undefined = built.providerRouting
       ? Object.fromEntries(
@@ -840,10 +754,7 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
     // has already been superseded. Returning it is fine — the caller asked
     // before the mutation — but caching it would strand the data plane on stale
     // routing until the next write.
-    if (revision === this.revision) {
-      this.snapshot = snapshot;
-      this.lastGood = snapshot;
-    }
+    if (revision === this.revision) this.snapshot = snapshot;
     return snapshot;
   }
 }
