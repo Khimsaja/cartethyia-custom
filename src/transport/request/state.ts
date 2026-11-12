@@ -255,15 +255,25 @@ function subscribeInFlightSnapshot(
  * small scalars post-dispatch readers need (`model`, `source_surface`,
  * `stream`, `reasoning`, `generation_controls`).
  *
- * Property replacement, never array mutation: the projected dispatch copies
- * are shallow spreads, so their own `messages` property keeps the original
- * array and a mid-stream retry still re-dispatches the full request. The
- * object itself is mutated (not replaced) so every holder of this exact
+ * Property replacement plus in-place array clearing: the projected dispatch
+ * copies are shallow spreads, so their own `messages` property keeps the
+ * original array, and replacing this object's property alone leaves the
+ * prompt pinned by every retained copy (heap leak). Clearing the shared
+ * array in place drops the message objects for all holders at once. This
+ * runs only when the request is done (no further attempt rebuilds from
+ * this canonical); a mid-stream retry uses the stream's own projected
+ * copy, whose array is a different object built via `.map()`.
+ * The object itself is mutated (not replaced) so every holder of this exact
  * object — the state, the prepared request, the finalizer's input — sees the
  * slimmed request at once.
  */
 export function slimCanonicalRequestInPlace(request: CanonicalRequest): void {
+  const originalMessages = request.messages;
   request.messages = [];
+  // Clear the shared array in place so every projected copy that still
+  // references this array drops the message objects at once. The array is
+  // readonly by type, so the mutation goes through a mutable cast.
+  (originalMessages as unknown as unknown[]).length = 0;
   // The optional fields are deleted rather than set to undefined: the
   // project compiles with exactOptionalPropertyTypes, so `undefined` is not
   // a valid value for them, and a deleted property reads as undefined to

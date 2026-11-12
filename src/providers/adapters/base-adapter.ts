@@ -36,13 +36,26 @@ export abstract class BaseProviderAdapter implements ProviderAdapter {
     // prompt itself is never read again after the transport. This generator's
     // frame otherwise pins the full prompt for the life of the process when
     // it is retained past the request (heap leak, measured: prompt retained
-    // ~1:1 per successful request, ~600 MB/min under prod traffic). Property
-    // replacement, never array mutation: the next failover attempt builds a
-    // fresh projected spread from the canonical request, so clearing this
-    // attempt's copy cannot starve a retry.
+    // ~1:1 per successful request, ~600 MB/min under prod traffic).
+    //
+    // Property replacement alone is not enough: the projected dispatch
+    // copies are shallow spreads, so their own `messages` property keeps
+    // the original array, and a retained copy pins the prompt even after
+    // this object's property is replaced. The array is also cleared in
+    // place so every holder of the shared array sees it empty. A failover
+    // retry is safe: it builds a fresh projected spread from the canonical
+    // request in the state, whose messages array is a different object
+    // (projected copies are built via `.map()`), so clearing this
+    // attempt's array cannot starve a retry.
     const releaseLargeInputs = (): void => {
+      const originalMessages = request.messages;
       payload = undefined;
       request.messages = [];
+      // Clear the shared array in place: every projected copy that still
+      // references this array (textMode/translated/effective/quirked)
+      // drops its reference to the message objects at once. The array is
+      // readonly by type, so the mutation goes through a mutable cast.
+      (originalMessages as unknown as unknown[]).length = 0;
       delete request.system;
       delete request.instructions;
     };
