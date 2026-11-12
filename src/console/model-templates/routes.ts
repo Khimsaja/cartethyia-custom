@@ -26,6 +26,8 @@ export interface ModelTemplateConfig {
   readonly apiKeyStore: Pick<DrizzleApiKeyStore, "listByModelTemplate" | "update">;
   readonly accessResolver: ConsoleAccessResolver;
   readonly auditSink?: AuditSink;
+  /** Rebuilds the route snapshot: the template list defines which models the catalog keeps. */
+  readonly snapshotInvalidator?: { invalidate(): unknown };
 }
 
 /** The shared helper knows the PostgreSQL SQLSTATE; SQLite reports its own constraint codes/messages. */
@@ -182,6 +184,8 @@ export function createModelTemplateOperations(config: ModelTemplateConfig) {
         target: record.id,
         detail: { name: record.name, modelCount: record.models.length },
       });
+      // A new template changes which models the route catalog keeps.
+      await config.snapshotInvalidator?.invalidate();
       return toModelTemplateResponse(record);
     },
 
@@ -225,6 +229,8 @@ export function createModelTemplateOperations(config: ModelTemplateConfig) {
       if (!modelsChanged) {
         return toModelTemplateResponse(record);
       }
+      // A changed model list changes which models the route catalog keeps.
+      await config.snapshotInvalidator?.invalidate();
       const sync = await pushTemplateToLinkedKeys(
         config,
         authorized.tenantId,
@@ -249,6 +255,8 @@ export function createModelTemplateOperations(config: ModelTemplateConfig) {
         target: templateId,
         detail: {},
       });
+      // A deleted template changes which models the route catalog keeps.
+      await config.snapshotInvalidator?.invalidate();
       return { success: true };
     },
 
