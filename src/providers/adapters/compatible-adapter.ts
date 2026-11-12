@@ -481,115 +481,124 @@ export class OpenAICompatibleAdapter extends BaseProviderAdapter {
     candidate: ProviderDispatchTarget,
     context: ProviderDispatchContext,
   ): AsyncIterable<CanonicalEvent> {
-    if (!res.ok) {
-      await throwIfHtmlResponse(res);
-      await mapUpstreamHttpError(res, this.provider_id);
-    }
-    // Edge proxies (Cloudflare etc.) can return an HTML error page with a
-    // 2xx/3xx status when the origin is unreachable — surface it as a typed
-    // 502 instead of a cryptic SSE/JSON decode failure.
-    await throwIfHtmlResponse(res);
+    // The upstream Response retains its Request body in Bun (measured).
+    // Hold it in a mutable local so a retained generator frame cannot
+    // pin the request body through the Response after the stream ends.
+    let upstreamResponse: Response | undefined = res;
+    try {
+      if (!upstreamResponse.ok) {
+        await throwIfHtmlResponse(upstreamResponse);
+        await mapUpstreamHttpError(upstreamResponse, this.provider_id);
+      }
+      // Edge proxies (Cloudflare etc.) can return an HTML error page with a
+      // 2xx/3xx status when the origin is unreachable — surface it as a typed
+      // 502 instead of a cryptic SSE/JSON decode failure.
+      await throwIfHtmlResponse(upstreamResponse);
 
-    const contentType = res.headers.get("content-type") ?? "";
-    const wireFamily = candidate.wire_family;
-    if (contentType.includes("text/event-stream")) {
-      if (!res.body) {
-        throw new GatewayError(
-          "platform_unavailable",
-          502,
-          `${wireFamily === "responses" ? "Responses returned empty stream" : "Chat returned empty stream"} (request {requestId}). The upstream came back empty-handed — retry 🌙`,
-          {},
-          "upstream",
-        );
-      }
-      yield* decodeWireStream(wireFamily, res.body, request, {
-        signal: context.abort_signal,
-        dialectPolicy: resolveDialect(candidate.model_id, candidate.provider_id, wireFamily, candidate.dialect),
-      });
-    } else {
-      // A streaming request answered with a non-SSE body is a provider
-      // protocol violation, and the body is often an error envelope or a
-      // plain-text/HTML page. `res.json()` on that threw a bare `SyntaxError`,
-      // which no classifier recognizes: it reached telemetry as
-      // `unknown_error` and the client as a 500 "the upstream failure could
-      // not be classified" — a gateway-blaming 500 for a perfectly
-      // identifiable upstream response. Parse defensively and raise a typed
-      // upstream error carrying the provider's own message when there is one.
-      const raw = await res.text().catch(() => "");
-      let json: Record<string, unknown>;
-      try {
-        const parsed: unknown = JSON.parse(raw);
-        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-          throw new Error("body is not a JSON object");
+      const contentType = upstreamResponse.headers.get("content-type") ?? "";
+      const wireFamily = candidate.wire_family;
+      if (contentType.includes("text/event-stream")) {
+        if (!upstreamResponse.body) {
+          throw new GatewayError(
+            "platform_unavailable",
+            502,
+            `${wireFamily === "responses" ? "Responses returned empty stream" : "Chat returned empty stream"} (request {requestId}). The upstream came back empty-handed — retry 🌙`,
+            {},
+            "upstream",
+          );
         }
-        json = parsed as Record<string, unknown>;
-      } catch {
-        const fallback = `Upstream returned a non-JSON response: ${extractHtmlTitle(raw) || raw.trim() || `HTTP ${res.status}`} (request {requestId}). The connection ghosted us — come back in a moment 👻`;
-        const upstreamText = upstreamMessageAsIs(raw, "");
-        throw new GatewayError(
-          "transport_unavailable",
-          502,
-          `${upstreamText.message || fallback}`.slice(0, 500),
-          { upstreamStatus: res.status, contentType },
-          "upstream",
-        );
+        yield* decodeWireStream(wireFamily, upstreamResponse.body, request, {
+          signal: context.abort_signal,
+          dialectPolicy: resolveDialect(candidate.model_id, candidate.provider_id, wireFamily, candidate.dialect),
+        });
+      } else {
+        // A streaming request answered with a non-SSE body is a provider
+        // protocol violation, and the body is often an error envelope or a
+        // plain-text/HTML page. `upstreamResponse.json()` on that threw a bare `SyntaxError`,
+        // which no classifier recognizes: it reached telemetry as
+        // `unknown_error` and the client as a 500 "the upstream failure could
+        // not be classified" — a gateway-blaming 500 for a perfectly
+        // identifiable upstream upstreamResponse. Parse defensively and raise a typed
+        // upstream error carrying the provider's own message when there is one.
+        const raw = await upstreamResponse.text().catch(() => "");
+        let json: Record<string, unknown>;
+        try {
+          const parsed: unknown = JSON.parse(raw);
+          if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+            throw new Error("body is not a JSON object");
+          }
+          json = parsed as Record<string, unknown>;
+        } catch {
+          const fallback = `Upstream returned a non-JSON upstreamResponse: ${extractHtmlTitle(raw) || raw.trim() || `HTTP ${upstreamResponse.status}`} (request {requestId}). The connection ghosted us — come back in a moment 👻`;
+          const upstreamText = upstreamMessageAsIs(raw, "");
+          throw new GatewayError(
+            "transport_unavailable",
+            502,
+            `${upstreamText.message || fallback}`.slice(0, 500),
+            { upstreamStatus: upstreamResponse.status, contentType },
+            "upstream",
+          );
+        }
+        // A JSON error envelope on a 2xx is still an upstream failure: surface
+        // the provider's own code/message instead of decoding it as a normal
+        // completion (which would silently yield an empty upstreamResponse). Gated on
+        // the absence of every completion shape so a provider that merely
+        // echoes an `error` field alongside real output is not misread.
+        const envelopeError = json["error"];
+        const startPlanError = this.provider_id === "zcode-start" &&
+          (json["success"] === false || (json["code"] !== undefined &&
+            ![0, 200, "0", "200"].includes(json["code"] as string | number)));
+        const hasCompletionShape =
+          json["choices"] !== undefined ||
+          json["output"] !== undefined ||
+          json["content"] !== undefined ||
+          json["candidates"] !== undefined;
+        if (((envelopeError !== undefined && envelopeError !== null) || startPlanError) && !hasCompletionShape) {
+          const errorObject = isRecord(envelopeError) ? envelopeError : json;
+          const identifier = upstreamErrorIdentifier(json);
+          const providerStatus = [
+            errorObject["status"],
+            errorObject["statusCode"],
+            errorObject["code"],
+          ].find(
+            (value): value is number =>
+              typeof value === "number" &&
+              Number.isFinite(value) &&
+              value >= 400 &&
+              value < 600,
+          );
+          // A context-window overflow arrives here on the streaming path with a
+          // numeric code that says nothing (`11115`) and the real cause in
+          // `extError.message`. The status table alone classifies it as a generic
+          // refusal, so the one thing a client acts on — the measured prompt size
+          // against the window — never reached it. The prose/identifier check
+          // mirrors the non-streaming path's pre-table branch.
+          const classification = isContextLengthFailure(json)
+            ? { code: "context_length_exceeded" as const, status: 413, origin: "upstream" as const, credentialEvidence: false, rateLimitScope: undefined }
+            : classifyUpstreamError(providerStatus, identifier);
+          const upstreamText = upstreamMessageAsIs(json, "");
+          throw new GatewayError(
+            classification.code,
+            classification.status,
+            upstreamText.message || "Upstream reported an error",
+            {
+              providerId: this.provider_id,
+              ...(providerStatus === undefined ? {} : { providerStatus }),
+              ...(identifier === undefined ? {} : { providerCode: identifier }),
+              ...(upstreamText.hadUpstreamText ? { upstreamMessageAsIs: true } : {}),
+              ...(classification.credentialEvidence ? { credentialEvidence: true } : {}),
+              ...(classification.rateLimitScope
+                ? { rateLimitScope: classification.rateLimitScope }
+                : {}),
+            },
+            classification.origin,
+          );
+        }
+        for (const ev of await decodeWireResponse(wireFamily, json, request)) yield ev;
       }
-      // A JSON error envelope on a 2xx is still an upstream failure: surface
-      // the provider's own code/message instead of decoding it as a normal
-      // completion (which would silently yield an empty response). Gated on
-      // the absence of every completion shape so a provider that merely
-      // echoes an `error` field alongside real output is not misread.
-      const envelopeError = json["error"];
-      const startPlanError = this.provider_id === "zcode-start" &&
-        (json["success"] === false || (json["code"] !== undefined &&
-          ![0, 200, "0", "200"].includes(json["code"] as string | number)));
-      const hasCompletionShape =
-        json["choices"] !== undefined ||
-        json["output"] !== undefined ||
-        json["content"] !== undefined ||
-        json["candidates"] !== undefined;
-      if (((envelopeError !== undefined && envelopeError !== null) || startPlanError) && !hasCompletionShape) {
-        const errorObject = isRecord(envelopeError) ? envelopeError : json;
-        const identifier = upstreamErrorIdentifier(json);
-        const providerStatus = [
-          errorObject["status"],
-          errorObject["statusCode"],
-          errorObject["code"],
-        ].find(
-          (value): value is number =>
-            typeof value === "number" &&
-            Number.isFinite(value) &&
-            value >= 400 &&
-            value < 600,
-        );
-        // A context-window overflow arrives here on the streaming path with a
-        // numeric code that says nothing (`11115`) and the real cause in
-        // `extError.message`. The status table alone classifies it as a generic
-        // refusal, so the one thing a client acts on — the measured prompt size
-        // against the window — never reached it. The prose/identifier check
-        // mirrors the non-streaming path's pre-table branch.
-        const classification = isContextLengthFailure(json)
-          ? { code: "context_length_exceeded" as const, status: 413, origin: "upstream" as const, credentialEvidence: false, rateLimitScope: undefined }
-          : classifyUpstreamError(providerStatus, identifier);
-        const upstreamText = upstreamMessageAsIs(json, "");
-        throw new GatewayError(
-          classification.code,
-          classification.status,
-          upstreamText.message || "Upstream reported an error",
-          {
-            providerId: this.provider_id,
-            ...(providerStatus === undefined ? {} : { providerStatus }),
-            ...(identifier === undefined ? {} : { providerCode: identifier }),
-            ...(upstreamText.hadUpstreamText ? { upstreamMessageAsIs: true } : {}),
-            ...(classification.credentialEvidence ? { credentialEvidence: true } : {}),
-            ...(classification.rateLimitScope
-              ? { rateLimitScope: classification.rateLimitScope }
-              : {}),
-          },
-          classification.origin,
-        );
-      }
-      for (const ev of await decodeWireResponse(wireFamily, json, request)) yield ev;
+    } finally {
+      upstreamResponse = undefined;
     }
+  
   }
 }
