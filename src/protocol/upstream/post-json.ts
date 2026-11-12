@@ -180,12 +180,14 @@ export async function postUpstreamJson(
   // alive indefinitely. Combining the request signal keeps the fetch
   // abortable; the deadline arm is still released by `release()`.
   const fetchSignal = AbortSignal.any([context.abort_signal, lifecycle.signal]);
+  // Hoisted so the catch can cancel a stream the fetch abandoned mid-drain.
+  let stream: ReadableStream<Uint8Array> | undefined;
   try {
     // A stream is only created when it will actually be sent as the body.
     // When a `bodyEncoder` is present the body is the encoder output, so
     // building a stream here would create a serializer that is never drained
     // or cancelled — its frame would retain the payload indefinitely.
-    const stream =
+    stream =
       bodyEncoder === undefined &&
       options?.streamBody === true &&
       isPlainJsonValue(payload, new Set())
@@ -206,6 +208,12 @@ export async function postUpstreamJson(
       release: lifecycle.release,
     };
   } catch (error: unknown) {
+    // A failed dial/fetch must not abandon the serializer: a stream that was
+    // never drained or cancelled keeps its generator suspended mid-payload,
+    // and the runtime's native fetch state retains the pull closure (see
+    // jsonBodyStream) — so the whole payload stays reachable for the life of
+    // the process. Cancel it here; the lifecycle release alone does not.
+    await stream?.cancel().catch(() => undefined);
     lifecycle.release();
     const abortError = abortGatewayError(lifecycle, error, context.abort_signal);
     if (abortError) throw abortError;

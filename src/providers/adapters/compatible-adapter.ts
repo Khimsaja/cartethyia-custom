@@ -384,13 +384,19 @@ export class OpenAICompatibleAdapter extends BaseProviderAdapter {
       endpointPath !== this.config.channel_fallback_path
         ? joinUrl(this.config.resolveBaseUrl?.(context) ?? this.config.base_url, this.config.channel_fallback_path)
         : undefined;
+    // The body is sent as a flat string, not a stream: the validated fetch
+    // drains a stream body into bytes to measure content-length before
+    // sending, so a streamed body never reaches the socket and provides no
+    // memory benefit — and its serializer generator's frame can retain the
+    // payload after the request ends (see post-json.ts). The flat string is
+    // retained only for the upstream wait and is collected normally.
     const upstream = await postUpstreamJson(
       fetchUrl,
       headers,
       payload as Record<string, unknown>,
       context,
       outboundFetch,
-      { streamBody: context.capture_provider_body === false },
+      { streamBody: false },
       bodyEncoder,
     );
     if (channelFallback !== undefined && upstream.res.status === 400) {
@@ -406,7 +412,7 @@ export class OpenAICompatibleAdapter extends BaseProviderAdapter {
           payload as Record<string, unknown>,
           context,
           outboundFetch,
-          { streamBody: context.capture_provider_body === false },
+          { streamBody: false },
           bodyEncoder,
         );
         retry.release();
