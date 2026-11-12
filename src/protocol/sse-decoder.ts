@@ -273,6 +273,20 @@ export async function* decodeSseEvents(
     yield* dispatchEvent();
   } finally {
     signal?.removeEventListener("abort", onAbort);
+    // Cancel the upstream body, not just the reader lock: a decoder that
+    // exits on [DONE], an error, or a generator `.return()` leaves the
+    // Response body stream open, and the runtime's native fetch state keeps
+    // the request (including its serialized body) rooted for as long as the
+    // stream lives — even though no one will read from it again. Cancelling
+    // here releases the fetch as soon as decoding ends, on every exit path.
+    // `reader.cancel()` both cancels the stream and releases the lock; the
+    // lock release below stays as a fallback for a reader already cancelled
+    // by `onAbort`.
+    try {
+      await reader.cancel().catch(() => undefined);
+    } catch {
+      // Already cancelled, or a pending read owns the lock.
+    }
     // `onAbort` cancels the reader, and `cancel()` releases the lock itself —
     // an unconditional `releaseLock()` then throws ERR_INVALID_STATE, which
     // would replace whatever actually ended the stream (a 499 abort, a
