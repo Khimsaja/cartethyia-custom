@@ -380,7 +380,7 @@ class InferhubAdapter implements ProviderAdapter {
     this.messages = messages;
   }
 
-  async *dispatch(
+  dispatch(
     request: CanonicalRequest,
     candidate: ProviderDispatchTarget,
     context: ProviderDispatchContext,
@@ -403,8 +403,19 @@ class InferhubAdapter implements ProviderAdapter {
     // for both legs. Re-applying inside the messages leg is idempotent:
     // already-stripped controls leave the request reference unchanged.
     const quirked = applyParamQuirks(effective, candidate.provider_id);
-    yield* extractInferhubTextToolCalls(
-      request,
+    // Whether the text-tool-call extractor runs: it only needs the tool
+    // declarations and the tool_choice, so compute the flag here and pass
+    // just the boolean. This method is deliberately NOT an async generator:
+    // a generator frame would pin the full prompt (`request`/`quirked`)
+    // for the whole stream, which is what grew the heap ~350 MB/min under
+    // agent traffic. Returning the extractor iterable directly frees this
+    // frame as soon as dispatch returns; the leg slims its own copy after
+    // transport (see BaseProviderAdapter.dispatch).
+    const enabled =
+      (((request.tools?.length ?? 0) > 0 || textMode !== undefined) &&
+        request.tool_choice !== "none");
+    return extractInferhubTextToolCalls(
+      enabled,
       leg.dispatch(quirked, candidate, context),
       textMode !== undefined,
     );
@@ -656,12 +667,13 @@ export function toInferhubTextModeRequest(request: CanonicalRequest): CanonicalR
  * block is prose, and inventing calls would break the client.
  */
 export async function* extractInferhubTextToolCalls(
-  request: CanonicalRequest,
+  enabled: boolean,
   source: AsyncIterable<CanonicalEvent>,
   dropResultBlocks = false,
 ): AsyncIterable<CanonicalEvent> {
-  const enabled =
-    (((request.tools?.length ?? 0) > 0 || dropResultBlocks) && request.tool_choice !== "none");
+  // The caller precomputes `enabled` from the request's tools/tool_choice
+  // and passes only the flag, so this generator never holds the request:
+  // holding it would pin the full prompt for the whole stream.
   if (!enabled) {
     yield* source;
     return;
