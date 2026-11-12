@@ -531,11 +531,16 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
   // Re-arm the request deadline so the stream watchdogs, not the shorter
   // pre-stream deadline, govern body duration. The hard ceiling becomes
   // pre-stream budget + stall budget, which is exactly the 480s pool-slot
-  // crash-recovery budget the network pool is sized for.
+  // crash-recovery budget the network pool is sized for. Record it as the
+  // hard ceiling: the stall watchdog re-arms on every upstream read, so
+  // without the clamp a stream that keeps dribbling data would push its
+  // deadline — and the dispatch graph it pins — forward forever.
+  state.hardDeadlineMs =
+    state.startedAtMs + resolveUpstreamTimeoutMs() + finalizer.streamStallTimeoutMs;
   state.extendDeadline(
     Math.max(
       0,
-      state.startedAtMs + resolveUpstreamTimeoutMs() + finalizer.streamStallTimeoutMs - Date.now(),
+      state.hardDeadlineMs - Date.now(),
     ),
   );
   return new Response(stream, {

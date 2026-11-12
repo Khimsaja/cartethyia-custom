@@ -75,6 +75,16 @@ export interface ProxyRequestState {
   /** Start one logical provider flight after dispatch leases are acquired. */
   startProviderFlight(): void;
   deadlineMs: number;
+  /**
+   * Hard ceiling for the whole request, set when a streaming body is
+   * established (stream start: pre-stream budget + one stall budget from
+   * ingress). `extendDeadline` never moves the deadline past this wall
+   * time: the stall watchdog re-arms on every upstream read, so without
+   * the clamp a stream that keeps dribbling data would push its deadline
+   * — and the dispatch graph the deadline pins — forward forever.
+   * `undefined` while no ceiling is set (pre-stream / non-streaming).
+   */
+  hardDeadlineMs?: number;
   readonly abortController: AbortController;
   /** Body decoded by the single ingress reader, when this is a proxy request. */
   ingressBody?: unknown;
@@ -488,16 +498,27 @@ export class ProxyRequestStateStore {
       ingressPath: fastPathname(request.url),
       extendDeadline: (ms: number) => {
         if (cleaned) return;
+        // A stream's hard ceiling bounds total lifetime: the stall watchdog
+        // re-arms on every upstream read, so an uncapped extension lets a
+        // stream that keeps dribbling data push its deadline — and the
+        // dispatch graph the deadline pins — forward forever. Clamp the
+        // re-arm to the ceiling set when the stream started; the timer
+        // fires at the clamped time, so a dribble stream dies at the
+        // ceiling instead of living until the process does.
+        const cappedMs =
+          state.hardDeadlineMs === undefined
+            ? Math.max(0, ms)
+            : Math.max(0, Math.min(ms, state.hardDeadlineMs - Date.now()));
         // Keep the field in sync with the timer: dispatch contexts are built
         // from `state.deadlineMs`, so a re-armed timer with a stale field let
         // the upstream fetch time out earlier than the stall budget.
-        state.deadlineMs = Date.now() + Math.max(0, ms);
+        state.deadlineMs = Date.now() + cappedMs;
         // The backstop sweep keys off the flight's own deadline, so a streaming
         // request that legitimately extends its budget must move the flight's
         // deadline too — otherwise the sweep would force-release a healthy
         // long stream the moment the pre-stream budget elapsed.
         if (providerFlightStarted) this.inFlightDeadlines.set(requestId, state.deadlineMs);
-        armDeadline(ms);
+        armDeadline(cappedMs);
       },
       cleanup: () => {
         if (cleaned) return;
