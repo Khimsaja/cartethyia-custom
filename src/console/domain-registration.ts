@@ -3,6 +3,7 @@ import { ConsoleDomainError } from "./shared/errors";
 import { createCliToolsRoutes } from "./cli-tools/routes";
 import { createAccountQuotaRoutes } from "./quota/account-quota";
 import { createApiKeyRoutes } from "./api-keys/routes";
+import { createModelTemplateRoutes } from "./model-templates/routes";
 import { familyBucketSpend } from "./api-keys/bucket-spend";
 import { createProviderCatalogRoutes } from "./providers/catalog/routes";
 import { createInferhubRoutes } from "./inferhub/routes";
@@ -59,6 +60,7 @@ import {
 import { refreshAccountStatus } from "../providers/operations/account-refresh-status";
 import { syncByokProvider } from "../providers/operations/provider-catalog-service";
 import { DrizzleApiKeyStore } from "../persistence/stores/api-key-store";
+import { DrizzleModelTemplateStore } from "../persistence/stores/model-template-store";
 import {
   DrizzleShareLinkStore,
   type ShareLinkStore,
@@ -265,6 +267,7 @@ export function registerConsoleDomains(
   const runtimeSettingsStore = new DrizzleRuntimeSettingsStore(ctx.db, resolveRedisBackend(ctx.redis));
   const modelRoutingStore = new DrizzleModelRoutingStore(ctx.db);
   const apiKeyStore = new DrizzleApiKeyStore(ctx.db);
+  const modelTemplateStore = new DrizzleModelTemplateStore(ctx.db);
   const shareStore = ctx.shareStore ?? new DrizzleShareLinkStore(ctx.db);
   const shareActivity = createShareUsagePort({ db: ctx.db, redis: ctx.redis });
 
@@ -404,7 +407,8 @@ export function registerConsoleDomains(
     }),
   );
   console.use(createModelRoutingRoutes({ store: modelRoutingStore, accessResolver: ctx.accessResolver, auditSink: ctx.auditRecorder, snapshotInvalidator: ctx.routeSnapshotService }));
-  console.use(createApiKeyRoutes({ store: apiKeyStore, accessResolver: ctx.accessResolver, auditSink: ctx.auditRecorder, shareStore, shareActivity, admissionService: ctx.admissionService, bucketSpend: (keyId, now) => familyBucketSpend(ctx.db, keyId, now) }));
+  console.use(createApiKeyRoutes({ store: apiKeyStore, accessResolver: ctx.accessResolver, auditSink: ctx.auditRecorder, shareStore, shareActivity, admissionService: ctx.admissionService, bucketSpend: (keyId, now) => familyBucketSpend(ctx.db, keyId, now), modelTemplateStore }));
+  console.use(createModelTemplateRoutes({ store: modelTemplateStore, apiKeyStore, accessResolver: ctx.accessResolver, auditSink: ctx.auditRecorder }));
   console.use(createCliToolsRoutes({ service: ctx.cliToolService, accessResolver: ctx.accessResolver, auditSink: ctx.auditRecorder, snapshotInvalidator: ctx.routeSnapshotService }));
   console.use(createAccountQuotaRoutes({
     db: ctx.db,

@@ -362,6 +362,7 @@ const POOL_COLUMNS = {
   status: networkPools.status,
   maxInflight: networkPools.maxInflight,
   weight: networkPools.weight,
+  dedicatedProviderId: networkPools.dedicatedProviderId,
 } as const;
 
 const POOL_ACCOUNT_COLUMNS = {
@@ -492,7 +493,12 @@ class RouteCatalogRepository {
     // automatic per-request selection — see `resolveNetworkPools` below.
     const activePoolsByTenant = new Map<
       string,
-      Array<{ id: string; maxInflight: number; weight: number }>
+      Array<{
+        id: string;
+        maxInflight: number;
+        weight: number;
+        dedicatedProviderId: string | null;
+      }>
     >();
     const configuredPoolTenants = new Set<string>();
     for (const pool of poolRows) {
@@ -500,8 +506,25 @@ class RouteCatalogRepository {
       if (pool.status !== "active") continue;
       if (!pool.tenantId) continue;
       const list = activePoolsByTenant.get(pool.tenantId) ?? [];
-      list.push({ id: pool.id, maxInflight: pool.maxInflight ?? 10, weight: pool.weight ?? 100 });
+      list.push({
+        id: pool.id,
+        maxInflight: pool.maxInflight ?? 10,
+        weight: pool.weight ?? 100,
+        dedicatedProviderId: pool.dedicatedProviderId ?? null,
+      });
       activePoolsByTenant.set(pool.tenantId, list);
+    }
+    // Providers with at least one exclusive pool configured in this tenant.
+    // Configured means any status, not just active: once an operator
+    // assigns a pool to a provider, that provider must not silently fall
+    // back to shared pools while its exclusive pools are cooling or
+    // disabled — exclusivity is the assignment, not one node's health.
+    const dedicatedProvidersByTenant = new Map<string, Set<string>>();
+    for (const pool of poolRows) {
+      if (!pool.dedicatedProviderId || !pool.tenantId) continue;
+      const set = dedicatedProvidersByTenant.get(pool.tenantId) ?? new Set<string>();
+      set.add(pool.dedicatedProviderId);
+      dedicatedProvidersByTenant.set(pool.tenantId, set);
     }
 
     // Pool-as-account rows, grouped by tenant: one per (pool × ip-scoped
@@ -622,7 +645,9 @@ class RouteCatalogRepository {
 
     /** Every active pool the account's tenant owns — dispatch picks the
      * least-loaded/non-cooldown one per request (`tryAcquireAvailablePool`),
-     * never an admin-pinned single pool. */
+     * never an admin-pinned single pool. An exclusive assignment narrows
+     * this set: a provider with dedicated pools uses ONLY those, and every
+     * other provider loses them from its own set. */
     function resolveNetworkPools(
       providerId: string,
       rowTenantId: string | null,
@@ -636,7 +661,15 @@ class RouteCatalogRepository {
       | undefined {
       if (!rowTenantId || resolveSkipProxy(providerId, rowTenantId)) return undefined;
       if (!configuredPoolTenants.has(rowTenantId)) return undefined;
-      const pools = activePoolsByTenant.get(rowTenantId) ?? [];
+      const tenantPools = activePoolsByTenant.get(rowTenantId) ?? [];
+      // Exclusive assignment: a provider with dedicated pools uses ONLY
+      // those, and every other provider loses them from its own set — a
+      // dedicated pool never also serves the shared group. A provider
+      // without an assignment keeps exactly the shared pools, so this
+      // filter is a no-op until the first assignment exists.
+      const pools = dedicatedProvidersByTenant.get(rowTenantId)?.has(providerId)
+        ? tenantPools.filter((pool) => pool.dedicatedProviderId === providerId)
+        : tenantPools.filter((pool) => pool.dedicatedProviderId === null);
       const limits: Record<string, number> = {};
       const weights: Record<string, number> = {};
       for (const pool of pools) {

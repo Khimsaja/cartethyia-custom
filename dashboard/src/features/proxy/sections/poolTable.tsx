@@ -606,6 +606,18 @@ export const PoolRow = memo(function PoolRow({
           <span className="text-badge text-text-tertiary">—</span>
         )}
       </td>
+      <td className="min-w-0 max-w-90">
+        {pool.dedicatedProviderId ? (
+          <span
+            className="truncate text-caption font-semibold text-text-secondary"
+            title={pool.dedicatedProviderId}
+          >
+            {pool.dedicatedProviderId}
+          </span>
+        ) : (
+          <span className="text-badge text-text-tertiary">Shared</span>
+        )}
+      </td>
       <td className="max-w-110">
         <PoolAddressBlock
           pool={pool}

@@ -8,6 +8,11 @@ import type { CallerIdentity } from "../../security/access-control";
 import type { RouteCandidate as RouteCandidate, InMemoryRouteSnapshotService, RoutePlan, RouteSnapshot } from "../routing/route-model";
 import type { RouteContinuationAffinity } from "../routing/route-model";
 import { resolveAliasTarget, type RoutingEngine } from "../routing/router";
+import {
+  AUTO_MODEL_NAME,
+  isAutoModelEnabled,
+  type AutoModelScorer,
+} from "../routing/auto-model";
 import { projectForRoute, routeCapabilitiesFor, deriveRequiredCapabilities } from "../../protocol/translation/capabilities";
 import type { RequiredCapability } from "../../protocol/translation/capabilities";
 import { isModelAllowed, type ResolvedApiKey } from "../../security/api-key-auth";
@@ -308,6 +313,13 @@ function lookupPendingCall(
 }
 
 export interface PreparedProxyRequest {
+  /**
+   * Model id the client sees in place of the routed model. Set only when
+   * the request asked for `auto`: the buyer sees `auto`, never the picked
+   * model or its provider. Routing, telemetry, and cost keep using the
+   * picked model — this only relabels the client-facing response.
+   */
+  readonly displayModel?: string;
   readonly canonicalRequest: CanonicalRequest;
   readonly authorization: ResolvedApiKey;
   readonly candidate: RouteCandidate;
@@ -348,6 +360,8 @@ interface ProxyRequestPreparerDeps {
   readonly snapshotService: InMemoryRouteSnapshotService;
   readonly routingEngine: RoutingEngine;
   readonly admissionService: ApiKeyAdmissionService;
+  /** Auto-model scorer; absent means the `auto` model is unconfigured. */
+  readonly autoModelScorer?: AutoModelScorer;
 }
 
 export class ProxyRequestPreparer {
@@ -451,10 +465,48 @@ export class ProxyRequestPreparer {
     // chosen yet, and the level is a statement about the request, not about any
     // one upstream. Each model's own ladder is applied later, after routing.
     const { model: bareModel, intent: thinkingIntent } = parseThinkingSuffix(initialRequest.model);
-    const request =
+    let request =
       thinkingIntent === null
         ? initialRequest
         : withThinkingSuffixIntent({ ...initialRequest, model: bareModel }, thinkingIntent);
+    // "auto" model (env-gated, default off): resolve to the most stable model
+    // on this key's own allowlist BEFORE any policy check, so the resolved
+    // model is authorized exactly like a direct request for it. Nothing
+    // downstream — alias resolution, allowlist, plan, telemetry — sees
+    // "auto"; it only ever sees the picked model.
+    // Auto failures carry their own error codes (auto_*), never
+    // model_not_found: the strike layer counts only model_not_found, and a
+    // legitimate auto request (disabled, unconfigured, no data) is not
+    // model probing and must never push the caller toward an abuse ban.
+    const requestedAuto = request.model === AUTO_MODEL_NAME;
+    if (requestedAuto) {
+      if (!isAutoModelEnabled()) {
+        throw new GatewayError("auto_not_enabled", 404, "model 'auto' is not enabled on this gateway", {
+          model: request.model,
+        });
+      }
+      const scorer = this.deps.autoModelScorer;
+      if (!scorer) {
+        throw new GatewayError(
+          "auto_not_configured",
+          404,
+          "model 'auto' is not configured on this gateway",
+          { model: request.model },
+        );
+      }
+      const pick = await scorer.pickForKey(authorization.snapshot);
+      if (!pick.ok) {
+        throw new GatewayError(
+          pick.reason === "no_allowlist" ? "auto_no_allowlist" : "auto_no_data",
+          404,
+          pick.reason === "no_allowlist"
+            ? "model 'auto' needs a key with an explicit model allowlist"
+            : "model 'auto' has no stability data for your models yet — send traffic to them first",
+          { model: request.model },
+        );
+      }
+      request = { ...request, model: pick.model };
+    }
     const snapshot = await this.deps.snapshotService.getSnapshot();
     const { allowCliMappings } = this.#resolveAliasAndGateModel(
       request.model,
@@ -632,6 +684,7 @@ export class ProxyRequestPreparer {
     if (policyCandidates.length === 0)
       throw new GatewayError("model_not_allowed", 403, "model is not allowed for this API key (request {requestId}). The door's locked for this one — check the allowlist 🔒", {
         model: request.model,
+        allowlist_miss: true,
       });
     if (policyCandidates.length !== plan.candidates.length)
       plan = { ...plan, candidates: policyCandidates };
@@ -726,6 +779,7 @@ export class ProxyRequestPreparer {
     const chosen = eligible[0]!;
     // plan() guarantees a non-empty candidate list (it throws otherwise).
     return {
+      ...(requestedAuto ? { displayModel: AUTO_MODEL_NAME } : {}),
       canonicalRequest: effectiveRequest,
       authorization,
       candidate: chosen,
@@ -792,6 +846,7 @@ export class ProxyRequestPreparer {
     if (policyCandidates.length === 0)
       throw new GatewayError("model_not_allowed", 403, "model is not allowed for this API key (request {requestId}). The door's locked for this one — check the allowlist 🔒", {
         model: input.model,
+        allowlist_miss: true,
       });
     const candidates = policyCandidates.filter(input.eligible);
     if (candidates.length === 0)

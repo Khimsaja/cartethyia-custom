@@ -3,6 +3,8 @@ import { FlaskConical, Loader2 } from "lucide-react";
 import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
 import { Stack } from "../../../components/ui/stack";
+import { Select } from "../../../components/ui/select";
+import { useProviders } from "../../../hooks/providers";
 import type {
   HealthCheckResult,
   NetworkPoolResponse,
@@ -50,6 +52,8 @@ export function PoolEditForm({
   const healthCheck = useHealthCheckNetworkPool();
   const [label, setLabel] = useState(pool.label ?? "");
   const [family, setFamily] = useState(pool.family ?? "");
+  const providersQuery = useProviders();
+  const [dedicated, setDedicated] = useState(pool.dedicatedProviderId ?? "");
   const [endpoint, setEndpoint] = useState(pool.endpoint ?? "");
   const [cap, setCap] = useState(String(pool.maxInflight ?? 10));
   const [weight, setWeight] = useState(String(pool.weight ?? 100));
@@ -136,6 +140,11 @@ export function PoolEditForm({
         // An emptied box clears the tag, so compare against the raw stored
         // value rather than a trimmed one.
         ...(family.trim() !== (pool.family ?? "") ? { family: family.trim() || null } : {}),
+        // An exclusive assignment: the pool serves only this provider, and
+        // that provider stops using shared pools. Empty means shared.
+        ...(dedicated !== (pool.dedicatedProviderId ?? "")
+          ? { dedicatedProviderId: dedicated || null }
+          : {}),
         ...(endpoint.trim() !== pool.endpoint && endpoint.trim() !== ""
           ? { endpoint: endpoint.trim() }
           : {}),
@@ -172,6 +181,24 @@ export function PoolEditForm({
           placeholder="e.g. residential-id"
           onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFamily(e.target.value)}
         />
+      </div>
+      <div>
+        <div className="text-micro text-text-tertiary mb-2">Dedicated provider</div>
+        <Select
+          aria-label="Dedicated provider"
+          value={dedicated}
+          onValueChange={(value) => setDedicated(value)}
+          options={[
+            { value: "", label: "Shared (all providers)" },
+            ...(providersQuery.data ?? []).map((provider) => ({
+              value: provider.providerId,
+              label: provider.displayName,
+            })),
+          ]}
+        />
+        <div className="text-micro text-text-tertiary mt-2">
+          Exclusive: this pool serves only the chosen provider, and that provider stops using shared pools.
+        </div>
       </div>
       <div>
         <Input
@@ -295,9 +322,16 @@ export function ProxyBulkForm({
   actionsRef,
   onProbeResult,
   onHealthResult,
+  dedicatedProviderId,
+  dedicatedProviderLabel,
 }: {
   readonly onClose: () => void;
   readonly actionsRef?: (actions: ReactNode) => void;
+  /** When set, every pool created here is assigned exclusively to this
+   * provider (see the Dedicated column). Absent means shared. */
+  readonly dedicatedProviderId?: string;
+  /** Display label for the note above the form; falls back to the id. */
+  readonly dedicatedProviderLabel?: string;
   /** Hands a provider-probe verdict to the page once the pool row exists. */
   readonly onProbeResult?: (poolId: string, result: PoolProviderProbeResult) => void;
   /** Hands the URL test's verdict along with it, so both survive the save. */
@@ -467,6 +501,7 @@ export function ProxyBulkForm({
         endpoint: line,
         ...(perRowQuota.has(index) ? { quotaBytes: perRowQuota.get(index) } : {}),
         ...(family.trim() !== "" ? { family: family.trim() } : {}),
+        ...(dedicatedProviderId ? { dedicatedProviderId } : {}),
       }));
       // One request creates the whole paste; the backend inserts all rows in a
       // single statement. A long paste used to be one round trip per proxy.
@@ -506,6 +541,11 @@ export function ProxyBulkForm({
   }, [actionsRef, batchSubmitting, lines.length, onClose]);
   return (
     <form id="add-proxy-form" onSubmit={submit} className="flex flex-col gap-4">
+      {dedicatedProviderId ? (
+        <p className="m-0 text-badge font-semibold text-text-secondary">
+          Pools added here will be dedicated exclusively to {dedicatedProviderLabel ?? dedicatedProviderId} — other providers will never use them.
+        </p>
+      ) : null}
       <div className="flex items-center justify-between gap-3">
         <label htmlFor="proxy-endpoints" className="text-caption font-semibold text-text-primary">
           Proxy endpoints

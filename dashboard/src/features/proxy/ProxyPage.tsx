@@ -117,7 +117,11 @@ export default function Proxy(): ReactNode {
   const updatePool = useUpdateNetworkPool();
   const healthCheck = useHealthCheckNetworkPool();
   const [showProxyForm, setShowProxyForm] = useState(false);
-  const closeAddProxy = useCallback(() => setShowProxyForm(false), []);
+  const [addProxyDedicated, setAddProxyDedicated] = useState<string | null>(null);
+  const closeAddProxy = useCallback(() => {
+    setShowProxyForm(false);
+    setAddProxyDedicated(null);
+  }, []);
   const [addProxyActions, setAddProxyActions] = useState<ReactNode>(null);
   const [editProxyActions, setEditProxyActions] = useState<ReactNode>(null);
   const [showRelayDeploy, setShowRelayDeploy] = useState(false);
@@ -520,6 +524,11 @@ export default function Proxy(): ReactNode {
     setDeleteTargets(null);
   };
 
+  // Exclusive CodeBuddy pools: these serve CodeBuddy only, and CodeBuddy
+  // stops using shared pools once any of them exists. Assignment happens
+  // in a pool's Edit form; this section is the overview plus release.
+  const codebuddyPools = pools.filter((pool) => pool.dedicatedProviderId === "cb");
+
   return (
     <ProxyLiveProvider>
       <Stack gap="16px">
@@ -532,6 +541,8 @@ export default function Proxy(): ReactNode {
         <ProxyBulkForm
           onClose={closeAddProxy}
           actionsRef={setAddProxyActions}
+          dedicatedProviderId={addProxyDedicated ?? undefined}
+          dedicatedProviderLabel={addProxyDedicated === "cb" ? "CodeBuddy" : undefined}
           onProbeResult={(poolId, result) => {
             // The row may not exist in this list yet (the add form reports
             // before the refetch lands), so the endpoint is read from the
@@ -564,6 +575,54 @@ export default function Proxy(): ReactNode {
         )}
       </Dialog>
 
+      <Card>
+        <CardHeader
+          title="Pool khusus CodeBuddy"
+          subtitle="Exclusive pools serve CodeBuddy only — other providers never use them, and CodeBuddy stops using shared pools once any exclusive pool is assigned."
+        />
+        <CardBody>
+          <div>
+            <Button
+              variant="primary"
+              size="sm"
+              icon={<Plus size={13} />}
+              onClick={() => {
+                setAddProxyDedicated("cb");
+                setShowProxyForm(true);
+              }}
+            >
+              Add pool khusus CodeBuddy
+            </Button>
+          </div>
+          {codebuddyPools.length === 0 ? (
+            <p className="text-badge text-text-secondary">
+              No exclusive pool yet — CodeBuddy still uses shared pools. Add one with the button above, or assign an existing pool from its Edit form.
+            </p>
+          ) : (
+            <Stack gap="8px">
+              {codebuddyPools.map((pool) => (
+                <div key={pool.id} className="flex items-center gap-8">
+                  <span className="min-w-0 flex-1 truncate text-badge font-semibold">{poolName(pool)}</span>
+                  <Badge tone={pool.status === "active" ? "ok" : pool.status === "disabled" ? "disabled" : "warn"}>
+                    {pool.status}
+                  </Badge>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={updatePool.isPending}
+                    onClick={() =>
+                      void updatePool.mutateAsync({ poolId: pool.id, request: { dedicatedProviderId: null } })
+                    }
+                  >
+                    Release to shared
+                  </Button>
+                </div>
+              ))}
+            </Stack>
+          )}
+        </CardBody>
+      </Card>
+
       <Card
         style={pools.length === 0 && !isPending && !isError ? { minHeight: "min(78dvh, calc(100dvh - 160px))", display: "flex", flexDirection: "column" } : undefined}
       >
@@ -590,7 +649,10 @@ export default function Proxy(): ReactNode {
                 variant="primary"
                 size="sm"
                 icon={<Plus size={13} />}
-                onClick={() => setShowProxyForm(true)}
+                onClick={() => {
+                  setAddProxyDedicated(null);
+                  setShowProxyForm(true);
+                }}
               >
                 Add proxies
               </Button>
@@ -795,6 +857,7 @@ export default function Proxy(): ReactNode {
                   "",
                   { key: "name", label: "Proxy", sortable: true },
                   { key: "family", label: "Family", sortable: true },
+                  "Dedicated",
                   { key: "address", label: "Address", sortable: true },
                   { key: "load", label: "Load", sortable: true },
                   "Actions",

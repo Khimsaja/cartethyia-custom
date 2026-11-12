@@ -13,7 +13,8 @@
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { deriveSqliteBaseline } from "../../scripts/tools/generate-sqlite";
 import { DrizzleModelRoutingStore } from "../../src/console/routing/model/store";
 import { resolvePackagePath } from "../../src/config/package-paths";
@@ -21,9 +22,7 @@ import { applySqliteMigrations, buildSqliteHandle, createSqliteDatabase } from "
 import {
   acceptedBaselineSchemaMarkers,
   baselineSchemaMarker,
-  migrationFileIds,
   MIGRATION_LEDGER_TABLE,
-  resolveMigrationsFolder,
 } from "../../src/persistence/migrate";
 import { tenants } from "../../src/persistence/schema";
 
@@ -41,9 +40,79 @@ function migratedDatabase(): Database {
 }
 
 test("each backend has matching baseline and incremental migrations", () => {
-  const postgres = migrationFileIds(resolveMigrationsFolder());
-  const sqlite = migrationFileIds(resolvePackagePath("migrations", "lite-sqlite3"));
-  expect(sqlite).toEqual(postgres);
+  const postgres = readdirSync(resolve(process.cwd(), "migrations", "full-postgres")).filter((name) => name.endsWith(".sql")).sort();
+  const sqlite = readdirSync(resolve(process.cwd(), "migrations", "lite-sqlite3")).filter((name) => name.endsWith(".sql")).sort();
+  // Both backends must carry the same numbered migrations. The list is pinned
+  // (rather than derived) so adding a migration to only one backend fails here
+  // instead of silently diverging at startup.
+  const expected = [
+    "0000_baseline.sql",
+    "0001_allow_multiple_shared_keys_per_ip.sql",
+    "0002_add_gemini_wire_family.sql",
+    "0003_add_models_model_id_index.sql",
+    "0004_add_model_block_hits.sql",
+    "0005_add_buddy_usage_snapshots.sql",
+    "0006_add_buddy_task_ledger.sql",
+    "0007_add_telemetry_payload_capture_state.sql",
+    "0008_add_models_route_unique_index.sql",
+    "0009_rename_opencode_provider_ids.sql",
+    "0010_add_provider_max_inflight_per_proxy.sql",
+    "0011_add_pool_provider_probe.sql",
+    "0012_add_reported_model.sql",
+    "0013_add_providers_tenant_id_index.sql",
+    "0014_add_provider_accounts_tenant_id_index.sql",
+    // TipRouter local migrations (not upstream): model templates, key
+    // expiry, and dedicated-provider pools. They share numbers with
+    // upstream files (0015/0016/0024) and sort before them; both backends
+    // carry the same set, which is what this test pins.
+    "0015_add_model_templates.sql",
+    "0015_add_payload_stages.sql",
+    "0016_add_api_keys_expires_at.sql",
+    "0016_add_share_link_slug.sql",
+    "0017_add_models_pro_only.sql",
+    "0018_add_accounts_quota_plan.sql",
+    "0019_add_models_free_tier.sql",
+    "0020_add_telemetry_event_analytics.sql",
+    "0021_add_api_key_concurrency_tolerance.sql",
+    "0022_add_inferhub_config_key.sql",
+    "0023_drop_api_key_concurrency_tolerance.sql",
+    "0024_add_network_pools_dedicated_provider.sql",
+    "0024_add_pool_provider_cooldowns.sql",
+    "0025_add_pool_random_strategy.sql",
+    "0026_add_qoder_native_identity.sql",
+    "0027_qoder_identity_genuine_seed.sql",
+    "0028_add_family_template_key_telemetry.sql",
+    "0029_null_share_child_policy_columns.sql",
+    "0030_add_api_key_max_children.sql",
+    "0031_tenant_system_prompts.sql",
+    "0032_add_provider_pool_accounts.sql",
+    "0033_add_api_key_ban.sql",
+    "0034_add_api_key_ban_until.sql",
+    "0035_align_pool_account_status_enum.sql",
+    "0036_system_prompt_presets_refs.sql",
+    "0037_share_concurrency_scope.sql",
+    "0038_add_accounts_quota_snapshot.sql",
+    "0039_add_telemetry_provider_model_indexes.sql",
+    "0040_add_models_dialect.sql",
+    "0041_add_daily_checkin_ledger_account_fk.sql",
+    "0042_add_telemetry_degenerate_stop.sql",
+    // TipRouter local 0043 (auth-escalation counters) collides with the
+    // upstream 0043 (custom user agent): the upstream file was renamed to
+    // 0044 in staging so both migrations apply on upgrade. Upstream 2.7.9
+    // adds 0044/0045, which collide with the renamed 0044 — they are
+    // renumbered forward to 0046/0047 so the ledger never sees a retired id.
+    // Upstream 2.8.0 adds only 0046_add_accounts_quota_plan_fetched_at.sql:
+    // its 0043/0044/0045 are byte-identical to the renamed local files, so
+    // the merge kept the local names (rename detection) and no duplicate
+    // no-op migration re-entered the tree.
+    "0043_add_auth_escalation_counters.sql",
+    "0044_add_provider_custom_user_agent.sql",
+    "0046_add_accounts_quota_plan_fetched_at.sql",
+    "0046_add_models_warning_metadata.sql",
+    "0047_migrate_workbuddy_to_codebuddy.sql",
+  ];
+  expect(postgres).toEqual(expected);
+  expect(sqlite).toEqual(expected);
 });
 
 test("the committed SQLite baseline matches the generator output", () => {

@@ -531,6 +531,17 @@ export const networkPools = pgTable("network_pools", {
    * operator has not tagged the pool.
    */
   family: text("family"),
+  /**
+   * Exclusive provider assignment: when set, this pool serves ONLY this
+   * provider, and that provider stops using shared pools (see
+   * `resolveNetworkPools` in `src/transport/routing/route-catalog.ts`).
+   * Null means a shared pool, available to every provider without an
+   * exclusive assignment. The reference clears itself when the provider
+   * row is deleted, so a removed provider never strands pools.
+   */
+  dedicatedProviderId: text("dedicated_provider_id").references(() => providers.id, {
+    onDelete: "set null",
+  }),
   endpointConfig: jsonb("endpoint_config").notNull(),
   credentialCiphertext: bytea("credential_ciphertext"),
   maxInflight: integer("max_inflight"),
@@ -609,6 +620,7 @@ export const networkPools = pgTable("network_pools", {
     index("network_pools_tenant_id_idx").on(table.tenantId),
     index("network_pools_status_cooldown_idx").on(table.status, table.cooldownUntil),
     index("network_pools_family_idx").on(table.family),
+    index("network_pools_dedicated_provider_id_idx").on(table.dedicatedProviderId),
   ],
 );
 
@@ -851,6 +863,24 @@ export const poolRoutingSettings = pgTable("pool_routing_settings", {
   rotateCount: integer("rotate_count").notNull().default(1),
 });
 
+/**
+ * Named model whitelist presets a tenant reuses when provisioning API keys.
+ * A key linked to a template mirrors its model list; later template edits
+ * do not rewrite issued keys unless explicitly synced.
+ */
+export const modelTemplates = pgTable(
+  "model_templates",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: tenantRefRequired(),
+    name: text("name").notNull(),
+    models: jsonb("models").notNull().$type<readonly string[]>(),
+    ...timestampColumns(),
+  },
+  (t) => [uniqueIndex("model_templates_tenant_name_uidx").on(t.tenantId, t.name)],
+);
+export type ModelTemplate = typeof modelTemplates.$inferSelect;
+
 export const API_KEY_MODES = ["personal", "share"] as const;
 export type ApiKeyMode = (typeof API_KEY_MODES)[number];
 
@@ -941,6 +971,10 @@ export const apiKeys = pgTable(
       .notNull()
       .default("whitelist"),
     modelList: jsonb("model_list").$type<readonly string[]>(),
+    /** Template this key mirrors, when it was provisioned from one. */
+    modelTemplateId: uuid("model_template_id").references(() => modelTemplates.id, {
+      onDelete: "set null",
+    }),
     /**
      * Client-router ids this key refuses. A request whose fingerprint names one
      * of these is rejected before routing, so an operator can stop a downstream
@@ -955,6 +989,8 @@ export const apiKeys = pgTable(
     createdAt: createdAtColumn(),
     enabled: boolean("enabled").notNull().default(true),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    /** Hard expiry for time-boxed keys; NULL means the key never expires. */
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
     /**
      * Ban state. A ban is distinct from a revoke: it records the operator's
      * reason (`banReason`) so the console can show it, and it is fully
@@ -995,6 +1031,7 @@ export const apiKeys = pgTable(
       .on(table.tenantId)
       .where(sql`${table.isDefault} = true AND ${table.revokedAt} IS NULL`),
     index("api_keys_tenant_id_idx").on(table.tenantId),
+    index("api_keys_model_template_id_idx").on(table.modelTemplateId),
     index("api_keys_enabled_tenant_idx").on(table.tenantId).where(sql`${table.enabled} = true`),
     index("api_keys_parent_key_id_idx").on(table.parentKeyId),
     check(

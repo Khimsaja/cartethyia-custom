@@ -6,6 +6,7 @@
 import type { AuditSink } from "../audit/contracts";
 import { randomBytes } from "node:crypto";
 import type { ApiKeyRecord, ApiKeyStore } from "../../persistence/stores/api-key-store";
+import type { DrizzleModelTemplateStore } from "../../persistence/stores/model-template-store";
 import { hashSecret } from "../../security/crypto";
 import { type ShareLinkStore, type ShareLinkSummary } from "../../persistence/stores/share-store";
 import { API_KEY_MODES, API_KEY_CONCURRENCY_SCOPES, type ApiKeyMode, type ApiKeyModelAccessMode, type ShareLinkKind } from "../../persistence/schema";
@@ -65,6 +66,28 @@ export interface CreateApiKeyRequest {
   lifetimeTokenBudget?: number | null;
   maxConcurrentRequests?: number | null;
   /**
+   * Hard expiry as an ISO timestamp for time-boxed keys (e.g. a subscription
+   * key that dies 30 days after issue). `null` clears a previously set expiry
+   * on update; omitting it leaves any stored expiry unchanged.
+   */
+  expiresAt?: string | null;
+  /**
+   * Duration-based alternative to `expiresAt`, for automation that thinks in
+   * subscription lengths ("30 days", "12 hours") rather than absolute
+   * timestamps. The two fields sum; combining either with an explicit
+   * `expiresAt` in the same request is rejected.
+   */
+  expiresInDays?: number | null;
+  expiresInHours?: number | null;
+  /**
+   * Update-only: pushes the key's existing expiry out by this duration
+   * instead of replacing it, so a renewal never changes the buyer's key and
+   * never shortens time they already paid for — the base is the later of now
+   * and the stored expiry. Rejected on create and for keys with no expiry.
+   */
+  extendByDays?: number;
+  extendByHours?: number;
+  /**
    * How `maxConcurrentRequests` applies to a share template's family:
    * `family` (default) = one cap across all recipient keys (a single shared
    * admission counter); `per_key` = each recipient key gets its own cap and
@@ -74,6 +97,12 @@ export interface CreateApiKeyRequest {
   /** Share-template slot cap; only meaningful when keyMode === "share". */
   maxChildren?: number | null;
   modelPrefix?: string;
+  /**
+   * The model template this key mirrors. On create, a string links the new
+   * key to that template; on update, a string links (or re-links) and `null`
+   * detaches. Omitting the field leaves any existing link untouched.
+   */
+  modelTemplateId?: string | null;
   modelAccessMode?: ApiKeyModelAccessMode;
   modelList?: readonly string[];
   /** Client-router ids this key refuses; see `client-router-fingerprint.ts`. */
@@ -108,6 +137,8 @@ export interface ApiKeyResponse {
   readonly monthlyTokenLimit?: number;
   readonly lifetimeTokenBudget?: number;
   readonly modelPrefix?: string;
+  /** Template this key mirrors, when it was provisioned from one. */
+  readonly modelTemplateId?: string;
   readonly modelAccessMode?: ApiKeyModelAccessMode;
   readonly modelList?: readonly string[];
   readonly clientRouterDenylist?: readonly string[];
@@ -124,6 +155,8 @@ export interface ApiKeyResponse {
   readonly sharePopupBody?: string;
   readonly createdAt: string;
   readonly revokedAt?: string;
+  /** ISO expiry for time-boxed keys; absent when the key never expires. */
+  readonly expiresAt?: string;
   /** Ban state; see the schema columns for the contract. */
   readonly bannedAt?: string;
   readonly banReason?: string;
@@ -190,6 +223,13 @@ export interface ApiKeyConfig {
     keyId: string,
     now: Date,
   ) => Promise<{ daily: number; monthly: number }>;
+
+  /**
+   * Tenant-scoped template lookup used to validate a key's template link.
+   * Optional: without it, requests that name a template are rejected, since
+   * an unvalidated link would let one tenant pin keys to another's template.
+   */
+  readonly modelTemplateStore?: Pick<DrizzleModelTemplateStore, "get">;
 }
 
 /** Result of minting a share link. The bearer token is returned exactly once. */
@@ -357,6 +397,46 @@ export function validateApiKeyRequest(request: CreateApiKeyRequest): readonly Ac
   finitePositive(request.monthlyTokenLimit, "monthlyTokenLimit");
   finitePositive(request.lifetimeTokenBudget, "lifetimeTokenBudget");
   finitePositive(request.maxConcurrentRequests, "maxConcurrentRequests");
+  if (request.expiresAt !== undefined && request.expiresAt !== null) {
+    // Fail closed on a malformed timestamp: an unparseable expiry that
+    // persisted anyway would read as "never expires" on the auth path.
+    if (typeof request.expiresAt !== "string" || Number.isNaN(new Date(request.expiresAt).getTime())) {
+      throw new ConsoleDomainError(
+        "invalid_expiry",
+        400,
+        "expiresAt must be a valid ISO timestamp",
+      );
+    }
+  }
+  finitePositive(request.expiresInDays, "expiresInDays");
+  finitePositive(request.expiresInHours, "expiresInHours");
+  finitePositive(request.extendByDays, "extendByDays");
+  finitePositive(request.extendByHours, "extendByHours");
+  if (
+    request.expiresAt != null &&
+    (request.expiresInDays != null || request.expiresInHours != null)
+  ) {
+    throw new ConsoleDomainError(
+      "invalid_expiry",
+      400,
+      "expiresAt cannot be combined with expiresInDays/expiresInHours",
+    );
+  }
+  const requestedHours =
+    (request.expiresInDays ?? 0) * 24 +
+    (request.expiresInHours ?? 0) +
+    (request.extendByDays ?? 0) * 24 +
+    (request.extendByHours ?? 0);
+  // A duration past ~10 years is a data-entry error, not a subscription;
+  // rejecting it keeps a stray unit slip (days typed as hours, x24) from
+  // minting an effectively permanent key against the operator's intent.
+  if (requestedHours > 24 * 366 * 10) {
+    throw new ConsoleDomainError(
+      "invalid_expiry",
+      400,
+      "expiry duration must not exceed 10 years",
+    );
+  }
   if (
     request.concurrencyScope !== undefined &&
     !(API_KEY_CONCURRENCY_SCOPES as readonly string[]).includes(request.concurrencyScope)
@@ -431,6 +511,19 @@ export function validateApiKeyRequest(request: CreateApiKeyRequest): readonly Ac
 }
 
 /** Serializes a persisted record without credential material or IP-key digests. */
+/**
+ * Computes the create-time expiry for a new key from `expiresAt` or the
+ * duration shorthands. Returns `undefined` when the key never expires.
+ */
+export function resolveCreateExpiresAt(request: CreateApiKeyRequest): Date | undefined {
+  if (request.expiresAt !== undefined) {
+    return request.expiresAt === null ? undefined : new Date(request.expiresAt);
+  }
+  const hours = (request.expiresInDays ?? 0) * 24 + (request.expiresInHours ?? 0);
+  if (hours <= 0) return undefined;
+  return new Date(Date.now() + hours * 3_600_000);
+}
+
 export function sanitizeApiKeyResponse(record: ApiKeyRecord): ApiKeyResponse {
   const keyPrefix =
     record.keyMode === "share" ? resolveShareKeyPrefix(record.keyPrefix) : record.keyPrefix;
@@ -463,10 +556,12 @@ export function sanitizeApiKeyResponse(record: ApiKeyRecord): ApiKeyResponse {
       concurrencyScope: record.concurrencyScope,
       maxChildren: record.maxChildren,
       modelPrefix: record.modelPrefix,
+      modelTemplateId: record.modelTemplateId,
       modelAccessMode: record.modelAccessMode,
       modelList: record.modelList,
       clientRouterDenylist: record.clientRouterDenylist,
       revokedAt: record.revokedAt?.toISOString(),
+      expiresAt: record.expiresAt?.toISOString(),
       bannedAt: record.bannedAt?.toISOString(),
       banReason: record.banReason,
       bannedUntil: record.bannedUntil?.toISOString(),

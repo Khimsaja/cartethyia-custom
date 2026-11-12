@@ -97,6 +97,11 @@ const ALLOW_LIST: Readonly<Record<string, Readonly<Record<string, string>>>> = {
     // operator is debugging the cursor transport.
     CARTETHYIA_CURSOR_HEARTBEAT_MS: "cursor transport heartbeat override",
   },
+  "src/transport/routing/auto-model.ts": {
+    // TipRouter auto-model gate; default-off flag: only "1"/"true" enables,
+    // while the generic flag reader enables unless the literal "false".
+    CARTETHYIA_AUTO_MODEL_ENABLED: "default-off flag semantics beyond generic reader",
+  },
   "src/console/cli-tools/cartethyia-websearch-plugin.ts": {
     // OpenCode websearch plugin generation: operator overrides for the
     // generated plugin's gateway URL/key/backend. Only read at plugin-write

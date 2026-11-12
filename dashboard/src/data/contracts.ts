@@ -322,3 +322,13 @@ export type {
   CliMappingInput,
   CliMappingSettings,
 } from "../../../src/console/cli-tools/contracts";
+
+// Model templates are tenant-scoped named model-list presets that keys can
+// mirror. The dashboard never keeps a second copy of the row shape.
+export type {
+  CreateModelTemplateRequest,
+  UpdateModelTemplateRequest,
+  ModelTemplateResponse,
+  ModelTemplateSyncResponse,
+  ModelTemplateUpdateResponse,
+} from "../../../src/console/model-templates/contracts";
