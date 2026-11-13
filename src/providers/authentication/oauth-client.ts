@@ -12,18 +12,20 @@ import {
   record,
 } from "./oauth-flow-store";
 import type {
+  OAuthAccountIdentity,
   OAuthAuthorizeRequest,
   OAuthCodeExchangeContext,
   OAuthExchangeResult,
   OAuthLoginClient,
 } from "./oauth-flow-store";
+import { oauthAccountIdentity } from "./oauth-flow-store";
 import type { OAuthTokenRefreshResult, OAuthTokenRefresher } from "./oauth-refresh-service";
 
 /** Minimal fetch surface accepted by the generic OAuth client. */
 export type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 /** Normalized token shape returned by provider token endpoints. */
-export interface NormalizedTokenResponse {
+export interface NormalizedTokenResponse extends OAuthAccountIdentity {
   readonly access: string;
   readonly refresh: string;
   readonly expiresAt: Date;
@@ -83,10 +85,30 @@ export abstract class OAuthClient implements OAuthLoginClient, OAuthTokenRefresh
    */
   readonly browserRedirectUri?: string;
 
+  /**
+   * Custom state generator; `undefined` keeps the shared base64url state.
+   * A provider whose authorization server validates the format (e.g. DeepAI
+   * requires 32 hex chars) overrides this.
+   */
+  generateState(): string | undefined {
+    return undefined;
+  }
+
   protected readonly fetchFn: FetchLike;
 
   constructor(fetchFn: FetchLike = globalThis.fetch) {
     this.fetchFn = fetchFn;
+  }
+
+  /**
+   * Resolves the transport a flow should use. When the console injects a
+   * `fetchFn` in the flow context (device-code OAuth routed through a network
+   * pool, see `device_flow_proxy`), that override wins; otherwise the
+   * client's own fetch is used. Every start/poll/exchange request that talks
+   * to the provider MUST route through this so the override is honored.
+   */
+  protected fetchFor(context?: { readonly fetchFn?: FetchLike | undefined }): FetchLike {
+    return context?.fetchFn ?? this.fetchFn;
   }
 
   // ---------------------------------------------------------------------------
@@ -135,8 +157,9 @@ export abstract class OAuthClient implements OAuthLoginClient, OAuthTokenRefresh
   }
 
   /** Extracts an account label from a token exchange/refresh response. */
-  protected extractAccountLabel(_data: unknown): string | undefined {
-    return undefined;
+  protected extractAccountLabel(data: unknown): string | undefined {
+    const identity = oauthAccountIdentity(data);
+    return identity.accountEmail ?? identity.accountName;
   }
 
   /** Calculates an expiry Date from an `expires_in` value. */
@@ -172,7 +195,14 @@ export abstract class OAuthClient implements OAuthLoginClient, OAuthTokenRefresh
     const refresh = nonEmptyString(body.refresh_token) ?? fallbackRefresh ?? "";
     const expiresAt = this.calculateExpiry(body.expires_in);
     const accountLabel = this.extractAccountLabel(data);
-    return { access, refresh, expiresAt, ...(accountLabel ? { accountLabel } : {}) };
+    const identity = oauthAccountIdentity(data);
+    return {
+      access,
+      refresh,
+      expiresAt,
+      ...identity,
+      ...(accountLabel ? { accountLabel } : {}),
+    };
   }
 
   /** Builds a PKCE authorization URL using the shared helper. */
@@ -231,22 +261,26 @@ export abstract class OAuthClient implements OAuthLoginClient, OAuthTokenRefresh
   // ---------------------------------------------------------------------------
 
   protected toExchangeResult(normalized: NormalizedTokenResponse): OAuthExchangeResult {
-    const { access, refresh, expiresAt, accountLabel, auth_state } = normalized;
+    const { access, refresh, expiresAt, accountLabel, accountEmail, accountName, auth_state } = normalized;
     return {
       access,
       refresh,
       expiresAt,
+      ...(accountEmail === undefined ? {} : { accountEmail }),
+      ...(accountName === undefined ? {} : { accountName }),
       ...(accountLabel ? { accountLabel } : {}),
       ...(auth_state === undefined ? {} : { auth_state }),
     };
   }
 
   protected toRefreshResult(normalized: NormalizedTokenResponse): OAuthTokenRefreshResult {
-    const { access, refresh, expiresAt, accountLabel, auth_state } = normalized;
+    const { access, refresh, expiresAt, accountLabel, accountEmail, accountName, auth_state } = normalized;
     return {
       access,
       ...(refresh ? { refresh } : {}),
       expiresAt,
+      ...(accountEmail === undefined ? {} : { accountEmail }),
+      ...(accountName === undefined ? {} : { accountName }),
       ...(accountLabel ? { accountLabel } : {}),
       ...(auth_state === undefined ? {} : { auth_state }),
     };

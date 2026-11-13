@@ -8,7 +8,7 @@ import { completeRequiredSchema, isRecord } from "../../../protocol/codecs";
 import { providerBaseUrl } from "../../provider-metadata";
 import { getCachedModelDiscovery } from "../../operations/provider-caches";
 import { defineModel } from "../../provider-model-definition";
-import { clineReasoningReplayPrepares } from "../buddy/buddy-chat-shared";
+import { clineReasoningReplayPrepares } from "../buddy/chat";
 import { clinePlatform, clinePlatformVersion } from "../../operations/cli-platform";
 import {
   getClineCliVersion,
@@ -105,7 +105,7 @@ function completeClineToolSchemas(payload: Record<string, unknown>): void {
   });
 }
 
-function clinePrePayload(
+export function clinePrePayload(
   payload: Record<string, unknown>,
   request: CanonicalRequest,
   candidate: ProviderDispatchTarget,
@@ -576,11 +576,10 @@ function clineRow(
  * not a tier marker — membership of the bucket is what makes a row free.
  */
 const CLINE_FREE_ROWS: readonly ClineSeedRow[] = [
-  { id: "reflection/beam-free", ctx: 128_000, out: 32_000 },
   { id: "cline-free/nemotron-3.5-super-vl", ctx: 1_000_000, out: 131_072, vision: true },
   { id: "nvidia/nemotron-3.5-lightning-free", ctx: 1_000_000, out: 65_536 },
-  { id: "poolside/laguna-s-2.1-free", ctx: 262_144, out: 32_768 },
   { id: "cline-free/solar-mini4", ctx: 524_288, out: 131_072 },
+  { id: "baidu/ernie-5.5-flash-preview:free", ctx: 1_000_000, out: 921_600 },
 ];
 
 /**

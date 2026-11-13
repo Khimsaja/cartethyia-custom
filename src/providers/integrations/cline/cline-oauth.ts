@@ -8,6 +8,7 @@ import {
   record,
 } from "../../authentication/oauth-flow-store";
 import type { OAuthDeviceFlowContext, OAuthDevicePollResult, OAuthDeviceStartResult, OAuthExchangeResult } from "../../authentication/oauth-flow-store";
+import { oauthAccountIdentity } from "../../authentication/oauth-flow-store";
 import type { OAuthTokenRefreshResult } from "../../authentication/oauth-refresh-service";
 import { OAuthDeviceFlow } from "../../authentication/oauth-device-flow";
 
@@ -45,14 +46,18 @@ function tokenResult(value: unknown, fallbackRefresh?: string): OAuthExchangeRes
   const refresh =
     nonEmptyTrimmedString(payload.refresh_token) ?? nonEmptyTrimmedString(payload.refreshToken) ?? fallbackRefresh;
   if (!access || !refresh) throw new Error("Cline OAuth response omitted access or refresh token");
+  const identity = oauthAccountIdentity(value);
   const accountLabel =
     nonEmptyTrimmedString(payload.email) ??
     nonEmptyTrimmedString(record(payload.userInfo)?.email) ??
-    nonEmptyTrimmedString(record(payload.user)?.email);
+    nonEmptyTrimmedString(record(payload.user)?.email) ??
+    identity.accountEmail ??
+    identity.accountName;
   return {
     access,
     refresh,
     expiresAt: tokenExpiry(payload),
+    ...identity,
     ...(accountLabel === undefined ? {} : { accountLabel }),
   };
 }
@@ -107,8 +112,8 @@ export class ClineOAuthClient extends OAuthDeviceFlow {
     }
   }
 
-  override async startDeviceAuth(_context?: OAuthDeviceFlowContext): Promise<OAuthDeviceStartResult> {
-    const response = await this.fetchFn(WORKOS_DEVICE_AUTHORIZATION_URL, {
+  override async startDeviceAuth(context?: OAuthDeviceFlowContext): Promise<OAuthDeviceStartResult> {
+    const response = await this.fetchFor(context)(WORKOS_DEVICE_AUTHORIZATION_URL, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
       body: new URLSearchParams({ client_id: CLINE_WORKOS_CLIENT_ID }),
@@ -145,7 +150,7 @@ export class ClineOAuthClient extends OAuthDeviceFlow {
       this.#sessions.delete(deviceAuthId);
       return { status: "failed", reason: "Cline device authorization expired" };
     }
-    const response = await this.fetchFn(WORKOS_AUTHENTICATE_URL, {
+    const response = await this.fetchFor(context)(WORKOS_AUTHENTICATE_URL, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
       body: new URLSearchParams({
@@ -185,7 +190,7 @@ export class ClineOAuthClient extends OAuthDeviceFlow {
     // exception that escapes the poll.
     let registered: Record<string, unknown>;
     try {
-      const registerResponse = await this.fetchFn(CLINE_REGISTER_URL, {
+      const registerResponse = await this.fetchFor(context)(CLINE_REGISTER_URL, {
         method: "POST",
         headers: { "content-type": "application/json", accept: "application/json" },
         body: JSON.stringify({ accessToken, refreshToken }),

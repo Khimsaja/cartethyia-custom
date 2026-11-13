@@ -53,48 +53,23 @@ export interface QoderRealmConfig {
  * - CLI / legacy COSY chat + device flow: `Bun/1.4.2` (flow 218/030, v1.1.83)
  * - IDE surface `/model/v1`: `Bun/1.4.4` (flow 219)
  * - job-token exchange: `qoder/<version>` (capture, e.g. `qoder/1.1.83`)
+ *
+ * The desktop app (0.5.7) hosts an Electron Node worker
+ * (`qoder-worker-runtime.obf.mjs --sdk`) whose fetch stack is undici; its
+ * chat/worker requests carry `User-Agent: undici` (capture 2026-11-11).
+ * The gateway mirrors the app wire on the COSY chat surface, so chat uses
+ * `QODER_UA_APP`; the CLI/device-flow surfaces keep `QODER_UA_CLI`.
  */
 export const QODER_UA_CLI = "Bun/1.4.2";
 export const QODER_UA_IDE = "Bun/1.4.4";
+export const QODER_UA_APP = "undici";
 
 /** Chat + model-list paths, identical across realms. */
 export const QODER_CHAT_PATH =
   "/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1";
 export const QODER_MODELS_PATH = "/algo/api/v2/model/list?Encode=1";
 
-/**
- * The modern model-server surface used by the IDE / QoderWake (OpenAI-shaped
- * chunks, plain bearer auth). This surface streams immediately and echoes the
- * real model key — the legacy `/algo` chat endpoint answers
- * `10605 isQueued` (parking requests in a server-side queue) and echoes a
- * fixed `"auto"` model. Dispatch tries this surface first, and falls back to
- * legacy COSY only when it refuses the account on entitlement grounds (HTTP
- * 402 / `{"code":116}`) AND the dispatched model is a free-tier row — for a
- * billed model the same code is genuine quota exhaustion and must surface.
- */
-export const QODER_IDE_CHAT_PATH = "/model/v1/chat/completions";
-
 /** The model-server host for one realm (intl: `api1`, cn: gateway). */
-export function qoderIdeChatUrl(realm: QoderRealm): string {
-  return realm === "cn"
-    ? `https://gateway.qoder.com.cn${QODER_IDE_CHAT_PATH}`
-    : `https://api1.qoder.sh${QODER_IDE_CHAT_PATH}`;
-}
-
-/**
- * The gRPC model-server host for one realm.
- *
- * Intl default is `api1.qoder.sh` (first host from `qoderInferenceCandidates`;
- * the old `api2-v2.qoder.sh` has been NXDOMAIN since 2026-11-07 — see
- * `documentation/research/qoder/live/
- * 2026-11-07-qoder-host-inference-fallback.md`). The gRPC service is no
- * longer verified alive on any host that resolves (UNIMPLEMENTED); this host
- * is kept as the target so probes/gRPC still have an address.
- */
-export function qoderGrpcHost(realm: QoderRealm): string {
-  return realm === "cn" ? "gateway.qoder.com.cn" : "api1.qoder.sh";
-}
-
 /**
  * Realm → deployment.
  *
@@ -142,8 +117,9 @@ export function qoderGatewayCandidates(realm: QoderRealm): readonly string[] {
  * Inference hosts for one realm, ordered by token kind — mirrors the donor's
  * `qoderInferenceBase` (donor hub): job tokens (`jt-...`) are served by `api2`
  * and get rejected by `api3` with "Login expired" (403), while device tokens
- * (`dt-...`) and everything else use the ordinary gateway set. CN has a
- * single gateway and serves every token kind.
+ * (`dt-...`) and everything else use the ordinary gateway set. The job-token
+ * set therefore excludes `api3` entirely; CN has a single gateway and serves
+ * every token kind.
  */
 export function qoderInferenceCandidates(
   realm: QoderRealm,
@@ -152,8 +128,9 @@ export function qoderInferenceCandidates(
   const config = QODER_REALMS[realm];
   if (realm === "cn") return [config.gateway];
   if (token !== undefined && token.startsWith("jt-")) {
-    const fallbacks = config.gatewayFallbacks.filter((h) => h !== "https://api2.qoder.sh");
-    return ["https://api2.qoder.sh", config.gateway, ...fallbacks];
+    // api3 rejects job tokens (Login expired, 403); only api2 and api1 can
+    // serve them.
+    return ["https://api2.qoder.sh", config.gateway];
   }
   return [config.gateway, ...config.gatewayFallbacks];
 }

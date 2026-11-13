@@ -20,14 +20,14 @@
 //
 
 import { and, eq, inArray } from "drizzle-orm";
-import type { ValidatedFetch } from "../network/outbound-fetch";
-import type { ValidatedNetworkBindingFactory } from "../network/pool/resolver";
+import type { ValidatedFetch } from "../network/egress/fetch";
+import type { ValidatedNetworkBindingFactory } from "../network/egress/factory";
 import type { RedisClient } from "../persistence/redis";
 import type { CartethyiaDatabase } from "../persistence/db-handle";
 import { dailyCheckinLedger, networkPools } from "../persistence/schema";
 import type { ProviderId } from "../providers/provider-contracts";
 import { log } from "../observability/logger";
-import type { DailyCheckinResult } from "../providers/integrations/buddy/buddy-checkin";
+import type { DailyCheckinResult } from "../providers/integrations/buddy/lifecycle";
 import { BUDDY_PROVIDER_IDS } from "../providers/provider-metadata";
 
 export type { DailyCheckinResult };
@@ -486,7 +486,7 @@ export async function attemptDailyGrowthPass(args: {
       });
     } else {
       const { fetchDailyCheckin } = await import(
-        "../providers/integrations/buddy/buddy-checkin"
+        "../providers/integrations/buddy/lifecycle"
       );
       checkin = await fetchDailyCheckin({
         providerId,

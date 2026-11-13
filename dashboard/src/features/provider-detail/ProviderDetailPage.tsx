@@ -41,7 +41,7 @@ import {
 } from "../../hooks/providers";
 import { queryKeys } from "../../data/query-keys";
 import { toast } from "../../lib/toast";
-import type { ProviderAccountResponse, ProviderResponse } from "../../data/contracts";
+import type { ProbeModelRequest, ProviderAccountResponse, ProviderResponse } from "../../data/contracts";
 import { providerCanConfigureUserAgent } from "../../lib/provider-user-agent";
 import { RoutingStrategyCard } from "./sections/RoutingStrategyCard";
 import { InferhubMarket } from "./sections/InferhubMarket";
@@ -423,25 +423,31 @@ export default function ProviderDetail(): ReactNode {
       void queryClient.invalidateQueries({ queryKey: queryKeys.providers.accounts(id) });
     }
   };
-  const runGrokAccountProbe = () => {
+  const runGrokAccountProbe = (selectedAccountIds: readonly string[]) => {
+    const request: ProbeModelRequest = {
+      modelId: "grok-4.6",
+      prompt: "Type the number 407.",
+      stream: true,
+      serviceKind: "llm",
+    };
+    if (selectedAccountIds.length > 0) request.accountIds = selectedAccountIds;
     probeAllAccounts.mutate(
       {
         providerId: id,
-        request: {
-          modelId: "grok-4.6",
-          prompt: "Type the number 407.",
-          stream: true,
-          serviceKind: "llm",
-        },
+        request,
       },
       {
         onSuccess: (result) => {
           const ok = result.results.filter((entry) => entry.ok).length;
           const rateLimited = result.results.filter((entry) => entry.statusCode === 202).length;
           const failed = result.results.length - ok - rateLimited;
+          const scope =
+            selectedAccountIds.length > 0
+              ? `${selectedAccountIds.length} selected account${selectedAccountIds.length === 1 ? "" : "s"}`
+              : "all accounts";
           toast.success(
             "Grok account probe complete",
-            `${ok} passed · ${rateLimited} returned 202 and were parked in cooldown · ${failed} other failures`,
+            `${scope} probed · ${ok} passed · ${rateLimited} returned 202 and were parked in cooldown · ${failed} other failures`,
           );
         },
         onError: (error) =>

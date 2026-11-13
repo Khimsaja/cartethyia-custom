@@ -5,7 +5,7 @@
 import type { CanonicalEvent, CanonicalRequest, WireFamily } from "../protocol/canonical-model";
 import { GatewayError } from "../protocol/gateway-error";
 import { BUNDLED_PROVIDER_METADATA, type BundledProviderId } from "./provider-metadata";
-import type { ValidatedOutboundHttp2Bidi } from "../network/http2-bidi";
+import type { ValidatedOutboundHttp2Bidi } from "../network/bidi";
 
 /** Closed union of every shipped provider ID. */
 export const BUNDLED_PROVIDER_IDS: ReadonlySet<BundledProviderId> = new Set(
@@ -134,7 +134,7 @@ export type ValidatedOutboundWebSocket = (
 /**
  * The dialer contract handed to a provider adapter.
  *
- * Declared in `network/http2-bidi.ts` — the transport owns the contract — and
+ * Declared in `network/bidi.ts` — the transport owns the contract — and
  * re-exported here so provider code keeps one import site.
  */
 export type { ValidatedOutboundHttp2Bidi };

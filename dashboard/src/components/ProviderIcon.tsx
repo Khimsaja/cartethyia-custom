@@ -2,7 +2,7 @@ import { memo, useState } from "react";
 
 const failedIcons = new Set<string>();
 
-const iconAssets: Record<string, { file: string; ext: "svg" | "webp" }> = {
+const iconAssets: Record<string, { file: string; ext: "svg" | "webp" | "png" }> = {
   claude: { file: "claude-code", ext: "svg" },
   anthropic: { file: "anthropics", ext: "webp" },
   openai: { file: "openai-light", ext: "svg" },
@@ -101,9 +101,19 @@ const iconAssets: Record<string, { file: string; ext: "svg" | "webp" }> = {
   // Zro's official mark is a black-on-transparent SVG (from the Zro docs
   // site); without this entry the fallback would look for `zro.webp`.
   zro: { file: "zro", ext: "svg" },
+  // SenseNova marks are PNGs shared by both realms (CN + Intl); the Intl entry
+  // uses the same official mark as its China sibling.
+  sensenova: { file: "sensenova", ext: "png" },
+  "sensenova-intl": { file: "sensenova-intl", ext: "png" },
+  // Clixad has no shipped brand mark in the asset folder; naming it here keeps
+  // the lookup deterministic and the fallback renders the "CL" initials.
+  clixad: { file: "clixad", ext: "svg" },
+  // DeepAI has no shipped brand mark in the asset folder either; naming it
+  // here keeps the lookup deterministic and the fallback renders "DE".
+  deepai: { file: "deepai", ext: "svg" },
 };
 
-function assetFor(icon: string): { file: string; ext: "svg" | "webp" } {
+function assetFor(icon: string): { file: string; ext: "svg" | "webp" | "png" } {
   const normalized = icon.toLowerCase().trim();
   return iconAssets[normalized] ?? { file: normalized, ext: "webp" };
 }

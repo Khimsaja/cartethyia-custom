@@ -172,6 +172,14 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
   { id: "opencode-go", displayName: "OpenCode Go", baseUrl: "https://opencode.ai", credentialUrl: "https://opencode.ai/auth" },
   { id: "cerebras", displayName: "Cerebras", baseUrl: "https://api.cerebras.ai/v1", credentialUrl: "https://cloud.cerebras.ai/platform" },
   { id: "openrouter", displayName: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", credentialUrl: "https://openrouter.ai/settings/keys" },
+  {
+    id: "vercel",
+    displayName: "Vercel AI Gateway",
+    baseUrl: "https://ai-gateway.vercel.sh/v1",
+    defaultSkipProxy: true,
+    credentialUrl: "https://vercel.com/dashboard/ai",
+    credentialHint: "Create an AI Gateway API key (`vercel ai-gateway api-keys create`) or paste an existing `vck_` key. The key is bearer-authenticated against the OpenAI-compatible /v1 surface.",
+  },
   { id: "mistral", displayName: "Mistral AI", baseUrl: "https://api.mistral.ai/v1", credentialUrl: "https://console.mistral.ai/api-keys" },
   { id: "fireworks", displayName: "Fireworks AI", baseUrl: "https://api.fireworks.ai/inference/v1", credentialUrl: "https://fireworks.ai/account/api-keys" },
   { id: "nvidia", displayName: "NVIDIA NIM", baseUrl: "https://integrate.api.nvidia.com/v1", credentialUrl: "https://build.nvidia.com/settings/api-keys" },
@@ -180,6 +188,22 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
   // and the registry pins the Messages endpoint separately.
   { id: "deepseek", displayName: "DeepSeek", baseUrl: "https://api.deepseek.com", wireFamilyDefault: "messages", credentialUrl: "https://platform.deepseek.com/api_keys" },
   { id: "gmi", displayName: "GMI Cloud", baseUrl: "https://api.gmi-serving.com/v1", credentialUrl: "https://console.gmicloud.ai" },
+  {
+    id: "clixad",
+    displayName: "Clixad",
+    baseUrl: "https://clixad.onrender.com/v1",
+    requiresAccount: true,
+    credentialUrl: "https://clixad.io",
+    credentialHint: "Sign in with GitHub (device flow) or paste a Clixad token (adg_...). Model calls draw from the account balance and a daily free tier (120k credits/day).",
+  },
+  {
+    id: "deepai",
+    displayName: "DeepAI",
+    baseUrl: "https://api.deepai.org",
+    requiresAccount: true,
+    credentialUrl: "https://deepai.org",
+    credentialHint: "Sign in via the DeepAI desktop flow (loopback exchange → api_key) or paste a DeepAI api_key. Model calls are authenticated with the Api-Key header; the daily free allowance is 50 Theos and 11 models draw nothing from it.",
+  },
 
   // OpenAI-compatible bearer aggregators. Each is a bare host already rooted at
   // its own version prefix, so the `/v1`-prefixed wire paths stay pinned by the
@@ -198,6 +222,12 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
   { id: "synthetic", displayName: "Synthetic", baseUrl: "https://api.synthetic.new/v1", credentialUrl: "https://app.synthetic.new/api-keys" },
   { id: "stepfun", displayName: "StepFun", baseUrl: "https://api.stepfun.com/v1", credentialUrl: "https://platform.stepfun.com/console/keys" },
   { id: "sakana", displayName: "Sakana AI", baseUrl: "https://api.sakana.ai/v1", credentialUrl: "https://console.sakana.ai/api-keys" },
+  // SenseNova keys are per-site: China keys (token.sensenova.cn) and
+  // international keys (token.sensenova.ai) reject each other with 401
+  // "Forbidden", so the two deployments are separate providers with separate
+  // hosts and catalogs — the same split as CodeBuddy cb/cbcn.
+  { id: "sensenova", displayName: "SenseNova", baseUrl: "https://token.sensenova.cn/v1", serviceKinds: ["llm", "imageGeneration"], credentialUrl: "https://token.sensenova.cn", credentialHint: "Paste a SenseNova API key created on platform.sensenova.cn. International accounts use SenseNova (Intl)." },
+  { id: "sensenova-intl", displayName: "SenseNova (Intl)", baseUrl: "https://token.sensenova.ai/v1", serviceKinds: ["llm", "imageGeneration"], credentialUrl: "https://platform.sensenova.ai", credentialHint: "Paste a SenseNova API key created on platform.sensenova.ai. China accounts use SenseNova." },
   { id: "helmcode", displayName: "HelmCode", baseUrl: "https://api.helmcode.com/v1", credentialUrl: "https://helmcode.com/dashboard" },
   { id: "coralbricks", displayName: "CoralBricks", baseUrl: "https://api.coralbricks.com/v1", credentialUrl: "https://coralbricks.com/api-keys" },
   { id: "aiand", displayName: "ai&", baseUrl: "https://api.aiand.com/v1", credentialUrl: "https://console.aiand.com/api-keys" },

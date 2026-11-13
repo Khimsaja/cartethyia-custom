@@ -16,14 +16,14 @@
  */
 import { describe, expect, test } from "bun:test";
 import { GatewayError } from "../../src/protocol/gateway-error";
-import { flagPoolOnEgressFailure } from "../../src/network/pool-health";
-import { classifyEgressFailure } from "../../src/network/rate-limit-verdict";
+import { flagPoolOnEgressFailure } from "../../src/network/pool/health";
+import { classifyEgressFailure } from "../../src/network/verdict";
 import {
   buildDispatchNetworkBindings,
   type DispatchNetworkBindings,
 } from "../../src/transport/dispatch/upstream";
 import type { CartethyiaDatabase } from "../../src/persistence/db-handle";
-import type { ValidatedNetworkBindingFactory } from "../../src/network/pool/resolver";
+import type { ValidatedNetworkBindingFactory } from "../../src/network/egress/factory";
 import type { ProviderExchangeCapture } from "../../src/transport/dispatch/attempt-finalize";
 import type { CapturePreferenceState } from "../../src/transport/dispatch/capture-policy";
 

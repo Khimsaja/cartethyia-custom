@@ -83,9 +83,6 @@ export interface ProviderAccountBulkActionResult {
   readonly globalSkipped: number;
 }
 
-/** Cap on one discovery-commit request (D29). Kept pure (no `node:*`) so the dashboard can import it. */
-export { DISCOVER_MODEL_COMMIT_MAX } from "./discover-constants";
-
 /**
  * One model the provider's own listing advertised, projected for the Add-Model
  * picker. Read-only: `GET .../models/discover` writes nothing. `models`
@@ -610,6 +607,9 @@ export interface ProviderAccountResponse {
   providerId: string;
   tenantId: string | null;
   label: string;
+  /** Structured identity learned from an OAuth login, when the provider exposed one. */
+  accountEmail?: string;
+  accountName?: string;
   credentialKind: CredentialKind;
   credentialMode?: CredentialMode;
   /**
@@ -1056,6 +1056,10 @@ export interface ProviderRoutingResponse {
    * default to skipping because their transport can't route through an HTTP
    * CONNECT proxy; it stays a real, per-tenant-overridable setting. */
   readonly skipProxy: boolean;
+  /** How device-code OAuth flows choose their egress: `random` (default)
+   * routes start+poll through a randomly selected active network pool so the
+   * upstream sees a rotating IP; `direct` always dials direct egress. */
+  readonly deviceFlowProxy: "random" | "direct";
   /** Built-in API-key upstream User-Agent; OAuth and custom providers retain their own identity. */
   readonly userAgent: string;
   /** Operator-set custom User-Agent override; `null` = no override (native identity is used). */
@@ -1089,6 +1093,8 @@ export interface UpdateProviderRoutingRequest {
   readonly enabled?: boolean;
   /** When true, this provider's requests always dial direct. */
   readonly skipProxy?: boolean;
+  /** How device-code OAuth flows choose their egress; absent = keep current. */
+  readonly deviceFlowProxy?: "random" | "direct";
   /** Built-in API-key upstream User-Agent. */
   readonly userAgent?: string;
   /** Operator-set custom User-Agent override; `null` clears it back to native. */

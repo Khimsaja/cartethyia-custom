@@ -584,6 +584,43 @@ export const PROVIDER_CAPABILITIES = {
       return PERCH_MODELS;
     },
   },
+  clixad: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/clixad/provider")).CLIXAD_SPEC),
+    loadModels: async () => (await import("./integrations/clixad/provider")).CLIXAD_DEFAULT_MODELS,
+    // Clixad login is a GitHub device flow; the issued token (adg_...) is the
+    // credential. The device flow is the only supported login path.
+    loadAuthentication: oauthCapability(() => import("./integrations/clixad/clixad-oauth"), "clixadOAuthClient"),
+    loadQuotaCollector: quotaCapability(() => import("./integrations/clixad/clixad-quota"), "fetchClixadQuota"),
+    // `/v1/models` is unauthenticated and lists all rows; the static roster
+    // carries the live-verified free tier and discovery keeps the list current.
+    loadModelDiscovery: async () => async (request: Parameters<ProviderModelDiscovery>[0]) => {
+      const { discoverClixadModels, CLIXAD_DEFAULT_MODELS } = await import("./integrations/clixad/provider");
+      const fetcher = request.fetcher as unknown as typeof fetch | undefined;
+      if (fetcher === undefined) return CLIXAD_DEFAULT_MODELS;
+      const rows = await discoverClixadModels({ baseUrl: request.baseUrl, fetcher });
+      if (rows === null || rows.length === 0) return CLIXAD_DEFAULT_MODELS;
+      return rows;
+    },
+  },
+  deepai: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/deepai/provider")).DEEPAI_SPEC),
+    loadModels: async () => (await import("./integrations/deepai/deepai-catalog")).DEEPAI_DEFAULT_MODELS,
+    // DeepAI login is a browser loopback flow; the exchange returns an opaque
+    // api_key (the credential). Pasting an api_key is supported via
+    // importCredential.
+    loadAuthentication: oauthCapability(() => import("./integrations/deepai/deepai-oauth"), "deepAIOAuthClient"),
+    loadQuotaCollector: quotaCapability(() => import("./integrations/deepai/deepai-quota"), "fetchDeepAIQuota"),
+    // `/deepai_code/models` is unauthenticated; the static roster carries the
+    // live-verified free tier and discovery keeps the list current.
+    loadModelDiscovery: async () => async (request: Parameters<ProviderModelDiscovery>[0]) => {
+      const { discoverDeepAIModels, DEEPAI_DEFAULT_MODELS } = await import("./integrations/deepai/deepai-catalog");
+      const fetcher = request.fetcher as unknown as typeof fetch | undefined;
+      if (fetcher === undefined) return DEEPAI_DEFAULT_MODELS;
+      const rows = await discoverDeepAIModels({ baseUrl: request.baseUrl, fetcher });
+      if (rows === null || rows.length === 0) return DEEPAI_DEFAULT_MODELS;
+      return rows;
+    },
+  },
   inferhub: {
     loadAdapter: async () => (await import("./integrations/inferhub")).createInferhubAdapter(),
     // Live `/v1/models` is the primary source: the marketplace republishes its
@@ -626,6 +663,32 @@ export const PROVIDER_CAPABILITIES = {
         ...(fetcher === undefined ? {} : { fetcher }),
       }),
   },
+  sensenova: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/sensenova/provider")).SENSENOVA_SPEC),
+    loadModels: async () => (await import("./integrations/sensenova/provider")).SENSENOVA_MODELS,
+    loadModelDiscovery: async () => async (input) =>
+      (await import("./integrations/sensenova/provider")).discoverSensenovaModels({
+        baseUrl: input.baseUrl,
+        providerId: "sensenova",
+        ...(typeof input.credential === "string" && input.credential.trim().length > 0
+          ? { credential: input.credential }
+          : {}),
+        ...(input.fetcher === undefined ? {} : { fetcher: input.fetcher }),
+      }),
+  },
+  "sensenova-intl": {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/sensenova/provider")).SENSENOVA_INTL_SPEC),
+    loadModels: async () => (await import("./integrations/sensenova/provider")).SENSENOVA_INTL_MODELS,
+    loadModelDiscovery: async () => async (input) =>
+      (await import("./integrations/sensenova/provider")).discoverSensenovaModels({
+        baseUrl: input.baseUrl,
+        providerId: "sensenova-intl",
+        ...(typeof input.credential === "string" && input.credential.trim().length > 0
+          ? { credential: input.credential }
+          : {}),
+        ...(input.fetcher === undefined ? {} : { fetcher: input.fetcher }),
+      }),
+  },
   openrouter: {
     loadAdapter: async () => createApiKeyAdapter((await import("./integrations/openrouter/provider")).OPENROUTER_SPEC),
     // One dynamic import for both halves: this registry lazy-loads every
@@ -652,6 +715,19 @@ export const PROVIDER_CAPABILITIES = {
     // is stored as an ordinary credential and forwarded as the bearer, which is
     // why the same adapter serves the pasted-key and signed-in cases.
     loadAuthentication: oauthCapability(() => import("./integrations/openrouter/oauth"), "openrouterOAuthClient"),
+  },
+  vercel: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/vercel/provider")).VERCEL_SPEC),
+    loadModels: async () => (await import("./integrations/vercel/provider")).VERCEL_DEFAULT_MODELS,
+    loadModelDiscovery: async () => async (input) =>
+      (await import("./integrations/vercel/provider")).discoverVercelModels({
+        baseUrl: input.baseUrl,
+        ...(typeof input.credential === "string" && input.credential.trim().length > 0
+          ? { credential: input.credential }
+          : {}),
+        ...(input.fetcher === undefined ? {} : { fetcher: input.fetcher }),
+      }),
+    loadQuotaCollector: quotaCapability(() => import("./integrations/vercel/vercel-quota"), "fetchVercelQuota"),
   },
   xiaomipg: {
     loadAdapter: async () => createApiKeyAdapter((await import("./integrations/xiaomi-mimo/xiaomi")).XIAOMIPG_SPEC),

@@ -19,16 +19,16 @@ import {
 /**
  * Newest Trae IDE version from the official changelog.
  *
- * Trae publishes no npm package and no release API, so the changelog is the
+ * Trae publishes no npm package and no release API, so the changelog was the
  * only machine-readable source of the current client version. It matters
  * upstream: intl `llm_raw_chat` answers `4015` unless the request carries the
  * *current* client version, so a stale pin is an outage, not a cosmetic drift.
  *
- * The page embeds its content as JSON, and its newest entry is the first dated
- * heading — not the highest semver, because this vendor's hotfix line numbers
- * past its feature line (3.5.104 shipped after 3.5.97). Taking `max(semver)`
- * would report an old build as current, so this walks the document in order and
- * returns the first version following a dated release heading.
+ * The page is now an SPA (2026-11-11): its HTML no longer embeds the release
+ * data, so this parser returns null and the pinned fallback carries the wire
+ * identity until a machine-readable feed exists again (see
+ * `VERSION_SOURCES.trae`). The parser is kept for when the page re-exposes
+ * its entries.
  */
 async function traeVersion(response: Response): Promise<string | null> {
   try {
@@ -179,11 +179,24 @@ const KIRO_SYSTEM_VERSION = "win32#10.0.22631";
 /** Node version the observed Kiro client reports (Electron's bundled Node). */
 const KIRO_NODE_VERSION = "24.18.0";
 
+/** Clixad gateway's own CLI version: `cli_latest` on `/v1/models`. */
+async function clixadVersion(response: Response): Promise<string | null> {
+  const body = await response.text().catch(() => "");
+  if (body.length === 0) return null;
+  try {
+    const parsed = JSON.parse(body) as { cli_latest?: unknown };
+    const candidate = parsed.cli_latest;
+    return typeof candidate === "string" && isSemverish(candidate) ? candidate.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Ordered upstream sources and pinned fallbacks for every client version. */
 export const VERSION_SOURCES = {
   antigravity: {
     key: "antigravity",
-    fallback: "2.29.0",
+    fallback: "2.31.0",
     sources: [
       {
         url: "https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml",
@@ -207,7 +220,7 @@ export const VERSION_SOURCES = {
     // under `@opencode/cli`, and this feed is what its own installer reads.
     // Fallback = the current latest release; raise it whenever the package
     // moves so a cold process does not present a stale client build.
-    fallback: "2.2.6",
+    fallback: "2.2.7",
     minVersion: "2.0.0",
     sources: [{ url: "https://opencode.ai/update/api/latest/cli/npm" }],
   },
@@ -247,7 +260,7 @@ export const VERSION_SOURCES = {
   },
   codex: {
     key: "codex",
-    fallback: "0.167.0",
+    fallback: "0.167.1",
     sources: [{ url: "https://registry.npmjs.org/@openai/codex/latest" }],
   },
   kimiCli: {
@@ -257,7 +270,7 @@ export const VERSION_SOURCES = {
   },
   kiro: {
     key: "kiro",
-    fallback: "1.4.121",
+    fallback: "1.4.154",
     sources: [
       {
         // Kiro's downloads page exposes no stable version string. Homebrew
@@ -270,7 +283,7 @@ export const VERSION_SOURCES = {
   },
   codebuddy: {
     key: "codebuddy",
-    fallback: "2.181.0",
+    fallback: "2.183.0",
     sources: [
       { url: "https://registry.npmjs.org/@tencent-ai/codebuddy-code/latest" },
       { url: "https://registry.npmmirror.com/@tencent-ai/codebuddy-code/latest" },
@@ -278,7 +291,7 @@ export const VERSION_SOURCES = {
   },
   codebuddyCn: {
     key: "codebuddy-cn",
-    fallback: "4.12.3.42658816",
+    fallback: "4.12.4.43368774",
     sources: [
       {
         // Official CN builds are listed by Homebrew's maintained cask feed;
@@ -293,7 +306,7 @@ export const VERSION_SOURCES = {
     // Current `@anthropic-ai/claude-code` release, so the billing
     // `cc_version=` suffix and the `claude-cli/` User-Agent stay on what
     // upstream ships.
-    fallback: "2.1.319",
+    fallback: "2.1.322",
     sources: [{ url: "https://registry.npmjs.org/@anthropic-ai/claude-code/latest" }],
   },
   claudeSdk: {
@@ -320,21 +333,22 @@ export const VERSION_SOURCES = {
   },
   kilo: {
     key: "kilo-code",
-    fallback: "7.8.27",
+    fallback: "7.8.28",
     sources: [{ url: "https://open-vsx.org/api/kilocode/kilo-code" }],
   },
   muse: {
     key: "muse-code",
-    fallback: "1.4.14-R7309.1",
+    fallback: "1.4.15-R8339.1",
     sources: [{ url: "https://api.meta.ai/muse-code/channels/muse-stable" }],
   },
   trae: {
     key: "trae",
-    // Fallback = the newest release the changelog names, which is the *high*
-    // end of its newest line ("TRAE v3.6.1 ~ 3.6.4"). Discovery replaces it
-    // within one monitor tick; it is only what a cold process sends before
-    // the first successful fetch.
-    fallback: "3.6.4",
+    // Fallback = the current desktop release per the official winget manifest
+    // (ByteDance.Trae 3.6.13). The docs changelog renders as an SPA and no
+    // longer exposes its newest entries to the parser below, so it is not a
+    // reliable discovery source right now — raise this pin when the desktop
+    // build moves.
+    fallback: "3.6.13",
     sources: [
       {
         url: "https://docs.trae.ai/ide/changelog?_lang=en",
@@ -345,24 +359,63 @@ export const VERSION_SOURCES = {
   freepi: {
     key: "freepi",
     // The free-pi CLI version — the `x-client-version` the gateway reports.
-    // Fallback = the unpacked 0.6.14 bundle; npm discovery replaces it.
-    fallback: "0.6.14",
+    // Fallback = the current npm latest (0.6.19 as of 2026-11-12); a cold
+    // process sends it until the monitor's first successful discovery.
+    fallback: "0.6.19",
     sources: [{ url: "https://registry.npmjs.org/free-pi-cli/latest" }],
   },
   perch: {
     key: "perch",
     // The official Perch CLI, spawned by the adapter for hosted inference.
-    fallback: "2.4.125",
+    // Fallback = the current npm latest (2.4.128 as of 2026-11-11); a cold
+    // process sends it until the monitor's first successful discovery.
+    fallback: "2.4.128",
     sources: [{ url: "https://registry.npmjs.org/perchai-cli/latest" }],
+  },
+  clixad: {
+    key: "clixad",
+    // The Clixad gateway publishes the CLI build it is paired with as
+    // `cli_latest` on `/v1/models` (unauthenticated). Fallback = the version
+    // the 0.0.1-beta.50 bundle shipped (verified live 2026-11-11); a cold
+    // process sends it until the monitor's first successful discovery.
+    fallback: "0.0.1-beta.50",
+    sources: [
+      {
+        url: "https://clixad.onrender.com/v1/models",
+        extract: clixadVersion,
+      },
+    ],
+  },
+  freebuff: {
+    key: "freebuff",
+    // No machine-readable public feed exists for Freebuff Desktop. GitHub
+    // releases only publish Codecane (a separate CLI line) staging builds,
+    // npm `freebuff` is the CLI (a different product), and the site's
+    // download links are client-rendered with no stable asset path.
+    // Fallback = the version unpacked from the official Windows installer
+    // during the wire audit (2026-11-09, Freebuff Desktop 0.0.201). Raise it
+    // when the next installer bundle is audited.
+    fallback: "0.0.201",
+    sources: [],
+  },
+  deepai: {
+    key: "deepai",
+    // No machine-readable public feed exists for the DeepAI Code desktop app
+    // (macOS/Windows only, no npm/CLI line). Fallback = the version unpacked
+    // from the audited bundle (2026-11-11, DeepAI Code 0.3.35). Raise it
+    // when the next bundle is audited. Pinned-only by design for the same
+    // reason as `freebuff`.
+    fallback: "0.3.35",
+    sources: [],
   },
   cursor: {
     key: "cursor",
-    // Fallback = the last observed wire version (CLI ~2026.11.07-306d153).
-    // Discovery replaces it within one monitor tick; it is only what a cold
-    // process sends before the first successful fetch. Kept equal to
-    // `FALLBACK_CLIENT_VERSION` in the cursor adapter so the badge and the
-    // request header always send one identity.
-    fallback: "cli-3.29.9-306d153",
+    // Fallback = the newest stable build from the official download API
+    // (cli-3.29.15-86776fc). Discovery replaces it within one monitor tick; it
+    // is only what a cold process sends before the first successful fetch.
+    // Kept equal to `FALLBACK_CLIENT_VERSION` in the cursor adapter so the
+    // badge and the request header always send one identity.
+    fallback: "cli-3.29.15-86776fc",
     sources: [
       {
         url: "https://cursor.com/api/download?platform=win32-x64-user&releaseTrack=stable",
@@ -376,7 +429,7 @@ export const VERSION_SOURCES = {
     // comment this replaced claimed no semver existed and pinned a date tag
     // (`v2026.9.24`) as the version — a tag, not a release, and not the
     // identity the client sends.
-    fallback: "0.23.0",
+    fallback: "0.23.1",
     sources: [
       {
         url: "https://api.github.com/repos/NousResearch/hermes-agent/releases/latest",
@@ -403,6 +456,9 @@ const resolvers = {
   trae: createClientVersionResolver({ ...VERSION_SOURCES.trae, client: "trae" }),
   freepi: createClientVersionResolver({ ...VERSION_SOURCES.freepi, client: "freepi" }),
   perch: createClientVersionResolver({ ...VERSION_SOURCES.perch, client: "perch" }),
+  clixad: createClientVersionResolver({ ...VERSION_SOURCES.clixad, client: "clixad" }),
+  freebuff: createClientVersionResolver({ ...VERSION_SOURCES.freebuff, client: "freebuff" }),
+  deepai: createClientVersionResolver({ ...VERSION_SOURCES.deepai, client: "deepai" }),
   cursor: createClientVersionResolver({ ...VERSION_SOURCES.cursor, client: "cursor" }),
   opencode: createClientVersionResolver({ ...VERSION_SOURCES.opencode, client: "opencode" }),
   commandcode: createClientVersionResolver({ ...VERSION_SOURCES.commandcode, client: "command-code" }),
@@ -424,6 +480,11 @@ const resolvers = {
 } satisfies Record<keyof typeof VERSION_SOURCES, ClientVersionResolver>;
 const PROVIDER_VERSION_RESOLVERS: Readonly<Record<string, ClientVersionResolver>> = {
   antigravity: resolvers.antigravity,
+  freepi: resolvers.freepi,
+  perch: resolvers.perch,
+  clixad: resolvers.clixad,
+  freebuff: resolvers.freebuff,
+  deepai: resolvers.deepai,
   grok: resolvers.grok,
   xai: resolvers.grok,
   opencode: resolvers.opencode,
@@ -537,6 +598,10 @@ export const getQoderVersion = accessor("qoder").get;
 export const getHermesVersion = accessor("hermes").get;
 export const getTraeVersion = accessor("trae").get;
 export const getAntigravityVersion = accessor("antigravity").get;
+export const getFreepiVersion = accessor("freepi").get;
+export const getPerchVersion = accessor("perch").get;
+export const getFreebuffVersion = accessor("freebuff").get;
+export const getDeepAIVersion = accessor("deepai").get;
 
 export const getOpenCodeVersion = accessor("opencode").get;
 

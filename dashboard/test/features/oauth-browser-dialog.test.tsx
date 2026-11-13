@@ -226,3 +226,23 @@ describe("OAuthBrowserDialog text drop", () => {
     }
   });
 });
+
+describe("OAuthBrowserDialog popup mode", () => {
+  test("completes by pasting the redirect URL", async () => {
+    const ctx = renderDialog();
+    const view = await ctx.mount();
+    try {
+      await pasteIntoField(view, VALID_PASTE);
+      expect(connectButton(view).disabled).toBe(false);
+      await view.act(async () => {
+        connectButton(view).dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      });
+      await view.flush();
+      expect(ctx.onClose).toHaveBeenCalledWith(true);
+      expect(ctx.closePopup).toHaveBeenCalled();
+    } finally {
+      view.unmount();
+      ctx.restore();
+    }
+  });
+});

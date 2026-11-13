@@ -29,7 +29,15 @@ export interface OAuthCodeExchangeContext {
   readonly providerState?: string;
 }
 
-export interface OAuthExchangeResult {
+/** Structured identity an OAuth token response exposed at login or polling time. */
+export interface OAuthAccountIdentity {
+  /** Human-readable name or username, when the provider exposes one. */
+  readonly accountName?: string;
+  /** Primary email, when the provider exposes one. */
+  readonly accountEmail?: string;
+}
+
+export interface OAuthExchangeResult extends OAuthAccountIdentity {
   readonly access: string;
   readonly refresh: string;
   readonly expiresAt: Date;
@@ -75,7 +83,19 @@ export interface OAuthDeviceFlowContext {
    * needs none ignores it.
    */
   readonly parameters?: Readonly<Record<string, string>> | undefined;
+  /**
+   * Transport override for the device-authorization and token-poll requests.
+   * When supplied, the client MUST use it instead of its default fetch — the
+   * console injects a pool-routed or direct validated fetch here (see the
+   * `device_flow_proxy` routing setting). Providers that ignore it keep
+   * dialing from the gateway's own egress, which is what made multiple device
+   * codes appear to arrive from one IP.
+   */
+  readonly fetchFn?: FetchLike | undefined;
 }
+
+/** Minimal fetch surface accepted by the OAuth flow contracts. */
+export type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 export type OAuthDevicePollResult =
   /**
@@ -112,6 +132,12 @@ export interface OAuthLoginClient {
    * compares it against the one the authorize step sent.
    */
   readonly browserRedirectUri?: string;
+  /**
+   * Custom OAuth state generator for providers whose authorization server
+   * validates the `state` format (e.g. DeepAI accepts only 32 hex chars).
+   * Defaults to the shared base64url state when omitted.
+   */
+  generateState?(): string | undefined;
   prepareAuthorize?(request: OAuthAuthorizeRequest): Promise<OAuthAuthorizeRequest>;
   /** Browser-code clients only; device-only clients omit both. */
   buildAuthorizeUrl?(request: OAuthAuthorizeRequest): string;
@@ -423,6 +449,61 @@ export function decodeJwtPayload(token: string): Record<string, unknown> | undef
   } catch {
     return undefined;
   }
+}
+
+/** Trim a text value from an untrusted token response without accepting other types. */
+function identityText(value: unknown): string | undefined {
+  const trimmed = nonEmptyTrimmedString(value);
+  return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
+}
+
+function firstIdentityText(
+  source: Record<string, unknown> | undefined,
+  fields: readonly string[],
+): string | undefined {
+  if (source === undefined) return undefined;
+  for (const field of fields) {
+    const value = identityText(source[field]);
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
+/**
+ * Reads identity from the token response shapes shared by WorkOS and the donor
+ * OAuth integrations. A provider that exposes only an id gets a display name,
+ * never an invented email; a response with neither leaves every field absent.
+ */
+export function oauthAccountIdentity(payload: unknown): OAuthAccountIdentity {
+  const root = record(payload);
+  if (root === undefined) return {};
+  const sources = [
+    root,
+    record(root.data),
+    record(root.user),
+    record(root.userInfo),
+    record(record(root.data)?.user),
+    record(record(root.data)?.userInfo),
+    decodeJwtPayload(identityText(root.access_token) ?? identityText(root.accessToken) ?? ""),
+  ].filter((value): value is Record<string, unknown> => value !== undefined);
+  const email = sources
+    .map((source) => firstIdentityText(source, ["email", "userEmail", "preferred_username", "upn"]))
+    .find((value): value is string => value !== undefined);
+  const name = sources
+    .map((source) => firstIdentityText(source, ["name", "displayName", "nickname", "username", "login"]))
+    .find((value): value is string => value !== undefined);
+  const firstName = sources
+    .map((source) => firstIdentityText(source, ["firstName", "first_name", "given_name"]))
+    .find((value): value is string => value !== undefined);
+  const lastName = sources
+    .map((source) => firstIdentityText(source, ["lastName", "last_name", "family_name"]))
+    .find((value): value is string => value !== undefined);
+  const fullName = [firstName, lastName].filter((part): part is string => part !== undefined).join(" ").trim();
+  const accountName = name ?? (fullName.length > 0 ? fullName : undefined);
+  return {
+    ...(email === undefined ? {} : { accountEmail: email }),
+    ...(accountName === undefined ? {} : { accountName }),
+  };
 }
 
 /**

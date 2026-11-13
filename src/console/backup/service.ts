@@ -311,7 +311,14 @@ export class BackupService {
     }
 
     if (detected.kind === "nine_router") {
-      const { payload: converted, report } = convert9RouterBackup(detected.payload, tenantId);
+      // dynamic-import: lazy OAuth graph — pulling the Github OAuth client into
+      // the console boot graph would make every console route pay for it.
+      const { bindImportedGithubCredential } = await import(
+        "../../providers/integrations/github/github-oauth"
+      );
+      const { payload: converted, report } = convert9RouterBackup(detected.payload, tenantId, {
+        github: bindImportedGithubCredential,
+      });
       const result = await this.apply(converted, tenantId, selection);
       return { ...result, report, format: "nine_router" };
     }

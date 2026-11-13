@@ -137,6 +137,13 @@ export async function resolveDevinAccountLabel(
 
 const DEVIN_AUTHORIZE_URL = "https://app.devin.ai/auth/cli/continue";
 const DEVIN_TOKEN_URL = "https://api.devin.ai/auth/cli/token";
+// Devin's authorization server only accepts this exact loopback redirect; a
+// public-origin redirect is refused with "Invalid redirect URI". The browser
+// opens it on the operator's own machine (the loopback listener belongs to the
+// desktop flow), so the gateway cannot intercept it — the operator pastes the
+// resulting URL back into the modal. On a server, the browser will show
+// "can't be reached" for 127.0.0.1: that is expected; the address bar still
+// carries the `code` to paste.
 const DEVIN_BROWSER_REDIRECT_URI = "http://127.0.0.1:59653/callback";
 
 export const devinOAuthClient: OAuthLoginClient = {

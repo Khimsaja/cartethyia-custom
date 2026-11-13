@@ -8,6 +8,345 @@ current baseline; an existing one applies the numbered files that followed it.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+## [2.8.1] - 2026-11-13
+
+### Added
+
+- **Tool-name alias registry (Claude Messages).** The request builder now
+  records every OAuth tool rename it applies on the canonical request, and
+  the response decoder restores the caller's original name exactly — mirroring
+  the two-way alias pattern the OpenCode free-tier fingerprint uses. The
+  registry (a WeakMap keyed by the request object, exposed via
+  `recordToolAliases` / `toolAliasesFor` / `restoreToolNameFor`) resolves the
+  ambiguity a fixed-prefix guess cannot: a caller declaring both `already` and
+  `_already` round-trips verbatim instead of the prefixed name restoring to the
+  wrong original. Shared restore point `restoreClaudeToolName` keeps the stream
+  and non-stream decoders in agreement (`restoreAliasedToolName` first, OAuth
+  prefix stripping as fallback).
+- **Inbound session ID normalization.** `normalizeInboundSessionId` trims and
+  rejects empty or oversized (>256 chars) values, mirroring the OpenCode CLI's
+  session cap. `resolveInboundSessionId` now skips unusable headers and falls
+  through to the next one, so a defective header can never become a cache key
+  or sticky-routing key.
+- **DeepAI provider (Free Limited).** Bundled provider for the DeepAI Code
+  model API (`https://api.deepai.org/deepai_code`) with the desktop sign-in
+  loopback flow (state + code exchange → opaque `api_key`), an API-key import
+  path validated against `/theos`, and a quota collector reading the daily 50
+  Theos allowance. The adapter stamps the exact upstream headers
+  (`Api-Key`, `X-DeepAI-Code-Theos: 4`, `X-DeepAI-Code-Instance`,
+  `X-DeepAI-Code-Machine`) — no bearer, since the upstream rejects one. The
+  static roster carries the 11 live-verified zero-Theos free rows (plus the
+  metered rows); live discovery keeps the 22-row catalog current, including
+  the responses-wire `gpt-6-astra`.
+- **DeepAI wire probes.** `scripts/provider-probing/deepai/` — capture
+  (`deepai-oauth-capture.mjs`) and wire probe (`probe-deepai.mjs`: models /
+  quota / chat hit) matching the desktop flow and headers; live-verified
+  2026-11-11.
+- **Add-Model modal: unlimited selection + mini cards.** The discovery-picker
+  no longer caps commits at 100 models (the backend commit route and UI both
+  dropped the `DISCOVER_MODEL_COMMIT_MAX` ceiling — any number of selected
+  rows commits). Each candidate row is now a mini card showing context window,
+  output limit, wire family, input modalities, reasoning/tool flags, and
+  free/pro/registered badges. The modal and manual-form copy is English-only
+  (Indonesian "Tambah manual"/"Dari provider" labels replaced).
+- **GitHub Copilot denial copy.** The "not signed up" refusal now reads
+  "not assigned to use GitHub Copilot. Activate Copilot Free at
+  https://github.com/features/copilot and connect again."
+- **OAuth refresh: scheduled-only, no inline request-path refresh.** The
+  dispatch credential resolver no longer refreshes OAuth tokens inline — a
+  hung token endpoint can no longer hold a client request for the full 30 s
+  refresh timeout (the p90/p95/p99 cliff). Tokens are kept fresh only by the
+  scheduled refresh sweep (due by per-provider lead), and a token that still
+  expires before its sweep turn is answered by the upstream's 401, which the
+  dispatch attempt-loop turns into a forced refresh. Unknown-expiry accounts
+  are no longer treated as instantly due (that forced a refresh on every
+  load). Refresh leads are now three coarse buckets — daily (default), 3
+  days, 7 weeks — with per-provider real-expiry notes; short-lived providers
+  (Claude ~8h, Google-backed ~1h, Grok/Kimi) keep tight leads so the sweep
+  does not re-mint on every tick.
+- **Cursor transport hardening.** The Cursor integration now falls back from
+  HTTP/2 to HTTP/1 when the upstream rejects the H2 stream (RunSSE /
+  BidiAppend), keeps a stable `requestId` across retries, and exposes
+  `forceH1`. Open and stream retries checkpoint and resume the last
+  confirmed event; in-flight exec handlers drain before a retry; tool counts
+  are reconciled after each attempt; errors resolve to structured codes; and
+  `CARTETHYIA_CURSOR_WIRE_TRACE` dumps the shape-only wire trace for
+  debugging. Healthy streams are untouched.
+- **Free-pi session affinity and rebase.** Each (secret, account, model)
+  pair now owns one `x-session-id`, and the session rotates and rebases when
+  the upstream refuses ownership (`session_mismatch` / `does not belong to`)
+  instead of failing the whole request.
+
+### Changed
+
+- **CodeBuddy integration consolidated into one folder.** The 21-module
+  `src/providers/integrations/buddy/` tree is merged into 9 files by domain:
+  `catalog.ts` (roster + discovery + CN rows), `headers.ts` (identity + CLI +
+  conversation headers), `account.ts` (OAuth + quota + usage + usage store),
+  `lifecycle.ts` (check-in + growth + server tools), `chat.ts`, `media.ts`,
+  `capabilities.ts`, and `codebuddy/index.ts` + `codebuddy/shared.ts`. No
+  wire behavior changed; module paths in consumers and tests follow the new
+  layout.
+
+- **Grok "Test 407" health log quotes the original model response.** The
+  probe's health-event reason now records the literal answer the model gave
+  (e.g. `returned "202" instead of "407"` for an exhausted account, or the
+  exact refusal text otherwise) instead of only the classification. The
+  operator sees what the upstream actually said in the health log, not just
+  the quota verdict.
+- **Grok "Test 407" respects the account selection.** When accounts are
+  selected in the provider detail page, the 407 exhaustion probe now runs
+  against only those accounts (fast, no full-provider sweep); with no
+  selection it still probes every account as before. The button's tooltip
+  names the scope, and the completion toast reports how many accounts were
+  probed (`N selected accounts` vs `all accounts`). The probe request gained an
+  optional `accountIds` filter (`probeAllAccounts`), and the console route
+  schema accepts it.
+- **Clixad provider (Free Limited).** Ad-funded coding-agent gateway; the
+  console now bundles it with the five live-verified free-tier rows
+  (`gpt-5-nano`, `gemini-2.5-flash-lite`, `claude-haiku-5.5`,
+  `deepseek-v4-flash`, `gemini-3.5-flash-lite`) — each bills zero per token
+  against the provider's daily free tier (120k credits/day, resets at
+  midnight UTC). Login is a GitHub device flow (the issued `adg_…` token is
+  the credential); quota reads the wallet endpoint and reports the account
+  balance, daily free-tier allowance, and the $5/day ad-reward cap. Live
+  `/v1/models` discovery keeps the roster current, and the client-version
+  monitor reads the gateway's own `cli_latest` from that listing (fallback
+  pin `0.0.1-beta.50`) so the provider presents the CLI build the gateway is
+  paired with. Evidence ledger:
+  `documentation/research/clixad/2026-11-11-clixad-wire.md`.
+- **Outbound keep-alive hardening + stale-socket replay.** Direct dials and
+  socks dispatchers now cap the pooled keep-alive socket lifetime (4 s
+  default) so a silently-dropped connection is not reused; an error that
+  proves the socket died before response headers (`UND_ERR_SOCKET`,
+  `ECONNRESET`, `EPIPE`, headers timeout, "other side closed", "socket hang
+  up") replays the request once on a fresh-socket dispatcher. Host-level
+  failures (DNS, refused, TLS, connect timeout) and aborts are never
+  replayed — a bare "fetch failed" stays ambiguous and is also excluded.
+- **NVIDIA NIM parameter quirks.** `applyParamQuirks` now strips the
+  cross-wire fields NIM rejects with 400 (`extension:client_metadata`,
+  `extension:prompt_cache_key`, `service_tier`,
+  `extension:anthropic_beta`, `extension:thinking_budget`,
+  `extension:metadata_user_id`, `extension:custom_field`), and the
+  compatible adapter drops `stream_options` on non-streaming requests (NIM
+  and DeepSeek accept the field only when `stream: true`).
+- **SenseNova providers (CN + Intl).** Keys are per-site — China keys on
+  `token.sensenova.cn`, international keys on `token.sensenova.ai` — so the
+  two realms are separate providers with separate hosts, catalogs and
+  discovery. Chat (`/v1/chat/completions`) plus image-generation rows
+  (`/v1/images/generations`) are bundled with the official SenseNova marks.
+- **Proxy pool status filter + Shift+click range selection.** The pools page
+  now filters by All/Enabled/Disabled; selections and Select All target only
+  visible rows, range selection works in the current sort order, and the
+  anchor resets when the filter changes.
+
+- **Device-code OAuth flows can now rotate egress through network pools.**
+  Device-authorization start + token poll previously always dialed from the
+  gateway's own egress, so every code minted on one host appeared to come from
+  a single IP — which let Cursor/Grok/other device-code providers flag
+  "multiple codes from one IP". A new `device_flow_proxy` routing setting
+  (default `random`) routes those requests through a randomly selected active
+  network pool (weighted, cooldown-aware; direct fallback when the tenant has
+  no usable pool). `direct` restores the old single-address behavior. The
+  setting is per-provider and per-tenant with a dropdown in the routing card;
+  the resolved validated fetch is injected into the OAuth flow context so every
+  device-flow client (Grok, Cursor, Codex, Kiro, Kimi, Kilo, Muse, Hermes,
+  Factory, xAI, ZCode Start, Cline, Buddy, GitHub, Qoder) honors it.
+
+- **Vercel AI Gateway provider added.** OpenAI-compatible bearer provider on
+  `https://ai-gateway.vercel.sh/v1`, registered in the bundled catalog with
+  three default rows (2026-11-11): the free-plan-serving
+  `nvidia/nemotron-3.5-lightning-free` (1M ctx) plus the operator's billed picks
+  `meituan/longcat-2.5` (vision, 1M ctx) and `inception/mercury-3` (1M ctx),
+  with capabilities from the upstream's own listing. Other zero-priced listing
+  rows (`reflection/beam*`, `humansand/ampersand-v0.1`,
+  `stealth/glyph-cluster`) are refused on a free plan (verified live: 403
+  `no_providers_available`), so they are intentionally not seeded. Live model
+  discovery (`GET /v1/models`) adds everything else, keeping roster rows whole.
+  Quota collector reads `GET /v1/credits` (USD balance + total spend) as a
+  pooled credit window. No OAuth flow exists — keys are created via the
+  Vercel CLI (`vercel ai-gateway api-keys create`) and pasted.
+
+- **Free-pi and Perch client versions now ride the background version monitor.**
+  `refreshProviderClientVersions()` previously skipped both because they were
+  missing from `PROVIDER_VERSION_RESOLVERS` — their wire identities stayed on
+  the launch-time pin forever. Both are now wired: free-pi sends the discovered
+  `free-pi-cli` npm version (fallback raised to 0.6.19, the minimum the
+  upstream now requires) in `x-client-version`, and Perch sends the discovered
+  `perchai-cli` npm version (fallback raised to 2.4.128) in its CLI
+  user-agent. Freebuff Desktop stays intentionally pinned
+  to the audited bundle build 0.0.201: no machine-readable public feed exists
+  for the desktop line (GitHub releases are Codecane staging builds; npm
+  `freebuff` is the CLI, a different product), so discovery would fake an
+  identity the upstream gate could reject.
+
+- **Qoder: dead chat surfaces removed, live COSY remains the one carrier.**
+  The gRPC `ChatService` and IDE `/model/v1` surfaces (both dead upstream —
+  UNIMPLEMENTED/404) are deleted along with the vendored proto, probe scripts,
+  and wire tests. The parser (`qoderBodyToCanonicalEvents`, envelope frames)
+  moved into `qoder-sse.ts` and now serves the sole live surface. The adapter
+  dispatches COSY only.
+- **Qoder: desktop-app outbound fingerprint mirrored.** `X-Qoder-HTTPDNS-IP`
+  is emitted when the account's `auth_state` carries the HTTPDNS-route IP
+  (parsed via `parseQoderOAuthState`, forwarded through `resolveQoderAuth` and
+  `qoderOAuthAuth`); without it the header is omitted, matching a non-HTTPDNS
+  client.
+- **Network egress: unified client and TLS ClientHello profiles.**
+  `src/network/` is restructured into `egress/`, `pool/`, `util/`, plus root
+  shared modules (`client.ts`, `bidi.ts`, `ssrf.ts`, `verdict.ts`).
+  `createNetworkClient()` is the single entry; `fetchWithTls(profile)` dials
+  direct https with a chosen TLS fingerprint via a Node agent (verified: the
+  `qoder-app` profile reproduces the captured desktop ClientHello suite order
+  and ALPN). Streams keep flowing during profile dials (no full-body buffer).
+
+### Added
+
+- **DeepAI client version pin.** The DeepAI Code desktop app publishes no
+  machine-readable feed, so `client-versions` carries the audited bundle pin
+  (0.3.35) and wires it into the refresh cycle and route identity.
+- **Freebuff client version joins the refresh cycle.** Freebuff stays on its
+  audited pin (0.0.201), but is now part of the provider version resolvers so
+  the pinned-version report and route identity see it like any other provider.
+
+### Fixed
+
+- **DeepAI sign-in accepts the generated state.** DeepAI's hosted desktop
+  auth validates the `state` as 32 hex characters; the shared base64url state
+  (which can contain `-`/`_`) was rejected with "Invalid desktop sign-in
+  request". The DeepAI client now generates a 32-hex state, and the OAuth
+  login client interface gained an optional `generateState` hook for providers
+  that validate the format.
+- **DeepAI login builds the authorize URL for any redirect.** `buildAuthorizeUrl`
+  threw when the console's redirect URI was not a loopback URL, failing the
+  login with "OAuth login operation failed" before any URL was shown. It now
+  falls back to the well-known 59653 loopback port, so the popup flow works
+  and the operator pastes the redirect URL back.
+- **Devin browser OAuth returns to the popup flow.** Devin's authorization
+  server rejects any redirect URI other than `http://127.0.0.1:59653/callback`
+  (the desktop flow's loopback), so the dashboard always opens the authorize
+  URL in a popup and the operator pastes the redirect URL back when the
+  loopback page cannot be reached.
+- **Hermes/OpenRouter free rows re-validated.** `reflection/beam-1.0-501b-a23b:free`
+  and `poolside/laguna-s-2.1:free` are withdrawn (dispatch fails); `stepfun/step-3.7-flash:free`
+  is kept with a clamped output cap — the catalog's 256k `max_completion_tokens` on a
+  256k context made every request exceed the endpoint ("you requested about 259137 tokens").
+  The Hermes discovery now clamps output under context and blocklists the known-broken ids.
+- **Cline free roster refreshed.** `reflection/beam-free` and `poolside/laguna-s-2.1-free`
+  are dropped; `baidu/ernie-5.5-flash-preview:free` (1.0M ctx / 922k out) added.
+- **Qoder PAT/job-token inference never falls through to `api3`.** A pasted
+  PAT (`pt-…`) is exchanged per request for a short-lived job token (`jt-…`),
+  and `api3.qoder.sh` rejects that token with `403 / {"code":"105","message":
+  "Login expired"}` — the `qoder/deepseek-v4-pro` live-test failure. Job-token
+  dispatches now dial only `api2` → `api1` (the desktop app's elected inference
+  host first); OAuth device tokens keep the ordinary `api1` → `api2` → `api3`
+  set. The PAT itself stays valid: `105` remains retryable, so the next attempt
+  re-exchanges it rather than parking the account as "Re-login required".
+- **DeepAI's loopback auto-complete accepts `/auth-callback`.** The desktop
+  sign-in redirects to `/auth-callback`, but the listener only bound
+  `/callback` and `/signin/callback`, so local logins 404'd after consent.
+  The extra path is harmless for other providers; remote browsers still use
+  the dialog's paste-back flow (DeepAI accepts loopback redirects only).
+- **Free-pi fallback roster carries the two defense rows.** `uncensored-1.2`
+  and `mimo-v2.6-flash` are seeded alongside the free rows, so a cold process
+  whose `/client-version` discovery fails still advertises them. The CLI
+  fallback is raised to 0.6.19, the minimum the upstream now requires.
+- **Cline/OpenRouter system-prompt shaping is pinned by tests.** The gateway
+  adds exactly one "You are a helpful assistant." baseline when none was
+  supplied, preserves a client-supplied `<model_identity>` block verbatim, and
+  OpenRouter's `prePayload` never touches system messages — a duplicated
+  baseline therefore comes from the caller/upstream, not the builders.
+- **DeepAI and Clixad login buttons now appear in the dashboard.** The registry
+  loaded the OAuth client *class* instead of an instance, so
+  `resolveLoginClient` returned a `Function` with no flow methods and the
+  provider list hid the Login buttons. Both integration exports now provide a
+  shared client instance (DeepAI browser loopback, Clixad GitHub device flow).
+- **Add-Model discovery cards render in a 2×2 grid** with only Context and
+  Output shown — the reasoning/tools/wire/input lines are dropped since not
+  every provider reports them.
+- **Vercel AI Gateway listed under Free Limited providers.** The single $0
+  model (`nvidia/nemotron-3.5-lightning-free`) is the only free-plan row; the
+  card now groups Vercel with the other daily-allowance providers.
+- **CodeBuddy tools are no longer silently ignored.** `normalizeBuddyToolNames`
+  rebuilt `payload.tools` entries on the `function` branch and returned the
+  inner declaration instead of the `{ type: "function", function: ... }`
+  envelope — the upstream accepted the request (HTTP 200) but emitted zero
+  `tool_calls`. The envelope is preserved again, and the bare-tool branch
+  keeps the original tool object too.
+- **Dashboard pre-existing typecheck failures cleared.** `PoolHealthEvent`
+  imports from the correct pool-health module, the Grok probe request is typed
+  as `ProbeModelRequest` (so `serviceKind` stays a `ServiceKind` union), and
+  the routing-strategy hook drops duplicated `setSkipProxy`/`setDeviceFlowProxy`
+  members and includes `deviceFlowProxy` in the user-agent save. The packed
+  tarball `npm` upgrade rehearsal now passes.
+- **OAuth callback listener no longer resets the callback connection.** The
+  loopback listener called `server.stop(true)` synchronously from inside the
+  request handler, closing the active connection before the success/denial
+  Response was delivered — the callback tab saw HTTP 000 (connection reset),
+  spuriously on local hosts and consistently on deployed/docker hosts. The
+  release is now deferred one tick so the response flushes first; the port is
+  freed immediately after. Verified live: HTTP 200 + completion. The listener
+  still binds only `127.0.0.1`/`::1` (loopback), so browser-code logins from a
+  machine other than the gateway's must use the dialog's manual paste path.
+
+- **Provider client-version pins refreshed to current upstream releases.**
+  Re-fetched every `VERSION_SOURCES` feed live (2026-11-11) and raised the
+  cold-process fallbacks that had drifted: antigravity 2.29.0 → 2.31.0,
+  opencode 2.2.6 → 2.2.7 (plus the `OPENCODE_CLIENT_VERSION` parity mirror),
+  codex 0.167.0 → 0.167.1, kiro 1.4.121 → 1.4.154, codebuddy 2.181.0 →
+  2.183.0, codebuddyCn 4.12.3.42658816 → 4.12.4.43368774, claude
+  2.1.319 → 2.1.322, kilo 7.8.27 → 7.8.28, muse 1.4.14-R7309.1 →
+  1.4.15-R8339.1, hermes 0.23.0 → 0.23.1, cursor cli-3.29.9-306d153 →
+  cli-3.29.15-86776fc (plus the adapter's `FALLBACK_CLIENT_VERSION`). Trae's
+  fallback is raised to 3.6.13 (the current desktop build per the official
+  winget manifest): the docs changelog renders as an SPA now, so its parser
+  yields nothing and the pin carries the wire identity until a machine-readable
+  feed exists again. Qoder, grok, cline, kimi, zcode, commandcode, and the
+  freepi/perch/freebuff entries are unchanged: their pins already matched the
+  fetched feeds, or (qoder) deliberately track the IDE build, not the npm CLI.
+
+- **Qoder: legacy COSY response body streams while profiled.** The Node
+  GET/HEAD-with-body dial path now bridges the response into a web stream, so
+  SSE chat streams are consumed incrementally instead of buffering the whole
+  payload before resolving.
+- **Qoder: chat wire aligned 1:1 with the desktop-worker capture**
+  (2026-11-11, app 0.5.7 / worker 1.1.79-hotfix.19). The COSY chat surface
+  now sends `Cosy-ClientType: 10` (was `5`), `Cosy-Business-Product: app`
+  (was `cli`), `Cosy-Scene: app` (was `assistant`), `User-Agent: undici`
+  (was `Bun/1.4.2`), `Accept-Encoding: br, gzip, deflate` (was `identity`),
+  `Content-Encoding: zstd` with a zstd-compressed body over the scrambled
+  transform (was uncompressed), plus `traceparent` (W3C), `sec-fetch-mode:
+  cors`, and `accept-language: *`. Verified live 2026-11-11: 5/5 roster keys
+  answer 200 through the adapter path. The signature is computed over the
+  scrambled body before zstd compression — signing over the zstd wire bytes
+  returns `403 Signature invalid`, proving the server decompresses before
+  verifying.
+- **GitHub Copilot: complete profile selection.** `CARTETHYIA_GITHUB_COPILOT_MODE`
+  now selects the OAuth app, token mint/refresh behavior, inference headers,
+  model discovery, and quota identity together. `opencode-copilot` remains the
+  default and uses the raw GitHub token; `vscode-client-real` mints and refreshes
+  the short-lived Copilot token. Restart the process after changing the mode,
+  then reconnect GitHub accounts. Cartethyia's `/auto` routing and GPT Luna
+  session-token flow remain available in both profiles. Imported 9router GitHub
+  credentials are rebound to the active profile during restore.
+- **OAuth: structured account identity and unique fallback labels.** OAuth login,
+  device polling, imports, and refreshes now preserve provider-reported email
+  and display name when available, including WorkOS response shapes used by
+  Cline and Factory Droid. Accounts whose upstream reports no identity receive
+  per-provider numbered labels such as `hermes-1` and `hermes-2` instead of
+  sharing the provider id. The account API and dashboard expose the resolved
+  email/name while generated labels remain display-only for re-login identity.
+
+### Fixed
+
+- **Trae: terminal quota authentication failures invalidate the account.** When
+  session usage and entitlement on both realms all return HTTP 401 with code
+  `1001`, the account is marked `disabled` / `auth_invalidated` immediately with
+  no recovery deadline. A successful surface or any other failure remains
+  non-terminal. Automatic and manual OAuth refreshes stop for the invalidated
+  account until re-authentication.
+
 ## [2.8.0] - 2026-11-09
 
 ### Added
@@ -612,7 +951,7 @@ etc. The adapter default surface is now legacy COSY (`cosy`), hosts are
 tried in order (`api1` → `api2` → `api3`), and the intl gRPC/IDE host
 constants point at `api1` instead of the dead `api2-v2`. Legacy COSY on
 `api1`/`api2` verified live: 200 + full stream with model `auto`. Evidence:
-`documentation/research/qoder/live/2026-11-07-qoder-host-inference-fallback.md`.
+`documentation/research/qoder/archive/qoder-research-archive-2026-11-11.zip` (`2026-11-07-qoder-host-inference-fallback.md`).
 
 ### Removed
 
@@ -666,7 +1005,7 @@ opencode → CarteLocal: single shell call and multi-call parallel blocks
 (previously `Invalid arguments ... Missing key` and glued JSON
 `{"command":"..."}{"command":"..."}`). Regression tests in
 `test/providers/integrations/qoder-grpc-wire.test.ts`. Documented in
-`documentation/research/qoder/live/2026-11-05-qoder-tool-calling.md` §6.
+`documentation/research/qoder/archive/qoder-research-archive-2026-11-11.zip` (`2026-11-05-qoder-tool-calling.md`) §6.
 - **Qoder adapter restructured into focused modules.** `qoder.ts` is now a
 re-export barrel over `qoder-auth` (PAT→job-token exchange v1), `qoder-cosy`
 (COSY signing), `qoder-chat` (legacy builder/transport), `qoder-ide`
@@ -675,7 +1014,9 @@ contract). Public imports unchanged.
 - **Qoder User-Agent aligned to live captures.** CLI/COSY/device flow now use
 `Bun/1.4.2`, the IDE surface `Bun/1.4.4`, the job-token exchange
 `qoder/<version>` (was `Go-http-client/2.0`), and the openapi/business
-surface `Qoder`/`QoderWork`.
+surface `Qoder`/`QoderWork`. Disambiguation: `Bun/1.4.2` is the CLI/device
+flow UA, `undici` is the **app/worker** UA (Electron-hosted Node undici) —
+see `documentation/research/qoder/2026-11-11-qoder-worker-chat-wire-capture.md`.
 - **Qoder PAT→jobToken exchange moved to the v1 endpoint.** intl now uses
 `POST center.qoder.sh/api/v1/jobToken/exchange` with a plain JSON body
 `{personal_token, machine_id}` and uppercase `X-Request-ID` (was the v3

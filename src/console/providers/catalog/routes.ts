@@ -5,7 +5,6 @@ import { SERVICE_KINDS, WIRE_FAMILIES } from "../../../protocol/canonical-model"
 import { PROBE_MODES, PROBE_REASONING_EFFORTS } from "../../../providers/discovery/discovery-types";
 import {
   ACCOUNT_STATUSES,
-  DISCOVER_MODEL_COMMIT_MAX,
   CREDENTIAL_KINDS,
   CREDENTIAL_MODES,
 } from "./contracts";
@@ -133,7 +132,7 @@ const registerModelsBody = t.Object({
   metadata: t.Optional(modelMetadataOverrideBody),
 });
 const discoverCommitBody = t.Object({
-  modelIds: t.Array(t.String(), { minItems: 1, maxItems: DISCOVER_MODEL_COMMIT_MAX }),
+  modelIds: t.Array(t.String(), { minItems: 1 }),
 });
 const probeModelBody = t.Object({
   modelId: t.String(),
@@ -141,6 +140,7 @@ const probeModelBody = t.Object({
   route: t.Optional(t.String()),
   wireFamily: t.Optional(t.String()),
   accountId: t.Optional(t.String()),
+  accountIds: t.Optional(t.Array(t.String(), { maxItems: 100 })),
   prompt: t.Optional(t.String()),
   reasoningEffort: t.Optional(literalUnion(PROBE_REASONING_EFFORTS)),
   maxOutputTokens: t.Optional(t.Integer({ minimum: 1, maximum: 131072 })),

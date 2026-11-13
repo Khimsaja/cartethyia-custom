@@ -1,21 +1,17 @@
 /**
  * Qoder adapter — transport selection, credential resolution, dispatch.
  *
- * Surface contract (2026-11-07):
+ * Surface contract (2026-11-07, verified live 2026-11-11):
  * - `cosy` (default, production): `/algo/.../agent_chat_generation` on
- *   `api1` → `api2` → `api3.qoder.sh` (legacy COSY) — the only surface
- *   verified alive. Accepts free-tier rows (`lite`).
- * - `grpc` (`model.chat.ChatService/ChatCompletionStream`): **not the
- *   default anymore** — its host (`api2-v2.qoder.sh`) is NXDOMAIN since
- *   2026-11-07. Kept as an explicit override for probes.
- * - `ide` (`/model/v1/chat/completions`): **probe/testing only — never
- *   production.** It is the only surface that echoes strategy metadata
- *   (`raw_usage` → provider_model/target) and it streams immediately, but its
- *   ~256 KiB body cap cannot carry the 1M window the roster declares. Dispatch
- *   reaches it only when `probe_surface: "ide"` is set (discovery probes) or
- *   the option `surface: "ide"` is forced explicitly for local testing.
+ *   the realm's token-kind-specific gateway set (legacy COSY) — the only
+ *   surface verified alive. A PAT is exchanged to a job token first; job
+ *   tokens use `api2` → `api1` only, since `api3` rejects them with
+ *   `105 Login expired` (403). Accepts free-tier rows (`lite`).
+ * - The gRPC surface (`model.chat.ChatService/ChatCompletionStream`) and the
+ *   IDE surface (`/model/v1/chat/completions`) are dead on every host that
+ *   resolves (gRPC: UNIMPLEMENTED; IDE: 404) since 2026-11-07 and are not
+ *   dispatched anymore.
  */
-import { randomUUID } from "node:crypto";
 import { GatewayError } from "../../../protocol/gateway-error";
 import type { CanonicalEvent, CanonicalRequest } from "../../../protocol/canonical-model";
 import {
@@ -28,19 +24,16 @@ import {
 } from "../../provider-contracts";
 import { abortGatewayError, createUpstreamDeadlineLifecycle } from "../../operations/upstream-deadline";
 import { getQoderVersion } from "../../operations/client-versions";
-import { qoderMachineHostname, qoderMachineOs } from "../../operations/cli-platform";
 import { mapUpstreamHttpError } from "../../../transport/failure-policy";
 import { QODER_CN_MODEL_CONFIGS, QODER_INTL_MODEL_CONFIGS } from "./qoder-catalog";
 import { isQoderVirtualModel, qoderDispatchModelId } from "./qoder-virtual";
 import { isQoderPat, qoderOAuthAuth, qoderSessionId, resolveQoderAuth } from "./qoder-auth";
 import { buildQoderRequest, callQoder } from "./qoder-chat";
-import { buildQoderGrpcRequest, qoderGrpcMetadata, qoderGrpcToCanonicalEvents } from "./qoder-grpc";
-import { buildQoderIdeRequest, qoderBodyToCanonicalEvents } from "./qoder-ide";
+import { qoderBodyToCanonicalEvents } from "./qoder-sse";
 import { estimateQoderSessionCache } from "./qoder-cache";
 import {
   QODER_CHAT_PATH,
   QODER_PROVIDER_ID,
-  qoderIdeChatUrl,
   qoderInferenceCandidates,
   type QoderRealm,
 } from "./qoder-realm";
@@ -56,38 +49,23 @@ interface QoderAdapterOptions {
    * Which chat transport to dispatch on.
    *
    * `cosy` (default) = legacy COSY (`/algo/.../agent_chat_generation`) on
-   * `api1` → `api2` → `api3.qoder.sh` — the only surface verified alive
-   * (2026-11-07; the `api2-v2` model-server host is NXDOMAIN). This path also
-   * accepts free-tier rows (`lite`).
-   *
-   * `grpc` forces the gRPC surface (`model.chat.ChatService/ChatCompletionStream`)
-   * — **no longer the default**; its host is not verified alive.
-   *
-   * `ide` forces `/model/v1` — **probe/testing only, never production**
-   * (see module doc).
+   * the realm's gateway candidates (device tokens: `api1` → `api2` → `api3`;
+   * job tokens minted from a PAT: `api2` → `api1` only — `api3` answers
+   * `105 Login expired`). The `api2-v2` model-server host is NXDOMAIN, and
+   * the gRPC service is UNIMPLEMENTED on every host that resolves. This path
+   * also accepts free-tier rows (`lite`).
    */
-  readonly surface?: "grpc" | "cosy" | "ide";
+  readonly surface?: "cosy";
 }
 
 /** Resolves the transport for one dispatch. Exported for tests. */
-export function resolveQoderTransport(
-  surface: "grpc" | "cosy" | "ide" | undefined,
-  modelConfig: QoderModelConfig,
-): "grpc" | "cosy" | "ide" {
-  const chosen = surface ?? "cosy";
-  // `ide` is an explicit testing override — never auto-selected, and it does
-  // not apply the free-tier rule (a forced IDE call is a test call).
-  if (chosen === "ide") return "ide";
-  // Free-tier rows (`lite`) are refused on gRPC with `quota exceeded` (116);
-  // they must use the legacy COSY surface.
-  if (chosen === "grpc" && modelConfig.is_free === true) return "cosy";
-  return chosen;
+export function resolveQoderTransport(): "cosy" {
+  return "cosy";
 }
 
 class QoderAdapter implements ProviderAdapter {
   readonly provider_id: ProviderId;
   private readonly realm: QoderRealm;
-  private readonly surface: "grpc" | "cosy" | "ide";
   private readonly fetchFn: typeof fetch;
 
   constructor(options: QoderAdapterOptions = {}) {
@@ -100,7 +78,6 @@ class QoderAdapter implements ProviderAdapter {
     // mismatch that made `deepseek-v4.1-flash` fail while `qwen3.8-flash`
     // passed. This is the same default `resolveQoderTransport(undefined)`
     // already returns.
-    this.surface = options.surface ?? "cosy";
     this.fetchFn = options.fetch ?? globalThis.fetch;
   }
 
@@ -180,7 +157,7 @@ class QoderAdapter implements ProviderAdapter {
 
     const lifecycle = createUpstreamDeadlineLifecycle(context);
 
-    // Outbound fetch respects SSRF binding when provided
+    // Outbound fetch respects SSRF binding when provided.
     const outboundFetch: typeof fetch = (context.outbound_fetch as unknown as typeof fetch) ?? this.fetchFn;
 
     const fetcher: (url: string, init: RequestInit) => Promise<Response> = (url, init) =>
@@ -196,77 +173,6 @@ class QoderAdapter implements ProviderAdapter {
         : qoderOAuthAuth(secret, context.credential.auth_state, context.credential.account_id);
 
       // Transport selection — see module doc for the surface contract.
-      const forceIde = this.surface === "ide" || candidate.probe_surface === "ide";
-      const useGrpc = !forceIde && resolveQoderTransport(this.surface, modelConfig) === "grpc";
-
-      if (forceIde) {
-        const ideUrl = qoderIdeChatUrl(this.realm);
-        const ideBody = buildQoderIdeRequest(modelId, request, modelConfig, auth, this.realm, version);
-        // Header fingerprint mirrors the desktop client's IDE surface (`PFn` /
-        // `Hc`): X-Request-ID normalized to uppercase, Cosy-Version, real
-        // machine OS, and the sanitized hostname on infer SSE requests. The
-        // User-Agent is the real IDE client's (`Bun/1.4.4`, live capture) and
-        // `X-Session-ID` matches the body's session id (sha256 userId:model).
-        const ideHostname = qoderMachineHostname();
-        const res = await fetcher(ideUrl, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${auth.securityOauthToken}`,
-            "Content-Type": "application/json",
-            Accept: "text/event-stream",
-            "User-Agent": "Bun/1.4.4",
-            "X-Request-ID": randomUUID().toUpperCase(),
-            "X-Session-ID": qoderSessionId(auth.userId, modelId),
-            "Cosy-Version": version,
-            "Cosy-ClientType": "5",
-            "Cosy-MachineOS": qoderMachineOs(),
-            ...(ideHostname.length > 0 ? { "Cosy-MachineHostname": ideHostname } : {}),
-          },
-          body: JSON.stringify(ideBody),
-        });
-        if (!res.ok) throw await mapUpstreamHttpError(res, "qoder");
-        if (!res.body) throw new GatewayError("platform_unavailable", 502, "Qoder returned empty body (request {requestId}). The upstream came back empty-handed — retry 🌙", {}, "upstream");
-        lifecycle.release();
-        yield* this.#withSessionCacheEstimate(
-          qoderBodyToCanonicalEvents(res.body as ReadableStream<Uint8Array>, lifecycle.signal, modelId),
-          request,
-          qoderSessionId(auth.userId, modelId),
-        );
-        return;
-      }
-
-      if (useGrpc) {
-        // The gRPC request mirrors the HTTP surfaces' OpenAI-shaped body, so
-        // the shared builder supplies the messages, tool declarations, and
-        // tool-choice knobs both surfaces expect. Without the `tools` array
-        // the upstream sees no toolset and answers with a DSML text block (or
-        // claims no tool exists) instead of a structured `tool_calls`.
-        const legacy = buildQoderRequest(modelId, request, modelConfig, auth, this.realm);
-        const grpcRequest = buildQoderGrpcRequest(
-          modelId,
-          request,
-          auth.userId,
-          {
-            messages: legacy.messages as Array<Record<string, unknown>>,
-            tools: legacy.tools as Array<Record<string, unknown>>,
-            ...(legacy.parameters === undefined
-              ? {}
-              : { parameters: legacy.parameters as Record<string, unknown> }),
-          },
-        );
-        const grpcMetadata = qoderGrpcMetadata(auth);
-        lifecycle.release();
-        yield* this.#withSessionCacheEstimate(
-          qoderGrpcToCanonicalEvents(grpcRequest, grpcMetadata, this.realm, lifecycle.signal, context.provider_capture),
-          request,
-          qoderSessionId(auth.userId, modelId),
-        );
-        return;
-      }
-
-      // Legacy COSY hosts are tried in order (api1 → api2 → api3) with the
-      // endpoint path from discovery when present. A network-level failure on
-      // one host falls through to the next; an HTTP error response surfaces as-is.
       const cosyCandidates = candidate.endpoint_path?.startsWith("http")
         ? [candidate.endpoint_path]
         : qoderInferenceCandidates(this.realm, auth.securityOauthToken).map(

@@ -110,7 +110,6 @@ export type {
 } from "../../../src/console/providers/catalog/contracts";
 
 export type { CompatibilityProfile } from "../../../src/providers/provider-metadata";
-export { DISCOVER_MODEL_COMMIT_MAX } from "../../../src/console/providers/catalog/discover-constants";
 
 /** Convenience alias for the discovery envelope; canonical name is C3's. */
 export type DiscoverModelsResponse = DiscoverModelCandidatesResponse;
@@ -309,7 +308,7 @@ export {
   RELAY_REGIONS,
 } from "../../../src/console/routing/pools/relay-regions";
 export type { RelayRegion } from "../../../src/console/routing/pools/relay-regions";
-export type { PoolHealthEvent } from "../../../src/network/pool-health-machine";
+export type { PoolHealthEvent } from "../../../src/network/pool/health";
 
 
 export type {

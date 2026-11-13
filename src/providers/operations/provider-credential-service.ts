@@ -161,6 +161,8 @@ export interface AccountWithOauthStateRow {
 export interface LoadAccountWithOauthStateOptions {
   /** Select `status` from providerAccounts. */
   readonly includeStatus?: boolean;
+  /** Select the last health category from providerAccounts. */
+  readonly includeLastErrorCategory?: boolean;
   /** Select `expiresAt` from providerOauthStates. */
   readonly includeExpiry?: boolean;
   /** Also compute the skew-adjusted OAuth due time (see `loadAccountWithFreshness`). */
@@ -174,6 +176,7 @@ export interface LoadedAccountWithOauthState {
   readonly id: string;
   readonly providerId: string;
   readonly credentialKind: CredentialKind;
+  readonly lastErrorCategory?: string | null;
   readonly credentialCiphertext: Buffer | null;
   readonly refreshCiphertext: Buffer | null;
   readonly authState: unknown;
@@ -209,6 +212,9 @@ export async function loadAccountWithOauthState(
       clientSecretCiphertext: providerOauthStates.clientSecretCiphertext,
       staticToken: providerAccounts.staticToken,
       ...(options.includeStatus === true ? { status: providerAccounts.status } : {}),
+      ...(options.includeLastErrorCategory === true
+        ? { lastErrorCategory: providerAccounts.lastErrorCategory }
+        : {}),
       ...(options.includeExpiry === true || options.includeDueAt === true
         ? { expiresAt: providerOauthStates.expiresAt }
         : {}),
@@ -225,14 +231,12 @@ export async function loadAccountWithOauthState(
   if (!row) return undefined;
   if (options.includeDueAt !== true) return row;
   const lead = options.skewMs ?? refreshLeadMs(row.providerId);
-  // A refresh-capable OAuth account with no stored expiry is unknown-liveness:
-  // we have no evidence the access token still works. Marking the token due
-  // immediately refreshes it on first use; the sweep handles the normal case
-  // where `expires_at` is populated.
-  const hasRefreshGrant = row.refreshCiphertext != null;
-  const kindOauth = row.credentialKind === "oauth";
-  const unknownExpiryButRefreshable =
-    kindOauth && !row.staticToken && hasRefreshGrant && row.expiresAt == null;
+  // A refresh-capable OAuth account with no stored expiry has an unknown
+  // liveness, but the scheduled sweep is the only refresher: marking it due
+  // here would refresh on every load, and the dispatch path deliberately no
+  // longer refreshes inline. Unknown expiry therefore means "not due yet" —
+  // if the token actually died, the upstream's 401 triggers the dispatch
+  // retry refresh (see `attempt-loop.ts`).
   // A static token is never "due": it is used as issued and there is no
   // refresh to run, so the dispatch path must not treat it as stale.
   const dueAt =
@@ -240,9 +244,7 @@ export async function loadAccountWithOauthState(
       ? undefined
       : row.expiresAt != null
         ? row.expiresAt.getTime() - lead
-        : unknownExpiryButRefreshable
-          ? 0
-          : undefined;
+        : undefined;
   return {
     ...row,
     ...(dueAt === undefined ? {} : { dueAt }),
@@ -293,7 +295,7 @@ export async function resolveCredentialForAccount(
   db: CartethyiaDatabase,
   providerId: string,
   accountId: string,
-  oauth?: ResolveCredentialOAuth,
+  _oauth?: ResolveCredentialOAuth,
 ): Promise<ResolvedCredential> {
   // Cache hit: skip DB round-trip + AES-GCM decrypt.
   // Don't cache OAuth credentials whose token is due for refresh soon —
@@ -338,19 +340,14 @@ export async function resolveCredentialForAccount(
       );
     }
   }
-  if (row.credentialKind === "oauth" && oauth && dueAt !== undefined && dueAt <= Date.now()) {
-    const refresher = await oauth.resolveRefresher(row.providerId);
-    if (refresher) {
-      // Try to refresh. If it fails (refresh grant dead, upstream unreachable,
-      // etc.) keep the already-decrypted stale secret rather than wiping it:
-      // dispatch then sends the token we have, and the upstream's own 401 is
-      // the authoritative verdict. Wiping it here turned "token expired" into
-      // a credential-less GatewayError before the request ever left, which is
-      // worse than letting the server say so.
-      const refreshed = await oauth.refreshService.ensureFreshAccessToken(accountId, refresher);
-      if (refreshed) secret = refreshed;
-    }
-  }
+  // No inline refresh on the request path. OAuth tokens are kept fresh by the
+  // scheduled refresh sweep (`oauth-refresh-sweep`, due by `refreshLeadMs`),
+  // and a token that still expired before its sweep turn is answered by the
+  // upstream's own 401, which the dispatch attempt-loop turns into a forced
+  // refresh (see `attempt-loop.ts`). Refreshing here blocked a client request
+  // on the token endpoint — a hung endpoint held the request for the full 30 s
+  // refresh timeout — and re-minted tokens on every expired request instead of
+  // once per schedule.
 
   const authState = jsonbRecord(row.authState);
   const alternative: CredentialAlternative = {

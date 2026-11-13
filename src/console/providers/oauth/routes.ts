@@ -2,11 +2,17 @@ import { providerAccounts, providerOauthStates } from "../../../persistence/sche
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { encryptCredential, hashSecret } from "../../../security/crypto";
 import type { CartethyiaDatabase } from "../../../persistence/db-handle";
-import type { OAuthExchangeResult, OAuthLoginClient } from "../../../providers/authentication/oauth-flow-store";
+import type {
+  OAuthDeviceStartResult,
+  OAuthExchangeResult,
+  OAuthLoginClient,
+} from "../../../providers/authentication/oauth-flow-store";
+import { oauthAccountIdentity } from "../../../providers/authentication/oauth-flow-store";
 import type { OAuthDevicePollResponse } from "../catalog/contracts";
 import { providerJwtVerification } from "../../../providers/provider-metadata";
 import type { ProviderRegistry } from "../../../providers/provider-registry";
 import { browserAuthorizeRedirectUri } from "../../../config/providers";
+import { resolveDeviceEgress, type DeviceEgressDeps } from "./device-egress";
 import { log } from "../../../observability/logger";
 import { GatewayError } from "../../../protocol/gateway-error";
 import { Elysia, t, type AnyElysia } from "elysia";
@@ -41,9 +47,51 @@ export function oauthIdentityFingerprint(input: {
   readonly label: string;
   readonly providerId: string;
 } & OAuthExchangeResult): string {
+  const identity = input.accountEmail?.trim() ?? input.accountName?.trim();
+  if (identity !== undefined && identity.length > 0) return hashSecret(identity);
   const label = input.label.trim();
-  const resolved = label.length > 0 && label.toLowerCase() !== input.providerId.trim().toLowerCase();
+  const resolved =
+    label.length > 0 &&
+    label.toLowerCase() !== input.providerId.trim().toLowerCase() &&
+    !isGeneratedOAuthLabel(label, input.providerId);
   return hashSecret(resolved ? label : input.refresh);
+}
+
+/** First unused `<providerId>-N` label for an OAuth account with no upstream identity. */
+export function nextGeneratedOAuthAccountLabel(
+  providerId: string,
+  existingLabels: readonly string[],
+): string {
+  const taken = new Set(existingLabels.map((label) => label.trim().toLowerCase()));
+  for (let n = 1; ; n += 1) {
+    const candidate = `${providerId}-${n}`;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
+}
+
+/** Generated labels are display-only and must never become re-login identity. */
+export function isGeneratedOAuthLabel(label: string, providerId: string): boolean {
+  const value = label.trim().toLowerCase();
+  const prefix = `${providerId.trim().toLowerCase()}-`;
+  return value === providerId.trim().toLowerCase() || (value.startsWith(prefix) && /^\d+$/.test(value.slice(prefix.length)));
+}
+
+/** Merges provider-reported identity with the operator label without inventing data. */
+function resolvedOAuthIdentity(
+  input: { readonly label: string } & OAuthExchangeResult,
+  providerId: string,
+): { readonly label: string; readonly accountEmail?: string; readonly accountName?: string } {
+  const tokenIdentity = oauthAccountIdentity(input);
+  const accountEmail = input.accountEmail?.trim() ?? tokenIdentity.accountEmail;
+  const accountName = input.accountName?.trim() ?? tokenIdentity.accountName;
+  const existing = input.label.trim();
+  const unresolved = existing.length === 0 || isGeneratedOAuthLabel(existing, providerId);
+  const label = unresolved ? (accountEmail ?? accountName ?? existing) : existing;
+  return {
+    label,
+    ...(accountEmail === undefined ? {} : { accountEmail }),
+    ...(accountName === undefined ? {} : { accountName }),
+  };
 }
 
 export class DrizzleOAuthAccountStore implements OAuthAccountStore {
@@ -54,7 +102,8 @@ export class DrizzleOAuthAccountStore implements OAuthAccountStore {
     providerId: string,
     input: { readonly label: string } & OAuthExchangeResult,
   ): Promise<PersistedOAuthAccount> {
-    const credentialFingerprint = oauthIdentityFingerprint({ ...input, providerId });
+    const identity = resolvedOAuthIdentity(input, providerId);
+    const credentialFingerprint = oauthIdentityFingerprint({ ...input, ...identity, providerId });
     const sameAccount = and(
       eq(providerAccounts.providerId, providerId),
       // The identity index coalesces a null tenant to a sentinel, so "same
@@ -68,6 +117,20 @@ export class DrizzleOAuthAccountStore implements OAuthAccountStore {
     const refreshCiphertext = encryptCredential(input.refresh);
     const clientSecretCiphertext =
       input.client_secret === undefined ? undefined : encryptCredential(input.client_secret);
+    const identityColumns = {
+      ...(input.auth_state === undefined && identity.accountName === undefined
+        ? {}
+        : {
+          authState: {
+            ...(input.auth_state ?? {}),
+            ...(identity.accountName === undefined ? {} : { accountName: identity.accountName }),
+          },
+        }),
+      ...(identity.accountEmail === undefined ? {} : { accountEmail: identity.accountEmail }),
+      ...(identity.accountEmail !== undefined || identity.accountName !== undefined
+        ? { identityCheckedAt: new Date() }
+        : {}),
+    };
     try {
       return await this.db.transaction(async (tx) => {
         const existing = await tx
@@ -76,6 +139,7 @@ export class DrizzleOAuthAccountStore implements OAuthAccountStore {
           .where(sameAccount)
           .limit(1);
         const existingId = existing[0]?.id;
+        const label = isGeneratedOAuthLabel(input.label, providerId) ? identity.label : input.label;
         if (existingId !== undefined) {
           // A re-login replaces the account it belongs to rather than adding a
           // second row: the same email is the same account, and the newer
@@ -90,7 +154,7 @@ export class DrizzleOAuthAccountStore implements OAuthAccountStore {
               // the learned label — but never over an operator's custom rename.
               // The CASE keeps the read and the write in one statement, so a
               // concurrent rename cannot lose to the login.
-              label: sql`CASE WHEN lower(trim(${providerAccounts.label})) = lower(trim(${providerAccounts.providerId})) THEN ${input.label} ELSE ${providerAccounts.label} END`,
+              label: sql`CASE WHEN lower(trim(${providerAccounts.label})) = lower(trim(${providerAccounts.providerId})) OR lower(trim(${providerAccounts.label})) = lower(trim(${label})) THEN ${label} ELSE ${providerAccounts.label} END`,
               credentialCiphertext,
               credentialKind: "oauth",
               status: "active",
@@ -106,7 +170,7 @@ export class DrizzleOAuthAccountStore implements OAuthAccountStore {
               staticToken: false,
               // Only what this login reported: a flow that learned no profile or
               // region leaves the stored configuration alone rather than blanking it.
-              ...(input.auth_state === undefined ? {} : { authState: input.auth_state }),
+              ...identityColumns,
             })
             .where(eq(providerAccounts.id, existingId));
           await tx
@@ -119,17 +183,34 @@ export class DrizzleOAuthAccountStore implements OAuthAccountStore {
             .where(eq(providerOauthStates.providerAccountId, existingId));
           return { accountId: existingId };
         }
+        const existingLabels = await tx
+          .select({ label: providerAccounts.label })
+          .from(providerAccounts)
+          .where(
+            and(
+              eq(providerAccounts.providerId, providerId),
+              tenantId === null
+                ? isNull(providerAccounts.tenantId)
+                : eq(providerAccounts.tenantId, tenantId),
+            ),
+          );
+        const generatedLabel = isGeneratedOAuthLabel(label, providerId)
+          ? nextGeneratedOAuthAccountLabel(
+              providerId,
+              existingLabels.map((row) => row.label).filter((value): value is string => typeof value === "string"),
+            )
+          : label;
         const rows = await tx
           .insert(providerAccounts)
           .values({
             providerId,
             tenantId,
-            label: input.label,
+            label: generatedLabel,
             credentialKind: "oauth",
             credentialCiphertext,
             credentialFingerprint,
             status: "active",
-            ...(input.auth_state === undefined ? {} : { authState: input.auth_state }),
+            ...identityColumns,
           })
           .returning({ id: providerAccounts.id });
         const row = rows[0];
@@ -194,6 +275,8 @@ export interface OAuthLoginConfig {
    * itself instead of waiting for the operator to paste the URL back.
    */
   readonly callbackListener: OAuthCallbackListener;
+  /** Resolves device-flow OAuth egress per the `device_flow_proxy` setting. */
+  readonly deviceEgress: DeviceEgressDeps;
 }
 
 async function requireClient(
@@ -290,7 +373,7 @@ export async function completeLogin(
       );
     }
     await config.accountStore.persistAccount(flow.tenantId, providerId, {
-      label: result.accountLabel ?? flow.accountLabel,
+      label: result.accountLabel ?? (flow.accountLabel.trim().toLowerCase() === providerId.trim().toLowerCase() ? "" : flow.accountLabel),
       ...result,
     });
     // The exchange succeeded and the account is persisted; now the flow is
@@ -442,7 +525,7 @@ function createOAuthLoginOperations(config: OAuthLoginConfig) {
             { providerId },
           );
         }
-        const state = generateOAuthState();
+        const state = client.generateState?.() ?? generateOAuthState();
         const { codeVerifier, codeChallenge } = generatePkcePair();
         /**
          * A client whose authorize URL depends on an upstream discovery runs it
@@ -547,12 +630,25 @@ function createOAuthLoginOperations(config: OAuthLoginConfig) {
             `Provider ${providerId} does not support device-code login`,
             { providerId },
           );
-        const started = await client.startDeviceAuth({
+        const egress = await resolveDeviceEgress(
+          config.deviceEgress,
           providerId,
-          tenantId: a.tenantId,
-          accountLabel,
-          ...(parameters === undefined ? {} : { parameters }),
-        });
+          a.tenantId,
+        );
+        let started: OAuthDeviceStartResult;
+        try {
+          started = await client.startDeviceAuth({
+            providerId,
+            tenantId: a.tenantId,
+            accountLabel,
+            fetchFn: egress.fetch,
+            ...(parameters === undefined ? {} : { parameters }),
+          });
+        } finally {
+          // The flow has been started; the pool slot is only needed for the
+          // start request. Polls re-resolve their own egress.
+          egress.release();
+        }
         const { providerState, ...publicStarted } = started;
         await config.oauthFlowStore.saveDevice(started.deviceAuthId, {
           providerId,
@@ -585,15 +681,22 @@ function createOAuthLoginOperations(config: OAuthLoginConfig) {
             409,
             "Provider does not support device-code login",
           );
+        const egress = await resolveDeviceEgress(
+          config.deviceEgress,
+          providerId,
+          a.tenantId,
+        );
         const polled = await client.pollDeviceAuth(deviceAuthId, {
           providerId,
           tenantId: a.tenantId,
           accountLabel: correlation.accountLabel,
+          fetchFn: egress.fetch,
           ...(correlation.providerState === undefined
             ? {}
             : { providerState: correlation.providerState }),
           ...(correlation.parameters === undefined ? {} : { parameters: correlation.parameters }),
         });
+        egress.release();
         if (polled.status === "pending")
           return {
             status: "pending",
@@ -634,7 +737,11 @@ function createOAuthLoginOperations(config: OAuthLoginConfig) {
           correlation.tenantId,
           providerId,
           {
-            label: polled.result.accountLabel ?? correlation.accountLabel,
+            label:
+              polled.result.accountLabel ??
+              (correlation.accountLabel.trim().toLowerCase() === providerId.trim().toLowerCase()
+                ? ""
+                : correlation.accountLabel),
             ...polled.result,
           },
         );
@@ -675,7 +782,7 @@ function createOAuthLoginOperations(config: OAuthLoginConfig) {
           );
         }
         const persisted = await config.accountStore.persistAccount(a.tenantId, providerId, {
-          label: result.accountLabel ?? accountLabel,
+          label: result.accountLabel ?? (accountLabel.trim().toLowerCase() === providerId.trim().toLowerCase() ? "" : accountLabel),
           ...result,
         });
         await config.snapshotInvalidator?.invalidate();
