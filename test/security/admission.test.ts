@@ -761,8 +761,13 @@ describe("admission lease TTLs", () => {
     // if the key TTL equalled the horizon, Redis would evict the hash exactly
     // when the sweeper wanted to read it and a crashed lease would strand its
     // concurrency slot. The sweep interval is 30s, so the grace must exceed it.
+    // The grace is one hour, not just above 30s: the sweeper only runs inside
+    // a live gateway, so the window must also cover OOM restart downtime
+    // (worst observed ~6 min). In Nov 2026 a 120s grace leaked ~373 tenant
+    // slots and pinned the tenant counter at its 400 cap; shrinking this
+    // reopens that storm.
     expect(LEASE_KEY_TTL_SECONDS).toBeGreaterThan(LEASE_REAP_HORIZON_SECONDS);
-    expect(LEASE_KEY_TTL_SECONDS - LEASE_REAP_HORIZON_SECONDS).toBeGreaterThan(30);
+    expect(LEASE_KEY_TTL_SECONDS - LEASE_REAP_HORIZON_SECONDS).toBeGreaterThanOrEqual(3600);
   });
 });
 
