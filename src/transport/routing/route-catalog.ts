@@ -421,27 +421,23 @@ type RouteCatalogSnapshotResult = Omit<RouteSnapshot, "revision" | "created_at">
 
 /** Repository abstracting database queries for the route catalog snapshot. */
 /**
- * Template-only catalog pruning.
+ * Global catalog (template-only pruning disabled).
  *
- * The route snapshot used to fan every persisted model out to every account
- * of its provider (~750k candidates on this deployment), and the snapshot is
+ * The route snapshot fans every persisted model out to every account of its
+ * provider (~750k candidates on this deployment), and the snapshot is
  * rebuilt wholesale whenever the account-health sweep recovers an account.
- * Each rebuild allocates the whole catalog again, and the runtime does not
- * return those pages to the OS, so resident memory climbs on every rebuild.
+ * Each rebuild allocates the whole catalog again, so resident memory and
+ * CPU spike on every rebuild.
  *
- * Only models reachable from a model template can be sold: a template entry
- * resolves through aliases and combos to concrete (provider, model) pairs,
- * and only those pairs — plus the bare models a template names directly —
- * need candidates. Everything else is dropped from the snapshot. CLI mapping
- * targets are seeds too: an operator-configured route must keep working.
- *
- * Two deliberate fail-opens keep this from ever emptying the catalog:
- * - no templates in scope: there is nothing to prune to, so the full
- *   catalog is kept (a fresh install with no templates still routes).
- * - an expansion that resolves to nothing: same, keep the full catalog.
- * A provider named by a qualified pair that kept zero rows keeps its first
- * model row, so the passthrough contract for qualified references (clone
- * the provider's first live candidate) keeps working.
+ * Template-only pruning used to keep only models reachable from a model
+ * template, but it also dropped every non-template model from routing
+ * (e.g. deepai/deepseek-v4.1-flash was unroutable despite an enabled
+ * catalog row and a live account). The heap-leak root cause turned out to
+ * be the Bun --cpu-prof flag, not catalog size, so the operator disabled
+ * the prune: the catalog is global again and every enabled model routes.
+ * `pruneCatalogModels` below is intentionally a pass-through; the
+ * template-reachability helpers are retained so the prune can be
+ * re-enabled by restoring the filter.
  */
 type TemplateReachableModels = {
   /** Exact `provider/model` pairs reachable from a template or CLI target. */
@@ -525,23 +521,12 @@ function pruneCatalogModels(
   rows: readonly MergedModelRow[],
   reachable: TemplateReachableModels,
 ): MergedModelRow[] {
-  if (reachable.qualified.size === 0 && reachable.bare.size === 0) return [...rows];
-  const kept = rows.filter(
-    (row) =>
-      reachable.qualified.has(`${row.providerId}/${row.modelId}`) ||
-      reachable.bare.has(row.modelId),
-  );
-  const keptProviders = new Set(kept.map((row) => row.providerId));
-  const anchors: MergedModelRow[] = [];
-  for (const provider of reachable.providers) {
-    if (keptProviders.has(provider)) continue;
-    const first = rows.find((row) => row.providerId === provider);
-    if (first) {
-      anchors.push(first);
-      keptProviders.add(provider);
-    }
-  }
-  return [...kept, ...anchors];
+  // Global catalog: no pruning. The template-reachability set is computed
+  // by the caller but intentionally unused here (see the comment above
+  // TemplateReachableModels). Restore the filter below to re-enable
+  // template-only pruning.
+  void reachable;
+  return [...rows];
 }
 
 class RouteCatalogRepository {
@@ -576,11 +561,10 @@ class RouteCatalogRepository {
           .from(consoleSettings),
       ]);
     const mergedModelRows = mergeModelCatalog(modelRows);
-    // Template-only catalog pruning: keep candidates only for models
-    // reachable from a model template (or an enabled CLI mapping target).
-    // The in-scope predicate matches the rest of this builder: a
-    // per-tenant build prunes to that tenant's templates, aliases and
-    // combos; the global build prunes to their union.
+    // Global catalog: every model row is kept (template-only pruning is
+    // disabled in pruneCatalogModels, operator decision 2026-11-13). The
+    // template/alias/combo seeds below still feed the reachability
+    // computation, which the pass-through prune currently ignores.
     const inScope = (rowTenantId: string | null | undefined): boolean =>
       tenantId === undefined || rowTenantId === tenantId;
     const enabledMappingBuckets = new Set<string>();

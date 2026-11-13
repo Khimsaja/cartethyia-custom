@@ -1,13 +1,16 @@
 /**
- * Template-only catalog pruning (`model_templates`).
+ * Global route catalog (template-only pruning disabled).
  *
- * The snapshot keeps candidates only for models reachable from a model
- * template — a template entry resolves through aliases and combos to
- * concrete (provider, model) pairs — plus the bare models a template names
- * directly. Everything else is dropped from the snapshot, so a rebuild
- * allocates far fewer candidates. A provider named by a qualified pair that
- * kept zero rows keeps its first model row (passthrough anchor). With no
- * templates in scope the full catalog is kept (fail open).
+ * The snapshot keeps candidates for every enabled model row, regardless of
+ * whether a model template names it. Template-only pruning used to drop
+ * non-template models from the snapshot, which made them unroutable even
+ * with an enabled catalog row and a live account (e.g.
+ * deepai/deepseek-v4.1-flash). The heap-leak root cause was the Bun
+ * --cpu-prof flag, not catalog size, so the operator disabled the prune
+ * (2026-11-13): the catalog is global again.
+ *
+ * These tests pin that behavior: templates, aliases and combos no longer
+ * restrict which models get candidates.
  */
 import { describe, expect, test } from "bun:test";
 import type { CartethyiaDatabase } from "../../src/persistence/db-handle";
@@ -124,8 +127,8 @@ function candidatePairs(snap: { candidates: readonly { provider_id: string; mode
   return snap.candidates.map((c) => `${c.provider_id}/${c.model_id}`).sort();
 }
 
-describe("route-catalog template-only prune", () => {
-  test("keeps only template-reachable models (combo members + direct refs)", async () => {
+describe("route-catalog global catalog (template prune disabled)", () => {
+  test("keeps every model even when templates name a subset", async () => {
     const build = createDatabaseSnapshotBuilder(
       fakeDb(
         baseRows({
@@ -145,10 +148,10 @@ describe("route-catalog template-only prune", () => {
       ),
     );
     const snap = await build();
-    expect(candidatePairs(snap)).toEqual(["p1/m-a", "p1/m-b", "p2/m-c"]);
+    expect(candidatePairs(snap)).toEqual(["p1/m-a", "p1/m-b", "p1/m-junk", "p2/m-c", "p2/m-junk"]);
   });
 
-  test("alias chains resolve to the target", async () => {
+  test("alias chains do not restrict the catalog", async () => {
     const build = createDatabaseSnapshotBuilder(
       fakeDb(
         baseRows({
@@ -162,10 +165,10 @@ describe("route-catalog template-only prune", () => {
       ),
     );
     const snap = await build();
-    expect(candidatePairs(snap)).toEqual(["p1/m-a"]);
+    expect(candidatePairs(snap)).toEqual(["p1/m-a", "p1/m-junk"]);
   });
 
-  test("bare template model keeps every provider's row", async () => {
+  test("bare template model does not restrict other models", async () => {
     const build = createDatabaseSnapshotBuilder(
       fakeDb(
         baseRows({
@@ -175,10 +178,10 @@ describe("route-catalog template-only prune", () => {
       ),
     );
     const snap = await build();
-    expect(candidatePairs(snap)).toEqual(["p1/shared", "p2/shared"]);
+    expect(candidatePairs(snap)).toEqual(["p1/other", "p1/shared", "p2/shared"]);
   });
 
-  test("qualified pair with no catalog row keeps a passthrough anchor", async () => {
+  test("qualified pair with no catalog row keeps every row", async () => {
     const build = createDatabaseSnapshotBuilder(
       fakeDb(
         baseRows({
@@ -188,12 +191,10 @@ describe("route-catalog template-only prune", () => {
       ),
     );
     const snap = await build();
-    // trae/kimi-k2.5 has no row, so the qualified reference routes by
-    // cloning the provider's first live candidate: the anchor row.
-    expect(candidatePairs(snap)).toEqual(["trae/other"]);
+    expect(candidatePairs(snap)).toEqual(["trae/other", "trae/unused"]);
   });
 
-  test("no templates keeps the full catalog (fail open)", async () => {
+  test("no templates keeps the full catalog", async () => {
     const build = createDatabaseSnapshotBuilder(
       fakeDb(
         baseRows({
