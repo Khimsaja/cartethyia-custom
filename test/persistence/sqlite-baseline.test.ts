@@ -105,10 +105,12 @@ test("each backend has matching baseline and incremental migrations", () => {
     // its 0043/0044/0045 are byte-identical to the renamed local files, so
     // the merge kept the local names (rename detection) and no duplicate
     // no-op migration re-entered the tree.
+    // Upstream 2.8.1 adds 0047_add_provider_device_flow_proxy.sql.
     "0043_add_auth_escalation_counters.sql",
     "0044_add_provider_custom_user_agent.sql",
     "0046_add_accounts_quota_plan_fetched_at.sql",
     "0046_add_models_warning_metadata.sql",
+    "0047_add_provider_device_flow_proxy.sql",
     "0047_migrate_workbuddy_to_codebuddy.sql",
   ];
   expect(postgres).toEqual(expected);
