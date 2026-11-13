@@ -17,7 +17,7 @@
  *   latency arrays are never returned to JavaScript;
  * - `isGatewayError()` semantics live in one shared SQL predicate.
  */
-import { and, desc, eq, gte, inArray, isNotNull, or, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, ne, or, sql, type SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import type { CartethyiaDatabase } from "../persistence/db-handle";
 import { apiKeys, telemetryEvents, telemetryUsageTotals } from "../persistence/schema";
@@ -599,6 +599,129 @@ export async function chartTelemetry(
     outputTokens: numeric(row.outputTokens),
     cachedInputTokens: numeric(row.cachedInputTokens),
   }));
+}
+
+/** One model's aggregate for the public network stats feed. */
+export interface PublicModelAggregate {
+  readonly model: string;
+  readonly hits: number;
+  readonly ok: number;
+  readonly tokens: number;
+}
+
+/** Per-model health over the last hour for the public status page. */
+export interface PublicModelHealthAggregate {
+  readonly model: string;
+  readonly hits: number;
+  readonly ok: number;
+}
+
+/** The public network stats aggregate: totals, top models, 1h model health. */
+export interface PublicNetworkStatsAggregate {
+  readonly requests: number;
+  readonly ok: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly topModels: readonly PublicModelAggregate[];
+  readonly modelHealth1h: readonly PublicModelHealthAggregate[];
+}
+
+/**
+ * Public network stats aggregate (buyer-facing /api/stats/public feed).
+ *
+ * Three SQL aggregates, all in the database: 24h totals, top-10 models by
+ * hits, and per-model health over the last hour for the buyer-template
+ * allowlist. 429 rate-limit rejections and 499 client aborts are excluded
+ * everywhere — both are buyer-side, not gateway or upstream failures — and
+ * rows with a NULL http_status are kept (they predate the column). No rows
+ * are materialized in JavaScript; only totals and groups come back.
+ */
+export async function publicNetworkStats(
+  db: CartethyiaDatabase,
+  tenantId: string,
+  since24h: Date,
+  since1h: Date,
+  allowlist: readonly string[],
+): Promise<PublicNetworkStatsAggregate> {
+  // 429s are client-side throttling and 499s are client aborts: neither is
+  // a gateway or upstream failure. NULL http_status predates the column and
+  // counts like any other non-429/499 row.
+  const notClientError = and(
+    or(ne(telemetryEvents.httpStatus, 429), isNull(telemetryEvents.httpStatus)),
+    or(ne(telemetryEvents.httpStatus, 499), isNull(telemetryEvents.httpStatus)),
+  );
+  const completed = eq(telemetryEvents.status, "completed");
+  const base24h = and(
+    eq(telemetryEvents.tenantId, tenantId),
+    gte(telemetryEvents.createdAt, since24h),
+    notClientError,
+  );
+  const okCount = sql<number>`sum(case when ${completed} then 1 else 0 end)`;
+
+  const [totals] = await db
+    .select({
+      requests: sql<number>`count(*)`,
+      ok: okCount,
+      inputTokens: sql<number>`coalesce(sum(${telemetryEvents.inputTokens}), 0)`,
+      outputTokens: sql<number>`coalesce(sum(${telemetryEvents.outputTokens}), 0)`,
+    })
+    .from(telemetryEvents)
+    .where(base24h);
+
+  // Null/empty requested_model groups as "unknown", matching the old JSONL
+  // reader's mapping.
+  const modelKey = sql<string>`coalesce(nullif(${telemetryEvents.requestedModel}, ''), 'unknown')`;
+  const topRows = await db
+    .select({
+      model: modelKey,
+      hits: sql<number>`count(*)`,
+      ok: okCount,
+      tokens: sql<number>`coalesce(sum(coalesce(${telemetryEvents.inputTokens}, 0) + coalesce(${telemetryEvents.outputTokens}, 0)), 0)`,
+    })
+    .from(telemetryEvents)
+    .where(base24h)
+    .groupBy(modelKey)
+    .orderBy(desc(sql`count(*)`))
+    .limit(10);
+
+  const healthRows =
+    allowlist.length === 0
+      ? []
+      : await db
+          .select({
+            model: telemetryEvents.requestedModel,
+            hits: sql<number>`count(*)`,
+            ok: okCount,
+          })
+          .from(telemetryEvents)
+          .where(
+            and(
+              eq(telemetryEvents.tenantId, tenantId),
+              gte(telemetryEvents.createdAt, since1h),
+              notClientError,
+              inArray(telemetryEvents.requestedModel, [...allowlist]),
+            ),
+          )
+          .groupBy(telemetryEvents.requestedModel)
+          .orderBy(desc(sql`count(*)`));
+
+  return {
+    requests: numeric(totals?.requests ?? 0),
+    ok: numeric(totals?.ok ?? 0),
+    inputTokens: numeric(totals?.inputTokens ?? 0),
+    outputTokens: numeric(totals?.outputTokens ?? 0),
+    topModels: topRows.map((row) => ({
+      model: row.model,
+      hits: numeric(row.hits),
+      ok: numeric(row.ok),
+      tokens: numeric(row.tokens),
+    })),
+    modelHealth1h: healthRows.map((row) => ({
+      model: row.model ?? "unknown",
+      hits: numeric(row.hits),
+      ok: numeric(row.ok),
+    })),
+  };
 }
 
 /** One day × model usage cell for a single provider — the Activity Matrix feed. */

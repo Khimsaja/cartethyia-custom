@@ -5,6 +5,7 @@ import type { ScheduledTaskRegistry } from "../workers/scheduler";
 import { createStaticHandler } from "../console/dashboard-assets";
 import { createShareRouter } from "../console/share/share-router";
 import { createShareStatsPort } from "../console/share/share-stats";
+import { getPublicNetworkStats } from "../console/public-network-stats";
 import { DrizzleShareLinkStore } from "../persistence/stores/share-store";
 import { chatAdapter } from "../transport/surface/chat/adapter";
 import { responsesAdapter } from "../transport/surface/responses/adapter";
@@ -448,6 +449,26 @@ export function createGatewayApp(deps: GatewayAppDeps) {
         (await deps.snapshotService.getSnapshot())?.invokeDisabledTenants?.has(tenantId),
     });
     transportPipeline.mountRoot(app);
+
+    // Buyer-facing network stats: aggregate-only, cached 30s in-process,
+    // no auth. Never add per-key / per-IP / cost fields here.
+    app.get("/api/stats/public", async () => {
+      const [tenant] = await deps.db.select({ id: tenants.id }).from(tenants).limit(1);
+      if (!tenant) {
+        return new Response(JSON.stringify({ error: "stats unavailable" }), {
+          status: 503,
+          headers: { "content-type": "application/json; charset=utf-8" },
+        });
+      }
+      const stats = await getPublicNetworkStats(deps.db, tenant.id);
+      return new Response(JSON.stringify(stats), {
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "cache-control": "public, max-age=30",
+        },
+      });
+    });
+
     // One dependency bundle for every gateway handler. Proxy, generation,
     // responses-compact, system one, web search, and token count all receive
     // the same wiring — a handler dep is added once, here, not in five
