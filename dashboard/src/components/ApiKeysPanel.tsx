@@ -7,11 +7,12 @@ import {
   Share2,
   Trash2,
 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Card, CardBody, CardHeader } from "./ui/card";
 import { Dialog } from "./ui/dialog";
+import { Input } from "./ui/input";
 import { EmptyState, ErrorState, LoadingState } from "./ui/state";
 import { Switch } from "./ui/switch";
 import { ApiKeyForm, oneTimeSecretForMode, type KeyFormInput } from "./ApiKeyForm";
@@ -60,7 +61,8 @@ const EXPIRY_TONE_CLASS: Record<"err" | "warn" | "default", string> = {
  * API-key management panel: access, budgets, usage, and share links.
  *
  * Secrets are never returned by the list endpoint, so the panel shows only the
- * public prefix; a newly created key's secret is revealed exactly once.
+ * public prefix; a personal key's stored secret can be revealed on demand,
+ * and a newly created key's secret is revealed exactly once.
  */
 export function ApiKeysPanel(): ReactNode {
   const keysQuery = useApiKeys();
@@ -83,6 +85,7 @@ export function ApiKeysPanel(): ReactNode {
   const [seeReasonTarget, setSeeReasonTarget] = useState<ApiKeyResponse | null>(null);
   const [rotateTarget, setRotateTarget] = useState<ApiKeyResponse | null>(null);
   const [revealedSecret, setRevealedSecret] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
   const [shareTarget, setShareTarget] = useState<ApiKeyResponse | null>(null);
   const [createActions, setCreateActions] = useState<ReactNode>(null);
   const [editActions, setEditActions] = useState<ReactNode>(null);
@@ -92,6 +95,41 @@ export function ApiKeysPanel(): ReactNode {
   const templateNames = new Map(
     (templatesQuery.data ?? []).map((template) => [template.id, template.name] as const),
   );
+  // Client-side search over the loaded list (same label/prefix/id matching as
+  // the Banned Users dialog, plus template name and status). The list endpoint
+  // already returns every key, so no backend change is needed — and reordering
+  // stays disabled while a search is active, because the backend requires the
+  // full key order, not a filtered subset.
+  const normalizedSearch = search.trim().toLowerCase();
+  const filteredKeys = useMemo(() => {
+    if (normalizedSearch === "") return keys;
+    return keys.filter((key) => {
+      const label = (key.label ?? "").toLowerCase();
+      const id = key.id.toLowerCase();
+      const prefix = (key.keyPrefix ?? "").toLowerCase();
+      const template = (
+        key.modelTemplateId
+          ? (templateNames.get(key.modelTemplateId) ?? key.modelTemplateId)
+          : "Custom"
+      ).toLowerCase();
+      const status = key.revokedAt
+        ? "revoked"
+        : key.bannedAt
+          ? "banned"
+          : key.expiresAt !== undefined && new Date(key.expiresAt).getTime() <= Date.now()
+            ? "expired"
+            : key.enabled
+              ? "enabled"
+              : "disabled";
+      return (
+        label.includes(normalizedSearch) ||
+        id.startsWith(normalizedSearch) ||
+        prefix.startsWith(normalizedSearch) ||
+        template.includes(normalizedSearch) ||
+        status.includes(normalizedSearch)
+      );
+    });
+  }, [keys, normalizedSearch, templateNames]);
   // Bans are keyed on the client address, so they are cross-tenant: only a
   // platform admin may see or lift one, and the entry point is hidden for
   // everyone else. The endpoint enforces this too — the gate here is UX.
@@ -109,6 +147,17 @@ export function ApiKeysPanel(): ReactNode {
       } else {
         toast.error("Clipboard unavailable on this origin");
       }
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Could not reveal API key."));
+    }
+  };
+
+  // Shows the stored secret on screen (personal keys only — a share template
+  // keeps no recoverable secret). The reveal is audit-logged server-side.
+  const revealApiKey = async (key: ApiKeyResponse) => {
+    try {
+      const { secret } = await revealKey.mutateAsync({ keyId: key.id });
+      setRevealedSecret(secret);
     } catch (error) {
       toast.error(getErrorMessage(error, "Could not reveal API key."));
     }
@@ -188,13 +237,35 @@ export function ApiKeysPanel(): ReactNode {
             icon={<KeyRound size={20} />}
           />
         ) : (
-          // The key list is the tallest thing on the page; bounding it keeps the
-          // page chrome in place and scrolls only the rows, like the sidebar.
-          <div className="scroll-region max-h-280 pr-1">
-          <SortableList
-            items={keys}
-            label="API credentials"
-            disabled={reorderKeys.isPending}
+          <div className="flex flex-col gap-4 min-w-0">
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search by label, prefix, template, or status…"
+              aria-label="Search API keys"
+            />
+            {search.trim() !== "" && filteredKeys.length > 0 ? (
+              <p className="text-badge text-text-secondary">
+                Showing {filteredKeys.length} of {keys.length} keys.
+              </p>
+            ) : null}
+            {filteredKeys.length === 0 ? (
+              <div className="rounded-inset border border-inner-border p-4 flex items-center justify-between gap-4 flex-wrap">
+                <p className="text-badge text-text-secondary">
+                  No keys match &ldquo;{search.trim()}&rdquo;.
+                </p>
+                <Button variant="secondary" size="sm" onClick={() => setSearch("")}>
+                  Clear search
+                </Button>
+              </div>
+            ) : (
+              // The key list is the tallest thing on the page; bounding it keeps the
+              // page chrome in place and scrolls only the rows, like the sidebar.
+              <div className="scroll-region max-h-280 pr-1">
+              <SortableList
+                items={filteredKeys}
+                label="API credentials"
+                disabled={reorderKeys.isPending || search.trim() !== ""}
             onReorder={(ids) =>
               reorderKeys.mutate(ids, {
                 onError: (error) =>
@@ -334,6 +405,17 @@ export function ApiKeysPanel(): ReactNode {
                       Copy
                     </Button>
                   ) : null}
+                  {!key.revokedAt && key.keyMode !== "share" ? (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      icon={<Eye size={13} />}
+                      onClick={() => void revealApiKey(key)}
+                      disabled={revealKey.isPending}
+                    >
+                      Reveal
+                    </Button>
+                  ) : null}
                   {!key.revokedAt && <Button
                     variant="secondary"
                     size="sm"
@@ -387,6 +469,8 @@ export function ApiKeysPanel(): ReactNode {
               </div>
             )}
           />
+          </div>
+            )}
           </div>
         )}
       </CardBody>
