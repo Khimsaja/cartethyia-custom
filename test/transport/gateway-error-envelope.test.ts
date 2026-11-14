@@ -9,8 +9,10 @@
  * 1. **Nothing outside the allowlist escapes.** `details` is populated by
  *    internal code with whatever it finds useful, including upstream response
  *    bodies. The allowlist is the boundary between "useful to a client" and
- *    "an internal map of the deployment" — provider ids, pool ids, account
- *    scope, and routing reasons are all on it deliberately, and everything else
+ *    "an internal map of the deployment" — pool ids, account scope, and
+ *    routing reasons are on it deliberately. Provider identity is NOT:
+ *    provider ids, provider codes, and upstream statuses stay inside, so the
+ *    buyer reads TipRouter's terms, never the supplier's. Everything else
  *    (including a future field nobody re-checked) must be dropped.
  * 2. **No upstream body reaches the client.** `details.raw` carries the
  *    provider's raw error body — supplier prose, supplier codes, and
@@ -32,6 +34,8 @@ import {
   explainGatewayError,
   formatPublicErrorMessage,
   GatewayError,
+  publicErrorOrigin,
+  publicGatewayErrorBody,
   publicGatewayErrorDetails,
   type GatewayErrorCode,
 } from "../../src/protocol/gateway-error";
@@ -312,19 +316,17 @@ describe("explainGatewayError", () => {
 
 describe("publicGatewayErrorDetails — the allowlist", () => {
   test("keeps every allowlisted key it is given", () => {
-    // The allowlist is deliberate: provider, pool, account scope, and routing
-    // reasons are what a client needs to act on a rejection. `maxInflight` and
+    // The allowlist is deliberate: pool, account scope, and routing reasons
+    // are what a client needs to act on a rejection. `maxInflight` and
     // `weight` are the pool-capacity pair `leases.ts` publishes with
     // `proxy_pool_capacity_exceeded` — the retired per-account column was
     // `provider_accounts.max_inflight`, but this key comes from the pool limit,
     // not from that column, and must not be pruned as dead with it.
     const details = {
-      providerId: "anthropic",
       poolId: "pool-1",
       model: "claude-sonnet-4-6",
       reason: "rpm-exhausted",
       retryAfterMs: 1_500,
-      upstreamStatus: 429,
       requestId: "req-1",
       maxInflight: 10,
       weight: 100,
@@ -337,8 +339,14 @@ describe("publicGatewayErrorDetails — the allowlist", () => {
   test("drops every key that is not on the allowlist", () => {
     // This is the boundary. An internal field that reaches a client is an
     // information leak, and the failure mode is silent — nothing else breaks.
+    // Provider identity is on the dropped side now: the buyer reads
+    // TipRouter's terms, never the supplier's.
     const details = {
+      model: "claude-sonnet-4-6",
       providerId: "anthropic",
+      providerCode: "overloaded_error",
+      upstreamStatus: 529,
+      upstreamRequestId: "req-upstream-1",
       owners: ["tenant-secret"],
       tenantId: "tenant-secret",
       internalNote: "upstream said the key sk-live-EXAMPLE is revoked",
@@ -349,7 +357,7 @@ describe("publicGatewayErrorDetails — the allowlist", () => {
     const public_ = publicGatewayErrorDetails(
       new GatewayError("accounts_unavailable", 503, "x", details),
     );
-    expect(public_).toEqual({ providerId: "anthropic" });
+    expect(public_).toEqual({ model: "claude-sonnet-4-6" });
     // Sweep the serialized envelope, so a key added later is caught by this
     // test rather than by an incident.
     const serialized = JSON.stringify(public_);
@@ -359,6 +367,9 @@ describe("publicGatewayErrorDetails — the allowlist", () => {
       "someInternalFunction",
       "/srv/app",
       "postgres://",
+      "anthropic",
+      "overloaded_error",
+      "req-upstream-1",
     ]) {
       expect(serialized).not.toContain(secret);
     }
@@ -369,25 +380,25 @@ describe("publicGatewayErrorDetails — the allowlist", () => {
   });
 
   test("a key that merely resembles an allowlisted one is dropped", () => {
-    // Exact membership, not a prefix or case-insensitive match: `ProviderId`
-    // and `provider_id` are different keys, and only the listed spelling is
+    // Exact membership, not a prefix or case-insensitive match: `Model`
+    // and `model_id` are different keys, and only the listed spelling is
     // published.
-    const details = { ProviderId: "anthropic", provider_id: "anthropic", providerId: "anthropic" };
+    const details = { Model: "claude-sonnet-4-6", model_id: "claude-sonnet-4-6", model: "claude-sonnet-4-6" };
     expect(
       publicGatewayErrorDetails(new GatewayError("accounts_unavailable", 503, "x", details)),
-    ).toEqual({ providerId: "anthropic" });
+    ).toEqual({ model: "claude-sonnet-4-6" });
   });
 
   test("a value of undefined is published as undefined, not dropped", () => {
     // MEASURED: the filter is on the key alone. The envelope then serializes
     // the key away in JSON, so this is observable only on the object. Pinned
     // because a change to `Object.entries` handling would alter the shape.
-    const details = { providerId: undefined, reason: "x" };
+    const details = { model: undefined, reason: "x" };
     const public_ = publicGatewayErrorDetails(
       new GatewayError("accounts_unavailable", 503, "x", details),
     );
-    expect("providerId" in public_).toBe(true);
-    expect(public_.providerId).toBeUndefined();
+    expect("model" in public_).toBe(true);
+    expect(public_.model).toBeUndefined();
   });
 });
 
@@ -453,8 +464,8 @@ describe("publicGatewayErrorDetails — bounds", () => {
 
   test("non-string scalars pass through untouched", () => {
     // Numbers and booleans are the useful part of a rejection: a client retries
-    // on `retryAfterMs` and branches on `upstreamStatus`.
-    const details = { retryAfterMs: 1_500, upstreamStatus: 429, available: true, capacity: 0 };
+    // on `retryAfterMs` and branches on `capacity`.
+    const details = { retryAfterMs: 1_500, available: true, capacity: 0 };
     expect(
       publicGatewayErrorDetails(new GatewayError("capacity_exhausted", 429, "x", details)),
     ).toEqual(details);
@@ -499,17 +510,17 @@ describe("publicGatewayErrorDetails — raw upstream bodies never reach the clie
   });
 
   test("dropping raw does not drop the allowlisted fields around it", () => {
-    // The cut is surgical: provider/status/retry metadata the client needs
-    // to act on the rejection still passes through.
+    // The cut is surgical: the TipRouter-safe fields the client needs to act
+    // on the rejection still pass through.
     const public_ = publicGatewayErrorDetails(
       new GatewayError("platform_unavailable", 502, "x", {
         raw: { error: { type: "authentication_error", message: "bad key" } },
-        providerId: "qoder",
-        providerStatus: 400,
+        model: "qwen3.8-flash",
+        reason: "upstream-failed",
         retryAfterMs: 1_500,
       }),
     );
-    expect(public_).toEqual({ providerId: "qoder", providerStatus: 400, retryAfterMs: 1_500 });
+    expect(public_).toEqual({ model: "qwen3.8-flash", reason: "upstream-failed", retryAfterMs: 1_500 });
     expect(JSON.stringify(public_)).not.toContain("bad key");
   });
 
@@ -612,12 +623,62 @@ describe("explainGatewayError — upstream failures speak TipRouter", () => {
   });
 });
 
+describe("publicGatewayErrorBody — the envelope says TipRouter", () => {
+  test("a gateway-origin error is branded tiprouter, not cartethyia", () => {
+    // The internal origin names the upstream product; the buyer-facing
+    // envelope carries our name instead.
+    const body = publicGatewayErrorBody(
+      new GatewayError("internal_error", 500, "boom"),
+    );
+    expect(body.error.origin).toBe("tiprouter");
+    expect(JSON.stringify(body)).not.toContain("cartethyia");
+  });
+
+  test("an upstream-origin error keeps its layer word", () => {
+    // `upstream` / `network` name where the failure happened, not who
+    // supplied it — a client triaging a failure still needs that distinction.
+    const body = publicGatewayErrorBody(
+      new GatewayError("invalid_request", 400, "Qoder says: no", {}, "upstream"),
+    );
+    expect(body.error.origin).toBe("upstream");
+    expect(body.error.message).toBe(
+      "TipRouter: the request was rejected as invalid. Check the request format and try again.",
+    );
+  });
+
+  test("publicErrorOrigin maps only the product name", () => {
+    expect(publicErrorOrigin("cartethyia")).toBe("tiprouter");
+    expect(publicErrorOrigin("upstream")).toBe("upstream");
+    expect(publicErrorOrigin("network")).toBe("network");
+  });
+
+  test("no provider term survives anywhere in the serialized envelope", () => {
+    // Message, code, origin, details: sweep the whole body a buyer receives.
+    const body = publicGatewayErrorBody(
+      new GatewayError("invalid_request", 400, "request was rejected as invalid", {
+        providerId: "qoder",
+        providerCode: "invalid_request",
+        providerStatus: 406,
+        upstreamStatus: 406,
+        upstreamRequestId: "req-abc",
+        raw: { error: "request was rejected as invalid" },
+        upstreamMessageAsIs: true,
+      }, "upstream"),
+    );
+    const serialized = JSON.stringify(body);
+    for (const term of ["qoder", "406", "req-abc"]) {
+      expect(serialized).not.toContain(term);
+    }
+    expect(body.error.message.startsWith("TipRouter:")).toBe(true);
+  });
+});
+
 describe("publicGatewayErrorDetails — a hostile details object", () => {
   test("a circular details object does not throw", () => {
     // `details` is built by internal code, but a value passed through from an
     // upstream JSON body could in principle be cyclic after a transform. An
     // error path that throws replaces a useful rejection with a 500.
-    const circular: Record<string, unknown> = { providerId: "anthropic" };
+    const circular: Record<string, unknown> = { model: "claude-sonnet-4-6" };
     circular.reason = circular;
     let failure: unknown = null;
     let result: Readonly<Record<string, unknown>> | undefined;
@@ -630,7 +691,7 @@ describe("publicGatewayErrorDetails — a hostile details object", () => {
     }
     // The depth bound stops the recursion, so this resolves rather than throws.
     expect(failure).toBeNull();
-    expect(result?.providerId).toBe("anthropic");
+    expect(result?.model).toBe("claude-sonnet-4-6");
   });
 
   test("a details object with a getter that throws does not escape", () => {

@@ -1,6 +1,6 @@
 // Error normalization + telemetry/cleanup lifecycle for the transport pipeline.
 import { Elysia } from "elysia";
-import { GatewayError, explainGatewayError, formatPublicErrorMessage, publicGatewayErrorDetails } from "../../protocol/gateway-error";
+import { GatewayError, explainGatewayError, formatPublicErrorMessage, publicErrorOrigin, publicGatewayErrorDetails } from "../../protocol/gateway-error";
 import type { ProxyRequestState, ProxyRequestStateStore } from "../request/state";
 import { GATEWAY_SECURITY_HEADERS } from "../../security/outbound-headers";
 import type { TelemetryBatchBuffer, TelemetryEventInput } from "../../observability/telemetry-buffer";
@@ -152,7 +152,9 @@ export function createErrorNormalizationMiddleware(deps: {
       }
       const envelope = {
         error: {
-          origin,
+          // Telemetry above keeps the internal origin; the envelope says
+          // `tiprouter` — the client reads our brand, not the product name.
+          origin: publicErrorOrigin(origin),
           code,
           requestId,
           message,

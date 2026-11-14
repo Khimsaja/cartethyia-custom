@@ -11,7 +11,7 @@
  *
  * `test/gateway/streaming-contract.test.ts` pins the observable contract.
  */
-import { GatewayError, explainGatewayError, formatPublicErrorMessage, publicGatewayErrorDetails } from "../../../protocol/gateway-error";
+import { GatewayError, explainGatewayError, formatPublicErrorMessage, publicErrorOrigin, publicGatewayErrorDetails } from "../../../protocol/gateway-error";
 import { classifyTerminalOutcome } from "../../failure-policy";
 import type { CanonicalEvent } from "../../../protocol/canonical-model";
 import type { CartethyiaDatabase } from "../../../persistence/db-handle";
@@ -605,10 +605,12 @@ export class StreamFinalizer {
             code,
             "The upstream closed the stream before it finished. Retry; if it keeps happening, the account or pool is unstable.",
           );
-      // Merge upstream details when available so a provider-reported error keeps its requestId/code.
+      // Details are already public-safe (TipRouter sentence + allowlisted
+      // fields); the frame carries the requestId/code the client retries on,
+      // never a provider body.
       const details = gatewayError ? publicGatewayErrorDetails(gatewayError) : {};
       // For cb gpt-6.1-sol style invoke errors, upstream extError is already in gatewayError details via provider pipeline.
-      pipeline.emitErrorFrame({ origin, code, message, details }, controller);
+      pipeline.emitErrorFrame({ origin: publicErrorOrigin(origin), code, message, details }, controller);
     }
     controller.close();
     void this.releaseStreamResources();

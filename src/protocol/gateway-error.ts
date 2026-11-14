@@ -284,10 +284,6 @@ const PUBLIC_ERROR_DETAIL_KEYS = new Set([
   "model",
   "poolId",
   "pools",
-  "providerCode",
-  "providerId",
-  "providerStatus",
-  "providerScope",
   "rateLimitScope",
   "reason",
   "reasons",
@@ -298,8 +294,6 @@ const PUBLIC_ERROR_DETAIL_KEYS = new Set([
   "safeMessage",
   "scope",
   "status",
-  "upstreamRequestId",
-  "upstreamStatus",
   "maxInflight",
   "weight",
 ]);
@@ -328,10 +322,23 @@ export function publicGatewayErrorDetails(
   );
 }
 
+/**
+ * The origin as a client sees it. The internal origin names the upstream
+ * product (`cartethyia`); the buyer-facing envelope says `tiprouter` instead.
+ * The layer words pass through unchanged: `upstream` / `network` name where
+ * the failure happened, not who supplied it, and a client triaging a failure
+ * still needs that distinction.
+ */
+export type PublicGatewayErrorOrigin = "tiprouter" | "upstream" | "network";
+
+export function publicErrorOrigin(origin: GatewayErrorOrigin): PublicGatewayErrorOrigin {
+  return origin === "cartethyia" ? "tiprouter" : origin;
+}
+
 /** Serializes a GatewayError with the same public shape as transport errors. */
 export function publicGatewayErrorBody(error: GatewayError): {
   readonly error: {
-    readonly origin: GatewayErrorOrigin;
+    readonly origin: PublicGatewayErrorOrigin;
     readonly code: GatewayErrorCode;
     readonly message: string;
     readonly details: Readonly<Record<string, unknown>>;
@@ -339,7 +346,7 @@ export function publicGatewayErrorBody(error: GatewayError): {
 } {
   return {
     error: {
-      origin: error.origin,
+      origin: publicErrorOrigin(error.origin),
       code: error.code,
       message: explainGatewayError(error),
       details: publicGatewayErrorDetails(error),
