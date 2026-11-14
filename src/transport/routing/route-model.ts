@@ -612,27 +612,6 @@ function deepFreeze<T>(obj: T): T {
   return obj;
 }
 
-/**
- * Candidates frozen per `build()` slice. Freezing the whole snapshot in one
- * synchronous pass blocks the event loop for ~2s at this deployment's catalog
- * size (~750k candidates, measured), and while it is blocked inbound requests
- * queue up, pool checkout timers expire, and the queued requests then flood
- * the pool at once — the connect timeouts behind the `/v1/models` 503 bursts
- * of 2026-11-14. Freezing in slices with a macrotask yield between them
- * keeps the loop breathing; the snapshot is only published once every slice
- * is frozen, so no partially-frozen snapshot is ever served.
- */
-const SNAPSHOT_FREEZE_SLICE = 25_000;
-
-/** Freezes a candidate array in slices, yielding to the event loop between them. */
-async function freezeCandidates(candidates: readonly RouteCandidate[]): Promise<void> {
-  for (let start = 0; start < candidates.length; start += SNAPSHOT_FREEZE_SLICE) {
-    const end = Math.min(start + SNAPSHOT_FREEZE_SLICE, candidates.length);
-    for (let index = start; index < end; index += 1) deepFreeze(candidates[index]);
-    if (end < candidates.length) await new Promise<void>((resolve) => setTimeout(resolve, 0));
-  }
-}
-
 export class InMemoryRouteSnapshotService implements RouteSnapshotService {
   private revision: RoutingRevision = 0;
   private snapshot: RouteSnapshot | undefined;
@@ -659,10 +638,9 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
 
   constructor(
     private readonly builder: SnapshotBuilder,
-    options: { readonly rebuildDebounceMs?: number; readonly minRebuildIntervalMs?: number } = {},
+    options: { readonly rebuildDebounceMs?: number } = {},
   ) {
     this.rebuildDebounceMs = options.rebuildDebounceMs ?? 500;
-    this.minRebuildIntervalMs = options.minRebuildIntervalMs ?? 300_000;
     // Peers' mutations arrive once per process, not per instance: the handler
     // schedules a background rebuild, which is the only one there is.
     this.unsubscribe = subscribeRoutingInvalidation(() => {
@@ -678,41 +656,14 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
   private readonly rebuildDebounceMs: number;
 
   /**
-   * Minimum wall-clock gap between cached rebuilds. The account-health sweep
-   * invalidates whenever any account recovers, and each rebuild re-reads the
-   * whole catalog and allocates a fresh frozen snapshot; at the sweep's
-   * cadence that churn dominates gateway CPU and heap growth. A recovered
-   * account becomes routable at most this long after its cooldown expires
-   * (cooldowns are 10+ min), so a 5-minute floor costs nothing noticeable.
-   */
-  private readonly minRebuildIntervalMs: number;
-
-  /**
-   * Wall-clock time the last rebuild attempt started. 0 before the first.
-   * Stamped on attempt, not only on success: a failed build must also count
-   * against the minimum rebuild interval, or a failing catalog retries on
-   * every invalidation and each attempt allocates a fresh ~1GB snapshot
-   * that nothing collects (2026-11-14: 8 failed attempts in 10 minutes
-   * took the gateway from 1.4GB to 9.2GB RSS and the pool timeouts that
-   * failed the builds kept coming).
-   */
-  private lastRebuildAt = 0;
-
-  /**
    * Schedules a background rebuild at the current revision. Debounced: while a
    * timer is pending, further invalidates just bump the revision and the
    * pending rebuild picks up the latest. Single-flight by construction — the
    * rebuild itself reuses {@link building}, so concurrent callers share one
-   * promise for the same revision. Rate-limited: the timer waits out the
-   * minimum rebuild interval so a burst of invalidates cannot rebuild more
-   * than once per interval.
+   * promise for the same revision.
    */
   private scheduleRebuild(): void {
     if (this.stopped || this.rebuildTimer !== undefined) return;
-    const delay = Math.max(
-      this.rebuildDebounceMs,
-      this.minRebuildIntervalMs - (Date.now() - this.lastRebuildAt),
-    );
     this.rebuildTimer = setTimeout(() => {
       this.rebuildTimer = undefined;
       void this.rebuildNow().catch((error: unknown) => {
@@ -720,7 +671,7 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
         // last-completed snapshot, and the next invalidation retries.
         log.warn("[route-snapshot] background rebuild failed", error as Error);
       });
-    }, delay);
+    }, this.rebuildDebounceMs);
     if (typeof this.rebuildTimer.unref === "function") this.rebuildTimer.unref();
   }
 
@@ -730,20 +681,11 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
     if (this.building && this.building.revision === revision) return this.building.promise;
     const promise = this.build(revision);
     this.building = { revision, promise };
-    // Clear the slot when the current build settles. Only the build that is
-    // still current may clear it; a build started after a mutation must not
-    // be dropped by an older one finishing. Use then(onF, onR) rather than
-    // finally(): finally() returns a second promise that rejects when the
-    // build fails, and nobody awaits it — an unhandled rejection on every
-    // failed background rebuild.
-    void promise.then(
-      () => {
-        if (this.building?.promise === promise) this.building = undefined;
-      },
-      () => {
-        if (this.building?.promise === promise) this.building = undefined;
-      },
-    );
+    void promise.finally(() => {
+      // Only the build that is still current may clear the slot; a build
+      // started after a mutation must not be dropped by an older one finishing.
+      if (this.building?.promise === promise) this.building = undefined;
+    });
     return promise;
   }
 
@@ -782,18 +724,7 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
   }
 
   private async build(revision: RoutingRevision): Promise<RouteSnapshot> {
-    // Stamp the attempt here: see lastRebuildAt. A failed build still
-    // allocates its partial snapshot, so it must count against the
-    // interval just like a successful one.
-    this.lastRebuildAt = Date.now();
-    const built = await this.builder().catch((error: unknown) => {
-      // A failed build still allocated its partial snapshot. Collect it
-      // now: the collector rarely gets a clean window while rebuilds are
-      // failing, and without this the garbage piles up until the next
-      // successful build — which may never come.
-      Bun.gc(true);
-      throw error;
-    });
+    const built = await this.builder();
     const providerRouting: ProviderRoutingMap | undefined = built.providerRouting
       ? Object.fromEntries(
           Object.entries(built.providerRouting).map(([tenantId, settings]) => [
@@ -810,17 +741,9 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
     // One literal for both routing modes: two verbatim copies differing only by
     // the `providerRouting` key would mean a snapshot field added to one branch
     // silently vanishes on the other.
-    //
-    // The candidates are frozen in slices first (see `freezeCandidates`):
-    // freezing ~750k of them in one pass blocks the event loop for ~2s, and
-    // the top-level `deepFreeze` below would walk them all again. Freezing
-    // them here makes that walk a no-op for the array — frozen entries are
-    // skipped — so the publish step stays cheap.
-    const candidates = Object.freeze([...built.candidates]) as readonly RouteCandidate[];
-    await freezeCandidates(candidates);
     const snapshot = deepFreeze({
       revision,
-      candidates,
+      candidates: Object.freeze([...built.candidates]) as readonly RouteCandidate[],
       aliases: Object.freeze({ ...built.aliases }),
       ...(built.cli_aliases ? { cli_aliases: Object.freeze({ ...built.cli_aliases }) } : {}),
       combos: Object.freeze({ ...built.combos }),
@@ -831,18 +754,7 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
     // has already been superseded. Returning it is fine — the caller asked
     // before the mutation — but caching it would strand the data plane on stale
     // routing until the next write.
-    if (revision === this.revision) {
-      this.snapshot = snapshot;
-      // The previous snapshot just became garbage. Collect it now: the event
-      // loop is saturated by rebuilds, so the collector rarely gets a clean
-      // window and old snapshots pile up between collections.
-      Bun.gc(true);
-    } else {
-      // Superseded before it could be cached: this snapshot is garbage now,
-      // same as a failed build, so collect it instead of leaving it for a
-      // collector that may never get a window.
-      Bun.gc(true);
-    }
+    if (revision === this.revision) this.snapshot = snapshot;
     return snapshot;
   }
 }
