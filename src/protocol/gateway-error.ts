@@ -143,8 +143,131 @@ export function formatPublicErrorMessage(code: string, message: string): string 
   return explanatory;
 }
 
+/**
+ * TipRouter-owned public messages, one per error code.
+ *
+ * A client must never read the provider's own words: upstream error bodies
+ * are raw supplier text — supplier error codes, supplier phrasing, sometimes
+ * supplier-internal identifiers — and they used to reach the buyer verbatim
+ * as `error.message` (plus the whole body again in `details.raw`). These
+ * sentences replace them at the public envelope. The code is untouched, so a
+ * client still branches on `error.code`; only the human text becomes ours.
+ *
+ * The GatewayError itself is NOT rewritten — retry policy, account-health
+ * classification, and the egress verdict all match on the raw upstream text
+ * and `details.raw` internally. Sanitizing here, at the envelope, keeps the
+ * operator's diagnostics while the buyer sees TipRouter.
+ *
+ * English by house rule (see the language guard in
+ * test/transport/gateway-error-envelope.test.ts): client-facing text must be
+ * readable without knowing this deployment's locale.
+ */
+const TIPROUTER_PUBLIC_MESSAGES: Readonly<Record<GatewayErrorCode, string>> = {
+  capability_unsupported:
+    "TipRouter: this route does not support that capability. Remove it from the request, or pick a model that accepts it.",
+  ambiguous_model:
+    "TipRouter: that model name matches more than one model. Use the full model id.",
+  model_not_found: "TipRouter: that model was not found. Check the model id and try again.",
+  auto_not_enabled: "TipRouter: automatic model selection is not enabled for this key.",
+  auto_not_configured: "TipRouter: automatic model selection is not configured.",
+  auto_no_allowlist:
+    "TipRouter: this key has no models allowlisted for automatic selection.",
+  auto_no_data:
+    "TipRouter: no usage data is available yet to pick a model automatically. Try again shortly.",
+  model_not_allowed: "TipRouter: this key is not allowed to use that model.",
+  upstream_not_found: "TipRouter: the provider could not find that model.",
+  context_length_exceeded:
+    "TipRouter: the request is too long for this model's context window. Shorten the input and try again.",
+  request_too_large: "TipRouter: the request is too large. Reduce its size and try again.",
+  accounts_unavailable:
+    "TipRouter: no account is available to serve this model right now. Please try again shortly.",
+  accounts_rate_limited:
+    "TipRouter: all accounts for this model are cooling down after rate limits. Please try again shortly.",
+  capacity_exhausted:
+    "TipRouter: the service is at capacity right now. Please wait a moment and try again.",
+  upstream_overloaded:
+    "TipRouter: the provider is overloaded right now. Please wait a moment and try again.",
+  provider_capacity_exhausted:
+    "TipRouter: the provider is at capacity for this model right now. Please try again shortly.",
+  upstream_queued: "TipRouter: the provider queued this request. Please wait and try again.",
+  proxy_pool_capacity_exceeded:
+    "TipRouter: the proxy pool is at capacity. Please try again shortly.",
+  proxy_pool_provider_capacity_exceeded:
+    "TipRouter: the proxy pool is at capacity for this provider. Please try again shortly.",
+  proxy_pool_blocked: "TipRouter: the proxy pool is temporarily blocked. Please try again shortly.",
+  proxy_pool_cooldown:
+    "TipRouter: the proxy pool is cooling down. Please try again shortly.",
+  proxy_pool_unavailable: "TipRouter: the proxy pool is unavailable. Please try again shortly.",
+  proxy_pool_unhealthy: "TipRouter: the proxy pool is unhealthy. Please try again shortly.",
+  invalid_pool_limits: "TipRouter: the proxy pool limits are misconfigured. Please try again later.",
+  admission_unavailable:
+    "TipRouter: the admission service is unavailable. Please try again shortly.",
+  route_unavailable: "TipRouter: no route is available for this request. Please try again shortly.",
+  slug_reserved: "TipRouter: that name is reserved.",
+  quota_exceeded:
+    "TipRouter: this key has exceeded its quota. Please wait for it to reset.",
+  rate_limited: "TipRouter: too many requests. Please slow down and try again.",
+  authentication_failed:
+    "TipRouter: authentication with the provider failed. Please try again; if it persists, contact support.",
+  policy_rejected:
+    "TipRouter: the request was rejected by policy. Please adjust the request and try again.",
+  invalid_request:
+    "TipRouter: the request was rejected as invalid. Check the request format and try again.",
+  not_found: "TipRouter: the requested resource was not found.",
+  link_not_found: "TipRouter: this share link is invalid.",
+  link_expired: "TipRouter: this share link has expired.",
+  link_revoked: "TipRouter: this share link was revoked.",
+  link_disabled: "TipRouter: this share link is disabled.",
+  invalid_sequence: "TipRouter: the tool-call sequence is invalid.",
+  invalid_lifecycle: "TipRouter: the request lifecycle is invalid.",
+  unsupported_field: "TipRouter: the request contains an unsupported field.",
+  unsupported_media_type: "TipRouter: the media type is not supported.",
+  upstream_conflict:
+    "TipRouter: the provider reported a conflict for this request. Please try again.",
+  upstream_unprocessable:
+    "TipRouter: the provider could not process this request. Please adjust it and try again.",
+  internal_error:
+    "TipRouter: an internal error occurred. Please retry; if it persists, quote the request id to support.",
+  transport_unavailable:
+    "TipRouter: the connection to the provider failed. Please try again.",
+  tunnel_setup_failed:
+    "TipRouter: the secure tunnel could not be established. Please try again.",
+  platform_unavailable:
+    "TipRouter: the provider is temporarily unavailable. Your request did not go through — please wait a moment and try again.",
+  tenant_capacity_exhausted:
+    "TipRouter: the service is at capacity right now. Please wait a moment and try again.",
+  tls_rejected: "TipRouter: the secure connection was rejected. Please try again.",
+  proxy_auth_required: "TipRouter: proxy authentication is required. Please try again shortly.",
+  deadline_exceeded: "TipRouter: the request timed out. Please try again.",
+  transport_closed:
+    "TipRouter: the connection closed before the response finished. Please retry.",
+  max_connections_exceeded:
+    "TipRouter: too many concurrent connections. Please try again shortly.",
+  overloaded: "TipRouter: the service is overloaded right now. Please try again shortly.",
+  proxy_unreachable: "TipRouter: the proxy is unreachable. Please try again shortly.",
+  tool_call_loop_detected:
+    "TipRouter: a tool-call loop was detected. Please adjust the request and try again.",
+  client_router_denied: "TipRouter: this client is not allowed. Please use an allowed client.",
+  shutting_down: "TipRouter: the service is restarting. Please try again in a moment.",
+};
+
+/** Fallback for a code with no dedicated sentence: generic, still ours. */
+const TIPROUTER_PUBLIC_MESSAGE_FALLBACK =
+  "TipRouter: the request failed. Please try again; if it persists, quote the request id to support.";
+
 /** Formats a gateway error for public/internal clients without mutating it. */
 export function explainGatewayError(error: GatewayError): string {
+  // Upstream failures carry the provider's own words in `message`
+  // (passthrough prose, or the provider's error identifier when there is no
+  // prose). Those words are the supplier's, not ours, so the buyer gets the
+  // TipRouter sentence for the code instead. Two signals mark the passthrough:
+  // the `upstream` origin, and the `upstreamMessageAsIs` detail the throw
+  // sites set when the message is verbatim upstream text. Gateway-authored
+  // messages (origin `cartethyia` / `network`, no flag) keep their sentence —
+  // they were already written by us.
+  if (error.origin === "upstream" || error.details["upstreamMessageAsIs"] === true) {
+    return TIPROUTER_PUBLIC_MESSAGES[error.code] ?? TIPROUTER_PUBLIC_MESSAGE_FALLBACK;
+  }
   return formatPublicErrorMessage(error.code, error.message);
 }
 
@@ -165,7 +288,6 @@ const PUBLIC_ERROR_DETAIL_KEYS = new Set([
   "providerId",
   "providerStatus",
   "providerScope",
-  "raw",
   "rateLimitScope",
   "reason",
   "reasons",
@@ -178,7 +300,6 @@ const PUBLIC_ERROR_DETAIL_KEYS = new Set([
   "status",
   "upstreamRequestId",
   "upstreamStatus",
-  "upstreamMessageAsIs",
   "maxInflight",
   "weight",
 ]);
