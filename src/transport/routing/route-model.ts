@@ -687,7 +687,15 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
    */
   private readonly minRebuildIntervalMs: number;
 
-  /** Wall-clock time the last cached rebuild landed. 0 before the first. */
+  /**
+   * Wall-clock time the last rebuild attempt started. 0 before the first.
+   * Stamped on attempt, not only on success: a failed build must also count
+   * against the minimum rebuild interval, or a failing catalog retries on
+   * every invalidation and each attempt allocates a fresh ~1GB snapshot
+   * that nothing collects (2026-11-14: 8 failed attempts in 10 minutes
+   * took the gateway from 1.4GB to 9.2GB RSS and the pool timeouts that
+   * failed the builds kept coming).
+   */
   private lastRebuildAt = 0;
 
   /**
@@ -722,11 +730,20 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
     if (this.building && this.building.revision === revision) return this.building.promise;
     const promise = this.build(revision);
     this.building = { revision, promise };
-    void promise.finally(() => {
-      // Only the build that is still current may clear the slot; a build
-      // started after a mutation must not be dropped by an older one finishing.
-      if (this.building?.promise === promise) this.building = undefined;
-    });
+    // Clear the slot when the current build settles. Only the build that is
+    // still current may clear it; a build started after a mutation must not
+    // be dropped by an older one finishing. Use then(onF, onR) rather than
+    // finally(): finally() returns a second promise that rejects when the
+    // build fails, and nobody awaits it — an unhandled rejection on every
+    // failed background rebuild.
+    void promise.then(
+      () => {
+        if (this.building?.promise === promise) this.building = undefined;
+      },
+      () => {
+        if (this.building?.promise === promise) this.building = undefined;
+      },
+    );
     return promise;
   }
 
@@ -765,7 +782,18 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
   }
 
   private async build(revision: RoutingRevision): Promise<RouteSnapshot> {
-    const built = await this.builder();
+    // Stamp the attempt here: see lastRebuildAt. A failed build still
+    // allocates its partial snapshot, so it must count against the
+    // interval just like a successful one.
+    this.lastRebuildAt = Date.now();
+    const built = await this.builder().catch((error: unknown) => {
+      // A failed build still allocated its partial snapshot. Collect it
+      // now: the collector rarely gets a clean window while rebuilds are
+      // failing, and without this the garbage piles up until the next
+      // successful build — which may never come.
+      Bun.gc(true);
+      throw error;
+    });
     const providerRouting: ProviderRoutingMap | undefined = built.providerRouting
       ? Object.fromEntries(
           Object.entries(built.providerRouting).map(([tenantId, settings]) => [
@@ -805,10 +833,14 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
     // routing until the next write.
     if (revision === this.revision) {
       this.snapshot = snapshot;
-      this.lastRebuildAt = Date.now();
       // The previous snapshot just became garbage. Collect it now: the event
       // loop is saturated by rebuilds, so the collector rarely gets a clean
       // window and old snapshots pile up between collections.
+      Bun.gc(true);
+    } else {
+      // Superseded before it could be cached: this snapshot is garbage now,
+      // same as a failed build, so collect it instead of leaving it for a
+      // collector that may never get a window.
       Bun.gc(true);
     }
     return snapshot;
