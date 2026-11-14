@@ -30,6 +30,18 @@ import type { ApiKeyModelAccessMode } from "../persistence/schema";
  */
 const authorizationCache = createApiKeyAuthorizationCache<ResolvedApiKey>();
 
+/**
+ * Delay before retrying a failed credential-store lookup once. Pool stalls
+ * (connect timeouts) last a second or two; a single retry after a short
+ * pause rides one out instead of failing the request and engaging the 1s
+ * store-unavailable cooldown for every concurrent caller (2026-11-14: one
+ * timeout became bursts of 7–55 key-lookup failures in a second). Jittered
+ * so concurrent retries do not re-hit the pool in lockstep. Only the first
+ * failure retries — a genuinely down store still cools down after the
+ * second one.
+ */
+const AUTH_STORE_RETRY_DELAY_MS = 200;
+
 /** Thrown when the credential store could not be reached at all. */
 export class ApiKeyStoreUnavailableError extends Error {
   constructor() {
@@ -340,14 +352,27 @@ export async function resolveApiKeyAuthorization(
   // query is the expensive part, and it is also the part that fails.
   if (authorizationCache.isStoreUnavailable(now)) throw new ApiKeyStoreUnavailableError();
   const store = new DrizzleApiKeyStore(db);
-  let row: Awaited<ReturnType<typeof store.findActiveByHash>>;
-  try {
-    row = await store.findActiveByHash(hash);
-  } catch (error) {
+  let row: Awaited<ReturnType<typeof store.findActiveByHash>> | undefined;
+  let storeError: unknown;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      row = await store.findActiveByHash(hash);
+      storeError = undefined;
+      break;
+    } catch (error) {
+      storeError = error;
+      if (attempt === 0) {
+        await new Promise<void>((resolve) =>
+          setTimeout(resolve, AUTH_STORE_RETRY_DELAY_MS + Math.random() * 100),
+        );
+      }
+    }
+  }
+  if (storeError !== undefined) {
     // Any failure here is the store's, not the key's — a revoked key is a
     // normal empty result, so this only runs on a real fault.
     authorizationCache.markStoreUnavailable(Date.now());
-    throw error;
+    throw storeError;
   }
   if (!row) {
     authorizationCache.rememberNegative(hash, now);

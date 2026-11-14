@@ -74,6 +74,11 @@ export function createApiKeyAuthorizationCache<T>() {
 
     invalidate(keyId?: string): void {
       negativeEntries.clear();
+      // A mutation just landed — the caller only invalidates after a
+      // successful write — so the store is reachable again and a cooldown
+      // from an earlier failure is stale. Without this, a key minted during
+      // a cooldown window stays unresolvable until the cooldown lapses.
+      failureUntil = 0;
       if (keyId === undefined) {
         entries.clear();
         hashesByKeyId.clear();
