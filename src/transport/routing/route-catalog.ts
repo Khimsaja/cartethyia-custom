@@ -7,7 +7,6 @@ import {
   models,
   modelAliases,
   modelCombos,
-  modelTemplates,
   networkPools,
   poolRoutingSettings,
   providerAccounts,
@@ -342,11 +341,6 @@ const COMBO_COLUMNS = {
   strategy: modelCombos.strategy,
 } as const;
 
-const TEMPLATE_COLUMNS = {
-  tenantId: modelTemplates.tenantId,
-  models: modelTemplates.models,
-} as const;
-
 const ROUTING_COLUMNS = {
   providerId: providerRoutingSettings.providerId,
   tenantId: providerRoutingSettings.tenantId,
@@ -420,120 +414,11 @@ type ModelRouteRow = { [K in keyof typeof MODEL_COLUMNS]: (typeof models.$inferS
 type RouteCatalogSnapshotResult = Omit<RouteSnapshot, "revision" | "created_at"> & { created_at?: number };
 
 /** Repository abstracting database queries for the route catalog snapshot. */
-/**
- * Global catalog (template-only pruning disabled).
- *
- * The route snapshot fans every persisted model out to every account of its
- * provider (~750k candidates on this deployment), and the snapshot is
- * rebuilt wholesale whenever the account-health sweep recovers an account.
- * Each rebuild allocates the whole catalog again, so resident memory and
- * CPU spike on every rebuild.
- *
- * Template-only pruning used to keep only models reachable from a model
- * template, but it also dropped every non-template model from routing
- * (e.g. deepai/deepseek-v4.1-flash was unroutable despite an enabled
- * catalog row and a live account). The heap-leak root cause turned out to
- * be the Bun --cpu-prof flag, not catalog size, so the operator disabled
- * the prune: the catalog is global again and every enabled model routes.
- * `pruneCatalogModels` below is intentionally a pass-through; the
- * template-reachability helpers are retained so the prune can be
- * re-enabled by restoring the filter.
- */
-type TemplateReachableModels = {
-  /** Exact `provider/model` pairs reachable from a template or CLI target. */
-  readonly qualified: ReadonlySet<string>;
-  /** Bare model ids reachable from a template (any provider may serve them). */
-  readonly bare: ReadonlySet<string>;
-  /** Providers named by a qualified pair (passthrough anchors). */
-  readonly providers: ReadonlySet<string>;
-};
-
-/** Mirrors router.ts normalizeAliasKey: exact match first, then a trailing
- * `[...]` variant, then the `claude-<slot>-…` family-slot fallback. */
-function normalizeTemplateAliasKey(
-  requested: string,
-  aliasMap: Readonly<Record<string, unknown>>,
-): string {
-  if (aliasMap[requested] !== undefined) return requested;
-  let base = requested;
-  const bracket = requested.indexOf("[");
-  if (bracket > 0) {
-    base = requested.slice(0, bracket);
-    if (aliasMap[base] !== undefined) return base;
-  }
-  if (base.startsWith("claude-")) {
-    const rest = base.slice("claude-".length);
-    if (aliasMap[rest] !== undefined) return rest;
-    const dash = rest.indexOf("-");
-    if (dash > 0) {
-      const slot = rest.slice(0, dash);
-      if (aliasMap[slot] !== undefined) return slot;
-    }
-  }
-  return base;
-}
-
-/**
- * Expands template entries (plus CLI mapping targets) to the model
- * references the request path can resolve them to: alias chains first, then
- * combo members, recursively — the same shape as the request path's
- * resolveAlias + expandMember, but over the union of every in-scope
- * tenant's rows, so a name that means different things in different
- * tenants resolves to all of them. Cycles stop instead of throwing: a bad
- * alias is unroutable either way, and the builder must never throw.
- */
-function resolveTemplateReachableModels(
-  seeds: readonly string[],
-  aliasTargets: Readonly<Record<string, readonly string[]>>,
-  comboMembers: Readonly<Record<string, readonly string[]>>,
-): TemplateReachableModels {
-  const qualified = new Set<string>();
-  const bare = new Set<string>();
-  const providers = new Set<string>();
-  const seen = new Set<string>();
-  const queue: { name: string; depth: number }[] = seeds.map((name) => ({ name, depth: 0 }));
-  while (queue.length > 0) {
-    const { name, depth } = queue.shift()!;
-    if (seen.has(name) || depth > 16) continue;
-    seen.add(name);
-    const aliasKey = normalizeTemplateAliasKey(name, aliasTargets);
-    const targets = aliasTargets[aliasKey];
-    if (targets !== undefined && targets.length > 0) {
-      for (const target of targets) queue.push({ name: target, depth: depth + 1 });
-      continue;
-    }
-    const members = comboMembers[aliasKey];
-    if (members !== undefined && members.length > 0) {
-      for (const member of members) queue.push({ name: member, depth: depth + 1 });
-      continue;
-    }
-    const slash = name.indexOf("/");
-    if (slash === -1) bare.add(name);
-    else {
-      qualified.add(name);
-      providers.add(name.slice(0, slash));
-    }
-  }
-  return { qualified, bare, providers };
-}
-
-function pruneCatalogModels(
-  rows: readonly MergedModelRow[],
-  reachable: TemplateReachableModels,
-): MergedModelRow[] {
-  // Global catalog: no pruning. The template-reachability set is computed
-  // by the caller but intentionally unused here (see the comment above
-  // TemplateReachableModels). Restore the filter below to re-enable
-  // template-only pruning.
-  void reachable;
-  return [...rows];
-}
-
 class RouteCatalogRepository {
   constructor(private readonly db: CartethyiaDatabase) {}
 
   async loadRouteCatalogSnapshot(tenantId?: string): Promise<RouteCatalogSnapshotResult> {
-    const [providerRows, modelRows, accountRows, aliasRows, comboRows, templateRows, routingRows, poolRows, poolAccountRows, disabledModelRows, cliMappingRows, cliMappingSettingRows, poolSettingRows, settingsRows] =
+    const [providerRows, modelRows, accountRows, aliasRows, comboRows, routingRows, poolRows, poolAccountRows, disabledModelRows, cliMappingRows, cliMappingSettingRows, poolSettingRows, settingsRows] =
       await Promise.all([
         this.db.select(PROVIDER_COLUMNS).from(providers).where(eq(providers.enabled, true)),
         this.db.select(MODEL_COLUMNS).from(models),
@@ -544,7 +429,6 @@ class RouteCatalogRepository {
           .orderBy(asc(providerAccounts.status), asc(providerAccounts.createdAt), asc(providerAccounts.id)),
         this.db.select(ALIAS_COLUMNS).from(modelAliases),
         this.db.select(COMBO_COLUMNS).from(modelCombos),
-        this.db.select(TEMPLATE_COLUMNS).from(modelTemplates),
         this.db.select(ROUTING_COLUMNS).from(providerRoutingSettings),
         this.db.select(POOL_COLUMNS).from(networkPools),
         this.db.select(POOL_ACCOUNT_COLUMNS).from(providerPoolAccounts),
@@ -561,42 +445,6 @@ class RouteCatalogRepository {
           .from(consoleSettings),
       ]);
     const mergedModelRows = mergeModelCatalog(modelRows);
-    // Global catalog: every model row is kept (template-only pruning is
-    // disabled in pruneCatalogModels, operator decision 2026-11-13). The
-    // template/alias/combo seeds below still feed the reachability
-    // computation, which the pass-through prune currently ignores.
-    const inScope = (rowTenantId: string | null | undefined): boolean =>
-      tenantId === undefined || rowTenantId === tenantId;
-    const enabledMappingBuckets = new Set<string>();
-    for (const row of cliMappingSettingRows) {
-      if (row.mappingsEnabled) enabledMappingBuckets.add(`${row.tenantId}:${row.apiKeyId}`);
-    }
-    const aliasTargets: Record<string, string[]> = {};
-    for (const row of aliasRows) {
-      if (!inScope(row.tenantId)) continue;
-      (aliasTargets[row.alias] ??= []).push(row.targetModel);
-    }
-    const comboMembers: Record<string, string[]> = {};
-    for (const row of comboRows) {
-      if (!inScope(row.tenantId)) continue;
-      const members = (comboMembers[row.name] ??= []);
-      for (const member of row.members) members.push(member);
-    }
-    const templateSeeds: string[] = [];
-    for (const row of templateRows) {
-      if (!inScope(row.tenantId)) continue;
-      for (const model of row.models) templateSeeds.push(model);
-    }
-    for (const row of cliMappingRows) {
-      if (!row.enabled) continue;
-      if (!enabledMappingBuckets.has(`${row.tenantId}:${row.apiKeyId}`)) continue;
-      if (!inScope(row.tenantId)) continue;
-      templateSeeds.push(row.targetModel);
-    }
-    const prunedModelRows = pruneCatalogModels(
-      mergedModelRows,
-      resolveTemplateReachableModels(templateSeeds, aliasTargets, comboMembers),
-    );
     /**
      * Tenants that asked to ignore an account-wide cooldown.
      *
@@ -929,7 +777,7 @@ class RouteCatalogRepository {
     }
 
     const candidates: RoutedCandidate[] = [];
-    for (const model of prunedModelRows) {
+    for (const model of mergedModelRows) {
       const providerTenantId = providerTenantById.get(model.providerId);
       if (providerTenantId === undefined) continue;
       const accounts = accountsByProvider.get(model.providerId) ?? [];
@@ -1161,8 +1009,11 @@ class RouteCatalogRepository {
     // Remote Routing is opt-in per (tenant, tool, key): a mapping row routes
     // only when its bucket's settings row explicitly enabled it. The CLI tool
     // page and the API-key edit form both write that one flag, so either place
-    // can turn the routes on or off. The bucket set is computed above, next to
-    // the template prune, because CLI targets are prune seeds too.
+    // can turn the routes on or off.
+    const enabledMappingBuckets = new Set<string>();
+    for (const row of cliMappingSettingRows) {
+      if (row.mappingsEnabled) enabledMappingBuckets.add(`${row.tenantId}:${row.apiKeyId}`);
+    }
     for (const row of cliMappingRows) {
       if (!row.enabled) continue;
       if (!enabledMappingBuckets.has(`${row.tenantId}:${row.apiKeyId}`)) continue;
