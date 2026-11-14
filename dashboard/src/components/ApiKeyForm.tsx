@@ -26,11 +26,13 @@ import {
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Button } from "./ui/button";
 import { FileInput, Input } from "./ui/input";
-import { Switch } from "./ui/switch";
 import { Select } from "./ui/select";
+import { Switch } from "./ui/switch";
 import { ModelPickerModal } from "./ModelPicker";
 import { useResetToolMappings, useSaveToolMappings, useToolMappings, useToolRegistry } from "../hooks/cli-tools";
 import { useUpdateApiKey } from "../hooks/api-keys";
+import { useModelTemplates, useUpdateModelTemplate } from "../hooks/model-templates";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { useDialogDirty } from "../hooks/use-dialog-dirty";
 import { toast } from "../lib/toast";
 import { getErrorMessage } from "../data/api";
@@ -87,6 +89,13 @@ const TOKEN_BUDGET_PRESETS = [
   { label: "100M", amount: 100_000_000, description: "100 million" },
   { label: "1B", amount: 1_000_000_000, description: "1 billion" },
   { label: "1T", amount: 1_000_000_000_000, description: "1 trillion" },
+] as const;
+/** Quick-pick durations (in days) offered beside the expiry duration fields. */
+const EXPIRY_DURATION_PRESETS = [
+  { label: "7d", description: "7 days", days: 7 },
+  { label: "30d", description: "30 days", days: 30 },
+  { label: "90d", description: "90 days", days: 90 },
+  { label: "1y", description: "1 year", days: 365 },
 ] as const;
 function parseTokenLimit(value: string): number | undefined {
   const raw = value.trim().toLowerCase();
@@ -337,6 +346,19 @@ export interface KeyFormInput {
   dailyTokenLimit?: number | null;
   monthlyTokenLimit?: number | null;
   lifetimeTokenBudget?: number | null;
+  /** ISO expiry for time-boxed keys; `null`/absent means the key never expires. */
+  expiresAt?: string | null;
+  /** Duration-based create expiry (e.g. 25 days); summed server-side from now. */
+  expiresInDays?: number;
+  expiresInHours?: number;
+  /** Update-only renewal: pushes the stored expiry out, never shortening it. */
+  extendByDays?: number;
+  extendByHours?: number;
+  /**
+   * Template the key mirrors. A string links (or re-links); `null` detaches.
+   * Omitted when unchanged so an untouched field never clears the link.
+   */
+  modelTemplateId?: string | null;
   notesTitle?: string;
   notesSubtitle?: string;
   notesBody?: string;
@@ -410,6 +432,70 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
       : "recurring",
   );
   const [concurrent, setConcurrent] = useState(record?.maxConcurrentRequests?.toString() ?? "");
+  // Expiry: duration (days + hours) or an exact date behind a segmented
+  // toggle. On create the duration is the key's lifetime; on edit with an
+  // existing expiry it extends from the later of now and that expiry; on
+  // edit without one it sets an absolute expiry. `clearExpiry` is the
+  // edit-only escape hatch back to permanent.
+  const [expiryMode, setExpiryMode] = useState<"duration" | "date">("duration");
+  const [expiryDays, setExpiryDays] = useState("");
+  const [expiryHours, setExpiryHours] = useState("");
+  const [expiryDate, setExpiryDate] = useState("");
+  const [clearExpiry, setClearExpiry] = useState(false);
+  const recordExpiresAt = record?.expiresAt ?? null;
+  const parseCount = (value: string): number | undefined => {
+    if (value.trim() === "") return 0;
+    const n = Number(value);
+    return Number.isInteger(n) && n >= 0 ? n : undefined;
+  };
+  const expiryDayCount = parseCount(expiryDays);
+  const expiryHourCount = parseCount(expiryHours);
+  const countsInvalid =
+    !clearExpiry && expiryMode === "duration" && (expiryDayCount === undefined || expiryHourCount === undefined);
+  const totalHours = (expiryDayCount ?? 0) * 24 + (expiryHourCount ?? 0);
+  const durationSet = !countsInvalid && totalHours > 0;
+  const durationTooLong = durationSet && totalHours > 3650 * 24;
+  const dateValue = expiryDate.trim() === "" ? undefined : new Date(expiryDate);
+  const dateInvalid =
+    !clearExpiry &&
+    expiryMode === "date" &&
+    dateValue !== undefined &&
+    (Number.isNaN(dateValue.getTime()) || dateValue.getTime() <= Date.now());
+  const expiryInvalid = countsInvalid || durationTooLong || dateInvalid;
+  const expiryPreview = clearExpiry
+    ? undefined
+    : expiryMode === "date"
+      ? dateValue && !dateInvalid
+        ? dateValue
+        : undefined
+      : durationSet
+        ? new Date(
+            (mode === "edit" && recordExpiresAt
+              ? Math.max(Date.now(), new Date(recordExpiresAt).getTime())
+              : Date.now()) +
+              totalHours * 3_600_000,
+          )
+        : undefined;
+  const currentExpiryInfo = ((): { text: string; tone?: "red" | "orange" } | undefined => {
+    if (mode !== "edit" || !recordExpiresAt || clearExpiry) return undefined;
+    const expiryMs = new Date(recordExpiresAt).getTime();
+    if (Number.isNaN(expiryMs)) return undefined;
+    const when = new Date(expiryMs).toLocaleString();
+    const remainingMs = expiryMs - Date.now();
+    if (remainingMs <= 0)
+      return { text: `Expired ${when} — add days/hours below to revive this key.`, tone: "red" };
+    const d = Math.floor(remainingMs / 86_400_000);
+    const h = Math.floor((remainingMs % 86_400_000) / 3_600_000);
+    const left = d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h` : "under an hour";
+    return {
+      text: `Currently expires ${when} — about ${left} left. Add days/hours below to extend it.`,
+      tone: remainingMs <= 48 * 3_600_000 ? "orange" : undefined,
+    };
+  })();
+  // Template link; "" means "Custom (no template)". Same untouched-field rule.
+  const [modelTemplateId, setModelTemplateId] = useState(record?.modelTemplateId ?? "");
+  const initialModelTemplateId = record?.modelTemplateId ?? "";
+  const templatesQuery = useModelTemplates();
   const [concurrencyScope, setConcurrencyScope] = useState<ConcurrencyScope>(
     record?.concurrencyScope ?? "family",
   );
@@ -426,6 +512,21 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
     return m ? [...m] : [];
   });
   const [pickerOpen, setPickerOpen] = useState(false);
+  // "Save list to template": pushes this form's current whitelist back into
+  // the selected template (the reverse of picking a template, which copies
+  // the template's list into the form). The template save auto-applies to
+  // every linked key, so this is a shared-template write, not a key edit —
+  // hence the confirmation dialog. Only meaningful in whitelist mode: a
+  // template holds an allow-list, never a block-list.
+  const [templateSaveOpen, setTemplateSaveOpen] = useState(false);
+  const updateTemplate = useUpdateModelTemplate();
+  const selectedTemplate = modelTemplateId
+    ? templatesQuery.data?.find((t) => t.id === modelTemplateId)
+    : undefined;
+  const listMatchesTemplate =
+    selectedTemplate !== undefined &&
+    models.length === selectedTemplate.models.length &&
+    models.every((m) => selectedTemplate.models.includes(m));
   const [blockedRouters, setBlockedRouters] = useState<string[]>(() => {
     const list = (record as unknown as { clientRouterDenylist?: string[] | null })
       ?.clientRouterDenylist;
@@ -575,6 +676,29 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
   const toggleScope = (scope: string) =>
     setScopes((cur) => (cur.includes(scope) ? cur.filter((s) => s !== scope) : [...cur, scope]));
   const submit = () => {
+    if (expiryInvalid) return;
+    // Exactly one expiry instruction is ever sent (or none). Duration mode
+    // sends the duration parts with zero components omitted — the server
+    // rejects a part that is present but not positive. Date mode and
+    // edit-without-an-expiry send an absolute expiresAt.
+    const expiryFields: Partial<KeyFormInput> = clearExpiry
+      ? { expiresAt: null }
+      : expiryMode === "date" && dateValue !== undefined
+        ? { expiresAt: dateValue.toISOString() }
+        : durationSet
+          ? mode === "edit" && recordExpiresAt
+            ? {
+                ...(expiryDayCount !== undefined && expiryDayCount > 0 ? { extendByDays: expiryDayCount } : {}),
+                ...(expiryHourCount !== undefined && expiryHourCount > 0 ? { extendByHours: expiryHourCount } : {}),
+              }
+            : mode === "edit"
+              ? { expiresAt: new Date(Date.now() + totalHours * 3_600_000).toISOString() }
+              : {
+                  ...(expiryDayCount !== undefined && expiryDayCount > 0 ? { expiresInDays: expiryDayCount } : {}),
+                  ...(expiryHourCount !== undefined && expiryHourCount > 0 ? { expiresInHours: expiryHourCount } : {}),
+                }
+          : { expiresAt: mode === "create" ? null : undefined };
+    const templateChanged = modelTemplateId !== initialModelTemplateId;
     onDone({
       label: label.trim(),
       ...keyCredentialFields(keyMode, customKey, prefix),
@@ -589,6 +713,8 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
       dailyTokenLimit: isOneTime ? null : (parseTokenLimit(daily) ?? null),
       monthlyTokenLimit: isOneTime ? null : (parseTokenLimit(monthly) ?? null),
       lifetimeTokenBudget: isOneTime ? (parseTokenLimit(lifetime) ?? null) : null,
+      ...expiryFields,
+      ...(templateChanged ? { modelTemplateId: modelTemplateId || null } : {}),
       notesTitle: notesTitle.trim(),
       notesSubtitle: notesSubtitle.trim(),
       notesBody: notesBody.trim(),
@@ -879,6 +1005,159 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
         )}
       </section>
       </div>
+      <section className="flex flex-col gap-4 min-w-0 p-6 border border-inner-border rounded-card bg-surface-2 col-span-full">
+        <div>
+          <h3 className="text-body font-bold text-text-primary">
+            <ShieldCheck size={16} className="mr-2 inline text-accent" aria-hidden="true" />
+            Lifetime
+          </h3>
+          <p className="mt-1 text-badge text-text-tertiary">
+            When the key stops working, and which model preset it mirrors.
+          </p>
+        </div>
+        <div>
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <span className="text-badge font-semibold text-text-secondary">
+              {mode === "edit" && recordExpiresAt ? "Extend expiry" : "Expiry"}
+            </span>
+            <div role="group" aria-label="Expiry mode" className="flex gap-1 p-1 rounded-inset border border-inner-border bg-surface-1">
+              {(["duration", "date"] as const).map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  aria-pressed={expiryMode === option}
+                  onClick={() => setExpiryMode(option)}
+                  disabled={busy || clearExpiry}
+                  className="py-1 px-4 rounded-chip text-micro font-semibold"
+                  style={{
+                    background: expiryMode === option ? "var(--accent-soft)" : "transparent",
+                    color: expiryMode === option ? "var(--accent)" : "var(--text-tertiary)",
+                    border: "none",
+                    cursor: busy || clearExpiry ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {option === "duration" ? "Duration" : "Date"}
+                </button>
+              ))}
+            </div>
+          </div>
+          {mode === "edit" && recordExpiresAt ? (
+            <p className="mt-0 mb-3 flex items-center gap-3 flex-wrap text-badge text-text-tertiary">
+              <span className={new Date(recordExpiresAt).getTime() <= Date.now() ? "text-red font-semibold" : undefined}>
+                {new Date(recordExpiresAt).getTime() <= Date.now() ? "Expired " : "Expires "}
+                {new Date(recordExpiresAt).toLocaleString()}
+              </span>
+              <button
+                type="button"
+                onClick={() => setClearExpiry((v) => !v)}
+                disabled={busy}
+                className="py-1 px-3 rounded-chip text-micro font-semibold"
+                style={{
+                  border: `1px solid ${clearExpiry ? "var(--accent)" : "var(--inner-border)"}`,
+                  background: clearExpiry ? "var(--accent-soft)" : "transparent",
+                  color: clearExpiry ? "var(--accent)" : "var(--text-tertiary)",
+                  cursor: busy ? "not-allowed" : "pointer",
+                }}
+              >
+                {clearExpiry ? "Keep expiry" : "Remove expiry"}
+              </button>
+            </p>
+          ) : null}
+          {expiryMode === "duration" ? (
+            <>
+              <div className="flex gap-3">
+                <div className="flex-1">
+                  <Input label="Days" type="number" min="0" step="1" value={expiryDays} onChange={(e) => setExpiryDays(e.target.value)} placeholder="0" disabled={busy || clearExpiry} />
+                </div>
+                <div className="flex-1">
+                  <Input label="Hours" type="number" min="0" step="1" value={expiryHours} onChange={(e) => setExpiryHours(e.target.value)} placeholder="0" disabled={busy || clearExpiry} />
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2 mt-3" role="group" aria-label="Duration presets">
+                {EXPIRY_DURATION_PRESETS.map((preset) => {
+                  const selected = expiryDayCount === preset.days && (expiryHourCount ?? 0) === 0 && expiryDays.trim() !== "";
+                  return (
+                    <button
+                      key={preset.label}
+                      type="button"
+                      aria-pressed={selected}
+                      aria-label={preset.description}
+                      onClick={() => { setExpiryDays(String(preset.days)); setExpiryHours(""); }}
+                      disabled={busy || clearExpiry}
+                      className="py-1 px-3 rounded-chip text-micro font-semibold"
+                      style={{
+                        cursor: busy || clearExpiry ? "not-allowed" : "pointer",
+                        border: `1px solid ${selected ? "var(--accent)" : "var(--inner-border)"}`,
+                        background: selected ? "var(--accent-soft)" : "transparent",
+                        color: selected ? "var(--accent)" : "var(--text-tertiary)",
+                      }}
+                    >
+                      {preset.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          ) : (
+            <Input type="datetime-local" label="Expires at" value={expiryDate} onChange={(e) => setExpiryDate(e.target.value)} disabled={busy || clearExpiry} />
+          )}
+          {clearExpiry ? (
+            <p className="mt-3 text-badge text-text-tertiary">Saving will make this key never expire.</p>
+          ) : countsInvalid ? (
+            <p className="mt-3 text-badge text-red">Use whole numbers of days and hours (0 or more).</p>
+          ) : durationTooLong ? (
+            <p className="mt-3 text-badge text-red">That's over ~10 years — the longest expiry the server accepts.</p>
+          ) : dateInvalid ? (
+            <p className="mt-3 text-badge text-red">Pick a date in the future.</p>
+          ) : expiryPreview ? (
+            <p className="mt-3 text-badge text-text-tertiary">
+              {mode === "edit" && recordExpiresAt && expiryMode === "duration" ? "Extends to ≈ " : "Expires ≈ "}
+              {expiryPreview.toLocaleString()}
+            </p>
+          ) : currentExpiryInfo ? (
+            <p className={`mt-3 text-badge ${currentExpiryInfo.tone === "red" ? "text-red font-semibold" : currentExpiryInfo.tone === "orange" ? "font-semibold" : "text-text-tertiary"}`}>
+              {currentExpiryInfo.text}
+            </p>
+          ) : (
+            <p className="mt-3 text-badge text-text-tertiary">
+              Optional — leave it empty for a key that never expires. A key past its
+              expiry stops authenticating immediately, so set one for time-boxed
+              subscriptions and extend it here when a subscription renews.
+            </p>
+          )}
+        </div>
+        <div className="min-w-0">
+          <Select
+            label="Model template"
+            value={modelTemplateId}
+            onValueChange={(v) => {
+              const next = v === "__none__" ? "" : v;
+              setModelTemplateId(next);
+              // Picking a template applies it: submit sends this form's own
+              // model list, so the template's models are copied in for the
+              // operator to see (and adjust) before saving. Without the copy
+              // the key was created with an empty whitelist and only the
+              // link set — a key that could call nothing until repaired.
+              if (next) {
+                const template = templatesQuery.data?.find((t) => t.id === next);
+                if (template) setModels([...template.models]);
+              }
+            }}
+            disabled={busy || templatesQuery.isPending}
+            placeholder={templatesQuery.isPending ? "Loading templates…" : "Custom (no template)"}
+            options={[
+              { value: "__none__", label: "Custom (no template)" },
+              ...(templatesQuery.data ?? []).map((template) => ({
+                value: template.id,
+                label: `${template.name} (${template.models.length} model${template.models.length === 1 ? "" : "s"})`,
+              })),
+            ]}
+          />
+        </div>
+        {templatesQuery.isError ? (
+          <p className="form-error">Could not load model templates.</p>
+        ) : null}
+      </section>
       <section className="flex flex-col gap-3 min-w-0 p-4 border border-inner-border rounded-card bg-surface-2 col-span-full" aria-labelledby="share-popup-heading">
         <div className="flex items-start justify-between gap-6">
           <div>
@@ -1060,6 +1339,30 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
               <Button variant="secondary" size="sm" type="button" onClick={() => setPickerOpen(true)} disabled={busy}>
                 Browse models
               </Button>
+              {modelAccessMode === "whitelist" ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  type="button"
+                  onClick={() => setTemplateSaveOpen(true)}
+                  disabled={
+                    busy ||
+                    templatesQuery.isPending ||
+                    selectedTemplate === undefined ||
+                    listMatchesTemplate ||
+                    updateTemplate.isPending
+                  }
+                  title={
+                    selectedTemplate === undefined
+                      ? "Pick a template first"
+                      : listMatchesTemplate
+                        ? "This list already matches the template"
+                        : `Write this list into the "${selectedTemplate.name}" template`
+                  }
+                >
+                  Save list to template
+                </Button>
+              ) : null}
               <ModelPickerModal
                 open={pickerOpen}
                 onClose={() => setPickerOpen(false)}
@@ -1069,6 +1372,32 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose, actionsRef }: 
                 }
                 title={modelAccessMode === "whitelist" ? "Select allowed models" : "Select blocked models"}
                 multi
+              />
+              <ConfirmDialog
+                open={templateSaveOpen}
+                onClose={() => setTemplateSaveOpen(false)}
+                title="Save list to template?"
+                message={
+                  selectedTemplate
+                    ? `Replace the "${selectedTemplate.name}" template with this list (${models.length} model${models.length === 1 ? "" : "s"})? The new list is then applied automatically to every key linked to that template.`
+                    : ""
+                }
+                confirmLabel="Save to template"
+                onConfirm={async () => {
+                  if (!selectedTemplate) return;
+                  const res = await updateTemplate.mutateAsync({
+                    templateId: selectedTemplate.id,
+                    request: { models: [...models] },
+                  });
+                  if (res.sync) {
+                    toast.success(
+                      `Template "${selectedTemplate.name}" updated and applied to ${res.sync.updatedKeys.length} key${res.sync.updatedKeys.length === 1 ? "" : "s"}` +
+                        (res.sync.skippedCount > 0 ? `, ${res.sync.skippedCount} skipped` : ""),
+                    );
+                  } else {
+                    toast.success(`Template "${selectedTemplate.name}" updated`);
+                  }
+                }}
               />
             </section>
 

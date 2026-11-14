@@ -10,6 +10,7 @@ import {
 import {
   bytea, createdAtColumn, tenantRefRequired, updatedAtColumn,
 } from "./schema-shared";
+import { modelTemplates } from "./schema-routing";
 
 export const API_KEY_MODES = ["personal", "share"] as const;
 export type ApiKeyMode = (typeof API_KEY_MODES)[number];
@@ -101,6 +102,10 @@ export const apiKeys = pgTable(
       .notNull()
       .default("whitelist"),
     modelList: jsonb("model_list").$type<readonly string[]>(),
+    /** Template this key mirrors, when it was provisioned from one. */
+    modelTemplateId: uuid("model_template_id").references(() => modelTemplates.id, {
+      onDelete: "set null",
+    }),
     /**
      * Client-router ids this key refuses. A request whose fingerprint names one
      * of these is rejected before routing, so an operator can stop a downstream
@@ -115,6 +120,8 @@ export const apiKeys = pgTable(
     createdAt: createdAtColumn(),
     enabled: boolean("enabled").notNull().default(true),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    /** Hard expiry for time-boxed keys; NULL means the key never expires. */
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
     /**
      * Ban state. A ban is distinct from a revoke: it records the operator's
      * reason (`banReason`) so the console can show it, and it is fully
@@ -155,6 +162,7 @@ export const apiKeys = pgTable(
       .on(table.tenantId)
       .where(sql`${table.isDefault} = true AND ${table.revokedAt} IS NULL`),
     index("api_keys_tenant_id_idx").on(table.tenantId),
+    index("api_keys_model_template_id_idx").on(table.modelTemplateId),
     index("api_keys_enabled_tenant_idx").on(table.tenantId).where(sql`${table.enabled} = true`),
     index("api_keys_parent_key_id_idx").on(table.parentKeyId),
     check(

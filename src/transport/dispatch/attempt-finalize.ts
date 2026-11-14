@@ -8,6 +8,7 @@ import type { AdmissionLease } from "../../security/admission/contracts";
 import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import type { TelemetryBatchBuffer } from "../../observability/telemetry-buffer";
 import type { ProxyRequestOutcome, ProxyRequestState } from "../request/state";
+import { responseHasVisibleContent } from "../surface/visible-content";
 import { finalizeRequestTelemetry } from "../guards/error-lifecycle";
 import { debitCachedQuota, quotaLens } from "../../providers/quota/cache";
 import { BUDDY_PROVIDER_IDS } from "../../providers/provider-metadata";
@@ -166,6 +167,13 @@ export interface AttemptCompletion extends ProxyRequestOutcome {
   readonly lastEventAtMs?: number;
   /** The model the upstream reported in its own response, verbatim. */
   readonly reportedModel?: string;
+  /**
+   * Explicit content verdict for this attempt, overriding the body-derived
+   * one. The streaming path passes it: its response body is the canonical
+   * event transcript, not the client body, so the body check below would
+   * misread it. Absent everywhere else.
+   */
+  readonly hasContent?: boolean;
 }
 
 /**
@@ -401,6 +409,15 @@ export async function completeAttempt(
     (completion.providerCapture?.reportedModel === undefined
       ? undefined
       : await completion.providerCapture.reportedModel.catch(() => undefined));
+  // Content verdict: an explicit one wins (streaming, whose body is the
+  // event transcript); otherwise read the client body the attempt actually
+  // sent, per surface. A missing body means this path cannot tell — leave
+  // the field absent so readers fail open instead of demoting blind.
+  const hasContent =
+    completion.hasContent ??
+    (completion.responseBody === undefined || completion.responseBody === null
+      ? undefined
+      : responseHasVisibleContent(state.canonicalRequest?.source_surface, completion.responseBody));
   state.outcome = {
     status: completion.status,
     httpStatus:
@@ -428,6 +445,7 @@ export async function completeAttempt(
     // lives in the resolution above (completion's own attribution first, then
     // the value read from the upstream bytes).
     ...(reportedModel === undefined ? {} : { reportedModel }),
+    ...(hasContent === undefined ? {} : { hasContent }),
     ...(completion.firstContentDeltaAtMs === undefined ? {} : { firstContentDeltaAtMs: completion.firstContentDeltaAtMs }),
     ...(completion.lastEventAtMs === undefined ? {} : { lastEventAtMs: completion.lastEventAtMs }),
     ...(completion.status === "completed" &&

@@ -176,3 +176,21 @@ export const poolRoutingSettings = pgTable("pool_routing_settings", {
   /** Requests served by one pool before round robin advances. */
   rotateCount: integer("rotate_count").notNull().default(1),
 });
+
+/**
+ * Named model whitelist presets a tenant reuses when provisioning API keys.
+ * A key linked to a template mirrors its model list; later template edits
+ * do not rewrite issued keys unless explicitly synced.
+ */
+export const modelTemplates = pgTable(
+  "model_templates",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: tenantRefRequired(),
+    name: text("name").notNull(),
+    models: jsonb("models").notNull().$type<readonly string[]>(),
+    ...timestampColumns(),
+  },
+  (t) => [uniqueIndex("model_templates_tenant_name_uidx").on(t.tenantId, t.name)],
+);
+export type ModelTemplate = typeof modelTemplates.$inferSelect;

@@ -22,11 +22,24 @@ export const LEASE_TTL_MS = 3600_000;
  * hash readable for several sweep intervals past the horizon, so the recovery
  * path actually runs.
  *
+ * The grace must also exceed gateway downtime, not just one sweep interval:
+ * the sweeper only runs inside a live gateway, so a lease whose horizon passes
+ * while the process is down (OOM kill, restart, deploy) is only reclaimable
+ * once the gateway is back AND the sweeper reaches it. In Nov 2026 a 120s
+ * grace (4 sweep intervals) was shorter than OOM restart downtime, and the
+ * tenant counter leaked ~373 slots this way until it pinned at its 400 cap
+ * and every request failed with `tenant_capacity_exhausted` — a storm that
+ * could not self-heal under load, because each dip below the cap was refilled
+ * by a new reserve that re-armed the counter TTL. One hour of grace (120
+ * sweep intervals) covers the worst observed downtime (~6 min) many times
+ * over, including backlog drain at 500 reaps per pass. Do not shrink this
+ * without re-checking restart downtime first.
+ *
  * Exported so the invariant is asserted directly: a lease key must outlive the
  * horizon it records by more than one sweep interval (`sweepLeases` runs every
  * 30s, wired in `runtime/dependencies.ts`).
  */
-const LEASE_TTL_GRACE_SECONDS = 120;
+const LEASE_TTL_GRACE_SECONDS = 3600;
 /** Seconds after which a lease hash is reapable (`expires_at` horizon). */
 export const LEASE_REAP_HORIZON_SECONDS = Math.ceil(LEASE_TTL_MS / 1000);
 /** Seconds the lease hash itself lives; must exceed the reap horizon. */

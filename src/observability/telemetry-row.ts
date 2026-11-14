@@ -52,6 +52,14 @@ export interface TelemetryInsertRowSource {
   readonly payloadCaptureState?: string | null;
   /** `true` for a degenerate-stop request; absent/null for everything else. */
   readonly degenerateStop?: boolean;
+  /**
+   * File-only signal, deliberately without a Postgres column: whether the
+   * completed answer carried usable content. The raw append writes the row
+   * object as-is, so this reaches the JSONL file the auto scorer reads;
+   * Postgres keeps only aggregates. NULL on rows from paths that cannot
+   * tell, which readers treat as content-bearing.
+   */
+  readonly hasContent?: boolean | null;
 }
 
 /** Coerces a token count to the integer the schema columns store; `undefined` for an unavailable count. */
@@ -76,7 +84,9 @@ export function tokenCountToInt(value: number | "unavailable" | undefined): numb
  * - `clientName` is derived here, once, via `clientNameFromUserAgent`, so the
  *   write path and the backfill group the same client the same way.
  */
-export function telemetryInsertRow(event: TelemetryInsertRowSource): typeof telemetryEvents.$inferInsert {
+export function telemetryInsertRow(
+  event: TelemetryInsertRowSource,
+): typeof telemetryEvents.$inferInsert & { readonly hasContent?: boolean | null } {
   return {
     id: event.requestId,
     tenantId: event.tenantId,
@@ -121,5 +131,8 @@ export function telemetryInsertRow(event: TelemetryInsertRowSource): typeof tele
     lastEventAtMs: event.lastEventAtMs,
     payloadCaptureState: event.payloadCaptureState ?? null,
     degenerateStop: event.degenerateStop ?? null,
+    // File-only: carried through to the JSONL append (see the interface);
+    // Drizzle builds the SQL insert from known columns only.
+    hasContent: event.hasContent ?? null,
   };
 }

@@ -329,7 +329,7 @@ const AUTH_KEY_COLUMNS = [
   "max_concurrent_requests", "concurrency_scope", "model_access_mode", "model_list", "client_router_denylist",
   "model_prefix", "created_at", "enabled", "revoked_at", "banned_at", "ban_reason", "banned_until",
   "key_prefix", "key_encrypted",
-  "notes_title", "notes_subtitle", "notes_body", "is_default", "sort_index",
+  "notes_title", "notes_subtitle", "notes_body", "is_default", "sort_index", "expires_at",
 ].join(", ");
 
 export interface SqliteAuthStatements {

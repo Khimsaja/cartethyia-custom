@@ -38,6 +38,14 @@ export interface ResponsesEncodingContext {
   response_id?: string;
   model?: string;
   created_at?: number;
+  /**
+   * When true, `model` is a display name the client asked for (today: the
+   * `auto` trigger): upstream events must not replace it, a later model
+   * change is not an error, and the upstream system fingerprint is
+   * withheld, so the client cannot learn which model or provider served
+   * the turn.
+   */
+  modelPinned?: boolean;
 }
 
 /** One structured event emitted by the Responses stream encoder. */

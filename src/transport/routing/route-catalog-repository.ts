@@ -20,7 +20,9 @@ import {
   cliMappingSourceKeys,
   mergeModelCatalog,
   type MergedModelRow,
+  pruneCatalogModels,
   resolveRouteUserAgent,
+  resolveTemplateReachableModels,
 } from "./route-catalog-helpers";
 import {
   type AccountRouteRow,
@@ -41,11 +43,21 @@ function hardCooldownCategory(category: string | null): boolean {
 
 
 
-/** Snapshot load result from the 13-table catalog read. */
+/** Snapshot load result from the 14-table catalog read. */
 type RouteCatalogSnapshotResult = Omit<RouteSnapshot, "revision" | "created_at"> & { created_at?: number };
 
 /**
- * Staged state for one snapshot build. The load reads all thirteen row sets
+ * Candidates emitted between event-loop yields during the fan-out below.
+ * Fanning ~750k candidates out is seconds of synchronous work on top of the
+ * freeze; without a yield the loop stays blocked long enough for pool
+ * checkout timers to expire and queued requests to flood the pool at once
+ * (2026-11-14). Fifty thousand is far below any timeout horizon and still
+ * cheap to check per model row.
+ */
+const SNAPSHOT_FANOUT_YIELD_EVERY = 50_000;
+
+/**
+ * Staged state for one snapshot build. The load reads all fourteen row sets
  * first, then compiles every lookup map/table once, then resolves candidates
  * against them through the resolver methods below. Everything here is local to
  * one build; nothing outlives it. Splitting this out of
@@ -70,8 +82,10 @@ class RouteCatalogBuildContext {
   /** Every active (non-disabled) pool a tenant owns, for automatic per-request selection. */
   readonly activePoolsByTenant: ReadonlyMap<
     string,
-    readonly { id: string; maxInflight: number; weight: number }[]
+    readonly { id: string; maxInflight: number; weight: number; dedicatedProviderId: string | null }[]
   >;
+  /** Providers with at least one exclusive pool configured, per tenant. */
+  readonly dedicatedProvidersByTenant: ReadonlyMap<string, ReadonlySet<string>>;
   /** Tenants that have at least one pool row (active or not). */
   readonly configuredPoolTenants: ReadonlySet<string>;
   /** Pool-as-account rows grouped by tenant. */
@@ -85,7 +99,36 @@ class RouteCatalogBuildContext {
 
   constructor(rows: CatalogRead) {
     this.rows = rows;
-    this.mergedModelRows = mergeModelCatalog(rows.modelRows);
+    // Global catalog: every model row is kept (template-only pruning is
+    // disabled in pruneCatalogModels, operator decision 2026-11-13). The
+    // template/alias/combo seeds below still feed the reachability
+    // computation, which the pass-through prune currently ignores.
+    const enabledMappingBuckets = new Set<string>();
+    for (const row of rows.cliMappingSettingRows) {
+      if (row.mappingsEnabled) enabledMappingBuckets.add(`${row.tenantId}:${row.apiKeyId}`);
+    }
+    const aliasTargets: Record<string, string[]> = {};
+    for (const row of rows.aliasRows) {
+      (aliasTargets[row.alias] ??= []).push(row.targetModel);
+    }
+    const comboMembers: Record<string, string[]> = {};
+    for (const row of rows.comboRows) {
+      const members = (comboMembers[row.name] ??= []);
+      for (const member of row.members) members.push(member);
+    }
+    const templateSeeds: string[] = [];
+    for (const row of rows.templateRows) {
+      for (const model of row.models) templateSeeds.push(model);
+    }
+    for (const row of rows.cliMappingRows) {
+      if (!row.enabled) continue;
+      if (!enabledMappingBuckets.has(`${row.tenantId}:${row.apiKeyId}`)) continue;
+      templateSeeds.push(row.targetModel);
+    }
+    this.mergedModelRows = pruneCatalogModels(
+      mergeModelCatalog(rows.modelRows),
+      resolveTemplateReachableModels(templateSeeds, aliasTargets, comboMembers),
+    );
     /**
      * Tenants that asked to ignore an account-wide cooldown.
      *
@@ -136,7 +179,12 @@ class RouteCatalogBuildContext {
     // automatic per-request selection — see `resolveNetworkPools` below.
     const activePoolsByTenant = new Map<
       string,
-      Array<{ id: string; maxInflight: number; weight: number }>
+      Array<{
+        id: string;
+        maxInflight: number;
+        weight: number;
+        dedicatedProviderId: string | null;
+      }>
     >();
     const configuredPoolTenants = new Set<string>();
     for (const pool of rows.poolRows) {
@@ -144,11 +192,29 @@ class RouteCatalogBuildContext {
       if (pool.status !== "active") continue;
       if (!pool.tenantId) continue;
       const list = activePoolsByTenant.get(pool.tenantId) ?? [];
-      list.push({ id: pool.id, maxInflight: pool.maxInflight ?? 10, weight: pool.weight ?? 100 });
+      list.push({
+        id: pool.id,
+        maxInflight: pool.maxInflight ?? 10,
+        weight: pool.weight ?? 100,
+        dedicatedProviderId: pool.dedicatedProviderId ?? null,
+      });
       activePoolsByTenant.set(pool.tenantId, list);
     }
     this.activePoolsByTenant = activePoolsByTenant;
     this.configuredPoolTenants = configuredPoolTenants;
+    // Providers with at least one exclusive pool configured in this tenant.
+    // Configured means any status, not just active: once an operator
+    // assigns a pool to a provider, that provider must not silently fall
+    // back to shared pools while its exclusive pools are cooling or
+    // disabled — exclusivity is the assignment, not one node's health.
+    const dedicatedProvidersByTenant = new Map<string, Set<string>>();
+    for (const pool of rows.poolRows) {
+      if (!pool.dedicatedProviderId || !pool.tenantId) continue;
+      const set = dedicatedProvidersByTenant.get(pool.tenantId) ?? new Set<string>();
+      set.add(pool.dedicatedProviderId);
+      dedicatedProvidersByTenant.set(pool.tenantId, set);
+    }
+    this.dedicatedProvidersByTenant = dedicatedProvidersByTenant;
 
     // Pool-as-account rows, grouped by tenant: one per (pool × ip-scoped
     // provider). For a credential-less ip-scoped provider these are the
@@ -278,7 +344,9 @@ class RouteCatalogBuildContext {
 
   /** Every active pool the account's tenant owns — dispatch picks the
    * least-loaded/non-cooldown one per request (`tryAcquireAvailablePool`),
-   * never an admin-pinned single pool. */
+   * never an admin-pinned single pool. An exclusive assignment narrows
+   * this set: a provider with dedicated pools uses ONLY those, and every
+   * other provider loses them from its own set. */
   private resolveNetworkPools(
     providerId: string,
     rowTenantId: string | null,
@@ -292,7 +360,15 @@ class RouteCatalogBuildContext {
     | undefined {
     if (!rowTenantId || this.resolveSkipProxy(providerId, rowTenantId)) return undefined;
     if (!this.configuredPoolTenants.has(rowTenantId)) return undefined;
-    const pools = this.activePoolsByTenant.get(rowTenantId) ?? [];
+    const tenantPools = this.activePoolsByTenant.get(rowTenantId) ?? [];
+    // Exclusive assignment: a provider with dedicated pools uses ONLY
+    // those, and every other provider loses them from its own set — a
+    // dedicated pool never also serves the shared group. A provider
+    // without an assignment keeps exactly the shared pools, so this
+    // filter is a no-op until the first assignment exists.
+    const pools = this.dedicatedProvidersByTenant.get(rowTenantId)?.has(providerId)
+      ? tenantPools.filter((pool) => pool.dedicatedProviderId === providerId)
+      : tenantPools.filter((pool) => pool.dedicatedProviderId === null);
     const limits: Record<string, number> = {};
     const weights: Record<string, number> = {};
     for (const pool of pools) {
@@ -623,10 +699,18 @@ class RouteCatalogBuildContext {
     return candidate;
   }
 
-  /** Fans out every model row into its candidates. */
-  private fanOutCandidates(): RoutedCandidate[] {
+/** Fans out every model row into its candidates. */
+  private async fanOutCandidates(): Promise<RoutedCandidate[]> {
     const candidates: RoutedCandidate[] = [];
+    let lastFanoutYieldAt = 0;
     for (const model of this.mergedModelRows) {
+      // Yield to the event loop while the fan-out grows: see
+      // SNAPSHOT_FANOUT_YIELD_EVERY. Checked per model row so the `continue`
+      // paths below cannot skip it.
+      if (candidates.length - lastFanoutYieldAt >= SNAPSHOT_FANOUT_YIELD_EVERY) {
+        lastFanoutYieldAt = candidates.length;
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      }
       candidates.push(...this.buildModelCandidates(model));
     }
     return candidates;
@@ -672,8 +756,8 @@ class RouteCatalogBuildContext {
   }
 
   /** Builds the full snapshot result from the compiled rows. */
-  snapshot(): RouteCatalogSnapshotResult {
-    const candidates = this.fanOutCandidates();
+  async snapshot(): Promise<RouteCatalogSnapshotResult> {
+    const candidates = await this.fanOutCandidates();
     const { aliases, cliAliases, combos } = this.assembleLookups();
     const routingMap: ProviderRoutingMap | undefined =
       Object.keys(this.providerRouting).length > 0 ? (this.providerRouting as ProviderRoutingMap) : undefined;

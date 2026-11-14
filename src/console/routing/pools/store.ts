@@ -3,9 +3,10 @@
 // `store-queries.ts`; this module owns the store surface: orchestration,
 // probes, health checks, speed tests, and credential handling.
 import { randomUUID } from "node:crypto";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import type { CartethyiaDatabase } from "../../../persistence/db-handle";
-import { networkPools } from "../../../persistence/schema";
+import { networkPools, providers } from "../../../persistence/schema";
+import { ConsoleDomainError } from "../../shared/errors";
 import { providerRateLimitIsIpScoped } from "../../../providers/provider-metadata";
 import {
   DEFAULT_POOL_STRATEGY,
@@ -320,7 +321,28 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
     return row ? mapNetworkPoolRow(row, tenantId) : undefined;
   }
 
+  /**
+   * An exclusive assignment names a real provider the pool's tenant may
+   * use: a global provider, or one owned by this tenant. Anything else is
+   * a typo that would silently strand the pool — routing filters on this
+   * id, so a misspelling would make the pool serve nobody at all.
+   */
+  private async assertDedicatedProvider(tenantId: string, providerId: string): Promise<void> {
+    const rows = await this.db
+      .select({ id: providers.id, tenantId: providers.tenantId })
+      .from(providers)
+      .where(eq(providers.id, providerId))
+      .limit(1);
+    const row = rows[0];
+    if (!row || (row.tenantId !== null && row.tenantId !== tenantId)) {
+      throw new ConsoleDomainError("unknown_provider", 400, `Unknown provider ${providerId}`);
+    }
+  }
+
   async create(record: NetworkPoolRecord): Promise<void> {
+    if (record.dedicatedProviderId) {
+      await this.assertDedicatedProvider(record.tenantId, record.dedicatedProviderId);
+    }
     await this.createMany([record]).then(() => undefined);
   }
 
@@ -353,6 +375,9 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
       consecutiveFailures: 0,
       ...(record.quotaBytes !== undefined ? { quotaBytes: record.quotaBytes } : {}),
       ...(record.family !== undefined ? { family: record.family } : {}),
+      ...(record.dedicatedProviderId !== undefined
+        ? { dedicatedProviderId: record.dedicatedProviderId }
+        : {}),
     }));
     await insertPoolRows(this.db, values);
 
@@ -405,6 +430,9 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
   ): Promise<NetworkPoolRecord | undefined> {
     const current = await this.get(tenantId, poolId);
     if (!current) return undefined;
+    if (patch.dedicatedProviderId) {
+      await this.assertDedicatedProvider(current.tenantId, patch.dedicatedProviderId);
+    }
     const endpointConfig: Record<string, unknown> = {
       endpoint: patch.endpoint ?? current.endpoint,
       ...((patch.label ?? current.label) ? { label: patch.label ?? current.label } : {}),
@@ -453,6 +481,11 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
       // An explicit `null` clears the family tag; omitting the field leaves
       // it as-is, matching `quotaBytes`.
       ...("family" in patch ? { family: patch.family ?? null } : {}),
+      // Same shape: an explicit `null` returns the pool to shared;
+      // omitting the field leaves the assignment alone.
+      ...("dedicatedProviderId" in patch
+        ? { dedicatedProviderId: patch.dedicatedProviderId ?? null }
+        : {}),
       ...(endpointChanged
         ? {
             providerProbeProviderId: null,

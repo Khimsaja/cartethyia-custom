@@ -28,7 +28,7 @@ export function ApiKeySecretDialog({
     if (secret === null) return;
     downloadTextFile(
       "cartethyia-api-key.txt",
-      `Cartethyia API key\n\n${secret}\n\nKeep this secret. Reveal it again from the key's Share button.\n`,
+      `Cartethyia API key\n\n${secret}\n\nKeep this secret. Reveal it again from the key's Reveal button.\n`,
       "text/plain;charset=utf-8",
     );
     toast.success("Key saved to your downloads.");
@@ -39,14 +39,14 @@ export function ApiKeySecretDialog({
       open={secret !== null}
       onClose={onClose}
       title="New API key"
-      description="Copy it now, or reveal it again later from the key's Share button."
+      description="Copy it now, or reveal it again later from the key's Reveal button."
       size="md"
     >
       <div className="flex flex-col gap-7">
         <p className="text-body text-text-secondary m-0 leading-normal">
-          A personal key stays recoverable. Open the key's Share button and choose
-          Reveal to see it again and copy it. Rotating the key replaces this secret,
-          and any client still using it starts getting 401s.
+          A personal key stays recoverable. Use the key's Reveal button to see it
+          again and copy it. Rotating the key replaces this secret, and any client
+          still using it starts getting 401s.
         </p>
         <code
           className="block rounded-inset border border-inner-border bg-surface-1 py-5 px-6 text-caption text-text-primary break-all"

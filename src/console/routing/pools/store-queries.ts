@@ -116,6 +116,7 @@ export function mapNetworkPoolRow(row: NetworkPoolRow, tenantId: string): Networ
     ...(Object.keys(rest).length > 0 ? { config: rest } : {}),
     ...(row.credentialCiphertext ? { hasCredential: true } : {}),
     ...(row.family ? { family: row.family } : {}),
+    ...(row.dedicatedProviderId ? { dedicatedProviderId: row.dedicatedProviderId } : {}),
     tenantId,
     createdAt: row.createdAt.toISOString(),
   };

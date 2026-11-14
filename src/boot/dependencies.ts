@@ -46,6 +46,7 @@ import { deleteExpiredSessions } from "../console/auth/session-service";
 import { InMemoryIpAbuseStore, IpAbuseProtectionService, RedisIpAbuseStore, type IpAbuseStore } from "../security/abuse";
 import { checkReadiness } from "../persistence/readiness";
 import { ProxyRequestPreparer } from "../transport/request/preparer";
+import { AutoModelScorer } from "../transport/routing/auto-model";
 import { DrizzleNetworkPoolLoader } from "../network/pool/loader";
 import { PoolAgentResolver } from "../network/pool/resolver";
 import { ValidatedNetworkBindingFactory } from "../network/egress/factory";
@@ -745,6 +746,7 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
       snapshotService,
       routingEngine,
       admissionService,
+      autoModelScorer: new AutoModelScorer(),
     }),
     networkBindingFactory,
     ipAbuseProtection,

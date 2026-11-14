@@ -115,6 +115,9 @@ export function createNetworkPoolOperations(config: NetworkPoolConfig) {
       ...(request.credential !== undefined ? { hasCredential: true } : {}),
       ...(typeof request.quotaBytes === "number" ? { quotaBytes: request.quotaBytes } : {}),
       ...pickDefined({ family: request.family }),
+      ...(request.dedicatedProviderId === undefined
+        ? {}
+        : { dedicatedProviderId: request.dedicatedProviderId }),
     };
   }
   /**

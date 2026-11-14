@@ -68,10 +68,14 @@ export interface ApiKeyRecord {
   readonly modelPrefix?: string;
   readonly modelAccessMode?: ApiKeyModelAccessMode;
   readonly modelList?: readonly string[];
+  /** Template this key mirrors; see `api_keys.model_template_id`. */
+  readonly modelTemplateId?: string;
   /** Client-router ids this key refuses; see the schema column for the contract. */
   readonly clientRouterDenylist?: readonly string[];
   readonly createdAt: Date;
   readonly revokedAt?: Date;
+  /** Hard expiry for time-boxed keys; absent means the key never expires. */
+  readonly expiresAt?: Date;
   /** Ban state; see the schema column for the contract. */
   readonly bannedAt?: Date;
   readonly banReason?: string;
@@ -112,6 +116,8 @@ export interface ApiKeyPatch
     | "monthlyTokenLimit"
     | "lifetimeTokenBudget"
     | "maxConcurrentRequests"
+    | "modelTemplateId"
+    | "expiresAt"
     | "maxChildren"
     | "bannedAt"
     | "banReason"
@@ -134,6 +140,10 @@ export interface ApiKeyPatch
   readonly monthlyTokenLimit?: number | null;
   readonly lifetimeTokenBudget?: number | null;
   readonly maxConcurrentRequests?: number | null;
+  /** Null detaches the key from its model template; a string links it. */
+  readonly modelTemplateId?: string | null;
+  /** Null clears a previously set expiry; a date moves it. */
+  readonly expiresAt?: Date | null;
   readonly maxChildren?: number | null;
   /** Ban state; a ban also disables the key, unban clears both columns entirely. */
   readonly bannedAt?: Date | null;

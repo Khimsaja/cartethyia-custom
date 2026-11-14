@@ -70,6 +70,8 @@ export interface ApiKeyStore {
   listActiveBanned(tenantId: string): Promise<readonly ApiKeyRecord[]>;
   get(tenantId: string, keyId: string): Promise<ApiKeyRecord | undefined>;
   listChildren(tenantId: string, parentKeyId: string): Promise<readonly ApiKeyRecord[]>;
+  /** Every key in the tenant linked to one model template, oldest first. */
+  listByModelTemplate(tenantId: string, templateId: string): Promise<readonly ApiKeyRecord[]>;
   revokeChildrenByScope(
     tenantId: string,
     parentKeyId: string,
@@ -167,11 +169,13 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
       ...(row.modelPrefix === null ? {} : { modelPrefix: row.modelPrefix }),
       modelAccessMode: row.modelAccessMode,
       ...(row.modelList === null ? {} : { modelList: row.modelList as string[] }),
+      ...(row.modelTemplateId === null ? {} : { modelTemplateId: row.modelTemplateId }),
       ...(row.clientRouterDenylist === null
         ? {}
         : { clientRouterDenylist: row.clientRouterDenylist as string[] }),
       createdAt: row.createdAt,
       ...(row.revokedAt ? { revokedAt: row.revokedAt } : {}),
+      ...(row.expiresAt ? { expiresAt: row.expiresAt } : {}),
       ...(row.bannedAt ? { bannedAt: row.bannedAt } : {}),
       ...(row.banReason ? { banReason: row.banReason } : {}),
       ...(row.bannedUntil ? { bannedUntil: row.bannedUntil } : {}),
@@ -179,7 +183,10 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
     };
   }
   async list(tenantId: string): Promise<readonly ApiKeyRecord[]> {
-    // Bounded: a large tenant key list must not load fully into memory.
+    // Bounded: a large tenant key list must not load fully into memory. The
+    // bound must stay well above a real tenant's key count: callers (console
+    // list, reorder, backup export) treat the result as the full set, so a
+    // cap below the tenant size silently drops the newest keys.
     // Ordered by the explicit `sort_index`, not `created_at`: a stable key means
     // rows keep their position across reloads (and can be reordered) instead of
     // shifting when two rows share a timestamp or one is updated.
@@ -190,11 +197,11 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
       // Parents first: share children all carry `sort_index = 0` (the column
       // default), so sorting by `sort_index` alone lets a huge family of
       // children crowd every top-level key except the one with the oldest
-      // `created_at` out of the 1000-row page. The console only renders
+      // `created_at` out of the page. The console only renders
       // top-level keys, so they must never be truncated away by their own
       // children.
       .orderBy(sql`(${apiKeys.parentKeyId} IS NOT NULL)`, apiKeys.sortIndex, apiKeys.createdAt, apiKeys.id)
-      .limit(1000);
+      .limit(10000);
     return this.withPopups(this.db, rows);
   }
   async listForConsole(
@@ -268,6 +275,23 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
         and(
           eq(apiKeys.tenantId, tenantId),
           eq(apiKeys.parentKeyId, parentKeyId),
+        ),
+      )
+      .orderBy(apiKeys.createdAt, apiKeys.id);
+    return this.withPopups(this.db, rows);
+  }
+  /** Every key in the tenant linked to one model template, oldest first. */
+  async listByModelTemplate(
+    tenantId: string,
+    templateId: string,
+  ): Promise<readonly ApiKeyRecord[]> {
+    const rows = await this.db
+      .select()
+      .from(apiKeys)
+      .where(
+        and(
+          eq(apiKeys.tenantId, tenantId),
+          eq(apiKeys.modelTemplateId, templateId),
         ),
       )
       .orderBy(apiKeys.createdAt, apiKeys.id);
@@ -407,6 +431,8 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
       modelPrefix: record.modelPrefix ?? null,
       modelAccessMode: record.modelAccessMode ?? "whitelist",
       modelList: record.modelList ?? null,
+      modelTemplateId: record.modelTemplateId ?? null,
+      expiresAt: record.expiresAt ?? null,
       clientRouterDenylist: record.clientRouterDenylist ?? null,
       lifetimeTokensConsumed: record.tokensConsumed,
     });
@@ -478,6 +504,10 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
           ...(patch.modelPrefix !== undefined ? { modelPrefix: patch.modelPrefix } : {}),
           ...(patch.modelAccessMode !== undefined ? { modelAccessMode: patch.modelAccessMode } : {}),
           ...(patch.modelList !== undefined ? { modelList: patch.modelList } : {}),
+          ...(patch.modelTemplateId !== undefined
+            ? { modelTemplateId: patch.modelTemplateId }
+            : {}),
+          ...(patch.expiresAt !== undefined ? { expiresAt: patch.expiresAt } : {}),
           ...(patch.clientRouterDenylist !== undefined
             ? { clientRouterDenylist: patch.clientRouterDenylist }
             : {}),
@@ -595,24 +625,39 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
     // path skips it. PostgreSQL has no prepared statement here and uses the
     // builder, whose plan is cached server-side.
     const prepared = getDbHandle().auth;
-    if (prepared) return this.authRow(prepared.byHash.get(hash));
+    if (prepared) return this.liveRow(this.authRow(prepared.byHash.get(hash)));
     const rows = await this.db
       .select()
       .from(apiKeys)
       .where(and(eq(apiKeys.keyHash, hash), eq(apiKeys.enabled, true), isNull(apiKeys.revokedAt), notBannedSql()))
       .limit(1);
-    return rows[0];
+    return this.liveRow(rows[0]);
   }
 
   async findActiveById(keyId: string): Promise<typeof apiKeys.$inferSelect | undefined> {
     const prepared = getDbHandle().auth;
-    if (prepared) return this.authRow(prepared.byId.get(keyId));
+    if (prepared) return this.liveRow(this.authRow(prepared.byId.get(keyId)));
     const rows = await this.db
       .select()
       .from(apiKeys)
       .where(and(eq(apiKeys.id, keyId), eq(apiKeys.enabled, true), isNull(apiKeys.revokedAt), notBannedSql()))
       .limit(1);
-    return rows[0];
+    return this.liveRow(rows[0]);
+  }
+
+  /**
+   * Hard expiry is an active-condition too: a key past `expiresAt` resolves
+   * to nothing, exactly like a revoked one (the 401 surface deliberately
+   * does not distinguish). Enforced here rather than in the queries because
+   * the prepared SQLite lookup cannot express it, and auth must behave the
+   * same on both backends.
+   */
+  private liveRow(
+    row: typeof apiKeys.$inferSelect | undefined,
+  ): typeof apiKeys.$inferSelect | undefined {
+    if (row === undefined) return undefined;
+    if (row.expiresAt != null && row.expiresAt.getTime() <= Date.now()) return undefined;
+    return row;
   }
 
   /**
@@ -669,6 +714,7 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
       createdAt: date("created_at") ?? new Date(0),
       enabled: flag("enabled"),
       revokedAt: date("revoked_at"),
+      expiresAt: date("expires_at"),
       bannedAt: date("banned_at"),
       banReason: text("ban_reason"),
       bannedUntil: date("banned_until"),

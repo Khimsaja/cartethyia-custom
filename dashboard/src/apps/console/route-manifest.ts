@@ -3,6 +3,7 @@ import {
   Cpu,
   FlaskConical,
   LayoutDashboard,
+  LayoutTemplate,
   Network,
   Palette,
   ScrollText,
@@ -26,6 +27,7 @@ export type ConsoleRouteKey =
   | "model-lab"
   | "cli-tools"
   | "cli-tool-detail"
+  | "model-templates"
   | "settings";
 
 export interface ConsoleRouteMeta {
@@ -153,6 +155,18 @@ export const CONSOLE_ROUTE_SPECS: readonly ConsoleRouteSpec[] = [
     title: "CLI Tool",
     sub: "Mappings, endpoints, and downloadable config",
     icon: Terminal,
+  },
+  {
+    // TipRouter local route (not upstream): named model-list presets that
+    // API keys can mirror. Kept in the manifest so nav, page title, and
+    // route registration stay derived from one spec like every other route.
+    key: "model-templates",
+    path: "/model-templates",
+    navGroup: "Control",
+    navLabel: "Model Templates",
+    title: "Model Templates",
+    sub: "Named model-list presets that API keys can mirror",
+    icon: LayoutTemplate,
   },
   {
     key: "customization",
