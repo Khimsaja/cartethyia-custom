@@ -77,12 +77,19 @@ function creditWindow(
   resetsAt: string | null,
 ): ProviderQuotaWindow | null {
   if (remaining === null && limit === null) return null;
+  // A zero ceiling means the account has no such balance at all: Qoder's
+  // business API answers userQuota all-zeroes (total 0, remaining 0) for
+  // free-tier accounts, and those accounts can still serve — their real
+  // constraint is the agent quota, enforced per call as code 115. Reporting
+  // a zero ceiling as 100% used parked every free-tier account (2026-11-15:
+  // all 589 active Qoder accounts were excluded from routing by it), so a
+  // zero ceiling is "no readable balance", not a spent balance.
+  if (limit === 0 && (remaining === null || remaining === 0)) return null;
   const used = remaining !== null && limit !== null ? limit - remaining : null;
   // Give pooled windows a percentage so the console can render a real bar and
   // tone instead of an uncolored "quota-only" row (which is what a null
   // percent produced: every Qoder account was grey, and "enable available
-  // accounts" could never match a window). A ceiling of 0 with nothing left is
-  // a spent balance — report 0% remaining rather than a null percent.
+  // accounts" could never match a window).
   let usedPercent: number | null = null;
   if (remaining !== null && limit !== null) {
     if (limit > 0) usedPercent = ((limit - remaining) / limit) * 100;
@@ -171,8 +178,11 @@ export async function fetchQoderQuota(
   // A live account on the free tier really does answer `userQuota` all zeroes
   // with `isQuotaExceeded: true` — verified against a real credential:
   // `{"isQuotaExceeded":true,"userQuota":{"total":0,"used":0,"remaining":0},
-  // "totalUsagePercentage":0.0,...}`. That is a balance of zero, not an
-  // unreadable body. Only a response with *both* quota objects absent is
+  // "totalUsagePercentage":0.0,...}`. That is a real answer, not an
+  // unreadable body — but a zero ceiling is not a spent balance either: the
+  // account can still serve (its real constraint is the agent quota), so
+  // `creditWindow` drops zero-ceiling windows instead of reporting them as
+  // 100% used. Only a response with *both* quota objects absent is
   // unreadable, and it is logged rather than returned — never as an error,
   // which would cool the account.
   if (bothMissing) {

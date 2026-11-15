@@ -443,10 +443,15 @@ describe("Qoder quota — an unreadable body is not a zero balance", () => {
     expect(shared?.limit).toBe(2500);
   });
 
-  test("a live free-tier zero balance is reported, not discarded", async () => {
+  test("a live free-tier zero balance yields no window (unknown, not spent)", async () => {
     // Verified against a real credential: a live free-tier account answers
-    // `userQuota` all zeroes with `isQuotaExceeded: true`. That is a balance of
-    // zero, not an unreadable body — discarding it hid the account entirely.
+    // `userQuota` all zeroes with `isQuotaExceeded: true`. That used to be
+    // reported as a spent 0/0 window — until 2026-11-15, when the zero window
+    // parked all 589 active Qoder accounts from routing while a per-account
+    // sweep proved 549 of them could still call lite-qwen-3.7-plus. The plan
+    // window does not govern serving (the agent quota does), so a zero ceiling
+    // is "no readable balance": no window, no error, and the account stays
+    // routable.
     const fetcher = routedFetcher([
       [
         "quota/usage",
@@ -460,11 +465,7 @@ describe("Qoder quota — an unreadable body is not a zero balance", () => {
 
     const result = await fetchQoderQuota("token", fetcher, {});
 
-    expect(result.windows).toHaveLength(1);
-    expect(result.windows[0]?.used).toBe(0);
-    expect(result.windows[0]?.limit).toBe(0);
-    // A spent 0/0 balance reads as 0% remaining, not an uncolored row.
-    expect(result.windows[0]?.remainingPercent).toBe(0);
+    expect(result.windows).toHaveLength(0);
     expect(result.error).toBeNull();
   });
 
