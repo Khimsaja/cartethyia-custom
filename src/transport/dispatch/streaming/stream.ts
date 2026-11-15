@@ -50,11 +50,11 @@ import { isWrappedInjectionProvider } from "../../../protocol/system-prompt-cont
 import { proxySuccessHeaders, buildUpstreamDispatchContext, buildDispatchNetworkBindings } from "../upstream";
 import type { AttemptLeaseOwnership } from "../leases";
 import type { ProviderContinuationScope } from "../../../providers/provider-contracts";
-import { resolveStreamFirstChunkTimeoutMs, resolveStreamStallTimeoutMs, resolveUpstreamTimeoutMs } from "../../../config/timeouts";
+import { resolveStreamEarlyCommitBudgetMs, resolveStreamEarlyCommitEnabled, resolveStreamFirstChunkTimeoutMs, resolveStreamStallTimeoutMs, resolveUpstreamTimeoutMs } from "../../../config/timeouts";
 import type { ProxyRequestState } from "../../request/state";
 import type { PreparedProxyRequest } from "../../request/preparer";
 import { drainAbortReason } from "../../shutdown-notice";
-import { StreamEventPipeline } from "./encoder";
+import { KEEPALIVE_COMMENT_BYTES, StreamEventPipeline } from "./encoder";
 import { StreamFinalizer, type StreamCandidateIdentity } from "./finalize";
 
 /** Collaborators the streaming branch reads from the dispatch handler. */
@@ -130,6 +130,54 @@ function nextWithAbort<T>(iterator: AsyncIterator<T>, signal: AbortSignal): Prom
         },
       );
   });
+}
+
+/**
+ * Result of racing the first upstream event against the early-commit budget.
+ *
+ * `timedOut: false` carries the first event (already resolved); `timedOut:
+ * true` carries the still-pending promise, which the stream's `start()` keeps
+ * awaiting while keepalives flow to the client.
+ */
+export type FirstEventRace =
+  | { readonly timedOut: false; readonly first: IteratorResult<CanonicalEvent> }
+  | { readonly timedOut: true; readonly pending: Promise<IteratorResult<CanonicalEvent>> };
+
+/**
+ * Races the first upstream event against the early-commit budget.
+ *
+ * The first event wins the race when it settles within the budget — resolved
+ * or rejected. A fast rejection rethrows to the caller (the attempt loop),
+ * so pre-commit failover to the next candidate is preserved exactly. Only a
+ * first event that is still pending when the budget elapses takes the
+ * timeout branch, and the returned promise stays alive for `start()` to
+ * finish priming after the stream is committed.
+ *
+ * The settlement is observed through a handler pair, so a rejection that
+ * lands after the budget elapses is consumed here and never surfaces as an
+ * unhandled rejection: `start()` awaits the same promise and routes it
+ * through the stream error path.
+ */
+export async function raceFirstEvent(
+  firstPromise: Promise<IteratorResult<CanonicalEvent>>,
+  budgetMs: number,
+): Promise<FirstEventRace> {
+  let budgetTimer: ReturnType<typeof setTimeout> | undefined;
+  const budgetElapsed = new Promise<boolean>((resolve) => {
+    budgetTimer = setTimeout(() => resolve(true), budgetMs);
+    budgetTimer.unref?.();
+  });
+  const firstSettled = firstPromise.then(
+    () => false,
+    () => false,
+  );
+  try {
+    const timedOut = await Promise.race([firstSettled, budgetElapsed]);
+    if (!timedOut) return { timedOut: false, first: await firstPromise };
+    return { timedOut: true, pending: firstPromise };
+  } finally {
+    if (budgetTimer !== undefined) clearTimeout(budgetTimer);
+  }
 }
 
 /**
@@ -246,7 +294,40 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
   let iterable = createUpstreamIterable();
   let iterator = iterable[Symbol.asyncIterator]();
   state.upstreamDispatchStartedAtMs = Date.now();
-  let first: IteratorResult<CanonicalEvent> = await nextWithAbort(iterator, state.abortController.signal);
+  // The first upstream event is primed before the response is committed, so a
+  // candidate that cannot produce even one event fails pre-commit and the
+  // attempt loop can fail over to the next candidate. The early-commit path
+  // keeps that property for fast failures and only moves the wait past the
+  // commit point when the first event is slow: the race below returns the
+  // event (or its throw) while it settles inside the budget, and only a
+  // still-pending first event takes the timeout branch. A slow candidate
+  // therefore commits the stream with keepalives flowing instead of leaving
+  // the client in silence — the shape that made impatient clients abort with
+  // `transport_closed` while the gateway was still priming.
+  let first: IteratorResult<CanonicalEvent> | undefined;
+  let pendingFirst: Promise<IteratorResult<CanonicalEvent>> | undefined;
+  if (resolveStreamEarlyCommitEnabled()) {
+    // Resolve the budget before starting the upstream iterator: a
+    // misconfigured budget throws here, with no iterator in flight to leak
+    // (an un-awaited priming promise rejects unhandled once the request
+    // aborts, which is how the first test run surfaced this).
+    const budgetMs = resolveStreamEarlyCommitBudgetMs();
+    const raced = await raceFirstEvent(
+      nextWithAbort(iterator, state.abortController.signal),
+      budgetMs,
+    );
+    if (!raced.timedOut) {
+      first = raced.first;
+    } else {
+      pendingFirst = raced.pending;
+    }
+  } else {
+    first = await nextWithAbort(iterator, state.abortController.signal);
+  }
+  // Pre-content redials spent by the early-commit path, in `start()`: at most
+  // one same-candidate redial per stream, mirroring the socket-drop budget
+  // (`MAX_SOCKET_DROP_RETRIES`) the attempt loop already grants.
+  let earlyCommitRedials = 0;
   const candidateIdentity: StreamCandidateIdentity = {
     providerId: candidate.provider_id,
     modelId: candidate.model_id,
@@ -358,7 +439,80 @@ export async function dispatchStreamingAttempt(input: StreamingDispatchInput): P
       finalizer.attachController(controller);
       if (state.abortController.signal.aborted) return;
       finalizer.startClientKeepalive(controller, CLIENT_SSE_KEEPALIVE_INTERVAL_MS);
-      if (!first.done) pipeline.enqueueEvent(first.value, controller);
+      if (first !== undefined) {
+        if (!first.done) pipeline.enqueueEvent(first.value, controller);
+        return;
+      }
+      // Early-commit path: the first event is still pending. Bun only flushes
+      // response headers once start() enqueues a chunk (or resolves), so
+      // enqueue a keepalive comment synchronously first — without it the
+      // "early" commit waits for the first event exactly like the old path
+      // (verified against Bun 1.4.2: a start() that only awaits holds the
+      // headers until it settles). A direct interval keeps comments flowing
+      // while priming finishes: the shared keepalive timer cannot do this,
+      // because with highWaterMark 0 desiredSize is never > 0 and its gate
+      // never opens — the timer is inert on this stream today. Keepalive
+      // comments are framing, not client-visible events, so they do not
+      // disturb the pre-content redial below; the interval is cleared once
+      // the first event lands or the stream errors. The first-chunk watchdog
+      // bounds the wait (it fires on upstream silence, not on stream
+      // duration), and `pull()` re-arms it per read once the first byte lands.
+      if (pendingFirst !== undefined) {
+        try {
+          controller.enqueue(KEEPALIVE_COMMENT_BYTES);
+        } catch {
+          // The consumer is already gone; the abort handler owns release.
+          return;
+        }
+        finalizer.armStallWatchdog(false);
+        const primingKeepalive = setInterval(() => {
+          if (state.abortController.signal.aborted) return;
+          try {
+            controller.enqueue(KEEPALIVE_COMMENT_BYTES);
+          } catch {
+            // The controller is closed; the watchdog/abort path owns release.
+          }
+        }, CLIENT_SSE_KEEPALIVE_INTERVAL_MS);
+        primingKeepalive.unref?.();
+        try {
+          const resolved = await pendingFirst;
+          finalizer.clearStallWatchdog();
+          if (state.abortController.signal.aborted) return;
+          if (!resolved.done) pipeline.enqueueEvent(resolved.value, controller);
+        } catch (err) {
+          finalizer.clearStallWatchdog();
+          if (state.abortController.signal.aborted) return;
+          // Nothing client-visible has been sent, so one same-candidate
+          // redial is safe: the request is replayed byte-identical and the
+          // client never sees the failed attempt. Cross-candidate failover
+          // stays with the attempt loop, which already returned — a second
+          // failure therefore ends the stream with the typed error frame,
+          // exactly as a mid-stream break does today.
+          if (earlyCommitRedials < 1) {
+            earlyCommitRedials += 1;
+            try {
+              await iterator.return?.();
+            } catch {
+              // The failed provider iterator is already being discarded.
+            }
+            sawUpstreamActivity = false;
+            iterable = createUpstreamIterable();
+            iterator = iterable[Symbol.asyncIterator]();
+            state.upstreamDispatchStartedAtMs = Date.now();
+            try {
+              const redialed = await nextWithAbort(iterator, state.abortController.signal);
+              if (state.abortController.signal.aborted) return;
+              if (!redialed.done) pipeline.enqueueEvent(redialed.value, controller);
+            } catch (redialErr) {
+              await finalizer.emitStreamErrorAndClose(redialErr, controller);
+            }
+          } else {
+            await finalizer.emitStreamErrorAndClose(err, controller);
+          }
+        } finally {
+          clearInterval(primingKeepalive);
+        }
+      }
     },
     async pull(controller) {
       finalizer.pullActive = true;

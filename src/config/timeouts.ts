@@ -92,6 +92,31 @@ export function resolveStreamFirstChunkTimeoutMs(): number {
   );
 }
 
+/**
+ * Whether a streaming response commits before the first upstream event
+ * arrives (early commit). Default off: enabled only when the operator sets
+ * `CARTETHYIA_STREAM_EARLY_COMMIT_ENABLED=1` (or `true`). Read directly from
+ * the environment, like `isAutoModelEnabled`: the spec `flag` kind is
+ * enabled-unless-`"false"`, which is the wrong default for a rollout switch.
+ */
+export function resolveStreamEarlyCommitEnabled(): boolean {
+  const value = process.env.CARTETHYIA_STREAM_EARLY_COMMIT_ENABLED?.trim().toLowerCase();
+  return value === "1" || value === "true";
+}
+
+/**
+ * Max wait for the first upstream event before the stream commits (early
+ * commit). Defaults to 10s: under the ~30s at which impatient clients start
+ * aborting a silent wait, and far above the ~2s median first-token latency,
+ * so the common path still primes pre-commit and keeps attempt-loop failover.
+ */
+export function resolveStreamEarlyCommitBudgetMs(): number {
+  return readInt(
+    "CARTETHYIA_STREAM_EARLY_COMMIT_BUDGET_MS",
+    CONFIG_SPEC.CARTETHYIA_STREAM_EARLY_COMMIT_BUDGET_MS,
+  );
+}
+
 /** Base delay for candidate-failover backoff (full-jitter exponential). Default 100ms. */
 export function resolveFallbackRetryBaseMs(): number {
   return readInt("CARTETHYIA_FALLBACK_RETRY_BASE_MS", CONFIG_SPEC.CARTETHYIA_FALLBACK_RETRY_BASE_MS);
