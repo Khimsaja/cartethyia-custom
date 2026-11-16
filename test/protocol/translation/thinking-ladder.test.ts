@@ -61,6 +61,12 @@ describe("resolveThinkingForModel ladder mapping", () => {
     expect(thinking.efforts).toEqual(["low", "medium", "high"]);
   });
 
+  test("plamo is narrowed to {medium} (upstream 422s anything else)", () => {
+    const thinking = resolveThinkingForModel("plamo-3.1-prime", "plamo", "chat");
+    expect(thinking.efforts).toEqual(["medium"]);
+    expect(thinking.mode).toBe("effort");
+  });
+
   test("declared efforts win over the rule table", () => {
     const thinking = resolveThinkingForModel("custom-model", "provider", "chat", {
       efforts: ["low", "high"],
@@ -103,6 +109,16 @@ describe("clampThinkingLevelForModel", () => {
     expect(clampThinkingLevelForModel(gpt55, "minimal")).toBe("low");
   });
 
+  test("plamo clamps every effort to medium, none sends nothing", () => {
+    const plamo = resolveThinkingForModel("plamo-3.1-prime", "plamo", "chat");
+    expect(clampThinkingLevelForModel(plamo, "high")).toBe("medium");
+    expect(clampThinkingLevelForModel(plamo, "xhigh")).toBe("medium");
+    expect(clampThinkingLevelForModel(plamo, "max")).toBe("medium");
+    expect(clampThinkingLevelForModel(plamo, "low")).toBe("medium");
+    expect(clampThinkingLevelForModel(plamo, "medium")).toBe("medium");
+    expect(clampThinkingLevelForModel(plamo, "none")).toBeUndefined();
+  });
+
   test("an in-ladder request passes through untouched", () => {
     const extended = resolveThinkingForModel("deepseek-v4.1-flash", "deepseek", "chat");
     expect(clampThinkingLevelForModel(extended, "max")).toBe("max");
@@ -123,6 +139,21 @@ describe("golden wire payloads stay byte-identical for defaults", () => {
     request.reasoning = { effort: "max" };
     const payload = canonicalToChatPayload(request);
     expect(payload["reasoning_effort"]).toBe("max");
+  });
+
+  test("chat reasoning effort for plamo (high) clamps to medium", () => {
+    const request = req("plamo-3.1-prime");
+    request.reasoning = { effort: "high" };
+    const payload = canonicalToChatPayload(request);
+    expect(payload["reasoning_effort"]).toBe("medium");
+
+    const lowReq = req("plamo-3.1-prime");
+    lowReq.reasoning = { effort: "low" };
+    expect(canonicalToChatPayload(lowReq)["reasoning_effort"]).toBe("medium");
+
+    const noneReq = req("plamo-3.1-prime");
+    noneReq.reasoning = { effort: "none" };
+    expect(canonicalToChatPayload(noneReq)["reasoning_effort"]).toBeUndefined();
   });
 
   test("responses reasoning effort for gpt-5.5 (xhigh) passes through, (max) clamps", () => {

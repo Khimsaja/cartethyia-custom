@@ -88,6 +88,16 @@ const INCEPTION_SUPPORTED_EFFORTS: readonly ReasoningEffortLevel[] = [
   "high",
 ];
 
+/**
+ * PLaMo chat ladder: only `medium`. The upstream validates `reasoning_effort`
+ * as a literal enum and answers 422 for anything outside `none`/`medium`
+ * (live 422 2026-11-16: `Input should be 'none' or 'medium'`, input `high`).
+ * `none` is not listed: the clamp sends nothing for it, which the upstream
+ * already accepts (proven by effort-less 200s), so the ladder holds the one
+ * level the API actually runs.
+ */
+const PLAMO_SUPPORTED_EFFORTS: readonly ReasoningEffortLevel[] = ["medium"];
+
 /** OpenAI 5.6/6/daybreak + new-gen Claude adaptive: `low..max`, no `minimal`. */
 const LOW_TO_MAX_SUPPORTED_EFFORTS: readonly ReasoningEffortLevel[] = [
   "low",
@@ -148,6 +158,10 @@ export const THINKING_LADDER_RULES: readonly ThinkingLadderRule[] = [
     wireFamily: "chat",
     efforts: INCEPTION_SUPPORTED_EFFORTS,
   },
+  // PLaMo chat ladder: only `medium` (live 422 for `high`, 2026-11-16).
+  // `high`/`xhigh`/`max` clamp down to it; a request below the floor clamps
+  // up to it; `none` still sends nothing.
+  { id: /plamo/, efforts: PLAMO_SUPPORTED_EFFORTS },
   // Claude adaptive 4.6 pair: `low..high`, no `xhigh`/`max`.
   {
     id: /opus-4-6|sonnet-4-6/,
