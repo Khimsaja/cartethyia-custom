@@ -426,8 +426,11 @@ export function canonicalToChatPayload(
           if (m.role === "assistant" && hasReasoning) continue;
           if (m.role !== "assistant" && hasReasoning && reasoningContent.length > 0) {
             const last = messages[messages.length - 1];
-            if (last !== undefined && last["role"] === "tool") {
-              last["reasoning_content"] = reasoningContent;
+            // Same side channel as carryReasoning above: a dialect without a
+            // reasoning field (e.g. PLaMo, which 400s on `reasoning_content`)
+            // drops the fold instead of writing it under a hardcoded name.
+            if (last !== undefined && last["role"] === "tool" && reasoningField !== undefined) {
+              last[reasoningField] = reasoningContent;
             }
           }
           continue;

@@ -25,6 +25,7 @@ export type DialectId =
   | "kimi"
   | "glm"
   | "minimax"
+  | "plamo" // OpenAI-compatible, but rejects reasoning_content outright
   | "gemini"; // extensibel
 
 /** Resolved policy consumed by the wire codecs. Every field has a safe

@@ -39,6 +39,16 @@ describe("resolveDialect", () => {
     expect(unknown.inband).toBe("qwen"); // heuristic still applies; no throw
   });
 
+  test("plamo resolves to the no-reasoning-content dialect", () => {
+    const plamo = resolveDialect("plamo-3.1-prime", "plamo", "chat");
+    expect(plamo.reasoningContentField).toBeUndefined();
+    // Everything else matches the OpenAI default.
+    expect(plamo.maxTokensField).toBe("max_tokens");
+    expect(plamo.supportsToolChoice).toBe(true);
+    expect(plamo.supportsMultipleSystemMessages).toBe(true);
+    expect(plamo.thinkingFormat).toBe("openai");
+  });
+
   test("memoization: repeated same-args calls return the identical object", () => {
     const a = resolveDialect("deepseek-v4-pro", "deepseek", "messages");
     const b = resolveDialect("deepseek-v4-pro", "deepseek", "messages");
@@ -66,6 +76,34 @@ describe("canonicalToChatPayload dialect policy", () => {
     });
     expect(defaulted).toEqual(plain);
     expect(openai).toEqual(plain);
+  });
+
+  test("plamo drops reasoning_content from replayed assistant turns", () => {
+    const withHistory = req();
+    withHistory.model = "plamo-3.1-prime";
+    withHistory.messages = [
+      {
+        role: "assistant",
+        content: [
+          { kind: "text", text: "Halo!" },
+          { kind: "reasoning", payload: "ENCRYPTED-TRACE", summary: "thinking" },
+        ],
+      },
+      { role: "user", content: [{ kind: "text", text: "hai" }] },
+    ];
+    const plamo = canonicalToChatPayload(withHistory, {
+      dialectPolicy: resolveDialect("plamo-3.1-prime", "plamo", "chat"),
+    });
+    const plamoMessages = (plamo as Record<string, unknown>)["messages"] as Array<Record<string, unknown>>;
+    expect(plamoMessages.some((m) => "reasoning_content" in m)).toBe(false);
+    expect(plamoMessages.some((m) => "reasoning" in m)).toBe(false);
+
+    const openai = canonicalToChatPayload(withHistory, {
+      dialectPolicy: resolveDialect("x", "openai", "chat"),
+    });
+    const openaiMessages = (openai as Record<string, unknown>)["messages"] as Array<Record<string, unknown>>;
+    const replayed = openaiMessages.find((m) => m["role"] === "assistant");
+    expect(replayed?.["reasoning_content"]).toBeDefined();
   });
 });
 

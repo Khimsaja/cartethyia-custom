@@ -59,6 +59,26 @@ const QWEN_POLICY: DialectPolicy = {
   inband: "qwen",
 };
 
+/**
+ * PLaMo: OpenAI-compatible except it rejects `reasoning_content` outright —
+ * replaying a prior assistant turn's reasoning answers 400
+ * `{"detail": "reasoning_content is not supported."}` (live 400 2026-11-16:
+ * the first turn succeeds, every follow-up fails because the reasoning-bearing
+ * assistant message stays in history). The policy therefore carries no
+ * `reasoningContentField`, so the codecs drop the side channel instead of
+ * sending it; everything else matches the OpenAI default.
+ */
+const PLAMO_POLICY: DialectPolicy = {
+  maxTokensField: "max_tokens",
+  stripSpecialTokens: false,
+  supportsMultipleSystemMessages: true,
+  supportsToolChoice: true,
+  requiresAssistantContentForToolCalls: false,
+  allowsSyntheticReasoningContent: true,
+  thinkingFormat: "openai",
+  inband: null,
+};
+
 /** Resolved policy per dialect id. A missing id falls back in `resolver.ts`. */
 export const DEFAULT_DIALECT_POLICIES: Readonly<Record<DialectId, DialectPolicy>> = {
   openai: OPENAI_POLICY,
@@ -68,6 +88,7 @@ export const DEFAULT_DIALECT_POLICIES: Readonly<Record<DialectId, DialectPolicy>
   kimi: OPENAI_POLICY,
   glm: OPENAI_POLICY,
   minimax: OPENAI_POLICY,
+  plamo: PLAMO_POLICY,
   gemini: OPENAI_POLICY,
 };
 
@@ -85,6 +106,10 @@ export const DIALECT_RULES: readonly DialectRule[] = [
   {
     dialect: "deepseek",
     match: (_modelId, providerId) => providerId.toLowerCase() === "deepseek",
+  },
+  {
+    dialect: "plamo",
+    match: (_modelId, providerId) => providerId.toLowerCase() === "plamo",
   },
   {
     dialect: "qwen",
