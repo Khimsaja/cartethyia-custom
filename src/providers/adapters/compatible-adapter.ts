@@ -14,6 +14,7 @@ import { applyRouteUserAgent, type ProviderDispatchTarget, type ProviderId, type
 import { BaseProviderAdapter } from "./base-adapter";
 import { encodeWireRequest, decodeWireResponse, decodeWireStream } from "../../protocol/registry";
 import { resolveDialect } from "../../protocol/translation/dialect/resolver";
+import { applyParamQuirks, hasParamQuirk } from "../../protocol/translation/quirks";
 import { resolveThinkingForModel } from "../../protocol/translation/dialect/thinking-ladder";
 import type { DialectPolicy } from "../../protocol/translation/dialect/types";
 import { postUpstreamJson } from "../../protocol/upstream/post-json";
@@ -266,7 +267,14 @@ export class OpenAICompatibleAdapter extends BaseProviderAdapter {
     context: ProviderDispatchContext,
   ): Promise<unknown> {
     const wireFamily = candidate.wire_family;
-    const effectiveRequest = this.config.prepareRequest?.(request) ?? request;
+    const baseRequest = this.config.prepareRequest?.(request) ?? request;
+    // Generic/BYOK providers never had the quirks table applied — the bespoke
+    // integrations call it themselves. Gated on a matching row so the
+    // universal Messages-wire thinking strip inside it does not leak onto
+    // chat/responses providers that never asked for it.
+    const effectiveRequest = hasParamQuirk(candidate.provider_id, baseRequest.model)
+      ? applyParamQuirks(baseRequest, candidate.provider_id)
+      : baseRequest;
     const promptCacheKey = resolvePromptCacheKey(effectiveRequest, context);
     const dialectPolicy: DialectPolicy = resolveDialect(
       candidate.model_id,

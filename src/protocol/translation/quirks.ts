@@ -29,6 +29,13 @@ export interface ParamQuirk {
   readonly stripControls?: readonly (keyof GenerationControls)[];
   /** Upper bound applied to `generation_controls.max_tokens` when exceeded. */
   readonly clampMaxOutput?: number;
+  /**
+   * Controls forced onto the request, overriding whatever the caller sent.
+   * Unlike strip/clamp — which exist because an upstream rejects a value —
+   * a forced control is an operator-requested override for one provider.
+   * Applied last so it wins over the strip/clamp above.
+   */
+  readonly forceControls?: Readonly<Partial<GenerationControls>>;
 }
 
 /** Per-wire output-token policy, in one table instead of per-builder branches. */
@@ -183,6 +190,12 @@ const PARAM_QUIRKS: readonly ParamQuirk[] = [
     matchModel: rejectsSamplingParams,
     stripControls: ["temperature", "top_p", "top_k"],
   },
+  {
+    provider: "maritaca",
+    // Operator-requested override (2026-11-17), NOT an upstream-proven quirk:
+    // every Maritaca request goes out with temperature 1, whatever the caller sent.
+    forceControls: { temperature: 1 },
+  },
 ];
 
 /** Finds the first quirk matching the provider/model pair, or undefined. */
@@ -249,5 +262,23 @@ export function applyParamQuirks(
     }
   }
 
+  if (quirk?.forceControls !== undefined && Object.keys(quirk.forceControls).length > 0) {
+    if (!changed) controls = { ...controls };
+    controls = { ...controls, ...quirk.forceControls };
+    changed = true;
+  }
+
   return changed ? { ...request, generation_controls: controls } : request;
+}
+
+/**
+ * True when a declarative quirk row matches the provider/model pair. The
+ * generic OpenAI-compatible adapter gates on this: its chat/responses wires
+ * never had the quirks table applied, and the universal thinking strip inside
+ * `applyParamQuirks` is a Messages-wire rule — calling it unconditionally
+ * would strip sampling controls from every BYOK provider's thinking
+ * requests. Only providers with a row get the table.
+ */
+export function hasParamQuirk(providerId: string, modelId: string): boolean {
+  return findParamQuirk(providerId, modelId) !== undefined;
 }
