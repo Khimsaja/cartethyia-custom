@@ -351,7 +351,7 @@ function logSweepAccounts(
  * while it waits.
  */
 const DEFAULT_MIN_AGE_MS = 8 * 60_000;
-const DEFAULT_MAX_PER_PASS = 40;
+const DEFAULT_MAX_PER_PASS = 120;
 const DEFAULT_PASS_BUDGET_MS = 90_000;
 
 /**

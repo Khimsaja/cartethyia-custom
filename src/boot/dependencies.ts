@@ -650,9 +650,12 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
         // the same account refreshes fine from the console, which binds the
         // same marker through `createQuotaRefreshDeps`.
         markApiKeyCredential: markProviderApiKeyCredential,
-        // Below the 60 s interval: a budget longer than the tick guarantees
-        // skip/burst under load instead of steady progress.
-        passBudgetMs: 45_000,
+        // 90 s: a pass now handles up to 120 accounts, and a 45 s budget
+        // would truncate it before the batch is done. Above the 60 s
+        // interval, so a long pass skips the next tick instead of
+        // overlapping (the sweep is non-overlapping); the effective
+        // cadence under load is ~90 s, still a ~30 min full cycle.
+        passBudgetMs: 90_000,
         // The check-in ride-along rotates egress per account: each account
         // gets the next active pool in its tenant's rotation so check-ins
         // spread across IPs instead of sharing one direct egress. No pool
