@@ -86,6 +86,11 @@ export function validateCompatibilityProfile(profile: CompatibilityProfile): voi
       throw new GatewayError("invalid_request", 400, "gateway_user_agent must be boolean. Check the shape of what you sent — then resend 🪞");
     }
   }
+  if (profile.prompt_cache !== undefined) {
+    if (typeof profile.prompt_cache !== "boolean") {
+      throw new GatewayError("invalid_request", 400, "prompt_cache must be boolean. Check the shape of what you sent — then resend 🪞");
+    }
+  }
   if (profile.extra_headers) {
     for (const [rawName, rawValue] of Object.entries(profile.extra_headers)) {
       const name = rawName.toLowerCase();
@@ -230,6 +235,10 @@ export function validateCompatibilityProfile(profile: CompatibilityProfile): voi
     // Explicit gateway-identity opt-in for BYOK rows (mirrors
     // `ApiKeyProviderSpec.gatewayUserAgent` for bundled specs).
     gateway_user_agent: true,
+    // Read by the BYOK registration in provider-catalog-service: maps onto
+    // the adapter's `supports_prompt_caching` flag, dropping the
+    // `prompt_cache_key` Maritaca rejects with 422 `extra_forbidden`.
+    prompt_cache: true,
   };
   for (const k of Object.keys(profile)) {
     if (!allowed[k]) {

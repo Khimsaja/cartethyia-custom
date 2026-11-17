@@ -393,6 +393,14 @@ export async function registerByokProviders(
           ...(compatibilityProfile?.streaming_usage_mode
             ? { streaming_usage_mode: compatibilityProfile.streaming_usage_mode }
             : {}),
+          // A provider whose upstream rejects the prompt-cache key (Maritaca
+          // 422s on `prompt_cache_key: extra_forbidden`) declares
+          // `prompt_cache: false` on its row; map it onto the adapter flag
+          // the chat/responses codecs already gate on. Without this the flag
+          // has no reader on the BYOK path and the key is sent anyway.
+          ...(compatibilityProfile?.prompt_cache === false
+            ? { supports_prompt_caching: false }
+            : {}),
           ...(compatibilityProfile?.structured_output
             ? { structured_output: compatibilityProfile.structured_output }
             : {}),

@@ -20,6 +20,14 @@ export interface CompatibilityProfile {
   /** Whether requests to OpenAI/Anthropic-compatible upstream should send official CLI headers. Defaults to true. */
   readonly cli_identity?: boolean;
   /**
+   * `false` drops OpenAI prompt-cache controls from the payload: the gateway
+   * sends no `prompt_cache_key` and no prompt-cache extension fields.
+   * Maritaca's API rejects the key with 422 `extra_forbidden` (verified live
+   * 2026-11-17); the BYOK registration maps this onto the adapter's
+   * `supports_prompt_caching` flag. Defaults to true.
+   */
+  readonly prompt_cache?: boolean;
+  /**
    * Direct egress for this provider uses the runtime-native fetch instead of
    * the Node-stack pinned agent. Some upstreams meter per client transport
    * fingerprint — OpenCode's anonymous free tier refuses the Node agent with
