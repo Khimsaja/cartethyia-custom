@@ -18,13 +18,20 @@ export const SPEC_ONLY_ENV_EXAMPLE_KEYS: Readonly<Record<string, true>> = {
   // Install-identity directory; only operators who need a stable identity
   // across restarts touch it, and the reference covers it.
   CARTETHYIA_INSTALL_ID_DIR: true,
-  CARTETHYIA_OAUTH_CALLBACK_PORT: true,
   // Provider-specific overrides. Readers live in `src/config/providers.ts`;
   // the majority of installs do not need them in the starter sample.
   CARTETHYIA_KIMI_OAUTH_HOST: true,
   CARTETHYIA_KIMI_QUOTA_BASE_URL: true,
   CARTETHYIA_GITHUB_ENTERPRISE_DOMAIN: true,
   CARTETHYIA_OPENCODE_UNAVAILABLE_FREE: true,
+  // Same doctrine: provider-specific tuning knobs, documented in the generated
+  // configuration reference rather than sampled for every install.
+  CARTETHYIA_QODER_MIN_GAP_MS: true,
+  CARTETHYIA_QODER_P4_WARN_STREAK: true,
+  CARTETHYIA_CURSOR_CLIENT_VERSION: true,
+  CARTETHYIA_CURSOR_HEARTBEAT_MS: true,
+  CARTETHYIA_CURSOR_WIRE_TRACE: true,
+  CARTETHYIA_ZCODE_AUTO_CLAIM: true,
   // Telemetry retention is deployment-level and documented in the reference.
   CARTETHYIA_TELEMETRY_RETENTION_DAYS: true,
   CARTETHYIA_TELEMETRY_PAYLOAD_MAX_BYTES: true,

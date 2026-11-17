@@ -1,63 +1,124 @@
-// Per-account Cursor model-roster cache. A Run needs the model's declared
-// default parameter tuple, but the roster is per-account and moves rarely, so
-// it is fetched once and reused rather than on every dispatch.
-import { fnv1a32 } from "../shared/hash";
-import { TtlCache } from "../../../persistence/ttl-cache";
-import type { CursorModelInfo } from "./cursor-catalog";
-
 /**
- * How long one account's model roster is reused for `parameters` lookups.
+ * Per-credential roster cache for Cursor model discovery.
  *
- * A Run needs the model's declared default parameter tuple, but the roster is
- * per-account and moves rarely, so it is fetched once and cached rather than on
- * every dispatch.
- */
-const CURSOR_ROSTER_TTL_MS = 300_000;
-/**
- * credential → roster for the parameter lookup.
+ * Why this exists: `AvailableModels` is one upstream round trip per ask, and a
+ * Run cannot be built without it (the model's declared parameter tuple or the
+ * Run streams only heartbeats). The cache policy follows the maturity fixes
+ * proven in the reference plugin's changelog (0.2.28):
  *
- * Keyed by an FNV-1a digest of the credential rather than the raw token so a
- * long-lived map does not hold live credentials as keys. Bounded by
- * `ROSTER_CACHE_MAX` with LRU eviction: the TTL is only checked on read, so
- * without a cap rotated tokens would grow the map without bound. Implemented
- * by the canonical `TtlCache` in LRU mode — re-setting moves the entry to the
- * newest position, and the cap evicts the least-recently-used entry.
+ * - **stale-while-revalidate** — a list past its keep is served while a fresh
+ *   one is fetched, so a slow upstream never blocks a Run on a 30s wait;
+ * - **single-flight** — requests at once share one ask;
+ * - **failure backoff** — after a failed ask, requests go without a refetch
+ *   for 5 minutes (using the stale list when there is one) instead of each
+ *   waiting on its own doomed round trip.
+ *
+ * Rosters are keyed by a credential digest, never by the token itself, so a
+ * cache dump cannot leak credentials.
  */
-const ROSTER_CACHE_MAX = 1024;
-const rosterCache = new TtlCache<{ roster: readonly CursorModelInfo[] }>({
-  ttlMs: CURSOR_ROSTER_TTL_MS,
-  maxEntries: ROSTER_CACHE_MAX,
-  lru: true,
-});
+import { createHash } from "node:crypto";
+import { fetchCursorDiscovery, type CursorDiscoveryResult } from "./cursor-discovery";
+import type { FetchLike } from "../../authentication/oauth-client";
 
-export function rosterCacheGet(
-  credential: string,
-): { roster: readonly CursorModelInfo[] } | undefined {
-  return rosterCache.get(String(fnv1a32(credential)));
+/** A roster's freshness window; stale-but-present rosters still serve. */
+const ROSTER_TTL_MS = 5 * 60 * 1000;
+/** After a failed ask, no refetch is attempted for this long. */
+const FAILURE_BACKOFF_MS = 5 * 60 * 1000;
+/** Bounded roster cache (one entry per credential digest). */
+const ROSTER_CACHE_MAX = 32;
+
+interface RosterEntry {
+  result: CursorDiscoveryResult;
+  fetchedAt: number;
+  /** Epoch ms until which a failed ask suppresses refetch; 0 when healthy. */
+  backoffUntil: number;
 }
 
-/** Peek without expiring: the stale roster is the refetch-failure fallback. */
-export function rosterCachePeek(
-  credential: string,
-): { roster: readonly CursorModelInfo[] } | undefined {
-  return rosterCache.peek(String(fnv1a32(credential)));
+export type RosterStatus = "fresh" | "stale-served" | "refetched" | "backoff-only";
+
+export interface RosterLookup {
+  readonly result: CursorDiscoveryResult;
+  readonly status: RosterStatus;
 }
 
-export function rosterCacheSet(
-  credential: string,
-  roster: readonly CursorModelInfo[],
-): void {
-  const key = String(fnv1a32(credential));
-  rosterCache.set(key, { roster });
+function credentialDigest(accessToken: string): string {
+  return createHash("sha256").update(accessToken).digest("hex").slice(0, 16);
 }
 
-/**
- * Test-only access to the roster cache (cap/eviction/TTL behavior is covered
- * by `test/providers/cursor-roster-cache.test.ts` without a full dispatch).
- */
-export const rosterCacheForTests = {
-  size: (): number => rosterCache.size,
-  set: rosterCacheSet,
-  get: (credential: string): { roster: readonly CursorModelInfo[] } | undefined =>
-    rosterCache.get(String(fnv1a32(credential))),
-};
+export class CursorRosterCache {
+  readonly #entries = new Map<string, RosterEntry>();
+  readonly #inflight = new Map<string, Promise<CursorDiscoveryResult>>();
+
+  /**
+   * Returns the roster for one credential, fetching when needed.
+   *
+   * Fresh entries return directly; stale entries serve immediately and a
+   * revalidation runs in the background (`stale-served` then `refetched` is
+   * observed by later lookups). A cold cache waits on the shared ask. During
+   * failure backoff a stale entry serves as `backoff-only`, and a cold cache
+   * throws the backoff error rather than hammering a broken upstream.
+   */
+  async lookup(
+    accessToken: string,
+    fetchFn: FetchLike,
+    now: number = Date.now(),
+  ): Promise<RosterLookup> {
+    const key = credentialDigest(accessToken);
+    const entry = this.#entries.get(key);
+
+    if (entry !== undefined && now - entry.fetchedAt < ROSTER_TTL_MS) {
+      return { result: entry.result, status: "fresh" };
+    }
+
+    if (entry !== undefined && entry.backoffUntil > now) {
+      // Upstream failed recently and we still hold a (stale) roster: serve it
+      // without asking again. The alternative — blocking every Run on a known
+      // failing endpoint — is what the 5-minute backoff exists to prevent.
+      return { result: entry.result, status: "backoff-only" };
+    }
+
+    const running = this.#inflight.get(key);
+    if (running !== undefined) {
+      const result = await running;
+      return { result, status: "fresh" };
+    }
+
+    const ask = fetchCursorDiscovery(accessToken, fetchFn)
+      .then((result) => {
+        this.#entries.set(key, { result, fetchedAt: now, backoffUntil: 0 });
+        this.#prune();
+        return result;
+      })
+      .catch((error: unknown) => {
+        if (entry !== undefined) {
+          entry.backoffUntil = now + FAILURE_BACKOFF_MS;
+          return entry.result;
+        }
+        throw error;
+      })
+      .finally(() => {
+        this.#inflight.delete(key);
+      });
+    this.#inflight.set(key, ask);
+
+    const result = await ask;
+    // If a stale entry existed and the ask succeeded, the fresh list replaced
+    // it; if the ask failed and fell back to stale, say so.
+    const current = this.#entries.get(key);
+    const servedStale = current !== undefined && current.backoffUntil > now;
+    return { result, status: servedStale ? "backoff-only" : entry === undefined ? "refetched" : "stale-served" };
+  }
+
+  /** Drops one credential's roster (sign-out, credential rotation). */
+  invalidate(accessToken: string): void {
+    this.#entries.delete(credentialDigest(accessToken));
+  }
+
+  #prune(): void {
+    while (this.#entries.size > ROSTER_CACHE_MAX) {
+      const oldest = this.#entries.keys().next();
+      if (oldest.done === true) break;
+      this.#entries.delete(oldest.value);
+    }
+  }
+}

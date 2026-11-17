@@ -1,12 +1,16 @@
 // Image-input handling for the Cursor adapter: MIME sniffing, size caps,
 // canonical image-part resolution (inline data URLs and validated HTTPS
 // fetches), and image extraction from tool results.
+//
+// The policy is pure Cartethyia: a caller-supplied media type is a claim, so
+// the MIME type is verified by sniffing the payload's magic bytes before it
+// is compared against the declared type, and remote images are fetched only
+// over HTTPS through the validated attachment egress with redirects refused.
 import { GatewayError } from "../../../protocol/gateway-error";
 import { resolveImageSource, splitDataUrl } from "../../../protocol/codecs";
 import { IMAGE_CLAMP_MAX_BYTES } from "../../../protocol/image-clamp";
-import type { CanonicalRequest, ContentPart } from "../../../protocol/canonical-model";
+import type { ContentPart } from "../../../protocol/canonical-model";
 import type { ProviderDispatchContext } from "../../provider-contracts";
-import type { CursorImageInput } from "./cursor-request";
 
 /** Image MIME types Cursor accepts in `selected_images`. */
 const ALLOWED_IMAGE_MIME_TYPES: Record<string, true> = {
@@ -19,8 +23,14 @@ const ALLOWED_IMAGE_MIME_TYPES: Record<string, true> = {
 /** Largest image payload accepted, matching the shared pre-send clamp. */
 const MAX_IMAGE_BYTES = IMAGE_CLAMP_MAX_BYTES;
 
+/** One validated image ready for the Run wire (bytes + sniffed media type). */
+export interface CursorImageInput {
+  readonly data: Uint8Array;
+  readonly mimeType: string;
+}
+
 /** Identifies an allowed image payload from its magic bytes. */
-function sniffImageMime(bytes: Uint8Array): string | undefined {
+export function sniffImageMime(bytes: Uint8Array): string | undefined {
   if (bytes.byteLength >= 4 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
     return "image/png";
   }
@@ -82,8 +92,15 @@ function finishImage(bytes: Uint8Array): CursorImageInput {
   return { data: bytes, mimeType };
 }
 
-/** Reads one canonical image part into Cursor `selected_images` bytes. */
-async function resolveImageInput(
+/**
+ * Resolves one canonical image part into validated Cursor image bytes.
+ *
+ * Inline `data:` URLs are decoded and sniffed; HTTPS URLs are fetched through
+ * the validated attachment egress with redirects refused (a public URL must
+ * not be able to redirect the fetch at a private address). Everything else is
+ * a rejected request, not a silently dropped attachment.
+ */
+export async function resolveCursorImageInput(
   part: Extract<ContentPart, { kind: "image" }>,
   context: ProviderDispatchContext,
 ): Promise<CursorImageInput> {
@@ -145,45 +162,8 @@ async function resolveImageInput(
   return finishImage(body);
 }
 
-/** Collects every canonical image part of a request into Cursor images. */
-export async function collectImages(
-  request: CanonicalRequest,
-  context: ProviderDispatchContext,
-): Promise<CursorImageInput[]> {
-  const images: CursorImageInput[] = [];
-  for (const message of request.messages) {
-    for (const part of message.content) {
-      if (part.kind !== "image") continue;
-      images.push(await resolveImageInput(part, context));
-    }
-  }
-  return images;
-}
-
 /** One image-bearing block of a tool result, ready for `McpToolResultContentItem`. */
 export interface ResultImage {
   readonly data: Uint8Array;
   readonly mimeType: string;
 }
-
-/** Reads the images out of one canonical tool result. */
-export function resultImages(part: Extract<ContentPart, { kind: "toolResult" }>): ResultImage[] {
-  if (typeof part.content === "string") return [];
-  const images: ResultImage[] = [];
-  for (const child of part.content) {
-    if (child.kind !== "image") continue;
-    const source = resolveImageSource(child.payload);
-    const url = source?.url;
-    if (url === undefined) continue;
-    const dataUrl = splitDataUrl(url);
-    if (dataUrl === undefined) continue;
-    const bytes = base64ToBytes(dataUrl.data);
-    if (bytes === undefined) continue;
-    const mimeType = sniffImageMime(bytes) ?? dataUrl.mediaType;
-    if (ALLOWED_IMAGE_MIME_TYPES[mimeType] !== true) continue;
-    if (bytes.byteLength > MAX_IMAGE_BYTES) continue;
-    images.push({ data: bytes, mimeType });
-  }
-  return images;
-}
-

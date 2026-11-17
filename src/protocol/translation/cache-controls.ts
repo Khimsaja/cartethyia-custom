@@ -21,14 +21,22 @@ interface CacheBreakpointPredicates {
 }
 
 /**
- * Parameterized cache-breakpoint marker that works across wire formats.
- * Finds the latest user/developer input, then scans backwards to mark the first
- * cacheable block with an explicit prompt_cache_breakpoint.
+ * F-34: marks the Nth-from-last cacheable block for each position in `list`
+ * (0 = the latest cacheable block, 1 = the one before it, ...) — the caller's
+ * explicit breakpoint intent, instead of every builder collapsing the hint to
+ * its single latest block. Positions are deduped and capped at four, the
+ * breakpoint cap Anthropic and OpenAI 5.6+ both enforce.
  */
-export function markLatestBreakpoint(
+export function markBreakpointsAtPositions(
   items: Array<Record<string, unknown>>,
   predicates: CacheBreakpointPredicates,
+  positions: readonly number[],
 ): void {
+  const capped = [...new Set(positions.filter((n) => Number.isInteger(n) && n >= 0))].sort(
+    (a, b) => a - b,
+  );
+  if (capped.length === 0 || capped.length > 4) return;
+
   let latestInput = -1;
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i];
@@ -39,7 +47,10 @@ export function markLatestBreakpoint(
   }
   if (latestInput <= 0) return;
 
-  for (let i = latestInput - 1; i >= 0; i--) {
+  // One backward pass collects the cacheable candidates in wire order; each
+  // requested position indexes into that collection from the end.
+  const candidates: Array<() => void> = [];
+  for (let i = latestInput - 1; i >= 0 && candidates.length <= capped[capped.length - 1]!; i--) {
     const item = items[i];
     if (!item || !predicates.isInputItem(item)) continue;
 
@@ -48,11 +59,14 @@ export function markLatestBreakpoint(
 
     const content = item["content"];
     if (typeof content === "string") {
-      items[i] = {
-        ...item,
-        content: [{ type: "text", text: content, prompt_cache_breakpoint: { mode: "explicit" } }],
-      };
-      return;
+      const index = i;
+      candidates.push(() => {
+        items[index] = {
+          ...items[index]!,
+          content: [{ type: "text", text: content, prompt_cache_breakpoint: { mode: "explicit" } }],
+        };
+      });
+      continue;
     }
     if (!Array.isArray(content)) continue;
 
@@ -63,10 +77,16 @@ export function markLatestBreakpoint(
         block !== null &&
         predicates.isCacheableBlock(block as Record<string, unknown>)
       ) {
-        predicates.writeMarker(block as Record<string, unknown>);
-        return;
+        const target = block as Record<string, unknown>;
+        candidates.push(() => predicates.writeMarker(target));
       }
     }
+  }
+  for (const position of capped) {
+    // Positions beyond the collected candidates are a hint for history the
+    // request does not carry — skipped, not an error.
+    const apply = candidates[candidates.length - 1 - position];
+    apply?.();
   }
 }
 

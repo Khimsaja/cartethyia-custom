@@ -103,10 +103,17 @@ Variables read outside the spec are therefore **not** listed below:
 
 | Variable | Kind | Default | Bounds |
 | --- | --- | --- | --- |
+| `CARTETHYIA_BIND_HOST` | string | `0.0.0.0` | — |
 | `DASHBOARD_DIST` | string | `./dist/dashboard` | — |
 | `CARTETHYIA_API_KEY` | string, optional | unset | — |
 | `CARTETHYIA_SERVER_MAX_BODY_BYTES` | integer | 16777216 | 1024 – 9007199254740991 |
 | `CARTETHYIA_SERVER_IDLE_TIMEOUT` | integer | 60 | 0 – 86400 |
+| `CARTETHYIA_TOOL_RESULT_MAX_KB` | integer | 0 | 0 – 1048576 |
+| `CARTETHYIA_QODER_MIN_GAP_MS` | integer | 400 | 0 – 60000 |
+| `CARTETHYIA_QODER_P4_WARN_STREAK` | integer | 5 | 1 – 1000 |
+| `CARTETHYIA_CURSOR_CLIENT_VERSION` | string, optional | unset | — |
+| `CARTETHYIA_CURSOR_HEARTBEAT_MS` | integer | 5000 | 500 – 120000 |
+| `CARTETHYIA_CURSOR_WIRE_TRACE` | string, optional | unset | — |
 | `CARTETHYIA_CONCURRENCY_TOLERANCE` | integer, optional | unset | 0 – 1024 when set |
 | `CARTETHYIA_PROCESS_COUNT` | integer | 1 | 1 – 16 |
 | `CARTETHYIA_PROCESS_INDEX` | integer | 0 | 0 – 15 |
@@ -118,6 +125,5 @@ Variables read outside the spec are therefore **not** listed below:
 | `CARTETHYIA_POOL_PROVIDER_RATE_LIMIT_COOLDOWN_MS` | integer | 3600000 | 0 – 86400000 |
 | `CARTETHYIA_ROUTING_STICKY_WARM_MS` | integer | 300000 | 0 – 86400000 |
 | `CARTETHYIA_ROUTING_STICKY_MAX_SESSIONS` | integer | 256 | 1 – 10000 |
-| `CARTETHYIA_OAUTH_CALLBACK_PORT` | integer | 59653 | 1024 – 65535 |
 | `CARTETHYIA_ZCODE_AUTO_CLAIM` | string | `false` | — |
 | `CARTETHYIA_OPENCODE_UNAVAILABLE_FREE` | comma-separated list | unset | — |

@@ -1,13 +1,17 @@
-import type { CanonicalMessage, CanonicalRequest, ContentPart, GenerationControls, ToolDefinition } from "../../../protocol/canonical-model";
+import type { CanonicalMessage, CanonicalRequest, ContentPart, GenerationControls } from "../../../protocol/canonical-model";
 import { isRecord } from "../../../protocol/codecs";
-import { decodeWireBody, textPart, normalizeInlineFile, fileContentPart, documentContentPart } from "../content-parts";
+import { assertImageReference, assertInlineAttachmentSize, assertMediaReference, decodeWireBody, textPart, normalizeInlineFile, fileContentPart, documentContentPart } from "../content-parts";
 import {
-  isServiceTier,
+  applyServiceTier,
   parseReasoningIntent,
   parseResponseFormat,
+  parseStopSequences,
   parseToolChoice,
-  parseToolDefinition,
+  parseToolsArray,
+  validateToolChoice,
 } from "../dialects";
+import { normalizeToolCallArguments } from "../../../protocol/tool-arguments";
+import { dropUnpairedToolResults } from "../../../protocol/tool-ledger";
 import { readBoolean, readNumber, readString } from "../../../protocol/codecs";
 import type { ResponsesComputerAction, ResponsesInputItem, ResponsesItemMetadata } from "./contracts";
 const OPENAI_RESPONSE_INCLUDES = {
@@ -141,6 +145,8 @@ function parseInputContent(value: unknown): { parts: ContentPart[]; contentTypes
       continue;
     }
     if (type === "input_image" || type === "output_image" || type === "image") {
+      // F-14: an image part with no reference at all died upstream.
+      assertImageReference(rawPart);
       parts.push({ kind: "image", payload: rawPart });
       contentTypes.push(type);
       continue;
@@ -194,9 +200,14 @@ function parseInputContent(value: unknown): { parts: ContentPart[]; contentTypes
       continue;
     }
     if (type === "input_audio" || type === "output_audio" || type === "audio") {
+      const audioData = rawPart["data"] ?? rawPart["audio"] ?? "";
+      // F-14: an audio part with no data is not a part.
+      assertMediaReference("audio", { data: audioData });
+      // F-42: the non-image attachment ceiling applies to audio too.
+      assertInlineAttachmentSize("audio", audioData);
       parts.push({
         kind: "audio",
-        data: rawPart["data"] ?? rawPart["audio"] ?? "",
+        data: audioData,
         media_type: readString(rawPart, "media_type") ?? "audio/mpeg",
       });
       contentTypes.push(type);
@@ -335,8 +346,11 @@ function parseInputItem(item: ResponsesInputItem): {
     const name = readString(item, "name");
     if (callId === undefined || name === undefined)
       throw new Error("Responses function_call requires call_id and name");
-    const args = item["arguments"];
-    if (args === undefined) throw new Error("Responses function_call requires arguments");
+    if (item["arguments"] === undefined)
+      throw new Error("Responses function_call requires arguments");
+    // F-4: arguments normalize to a JSON-object string on every surface —
+    // `arguments: 42` is a malformed call, not a value to forward.
+    const args = normalizeToolCallArguments(item["arguments"], "function_call arguments");
     const namespace = readString(item, "namespace");
     return {
       message: {
@@ -609,6 +623,10 @@ export function parseResponsesRequest(input: unknown): CanonicalRequest {
   }
   if (pendingReasoning !== undefined)
     messagesWithReasoning.push({ role: "assistant", content: pendingReasoning });
+  // F-5: the Responses wire runs the shared pairing ledger in repair mode —
+  // orphan `function_call_output` items and duplicate answers are dropped at
+  // ingress instead of reaching the upstream (or the dispatch repair) first.
+  const pairedMessages = dropUnpairedToolResults(messagesWithReasoning);
   const metadata = parsedItems.map((entry) => entry.metadata);
   const controls: GenerationControls = {};
   const maxOutputTokens = readNumber(bodyValue, "max_output_tokens");
@@ -619,8 +637,12 @@ export function parseResponsesRequest(input: unknown): CanonicalRequest {
   }
   const parallel = readBoolean(bodyValue, "parallel_tool_calls");
   if (parallel !== undefined) controls.parallel_tool_calls = parallel;
-  const serviceTier = readString(bodyValue, "service_tier");
-  if (serviceTier !== undefined && isServiceTier(serviceTier)) controls.service_tier = serviceTier;
+  // F-16: one shared service_tier rule instead of the silent drop.
+  applyServiceTier(controls, readString(bodyValue, "service_tier"), "extension:service_tier");
+  // F-11: `stop` was not on the extension whitelist and vanished; every other
+  // surface validates and carries it, so Responses does too.
+  const stop = parseStopSequences(bodyValue["stop"], "Responses");
+  if (stop !== undefined) controls.stop = stop;
   // The Responses API accepts `temperature`/`top_p` as top-level generation
   // parameters; the wire-support matrix already lists them for `responses`.
   const temperature = readNumber(bodyValue, "temperature");
@@ -663,15 +685,11 @@ export function parseResponsesRequest(input: unknown): CanonicalRequest {
   const text = bodyValue["text"];
   if (isRecord(text) && hasOwn(text, "verbosity"))
     assignExtension(controls, "extension:responses.verbosity", text["verbosity"]);
-  const tools = Array.isArray(bodyValue["tools"])
-    ? bodyValue["tools"]
-        .map((tool) => parseToolDefinition(tool, "responses"))
-        .filter((tool): tool is ToolDefinition => tool !== undefined)
-    : undefined;
+  const tools = parseToolsArray(bodyValue["tools"], "responses");
 
   const request: CanonicalRequest = {
     model,
-    messages: messagesWithReasoning,
+    messages: pairedMessages,
     generation_controls: controls,
     stream: readBoolean(bodyValue, "stream") ?? false,
     source_surface: "responses",
@@ -701,6 +719,8 @@ export function parseResponsesRequest(input: unknown): CanonicalRequest {
   }
   if (tools !== undefined) request.tools = tools;
   const toolChoice = parseToolChoice(bodyValue["tool_choice"], "responses");
+  // F-6: the same cross-check every surface applies.
+  if (toolChoice !== undefined) validateToolChoice(toolChoice, tools);
   if (toolChoice !== undefined) request.tool_choice = toolChoice;
   const reasoning =
     parseReasoningIntent(

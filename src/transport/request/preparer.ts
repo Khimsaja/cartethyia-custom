@@ -4,7 +4,6 @@ import type { ApiKeyAdmissionService } from "../../security/admission/service";
 import type { VisionHandoffCall, VisionHandoffResult } from "../vision-handoff";
 import type { CallerIdentity } from "../../security/access-control";
 import type { RouteCandidate as RouteCandidate, InMemoryRouteSnapshotService, RoutePlan, RouteSnapshot } from "../routing/route-model";
-import type { RouteContinuationAffinity } from "../routing/route-model";
 import {
   resolveAliasTarget,
 } from "../routing/alias-resolution"
@@ -22,6 +21,9 @@ import { isModelAllowed, type ResolvedApiKey } from "../../security/api-key-auth
 import { allowsCliToolMappings } from "../../security/cli-client-fingerprint";
 import { dropIncompleteToolRounds, repairRequestToolCalls } from "../../protocol/translation/tool-repair";
 import { sanitizeRequestToolIds } from "../../protocol/translation/tool-id";
+import { redeclareWithdrawnTools } from "../../protocol/request/sent-tools";
+import { truncateToolResults } from "../../protocol/tool-result-truncate";
+import { resolveToolResultMaxKb } from "../../config/runtime";
 import { dropCorruptAttachments } from "../../protocol/translation/attachment-integrity";
 import { parseThinkingSuffix, withThinkingSuffixIntent } from "../../protocol/translation/thinking";
 import { nativeServicePathFor } from "../contracts";
@@ -35,7 +37,6 @@ import {
 import { DEFAULT_ESTIMATED_OUTPUT_TOKENS, estimateInputTokens } from "./token-estimate";
 import { inputLimitExceeded } from "./input-limits";
 import { condenseHandoffRequest, replaceImagePartsWithText } from "./vision-rewrite";
-import { resolveContinuationAffinityWithRebase } from "./continuation-affinity";
 
 export { condenseHandoffRequest } from "./vision-rewrite";
 
@@ -67,13 +68,6 @@ export interface PreparedProxyRequest {
   readonly degradedCapabilities?: readonly RequiredCapability[];
   /** Snapshot-consistent plan used to reserve each individual attempt. */
   readonly plan: RoutePlan;
-  /**
-   * The account this request must reach because a provider session is already
-   * live on it. Set only when the request carried a live tool result; the
-   * dispatch path uses it to borrow the held session instead of acquiring a
-   * second account and pool slot.
-   */
-  readonly continuationAffinity?: RouteContinuationAffinity;
   /** Single "who is speaking" identity, derived at auth. */
   readonly caller: CallerIdentity;
   readonly estimatedInputTokens: number;
@@ -260,13 +254,6 @@ export class ProxyRequestPreparer {
     // require the `image` capability — it plans like the text request it has
     // become, instead of being routed to a vision route for nothing.
     const requestWithAttachments = dropCorruptAttachments(request).request;
-    // Continuation affinity is resolved before anything else: a request
-    // carrying a tool result for a live provider session must be planned against
-    // the one account that owns that session, before capability derivation or
-    // degradation could narrow the candidate set past it. This is also the
-    // point where a mismatched or expired call id becomes a 400 the caller can
-    // act on, instead of a dispatch that silently starts a new upstream turn.
-    const continuationAffinity = resolveContinuationAffinityWithRebase(requestWithAttachments, authorization);
     // Capability-aware routing: derive requirements BEFORE planning so the
     // router filters candidates against snapshot profiles. When nothing
     // supports the full request, degrade (same greedy order) and re-plan
@@ -293,7 +280,6 @@ export class ProxyRequestPreparer {
           variant.required,
           allowCliMappings,
           authorization.cliMappingOwnerId ?? authorization.id,
-          continuationAffinity,
           request.conversation_id ?? request.conversation?.conversation_id,
         );
       } catch (error) {
@@ -361,8 +347,7 @@ export class ProxyRequestPreparer {
                   requiredAfter,
                   allowCliMappings,
                   authorization.cliMappingOwnerId ?? authorization.id,
-                  continuationAffinity,
-                  request.conversation_id ?? request.conversation?.conversation_id,
+                          request.conversation_id ?? request.conversation?.conversation_id,
                 );
                 plan = handoffPlan;
                 variantRequest = replaced;
@@ -501,6 +486,15 @@ export class ProxyRequestPreparer {
           })
         : repairRequestToolCalls(variantRequest);
       effectiveRequest = sanitizeRequestToolIds(effectiveRequest);
+      // F-23: history may call a tool the current request no longer declares
+      // (a client that widened then narrowed its tool set). The transcript
+      // replays that call on every later turn and strict wires reject it —
+      // re-declare the withdrawn names so the history stays dispatchable.
+      effectiveRequest = redeclareWithdrawnTools(effectiveRequest);
+      // F-43: the operator-opt-in tool-result ceiling applies at the same
+      // canonical stage, so all three surfaces inherit one policy. Off (0)
+      // returns the same reference.
+      effectiveRequest = truncateToolResults(effectiveRequest, resolveToolResultMaxKb());
     }
     if (signal?.aborted)
       throw new GatewayError("transport_closed", 499, "The request was cancelled (request {requestId}). Send it again whenever ready 🙃");
@@ -541,7 +535,6 @@ export class ProxyRequestPreparer {
       eligibleRouteCandidates: eligible,
       degradedCapabilities: degraded,
       plan,
-      ...(continuationAffinity === undefined ? {} : { continuationAffinity }),
       caller: authorization.caller,
       estimatedInputTokens,
       estimatedOutputTokens,
@@ -585,7 +578,6 @@ export class ProxyRequestPreparer {
       undefined,
       allowCliMappings,
       input.authorization.cliMappingOwnerId ?? input.authorization.id,
-      undefined,
       input.conversationId,
     );
     if (input.signal?.aborted)

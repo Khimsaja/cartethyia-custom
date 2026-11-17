@@ -2,12 +2,17 @@ import type { CanonicalMessage, CanonicalRequest, ContentPart, GenerationControl
 import { getHeader as readHeader } from "../../../protocol/canonical-model";
 import { requiredObject } from "../adapters";
 import { isRecord } from "../../../protocol/codecs";
-import { parseToolDefinition } from "../dialects";
-import { documentContentPart } from "../content-parts";
+import { parseToolsArray } from "../dialects";
+import { normalizeToolCallArguments } from "../../../protocol/tool-arguments";
+import {
+  scanToolPairingIssues,
+  type ToolPairingIssue,
+} from "../../../protocol/tool-ledger";
+import { assertImageReference, assertInlineAttachmentSize, assertMediaReference, documentContentPart } from "../content-parts";
 import { canContainToolResult } from "../../../protocol/canonical-model";
 import { MessagesLedgerError } from "./errors";
 import { finiteNumber, stringValue } from "../../../protocol/codecs";
-import { LEVEL_TO_BUDGET } from "../../../protocol/translation/thinking";
+import { clampBudgetToWireFloor, LEVEL_TO_BUDGET } from "../../../protocol/translation/thinking";
 
 export interface MessagesParseOptions {
   /** Explicit Claude model generation (for example `4.6` or `4.7`). */
@@ -79,7 +84,11 @@ function parseBlock(value: unknown): ContentPart {
   if (!isRecord(value)) return { kind: "extension", name: "unknown", payload: value };
   const type = value.type;
   if (type === "text") return textPart(value.text ?? "");
-  if (type === "image") return { kind: "image", payload: value };
+  if (type === "image") {
+    // F-14: an image part with no reference at all died upstream.
+    assertImageReference(value);
+    return { kind: "image", payload: value };
+  }
   if (type === "document") {
     const source: MessagesWireObject = isRecord(value.source) ? value.source : {};
     const sourceType = typeof source.type === "string" ? source.type : undefined;
@@ -91,8 +100,12 @@ function parseBlock(value: unknown): ContentPart {
       sourceType === "base64" || sourceType === "url" || sourceType === "file" || sourceType === "text"
         ? sourceType
         : undefined;
+    const documentData = source.data ?? fileId ?? url ?? "";
+    // F-42: the messages document site does not go through
+    // normalizeInlineFile, so the ceiling is asserted here as well.
+    assertInlineAttachmentSize("document", documentData);
     return documentContentPart({
-      data: source.data ?? fileId ?? url ?? "",
+      data: documentData,
       media_type: stringValue(source.media_type) ? source.media_type : "application/octet-stream",
       title: stringValue(value.title) ? value.title : undefined,
       citations:
@@ -102,14 +115,20 @@ function parseBlock(value: unknown): ContentPart {
       file_id: fileId,
     });
   }
-  if (type === "audio")
+  if (type === "audio") {
+    const audioData = isRecord(value.source) ? value.source.data ?? "" : "";
+    // F-14: an audio part with no data is not a part.
+    assertMediaReference("audio", { data: audioData });
+    // F-42: the non-image attachment ceiling applies to audio too.
+    assertInlineAttachmentSize("audio", audioData);
     return {
       kind: "audio",
-      data: isRecord(value.source) ? value.source.data ?? "" : "",
+      data: audioData,
       media_type: isRecord(value.source) && stringValue(value.source.media_type)
         ? value.source.media_type
         : "audio/mpeg",
     };
+  }
   if (type === "refusal") return { kind: "refusal", text: stringValue(value.refusal) ? value.refusal : "" };
   if (type === "tool_use") {
     if (!stringValue(value.id) || !stringValue(value.name)) {
@@ -119,7 +138,11 @@ function parseBlock(value: unknown): ContentPart {
       kind: "toolCall",
       call_id: value.id,
       name: value.name,
-      arguments: value.input ?? {},
+      // F-4: arguments normalize to a JSON-object string on every surface.
+      // `input` is required to be an object on this wire; a string that
+      // parses to an object is accepted and re-stringified, anything else
+      // malformed is refused here rather than reaching the upstream.
+      arguments: normalizeToolCallArguments(value.input ?? {}, "tool_use input"),
       ...(finiteNumber(value.index) ? { index: value.index } : {}),
       ...(stringValue(value.namespace) ? { namespace: value.namespace } : {}),
     };
@@ -197,13 +220,10 @@ export function parseMessage(value: unknown): CanonicalMessage {
 }
 
 export function parseTools(value: unknown): ToolDefinition[] | undefined {
-  if (value == null) return undefined;
-  if (!Array.isArray(value)) throw new Error("Messages tools must be an array");
-  return value.map((entry) => {
-    const parsed = parseToolDefinition(entry, "messages");
-    if (!parsed) throw new Error("Messages tool failed to parse");
-    return parsed;
-  });
+  // F-3: one tools[] verdict per dialect (non-array 400, every entry must
+  // parse, empty normalizes to undefined) — the Messages labels come from the
+  // shared parser.
+  return parseToolsArray(value, "messages");
 }
 
 
@@ -294,7 +314,9 @@ export function parseThinking(
     // of answered with `budget_tokens: Field required`.
     const effectiveBudget =
       budget ??
-      (effort !== undefined && effort !== "none" ? Math.max(1024, LEVEL_TO_BUDGET[effort]) : undefined);
+      (effort !== undefined && effort !== "none"
+        ? clampBudgetToWireFloor("budget", LEVEL_TO_BUDGET[effort])
+        : undefined);
     if (!finiteNumber(effectiveBudget) || !Number.isInteger(effectiveBudget))
       throw new Error("Manual Messages thinking requires integer budget_tokens");
     if (generation !== undefined && generation >= 4.7)
@@ -387,9 +409,9 @@ export function extensionControls(body: MessagesWireObject, userId: unknown): Ge
   if (contextManagement !== undefined)
     extensions["extension:context_management"] = contextManagement;
   if (userId !== undefined) extensions["extension:metadata_user_id"] = userId;
-  // Anthropic top-level params with no canonical slot pass through verbatim.
-  if (body.service_tier === "auto" || body.service_tier === "standard_only")
-    extensions["extension:service_tier"] = body.service_tier;
+  // service_tier is applied by the shared F-16 rule in the adapter
+  // (`applyServiceTier`), which routes known tiers to the canonical slot and
+  // forwards the rest — including Anthropic's `standard_only` — verbatim.
   if (isRecord(body.container)) extensions["extension:container"] = body.container;
   if (stringValue(body.inference_geo)) extensions["extension:inference_geo"] = body.inference_geo;
   if (stringValue(body.user_profile_id))
@@ -455,11 +477,10 @@ function collectOccurrences(messages: readonly CanonicalMessage[]): {
   messages.forEach((message, messageIndex) => {
     message.content.forEach((part, partIndex) => {
       if (part.kind === "toolCall") {
-        if (!part.call_id || !part.name)
-          throw new MessagesLedgerError("tool_call must include call_id and name");
-        if (calls.has(part.call_id))
-          throw new MessagesLedgerError(`duplicate tool call occurrence: ${part.call_id}`);
-        calls.set(part.call_id, { callId: part.call_id, messageIndex, server: false });
+        // Invalid and duplicate calls are surfaced by the shared pairing
+        // ledger scan before this map is read (F-5); collect first-wins here.
+        if (part.call_id.length > 0 && !calls.has(part.call_id))
+          calls.set(part.call_id, { callId: part.call_id, messageIndex, server: false });
       }
       const serverId = serverToolId(part);
       if (serverId) {
@@ -480,25 +501,40 @@ function collectOccurrences(messages: readonly CanonicalMessage[]): {
 function validatedResults(
   calls: Map<string, ToolCallOccurrence>,
   results: readonly ToolResultOccurrence[],
-  serverIds: Set<string>,
 ): Map<string, ToolResultOccurrence> {
+  // Validation itself lives in the shared pairing ledger (`scanToolPairingIssues`,
+  // proposal F-5) so Chat/Responses ingress enforce the same checks; this pass
+  // only builds the call→result index the turn rebuild consumes.
   const byCall = new Map<string, ToolResultOccurrence>();
   for (const occurrence of results) {
     const call = calls.get(occurrence.result.call_id);
-    if (!call) {
-      if (serverIds.has(occurrence.result.call_id)) continue;
-      throw new MessagesLedgerError(
-        `tool_result has no matching tool_use: ${occurrence.result.call_id}`,
-      );
-    }
-    if (call.server) continue;
-    if (byCall.has(occurrence.result.call_id))
-      throw new MessagesLedgerError(
-        `duplicate tool_result occurrence: ${occurrence.result.call_id}`,
-      );
+    if (call === undefined || call.server) continue;
+    if (byCall.has(occurrence.result.call_id)) continue;
     byCall.set(occurrence.result.call_id, occurrence);
   }
   return byCall;
+}
+
+/**
+ * Maps one shared-ledger issue onto the typed error this surface has always
+ * thrown, keeping the wire message identical while the checks themselves
+ * live in one owner (F-5).
+ */
+function ledgerErrorFor(issue: ToolPairingIssue): MessagesLedgerError {
+  switch (issue.code) {
+    case "invalid_call":
+      return new MessagesLedgerError("tool_call must include call_id and name");
+    case "duplicate_call":
+      return new MessagesLedgerError(`duplicate tool call occurrence: ${issue.callId ?? ""}`);
+    case "orphan_result":
+      return new MessagesLedgerError(
+        `tool_result has no matching tool_use: ${issue.callId ?? ""}`,
+      );
+    case "duplicate_result":
+      return new MessagesLedgerError(
+        `duplicate tool_result occurrence: ${issue.callId ?? ""}`,
+      );
+  }
 }
 
 function freeContent(message: CanonicalMessage): ContentPart[] {
@@ -513,8 +549,15 @@ function freeContent(message: CanonicalMessage): ContentPart[] {
 export function applyMessagesToolLedger(
   messages: readonly CanonicalMessage[],
 ): readonly CanonicalMessage[] {
-  const { calls, results, serverIds } = collectOccurrences(messages);
-  const byCall = validatedResults(calls, results, serverIds);
+  // F-5: the pairing checks are the shared ledger scan — the same four
+  // structural facts Chat/Responses ingress now repair or reject — mapped
+  // onto this surface's typed error.
+  const serverIds = collectOccurrences(messages).serverIds;
+  const issues = scanToolPairingIssues(messages, { exemptResultId: (id) => serverIds.has(id) });
+  const [firstIssue] = issues;
+  if (firstIssue !== undefined) throw ledgerErrorFor(firstIssue);
+  const { calls, results } = collectOccurrences(messages);
+  const byCall = validatedResults(calls, results);
   const resultMessageIndexes = new Set(results.map((occurrence) => occurrence.messageIndex));
   const output: CanonicalMessage[] = [];
   const consumedResultMessages = new Set<number>();

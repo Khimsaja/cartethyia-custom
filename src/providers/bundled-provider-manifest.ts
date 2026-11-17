@@ -96,23 +96,6 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
     credentialHint: "Sign in with Google or GitHub in the browser, or use the device-code login with an Identity Center organization, then paste a Kiro API key if you prefer. Prompt caching is not reliably working for Kiro: the upstream recomputes the prompt on every turn, so cached-token savings should not be expected.",
   },
   {
-    id: "cursor",
-    displayName: "Cursor",
-    baseUrl: "https://api2.cursor.sh",
-    wireFamilyDefault: "chat",
-    requiresAccount: true,
-    bespokeWire: true,
-    hasAdapterUserAgent: true,
-    // Always direct. Cursor's upstream is reached over its own HTTP/2 path and
-    // an egress proxy in front of it breaks the connection shape the upstream
-    // expects, so proxying is not a discovery an operator should have to make
-    // after the first failures. Only the initial value: an explicit `skipProxy`
-    // patch still wins.
-    defaultSkipProxy: true,
-    credentialUrl: "https://cursor.com",
-    credentialHint: "Sign in with Cursor or import a Cursor API key.",
-  },
-  {
     id: "devin",
     displayName: "Devin",
     baseUrl: "https://server.codeium.com",
@@ -125,6 +108,21 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
     defaultSkipProxy: true,
     credentialUrl: "https://devin.ai",
     credentialHint: "Sign in with Devin, Windsurf Enterprise, or import a Devin session token / Windsurf seat key.",
+  },
+  {
+    id: "cursor",
+    displayName: "Cursor",
+    baseUrl: "https://api2.cursor.sh",
+    wireFamilyDefault: "chat",
+    requiresAccount: true,
+    bespokeWire: true,
+    hasAdapterUserAgent: true,
+    // The Run wire is a Connect-RPC bidi stream on HTTP/2 with an HTTP/1
+    // fallback; an egress proxy in front of it breaks the stream shape.
+    // Direct only.
+    defaultSkipProxy: true,
+    credentialUrl: "https://cursor.com",
+    credentialHint: "Sign in with Cursor or import a Cursor API key (crsr_...).",
   },
   { id: "kimi", displayName: "Kimi Code", baseUrl: "https://api.kimi.com/coding", credentialUrl: "https://platform.moonshot.ai/console/api-keys" },
   { id: "opencode", displayName: "OpenCode Free", baseUrl: "https://opencode.ai", requiresAccount: false, ipScopedRateLimit: true, hasAdapterUserAgent: true },
@@ -186,8 +184,8 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
   // international keys (token.sensenova.ai) reject each other with 401
   // "Forbidden", so the two deployments are separate providers with separate
   // hosts and catalogs — the same split as CodeBuddy cb/cbcn.
-  { id: "sensenova", displayName: "SenseNova", baseUrl: "https://token.sensenova.cn/v1", serviceKinds: ["llm", "imageGeneration"], credentialUrl: "https://token.sensenova.cn", credentialHint: "Paste a SenseNova API key created on platform.sensenova.cn. International accounts use SenseNova (Intl)." },
-  { id: "sensenova-intl", displayName: "SenseNova (Intl)", baseUrl: "https://token.sensenova.ai/v1", serviceKinds: ["llm", "imageGeneration"], credentialUrl: "https://platform.sensenova.ai", credentialHint: "Paste a SenseNova API key created on platform.sensenova.ai. China accounts use SenseNova." },
+  { id: "sensecn", displayName: "SenseNova (China)", baseUrl: "https://token.sensenova.cn/v1", serviceKinds: ["llm", "imageGeneration"], credentialUrl: "https://token.sensenova.cn", credentialHint: "Paste a SenseNova API key created on platform.sensenova.cn. International accounts use SenseNova (Intl)." },
+  { id: "senseintl", displayName: "SenseNova (Intl)", baseUrl: "https://token.sensenova.ai/v1", serviceKinds: ["llm", "imageGeneration"], credentialUrl: "https://platform.sensenova.ai", credentialHint: "Paste a SenseNova API key created on platform.sensenova.ai. China accounts use SenseNova (China)." },
   { id: "helmcode", displayName: "HelmCode", baseUrl: "https://api.helmcode.com/v1", credentialUrl: "https://helmcode.com/dashboard" },
   { id: "coralbricks", displayName: "CoralBricks", baseUrl: "https://api.coralbricks.com/v1", credentialUrl: "https://coralbricks.com/api-keys" },
   { id: "aiand", displayName: "ai&", baseUrl: "https://api.aiand.com/v1", credentialUrl: "https://console.aiand.com/api-keys" },
@@ -411,7 +409,7 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
     credentialUrl: "https://commandcode.ai/studio",
     credentialHint: "Use the API key from the Command Code CLI, or create one in the studio.",
   },
-  { id: "qoder", displayName: "Qoder", baseUrl: "https://api2.qoder.sh/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1", hasAdapterUserAgent: true, credentialUrl: "https://qoder.com/account/integrations", credentialHint: "Paste a Personal Access Token (pt-...) from the Qoder integrations page, or sign in with your Qoder account." },
+  { id: "qoder", displayName: "Qoder", baseUrl: "https://api2.qoder.sh/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=*", hasAdapterUserAgent: true, credentialUrl: "https://qoder.com/account/integrations", credentialHint: "Paste a Personal Access Token (pt-...) from the Qoder integrations page, or sign in with your Qoder account." },
   // A separate provider, not a region flag on `qoder`: the China deployment has
   // its own gateway host, OAuth client id, and model roster, and a CN account
   // dispatched to the global host is refused rather than degraded.

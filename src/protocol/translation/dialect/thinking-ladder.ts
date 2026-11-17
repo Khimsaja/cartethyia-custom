@@ -39,10 +39,18 @@ export interface ThinkingConfig {
   readonly defaultLevel?: ReasoningEffortLevel;
   /** True when the upstream rejects off/omitted efforts → clamp up to the floor. */
   readonly requiresEffort?: boolean;
+  /**
+   * F-30: the family enforces a reasoning-replay contract on its chat wire —
+   * a `thinking` object must be present and an effort defaulted — for models
+   * the ladder rule matched. Gating the injection on this resolved flag (not
+   * a raw model-string prefix) is what keeps the reasoning creation inside
+   * the capability-assessed path.
+   */
+  readonly reasoningReplay?: boolean;
 }
 
 /** Optional model-declared thinking override (compile-time, persisted catalog). */
-export interface ThinkingModelDecl {
+interface ThinkingModelDecl {
   readonly efforts?: readonly string[];
   readonly mode?: ThinkingControlMode;
 }
@@ -130,6 +138,8 @@ interface ThinkingLadderRule {
   readonly mode?: ThinkingControlMode;
   readonly defaultLevel?: ReasoningEffortLevel;
   readonly requiresEffort?: boolean;
+  /** F-30: see {@link ThinkingConfig.reasoningReplay}. */
+  readonly reasoningReplay?: boolean;
   /** True when `id` expects the dot → dash normalized id (Claude generations). */
   readonly normalizeClaudeId?: boolean;
 }
@@ -144,7 +154,7 @@ interface ThinkingLadderRule {
  * dot-tolerant form (`claude-opus-4.6` → `claude-opus-4-6`), mirroring the
  * removed `claudeUsesAdaptiveThinking` behavior.
  */
-export const THINKING_LADDER_RULES: readonly ThinkingLadderRule[] = [
+const THINKING_LADDER_RULES: readonly ThinkingLadderRule[] = [
   // --- Responses wire (cap at `xhigh` unless a generation ladder says otherwise) ---
   { wireFamily: "responses", id: /gpt-5\.5/, efforts: GPT55_SUPPORTED_EFFORTS },
   { wireFamily: "responses", id: /gpt-5\.6|gpt-6|daybreak/, efforts: LOW_TO_MAX_SUPPORTED_EFFORTS },
@@ -184,6 +194,24 @@ export const THINKING_LADDER_RULES: readonly ThinkingLadderRule[] = [
   },
   // Any other Claude row: extended ladder, budget-era transport.
   { id: /claude/, efforts: EXTENDED_SUPPORTED_EFFORTS },
+  // F-30: the DeepSeek chat contract — the upstream demands a `thinking`
+  // object and defaults the effort — stated as a ladder rule so the injection
+  // helpers gate on the resolved flag instead of a raw model-string prefix.
+  // `reflection/beam` is the reseller spelling of the same contract (Cline's
+  // beam rows answer the same replay errors).
+  {
+    id: /^deepseek/,
+    efforts: EXTENDED_SUPPORTED_EFFORTS,
+    defaultLevel: DEEPSEEK_DEFAULT_EFFORT,
+    reasoningReplay: true,
+  },
+  { id: /reflection\/beam/, efforts: EXTENDED_SUPPORTED_EFFORTS, reasoningReplay: true },
+  // F-32: Copilot's fallback ceiling as a ladder row instead of adapter code —
+  // a github model that declares no ladder of its own serves up to `high`, so
+  // the generic clamp (not a prePayload mutation) answers max/xhigh at high.
+  // Model-specific rules above win first, exactly as the deleted hook's
+  // "only guards a bare fallback" comment intended.
+  { provider: /^github$/, efforts: BASE_SUPPORTED_EFFORTS },
 ];
 
 function familyDefaultMode(wireFamily: WireFamily): ThinkingControlMode {
@@ -248,6 +276,7 @@ export function resolveThinkingForModel(
       efforts: rule.efforts,
       ...(rule.defaultLevel === undefined ? {} : { defaultLevel: rule.defaultLevel }),
       ...(rule.requiresEffort === undefined ? {} : { requiresEffort: rule.requiresEffort }),
+      ...(rule.reasoningReplay === undefined ? {} : { reasoningReplay: rule.reasoningReplay }),
     };
     THINKING_RESOLVE_CACHE.set(cacheKey, resolved);
     return resolved;

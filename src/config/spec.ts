@@ -85,6 +85,13 @@ export type ConfigEntry =
 export const CONFIG_SPEC = {
   // HTTP listener + dashboard runtime
   PORT: { kind: "int", default: 12_800, min: 1, max: 65_535 },
+  /**
+   * Address the HTTP listener binds. The default keeps the historical
+   * wildcard bind; a reverse-proxy deployment (cloudflared, Caddy, nginx on
+   * the same host) sets `127.0.0.1` so the gateway is reachable only through
+   * the proxy and never directly from the network.
+   */
+  CARTETHYIA_BIND_HOST: { kind: "text", default: "0.0.0.0" },
   DASHBOARD_DIST: { kind: "text", default: DEFAULT_DASHBOARD_DIST },
   CARTETHYIA_API_KEY: { kind: "optional-text" },
   CARTETHYIA_SERVER_MAX_BODY_BYTES: {
@@ -99,6 +106,50 @@ export const CONFIG_SPEC = {
     max: Number.MAX_SAFE_INTEGER,
   },
   CARTETHYIA_SERVER_IDLE_TIMEOUT: { kind: "int", default: 60, min: 0, max: 86_400 },
+  // F-43: tool-result payload ceiling, in KiB of text per tool_result. 0 (the
+  // default) leaves results untouched — the truncation is opt-in because it
+  // rewrites client-visible content; an operator whose agents persist
+  // oversized tool outputs (the classic context killer) sets the ceiling and
+  // every surface inherits it at the canonical prepare stage.
+  CARTETHYIA_TOOL_RESULT_MAX_KB: {
+    kind: "int",
+    default: 0,
+    min: 0,
+    max: 1024 * 1024,
+  },
+
+  // Qoder risk controls (see src/providers/integrations/qoder/qoder-risk.ts):
+  // the upstream scores request cadence and machine identity as their own
+  // dimensions. The gap spaces same-account dispatches (the donor hub's
+  // PR #78 uses 400ms with concurrency 1); the streak is how many consecutive
+  // queueType=p4 queue envelopes re-alarm the egress/machine-pin warning.
+  CARTETHYIA_QODER_MIN_GAP_MS: {
+    kind: "int",
+    default: 400,
+    min: 0,
+    max: 60_000,
+  },
+  CARTETHYIA_QODER_P4_WARN_STREAK: {
+    kind: "int",
+    default: 5,
+    min: 1,
+    max: 1000,
+  },
+
+  // Cursor Run wire controls (see src/providers/integrations/cursor/cursor.ts):
+  // the client version overrides the monitored `cli-<date>-<sha7>` identity the
+  // Run and unary calls present (an operator pins it while the monitor catches
+  // up); the heartbeat keeps a counted tool batch open on a parked Run; the
+  // wire trace is opt-in — set the variable (any value) to log every decoded
+  // Run frame for diagnosis.
+  CARTETHYIA_CURSOR_CLIENT_VERSION: { kind: "optional-text" },
+  CARTETHYIA_CURSOR_HEARTBEAT_MS: {
+    kind: "int",
+    default: 5_000,
+    min: 500,
+    max: 120_000,
+  },
+  CARTETHYIA_CURSOR_WIRE_TRACE: { kind: "optional-text" },
 
   // Graceful-shutdown drain: how long in-flight requests may finish naturally
   // before the drain aborts the stragglers. Sized above the common case (a
@@ -309,15 +360,6 @@ export const CONFIG_SPEC = {
 
   // Provider OAuth hosts
   CARTETHYIA_KIMI_OAUTH_HOST: { kind: "text", default: DEFAULT_KIMI_OAUTH_HOST },
-  /**
-   * Loopback port the browser-OAuth callback listener binds.
-   *
-   * Configurable because the default is a fixed number: a busy port would strand
-   * the operator, since the login could not start and there would be no way to
-   * move it. Codex's authorization server still expects 59653, so changing this
-   * only helps the providers whose redirect URI is not allowlisted upstream.
-   */
-  CARTETHYIA_OAUTH_CALLBACK_PORT: { kind: "int", default: 59_653, min: 1_024, max: 65_535 },
   /**
    * Kimi Code quota/billing base. The `/usages` path joins on this, so the
    * default includes the `/v1` segment the bundled provider metadata implies.

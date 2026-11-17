@@ -72,12 +72,6 @@ const GROK_ALLOWED_FIELDS = new Set([
   "text",
   "metadata",
   "prompt_cache_key",
-  // Session/response linkage fields — verified in the 1.0.70 binary's
-  // `struct Response with 31 elements` / `struct Conversation with 1 element`
-  // (OpenAI Responses shape). Without them a fresh request cannot reference
-  // earlier turns, and the proxy treats each call as a brand-new session.
-  "previous_response_id",
-  "conversation",
   // Extra Responses fields the binary accepts; harmless and useful for parity.
   "background",
   "truncation",
@@ -478,8 +472,6 @@ function normalizeGrokPayload(
   candidate: ProviderDispatchTarget,
   context: ProviderDispatchContext,
 ): void {
-  payload.stream = true;
-  if (payload.store === undefined || payload.store === null) payload.store = false;
   payload.input = normalizeInput(payload.input);
   normalizeTools(payload);
 
@@ -532,14 +524,6 @@ function normalizeGrokPayload(
   if (cacheKey !== undefined && typeof payload.prompt_cache_key !== "string")
     payload.prompt_cache_key = cacheKey.slice(0, 512);
 
-  // The Grok Build proxy does NOT persist responses: a `previous_response_id`
-  // (even from a real `response.id` of an earlier turn, with `store:true`)
-  // returns 404 "Previous response cannot be found" — verified live
-  // 2026-11-02. The proxy is stateless; continuity comes only from the full
-  // `input` history, so referencing a previous response id can never succeed
-  // and would fail the whole request. Drop it here.
-  delete payload.previous_response_id;
-
   for (const key of Object.keys(payload)) {
     if (!GROK_ALLOWED_FIELDS.has(key)) delete payload[key];
   }
@@ -553,6 +537,17 @@ export const GrokConfig = withBearerAuthentication({
   extra_headers: { accept: "text/event-stream", "accept-encoding": "identity" },
   buildExtraHeaders: grokHeaders,
   prePayload: normalizeGrokPayload,
+  // F-20: the proxy does NOT persist responses — a `previous_response_id`
+  // (even from a real `response.id` of an earlier turn, with `store:true`)
+  // answers 404 "Previous response cannot be found" (verified live
+  // 2026-11-02). Declared once here; the Responses codec strips the linkage
+  // fields instead of this adapter deleting them in its own prePayload.
+  stateless_responses: true,
+  // F-22 / F-18: the wire facts as declaration, not prePayload lines — the
+  // proxy only answers streams, and `store` defaults to false when the caller
+  // left it unset.
+  requires_upstream_stream: true,
+  default_payload: { store: false },
   // The real CLI compresses the request body with zstd (sampler
   // `request_compression`); stamp the matching Content-Encoding and compress.
   request_compression: "zstd",

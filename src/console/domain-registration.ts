@@ -53,6 +53,7 @@ import { providerUsageMatrix } from "../observability/event-query";
 
 import { InMemoryOAuthFlowStore, OAuthFlowStore } from "../providers/authentication/oauth-flow-store";
 import { OAuthCallbackListener } from "./providers/oauth/callback-listener";
+import { createOAuthRootCallbackRoutes } from "./providers/oauth/root-callback";
 import {
   createAccountExportCredentialsResolver,
   createAccountSecretResolver,
@@ -148,10 +149,15 @@ import { DEFAULT_PROXY_SKIP_PROVIDER_IDS } from "../providers/provider-metadata"
 import type { ProbeOutboundBinding } from "../providers/discovery/probing-service";
 
 
+/**
+ * Registers every console domain on `console` and returns the OAuth root
+ * callback routes, which live outside the console prefix and must be mounted
+ * on the root application by the caller.
+ */
 export function registerConsoleDomains(
   console: AnyElysia,
   ctx: ConsoleDomainContext,
-): void {
+): AnyElysia {
   const observabilityStore = new DrizzleObservabilityStore(ctx.db, ctx.redis);
   const auditReadStore = new DrizzleAuditReadStore(ctx.db);
   /** Refresh-aware credential resolution for quota routes. */
@@ -442,4 +448,8 @@ export function registerConsoleDomains(
     },
   };
   console.use(createOAuthLoginRoutes(oauthConfig));
+  // The root callback routes live outside the `/console/api` prefix: they are
+  // the delivery target for browser redirects naming this gateway's own port.
+  // Returned so the caller mounts them on the root app.
+  return createOAuthRootCallbackRoutes(oauthConfig);
 }

@@ -22,7 +22,7 @@ import { pickDefined } from "../../shared/object";
  * across logins, so it is what a re-login replaces.
  *
  * A label the provider never resolved is *not* that identity. Callers fill the
- * gap with the provider id (`cursor`, `github`), and hashing that made every
+ * gap with the provider id (e.g. `github`), and hashing that made every
  * login of every account of that provider collide: the second login matched the
  * first row and replaced it, so adding an account silently consumed the one
  * already there. Only a label the provider actually reported — or the refresh
@@ -164,7 +164,7 @@ export class DrizzleOAuthAccountStore implements OAuthAccountStore {
               // concurrent rename cannot lose to the login.
               label: sql`CASE WHEN lower(trim(${providerAccounts.label})) = lower(trim(${providerAccounts.providerId})) OR lower(trim(${providerAccounts.label})) = lower(trim(${label})) THEN ${label} ELSE ${providerAccounts.label} END`,
               credentialCiphertext,
-              credentialKind: "oauth",
+              credentialKind: input.credentialKind ?? "oauth",
               status: "active",
               consecutiveFailures: 0,
               cooldownUntil: null,
@@ -214,7 +214,7 @@ export class DrizzleOAuthAccountStore implements OAuthAccountStore {
             providerId,
             tenantId,
             label: generatedLabel,
-            credentialKind: "oauth",
+            credentialKind: input.credentialKind ?? "oauth",
             credentialCiphertext,
             credentialFingerprint,
             status: "active",

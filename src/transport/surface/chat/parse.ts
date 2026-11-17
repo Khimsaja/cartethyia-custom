@@ -2,8 +2,9 @@ import type { CanonicalMessage, ContentPart, GenerationControls } from "../../..
 import type { SurfaceInput } from "../adapters";
 import { isRecord } from "../../../protocol/codecs";
 import { asNumber } from "../../../shared/coerce";
-import { decodeWireBody, textPart, normalizeInlineFile, fileContentPart, documentContentPart } from "../content-parts";
-import { SERVICE_TIERS } from "../dialects";
+import { assertImageReference, assertInlineAttachmentSize, assertMediaReference, decodeWireBody, textPart, normalizeInlineFile, fileContentPart, documentContentPart } from "../content-parts";
+import { applyServiceTier, parseStopSequences } from "../dialects";
+import { normalizeToolCallArguments } from "../../../protocol/tool-arguments";
 import { readNumber, readString } from "../../../protocol/codecs";
 import type { OpenAiUsage } from "../../../providers/provider-usage";
 
@@ -103,6 +104,9 @@ function parseContentPart(value: unknown): ContentPart {
     return textPart(text);
   }
   if (type === "image_url" || type === "image") {
+    // F-14: an image part with no reference at all died upstream with a
+    // provider-specific error.
+    assertImageReference(value.image_url ?? value);
     return { kind: "image", payload: value.image_url ?? value };
   }
   if (type === "input_audio" || type === "audio") {
@@ -110,9 +114,14 @@ function parseContentPart(value: unknown): ContentPart {
     // `{data, format|media_type}` shape for Responses-origin blocks.
     const nested = isRecord(value.input_audio) ? value.input_audio : value;
     const format = readString(nested, "format") ?? readString(nested, "media_type");
+    const audioData = nested.data ?? nested.audio ?? "";
+    // F-14: an audio part with no data is not a part.
+    assertMediaReference("audio", { data: audioData });
+    // F-42: the non-image attachment ceiling applies to audio too.
+    assertInlineAttachmentSize("audio", audioData);
     return {
       kind: "audio",
-      data: nested.data ?? nested.audio ?? "",
+      data: audioData,
       media_type: audioFormatToMediaType(format),
     };
   }
@@ -182,17 +191,21 @@ function parseToolCall(value: unknown, index: number): ParsedToolCall | undefine
   const name = readString(functionValue, "name");
   if (id === undefined || name === undefined) return undefined;
   if (type !== undefined && type !== "function") return undefined;
-  // A history tool call without arguments is a zero-arg call, not a
-  // malformed one: default to "{}" instead of dropping the call and
-  // orphaning its paired result. An empty/whitespace string is normalized
-  // too — the Messages wire requires `input` to be an object, and a raw ""
-  // is not valid JSON for the Chat/Responses history either.
-  const args = readString(functionValue, "arguments");
+  // Arguments normalize through the shared F-4 rule so one logical field gets
+  // one verdict on every surface: a string must be valid JSON (a JSON object),
+  // an object is stringified once here, and absence is a zero-arg call — never
+  // a malformed `"not json{"` forwarded verbatim to the upstream. The empty /
+  // whitespace string normalizes to "{}" too, which is what the Messages wire
+  // requires `input` to carry for a zero-arg call.
+  const args = normalizeToolCallArguments(
+    functionValue["arguments"],
+    `tool_calls[${index}] arguments`,
+  );
   const namespace = readString(functionValue, "namespace");
   return {
     id,
     name,
-    arguments: args === undefined || args.trim().length === 0 ? "{}" : args,
+    arguments: args,
     index,
     ...(namespace === undefined ? {} : { namespace }),
   };
@@ -249,8 +262,13 @@ export function parseMessage(value: unknown): CanonicalMessage {
   }
 
   if (role === "tool") {
+    // F-5: a tool turn IS a tool result on this wire — OpenAI requires
+    // `tool_call_id`, and forwarding a turn without one produced a mangled
+    // `role:"tool"` message the upstream rejected with an opaque sequence
+    // error. The Messages parse already refuses the same shape, so both
+    // wire ingresses now give one verdict.
     const callId = readString(value, "tool_call_id");
-    if (callId === undefined) return { role, content };
+    if (callId === undefined) throw new Error("tool message requires tool_call_id");
     return {
       role,
       content: [
@@ -288,13 +306,12 @@ export function parseGenerationControls(body: JsonObject): GenerationControls {
     addExtension(controls, "extension:omit_encrypted_reasoning", body.omit_encrypted_reasoning);
   if (typeof body.parallel_tool_calls === "boolean")
     controls.parallel_tool_calls = body.parallel_tool_calls;
-  if (typeof body.service_tier === "string") controls.service_tier = body.service_tier;
-  if (
-    typeof body.stop === "string" ||
-    (Array.isArray(body.stop) && body.stop.every((part) => typeof part === "string"))
-  ) {
-    controls.stop = body.stop as string | readonly string[];
-  }
+  // F-16: one shared service_tier rule — known tier into the canonical slot,
+  // anything else forwarded verbatim as an extension.
+  applyServiceTier(controls, body.service_tier, "extension:service_tier");
+  // F-11: one shared stop verdict — strings only, 1..64 chars each, ≤ 4.
+  const stop = parseStopSequences(body.stop, "Chat");
+  if (stop !== undefined) controls.stop = stop;
   const tokenLimit = nonNegativeNumber(body.max_tokens);
   const completionLimit = nonNegativeNumber(body.max_completion_tokens);
   if (tokenLimit !== undefined) controls.max_tokens = tokenLimit;
@@ -339,11 +356,5 @@ export function parseGenerationControls(body: JsonObject): GenerationControls {
     addExtension(controls, "extension:web_search_options", body.web_search_options);
   if (typeof body.prompt_cache_key === "string" && body.prompt_cache_key.length > 0)
     addExtension(controls, "extension:prompt_cache_key", body.prompt_cache_key);
-  if (
-    SERVICE_TIERS.has(String(body.service_tier)) === false &&
-    typeof body.service_tier === "string"
-  ) {
-    addExtension(controls, "extension:service_tier", body.service_tier);
-  }
   return controls;
 }

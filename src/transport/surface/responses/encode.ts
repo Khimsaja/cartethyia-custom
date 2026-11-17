@@ -3,6 +3,8 @@ import { isRecord } from "../../../protocol/codecs";
 import { usageToResponsesWire } from "../../../providers/provider-usage";
 import { TEXT_ENCODER } from "../../../protocol/sse-frame";
 import { SurfaceStreamEncoder } from "../stream-frame";
+import { toolIdentityKey } from "../../../protocol/tool-identity";
+import { repairToolArguments } from "../../../protocol/tool-repair-args";
 import { ResponsesLifecycleError, ResponsesSequenceError } from "./errors";
 import type { ResponsesEncodingContext, ResponsesWireEvent } from "./contracts";
 import type { SurfaceOutput } from "../adapters";
@@ -12,12 +14,23 @@ import { computerOutputToWire, outputToWire } from "./wire-output";
 
 
 
-function terminalResponseStatus(state: "complete" | "failed" | "aborted"): {
-  event: string;
-  status: string;
-} {
-  if (state === "complete") return { event: "response.completed", status: "completed" };
+function terminalResponseStatus(
+  state: "complete" | "failed" | "aborted",
+  stopReason?: CanonicalStopReason,
+): { event: string; status: string; incompleteReason?: string } {
   if (state === "failed") return { event: "response.failed", status: "failed" };
+  // The OpenAI Responses wire expresses a length/content-filter stop through
+  // `response.incomplete` + `incomplete_details`, never through
+  // `response.completed` — a client reading `completed` believes it has the
+  // whole answer (F-35: per-state terminal mappings).
+  const incompleteReason = incompleteResponseReason(stopReason);
+  if (state === "complete") {
+    if (incompleteReason !== undefined)
+      return { event: "response.incomplete", status: "incomplete", incompleteReason };
+    return { event: "response.completed", status: "completed" };
+  }
+  if (incompleteReason !== undefined)
+    return { event: "response.incomplete", status: "incomplete", incompleteReason };
   return { event: "response.incomplete", status: "incomplete" };
 }
 
@@ -78,6 +91,8 @@ export class ResponsesEventEncoder extends SurfaceStreamEncoder<CanonicalEvent, 
    */
   private outputSnapshot: Record<string, unknown>[] | undefined;
   private readonly computerCalls = new Set<string>();
+  /** First raw spelling seen per call identity — the id the client is handed (F-24). */
+  private readonly firstRawToolIds = new Map<string, string>();
   private readonly context: ResponsesEncodingContext;
 
   constructor(context: ResponsesEncodingContext = {}) {
@@ -91,10 +106,52 @@ export class ResponsesEventEncoder extends SurfaceStreamEncoder<CanonicalEvent, 
     this.createdAt = context.created_at ?? Math.floor(Date.now() / 1000);
   }
 
+  /**
+   * Identity key for a call id, remembering the first raw spelling seen (F-24).
+   *
+   * One logical call can arrive under two prefix spellings (`call_x` /
+   * `fc_x`); keying the parked state and the output item by identity collapses
+   * them into one item, and the client is handed the first spelling — the id
+   * the backend actually sent and the transcript can replay.
+   */
+  private toolKey(callId: string): string {
+    const key = toolIdentityKey(callId);
+    if (!this.firstRawToolIds.has(key)) this.firstRawToolIds.set(key, callId);
+    return key;
+  }
+
+  /** The raw id the client is handed for a call identity. */
+  private rawToolId(key: string): string {
+    return this.firstRawToolIds.get(key) ?? key;
+  }
+
   private emit(type: string, payload: Record<string, unknown> = {}): ResponsesWireEvent {
     const event: ResponsesWireEvent = { type, sequence_number: this.sequence, ...payload };
     this.sequence += 1;
     return event;
+  }
+
+  /**
+   * F-38: the one `response.error` payload builder. The push path and the
+   * fatal encoder used to emit two incompatible shapes (`category`+`message`
+   * vs `origin`+`code`+`message`+`details`), so a client keying on `code`
+   * could not classify a mid-stream error. Both paths now emit the same
+   * fields; the push path's canonical category doubles as the code, and the
+   * `category` field is kept so category-keyed clients still classify.
+   */
+  private errorEvent(input: {
+    readonly origin: string;
+    readonly code: string;
+    readonly message: string;
+    readonly details?: unknown;
+  }): ResponsesWireEvent {
+    return this.emit("response.error", {
+      origin: input.origin,
+      code: input.code,
+      category: input.code,
+      message: input.message,
+      ...(input.details === undefined ? {} : { details: input.details }),
+    });
   }
   private readonly responseId: string;
   private readonly createdAt: number;
@@ -221,7 +278,12 @@ export class ResponsesEventEncoder extends SurfaceStreamEncoder<CanonicalEvent, 
     } else if (open.kind === "tool") {
       if (open.isComputer === true)
         open.item["actions"] = parseResponsesComputerActionChunks(chunks);
-      else open.item["arguments"] = chunks;
+        // F-26: the finalization is where the arguments become a complete
+        // value, so this is where the shared repair applies — the same
+        // jsonrepair pass the Chat non-stream encoder applies. A bridged
+        // upstream's truncated object reaches the client as strict JSON
+        // instead of a string its parser rejects.
+      else open.item["arguments"] = repairToolArguments(chunks);
     } else if (open.kind === "reasoning") {
       if (open.chunks.length > 0) {
         open.item["content"] = [{ type: "reasoning_text", text: chunks }];
@@ -428,19 +490,20 @@ export class ResponsesEventEncoder extends SurfaceStreamEncoder<CanonicalEvent, 
   }
 
   private openTool(callId: string, name?: string): ResponsesWireEvent[] {
-    if (this.open?.kind === "tool" && this.open.callId === callId) return [];
+    const key = this.toolKey(callId);
+    if (this.open?.kind === "tool" && this.open.callId === key) return [];
     const events: ResponsesWireEvent[] = this.closeActiveNonTool();
     this.suspendTool();
-    if (this.restoreParked(this.openKey("tool", callId))) return events;
+    if (this.restoreParked(this.openKey("tool", key))) return events;
     const outputIndex = this.outputItems.length;
-    const itemId = callId;
+    const itemId = this.rawToolId(key);
     const isComputer = name === "computer";
-    if (isComputer) this.computerCalls.add(callId);
+    if (isComputer) this.computerCalls.add(key);
     const item: Record<string, unknown> = isComputer
       ? {
           id: itemId,
           type: "computer_call",
-          call_id: callId,
+          call_id: itemId,
           actions: [],
           pending_safety_checks: [],
           status: "in_progress",
@@ -448,7 +511,7 @@ export class ResponsesEventEncoder extends SurfaceStreamEncoder<CanonicalEvent, 
       : {
           id: itemId,
           type: "function_call",
-          call_id: callId,
+          call_id: itemId,
           arguments: "",
           status: "in_progress",
         };
@@ -459,7 +522,7 @@ export class ResponsesEventEncoder extends SurfaceStreamEncoder<CanonicalEvent, 
       itemId,
       outputIndex,
       contentIndex: 0,
-      callId,
+      callId: key,
       isComputer,
       chunks: [],
     };
@@ -569,7 +632,7 @@ export class ResponsesEventEncoder extends SurfaceStreamEncoder<CanonicalEvent, 
       if (this.open?.isComputer !== true)
         events.push(
           this.emit("response.function_call_arguments.delta", {
-            item_id: content.call_id,
+            item_id: this.rawToolId(this.toolKey(content.call_id)),
             output_index: this.open?.outputIndex,
             delta,
           }),
@@ -605,34 +668,37 @@ export class ResponsesEventEncoder extends SurfaceStreamEncoder<CanonicalEvent, 
     content: readonly ContentPart[] | string,
   ): ResponsesWireEvent[] {
     // Finalize exactly this call wherever it lives (active or parked) so a
-    // result for one parallel call never closes its siblings.
-    const key = this.openKey("tool", callId);
+    // result for one parallel call never closes its siblings. Keyed by
+    // identity (F-24) so a result under either spelling closes the same call.
+    const key = this.toolKey(callId);
+    const parkKey = this.openKey("tool", key);
     let events: ResponsesWireEvent[] = [];
-    if (this.open?.kind === "tool" && this.open.callId === callId) {
+    if (this.open?.kind === "tool" && this.open.callId === key) {
       const state = this.open;
       this.open = undefined;
-      this.parked.delete(key);
+      this.parked.delete(parkKey);
       events = this.finalizeState(state);
     } else {
-      const parked = this.parked.get(key);
+      const parked = this.parked.get(parkKey);
       if (parked !== undefined) {
-        this.parked.delete(key);
+        this.parked.delete(parkKey);
         events = this.finalizeState(parked);
       }
     }
     const outputIndex = this.outputItems.length;
-    const item: Record<string, unknown> = this.computerCalls.has(callId)
+    const rawId = this.rawToolId(key);
+    const item: Record<string, unknown> = this.computerCalls.has(key)
       ? {
-          id: callId,
+          id: rawId,
           type: "computer_call_output",
-          call_id: callId,
+          call_id: rawId,
           output: computerOutputToWire(content),
           status: "completed",
         }
       : {
-          id: callId,
+          id: rawId,
           type: "function_call_output",
-          call_id: callId,
+          call_id: rawId,
           output: outputToWire(content),
           status: "completed",
         };
@@ -661,11 +727,10 @@ export class ResponsesEventEncoder extends SurfaceStreamEncoder<CanonicalEvent, 
     // than `response.incomplete` (the same distinction the Messages encoder
     // applies in `stopData`).
     const effectiveState = state === "aborted" && this.hasError ? "failed" : state;
-    const status = terminalResponseStatus(effectiveState);
+    const status = terminalResponseStatus(effectiveState, stopReason);
     const response = this.responseObject(status.status);
-    const incompleteReason =
-      status.status === "incomplete" ? incompleteResponseReason(stopReason) : undefined;
-    if (incompleteReason !== undefined) response.incomplete_details = { reason: incompleteReason };
+    if (status.incompleteReason !== undefined)
+      response.incomplete_details = { reason: status.incompleteReason };
     if (effectiveState === "failed") {
       response.error = stopDetailsError(stopDetails, stopReason);
     }
@@ -713,7 +778,7 @@ export class ResponsesEventEncoder extends SurfaceStreamEncoder<CanonicalEvent, 
       if (this.open?.isComputer !== true)
         toolEvents.push(
           this.emit("response.function_call_arguments.delta", {
-            item_id: event.call_id,
+            item_id: this.rawToolId(this.toolKey(event.call_id)),
             output_index: this.open?.outputIndex,
             delta,
           }),
@@ -730,7 +795,7 @@ export class ResponsesEventEncoder extends SurfaceStreamEncoder<CanonicalEvent, 
     if (event.type === "error") {
       this.hasError = true;
       return events.concat(
-        this.emit("response.error", { category: event.category, message: event.message }),
+        this.errorEvent({ origin: "upstream", code: event.category, message: event.message }),
       );
     }
     if (event.type === "terminal")
@@ -769,12 +834,7 @@ export class ResponsesEventEncoder extends SurfaceStreamEncoder<CanonicalEvent, 
   }): ResponsesWireEvent[] {
     if (this.terminal) return [];
     this.terminal = true;
-    const errorEvent = this.emit("response.error", {
-      origin: input.origin,
-      code: input.code,
-      message: input.message,
-      details: input.details,
-    });
+    const errorEvent = this.errorEvent(input);
     const response = this.responseObject("failed");
     response["error"] = {
       type: "server_error",

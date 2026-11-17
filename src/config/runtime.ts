@@ -9,6 +9,11 @@ export function resolvePort(): number {
   return readInt("PORT", CONFIG_SPEC.PORT);
 }
 
+/** Resolves the address the HTTP listener binds (wildcard by default). */
+export function resolveBindHost(): string {
+  return readText("CARTETHYIA_BIND_HOST", CONFIG_SPEC.CARTETHYIA_BIND_HOST);
+}
+
 /** Resolves the dashboard static asset directory. */
 export function resolveDashboardDist(): string {
   return readText("DASHBOARD_DIST", CONFIG_SPEC.DASHBOARD_DIST);
@@ -32,6 +37,39 @@ export function resolveMaxBodyBytes(): number {
 /** Resolves the listener idle-socket timeout (seconds). */
 export function resolveIdleTimeout(): number {
   return readInt("CARTETHYIA_SERVER_IDLE_TIMEOUT", CONFIG_SPEC.CARTETHYIA_SERVER_IDLE_TIMEOUT);
+}
+
+/**
+ * F-43: the tool-result payload ceiling in KiB, or 0 when truncation is off
+ * (the default — it rewrites client-visible content, so it is opt-in).
+ */
+export function resolveToolResultMaxKb(): number {
+  return readInt("CARTETHYIA_TOOL_RESULT_MAX_KB", CONFIG_SPEC.CARTETHYIA_TOOL_RESULT_MAX_KB);
+}
+
+/** Resolves the minimum gap between same-account Qoder dispatches (ms). */
+export function resolveQoderMinGapMs(): number {
+  return readInt("CARTETHYIA_QODER_MIN_GAP_MS", CONFIG_SPEC.CARTETHYIA_QODER_MIN_GAP_MS);
+}
+
+/** Resolves the p4 streak length that re-alarms the Qoder egress-pin warning. */
+export function resolveQoderP4WarnStreak(): number {
+  return readInt("CARTETHYIA_QODER_P4_WARN_STREAK", CONFIG_SPEC.CARTETHYIA_QODER_P4_WARN_STREAK);
+}
+
+/** Resolves the operator-pinned Cursor client version, or `undefined` for the monitored one. */
+export function resolveCursorClientVersion(): string | undefined {
+  return readOptionalText("CARTETHYIA_CURSOR_CLIENT_VERSION", CONFIG_SPEC.CARTETHYIA_CURSOR_CLIENT_VERSION);
+}
+
+/** Resolves the Cursor Run heartbeat cadence (ms). */
+export function resolveCursorHeartbeatMs(): number {
+  return readInt("CARTETHYIA_CURSOR_HEARTBEAT_MS", CONFIG_SPEC.CARTETHYIA_CURSOR_HEARTBEAT_MS);
+}
+
+/** Whether the Cursor Run wire logs every decoded frame (opt-in, presence = on). */
+export function resolveCursorWireTrace(): boolean {
+  return readOptionalText("CARTETHYIA_CURSOR_WIRE_TRACE", CONFIG_SPEC.CARTETHYIA_CURSOR_WIRE_TRACE) !== undefined;
 }
 
 /** Resolves the graceful-shutdown drain window: time for in-flight requests to finish before abort. */
@@ -64,8 +102,10 @@ export function resolveDrainToken(): string | undefined {
  * even when `NODE_ENV=production`. A deployment that runs
  * `bun run src/main.ts` must not be pushed onto the eager branch.
  *
- * `CARTETHYIA_SOURCE_RUN` marks a source run explicitly. It is set by
- * `scripts/deploy/*.sh`, which are the only supported way to run from source.
+ * `CARTETHYIA_SOURCE_RUN` marks a source run explicitly. It is an
+ * operator-set sentinel: the operator sets it to `1` whenever a source run
+ * starts with `NODE_ENV=production` (see the deployment gotchas), so the
+ * process never takes the eager branch from source.
  */
 export function resolveElysiaPrecompile(): boolean {
   if (process.env.CARTETHYIA_SOURCE_RUN === "1") return false;

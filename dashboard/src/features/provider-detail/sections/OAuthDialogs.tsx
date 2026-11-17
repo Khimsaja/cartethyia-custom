@@ -28,7 +28,19 @@ import { useTrackedTimeout } from "../../../hooks/use-timeout";
  * in place of a `code`, which is forwarded whole.
  */
 export function extractOAuthCode(raw: string): { code: string } | { error: string } {
-  const trimmed = raw.trim();
+  let trimmed = raw.trim();
+  /**
+   * Operators paste the landing URL from the address bar — usually with the
+   * scheme, just as often without it (`127.0.0.1:59653/callback?code=…`),
+   * because the browser error page does not always copy one. `new URL` then
+   * reads `127.0.0.1` as the scheme and every lookup fails, so recover it
+   * here: a loopback host is always `http`, any other host `https`. A bare
+   * code (no slash) is never touched — it is not a URL.
+   */
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed) && trimmed.includes("/")) {
+    const loopback = /^(?:\[?::1\]?|127\.0\.0\.1|localhost)(?::\d+)?(?:[/?#]|$)/i.test(trimmed);
+    trimmed = `${loopback ? "http" : "https"}://${trimmed}`;
+  }
   const paramsOf = (value: string): URLSearchParams | undefined => {
     try {
       return new URL(value).searchParams;
@@ -62,6 +74,12 @@ export function extractOAuthCode(raw: string): { code: string } | { error: strin
   return { code: trimmed };
 }
 
+/** Hosts that name the machine the browser itself runs on. */
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
+}
+
 export function OAuthBrowserDialog({
   providerId,
   authorizeUrl,
@@ -75,6 +93,16 @@ export function OAuthBrowserDialog({
   readonly popup: Window;
   readonly onClose: (completed: boolean) => void;
 }): ReactNode {
+  /**
+   * Whether this dashboard is served from anything other than the operator's
+   * own machine. The OAuth redirect targets `http://127.0.0.1:<gateway
+   * port>/…`, which the browser resolves on *its* machine — a remote server's
+   * listener is unreachable by construction, so the redirect always fails to
+   * connect there. Saying so up front keeps the paste path from reading as a
+   * broken login; locally the popup completes on its own and none of this
+   * shows.
+   */
+  const remoteDashboard = !isLoopbackHost(window.location.hostname);
   const [copied, setCopied] = useState(false);
   const [callbackValue, setCallbackValue] = useState("");
   const [dragActive, setDragActive] = useState(false);
@@ -252,7 +280,11 @@ export function OAuthBrowserDialog({
         <div className="flex items-center gap-2.5 px-3.5 py-2.5 rounded-card border border-inner-border bg-surface-2">
           <Loader2 size={16}
            className="animate-spin text-accent shrink-0"/>
-          <span className="text-body font-semibold">Waiting for popup authorization…</span>
+          <span className="text-body font-semibold">
+            {remoteDashboard
+              ? "Server install: after you approve, the redirect page will fail to connect — that is expected, not an error. Copy that page's URL and paste it below to finish the login."
+              : "Waiting for popup authorization…"}
+          </span>
         </div>
 
         <div className="flex flex-col gap-2">
@@ -286,13 +318,18 @@ export function OAuthBrowserDialog({
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5 text-micro font-bold uppercase tracking-label text-text-tertiary"><span aria-hidden="true" className="flex-1 h-px bg-inner-border" /><span>Or complete manually</span><span aria-hidden="true" className="flex-1 h-px bg-inner-border" /></div>
+        <div className="flex items-center gap-2.5 text-micro font-bold uppercase tracking-label text-text-tertiary"><span aria-hidden="true" className="flex-1 h-px bg-inner-border" /><span>{remoteDashboard ? "Then complete it here" : "Or complete manually"}</span><span aria-hidden="true" className="flex-1 h-px bg-inner-border" /></div>
 
         <div className="flex flex-col gap-2">
-          <div className="text-body font-semibold text-text-primary">Step 2: Paste the redirect URL here</div>
+          <div className="text-body font-semibold text-text-primary">
+            {remoteDashboard
+              ? "Step 2: Paste the callback URL here — this is what completes the login"
+              : "Step 2: Paste the redirect URL here"}
+          </div>
           <p className="text-badge leading-snug text-text-tertiary">
-            If the redirect lands on an unreachable address, copy that page&apos;s full URL from
-            your browser and paste it below — this works from any machine, not just localhost.
+            {remoteDashboard
+              ? "After you approve in the popup, the browser lands on a page that cannot connect — that is the designed path on a server install. Copy the full URL from that page's address bar and paste it below, then press Connect. The scheme is optional (it is added for you); the code= value alone works too. The login finishes only after this paste."
+              : "If the redirect lands on an unreachable address, copy that page's full URL from your browser and paste it below — this works from any machine, not just localhost."}
           </p>
           <Inline gap="8px" align="flex-start">
             <div
@@ -334,7 +371,7 @@ export function OAuthBrowserDialog({
               <textarea
                 value={callbackValue}
                 onChange={(event) => setCallbackValue(event.target.value)}
-                placeholder="http://127.0.0.1:59653/callback?code=…&state=…  (or just the code)"
+                placeholder="http://127.0.0.1:59653/callback?code=…&state=…  — with or without http://, or just the code"
                 rows={2}
                 spellCheck={false}
                 className="w-full min-h-16 resize-y rounded-control border border-inner-border bg-input-bg px-2.5 py-2 font-mono text-badge text-text-primary box-border focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-1"

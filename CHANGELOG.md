@@ -8,7 +8,245 @@ current baseline; an existing one applies the numbered files that followed it.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [2.8.3] - 2026-11-17 · Codename Arc-en-ciel
+
+### Changed
+
+- **Docker defaults close the 2026-11-16 origin-misconfig class.** The image's
+  `HEALTHCHECK` dials `127.0.0.1` instead of `localhost` (which can resolve to
+  `::1` first and dead-dial an IPv4-only bind — the exact shape of the
+  cloudflared `http://localhost:8080` origin outage); compose publishes the
+  gateway port on host loopback by default (`127.0.0.1:<PORT>`, overridable
+  with `CARTETHYIA_PUBLISH_HOST`), pins the in-container
+  `CARTETHYIA_BIND_HOST` to `0.0.0.0` in `environment:` (docker-proxy needs
+  the all-interface bind, and `environment:` overrides a mounted `.env` that
+  carries a loopback value), and the deployment guide now instructs
+  `http://127.0.0.1:<PORT>` for tunnel origins with the `localhost`→`::1`
+  warning.
+- **Repo-wide cleanup pass.** A full read-only audit (80 findings) removed
+  ~50 dead exports across the gateway, scripts, and dashboard (each
+  re-verified to have zero callers), deleted five unreferenced `test/tools`
+  one-offs that defaulted to reading the operator's real local database,
+  translated the six remaining Indonesian documents to English, fixed the
+  stale research index and broken documentation links, and aligned
+  `packageManager` with `.bun-version`.
+- **Every provider in the console list shows its brand mark.** Thirty
+  provider ids that fell through to the two-letter initials placeholder now
+  have their real logos, fetched from each provider's own domain, PWA
+  manifest, or CDN. `coralbricks` keeps the placeholder (no reachable
+  mark).
+
+### Fixed
+
+- **A dead proxy pool is flagged instead of looped on.** A mid-response socket
+  drop (`transport_unavailable`) carried by a network pool was blamed on the
+  upstream — the classifier's origin stamp is written for direct egress — so
+  the pool health machine early-returned on every failure, the pool stayed
+  `active`, and every request kept selecting the same unusable proxy (live
+  2026-11-17: one dead pool rode every dispatch until the route was edited by
+  hand). A socket drop on a pool-carried attempt is now recorded as a pool
+  fault: the pool parks (`cooldown`), routing drops it from the snapshot
+  until the cooldown sweep brings it back, and one completed dispatch clears
+  the strike — so a genuinely dead proxy stops receiving traffic while a
+  transient upstream reset (the Trae-style edge reset a fresh dial recovers)
+  heals within the request's own retry.
+
+- **Devin no longer answers a large session switch with a 502.** Devin's own
+  answer to an oversized prompt is a silent stream close — HTTP 200, no
+  frames, no error trailer — which the decoder read as "ended without
+  content" and the gateway mapped to a 502. The adapter now refuses an
+  oversized history before the upstream call (estimated tokens vs the lane's
+  context window from the catalog) as `context_length_exceeded` (413), with
+  fail-over to a larger-window candidate while one exists. Also fixed while
+  auditing: message ids are proper UUIDs (the raw seed string was not an id
+  the upstream's rehydration treats as one), foreign reasoning signatures no
+  longer reach the wire (they belong to the provider that minted them), empty
+  assistant turns are skipped, and tool results folded into user turns by the
+  Messages surface no longer lose their text — the model was answering with
+  an invented tool output.
+
+### Added
+
+- **The Cursor provider is back, rebuilt on the reference wire spec.** The
+  adapter speaks Cursor's Agent Run stream (`agent.v1.AgentService/Run`,
+  Connect-RPC over HTTP/2 with a `RunSSE` + `BidiAppend` HTTP/1 fallback)
+  from a codec generated off the vendored `agent.proto`; unary Connect
+  answers are unwrapped whether they arrive raw or in the 5-byte framed
+  envelope. This replaces the previous implementation outright — adapter and
+  Run transport, OAuth client, model catalog, probe scripts, docs page,
+  provider icon, and vendored proto were deleted first, then rebuilt from
+  the reference spec — and existing account rows and migration history are
+  untouched, so an installed deployment keeps its Cursor accounts and simply
+  dispatches them through the new adapter. Tool calls are relay-only:
+  Cursor's native tools are disabled server-side, the caller's tools ride
+  the `requestContext` handshake, and a held batch parks the Run open until
+  the next request's results resume it in-band (exact model + wire id +
+  conversation + coverage contract) or the turn rebuilds from history.
+  History is SHA-256 blob records served over the KV channel, with the
+  server's own checkpoint records replayed byte-for-byte under the same wire
+  route + digest. Quota pairs `usage-summary` (USD cents, cookie auth) over
+  the legacy `/auth/usage` buckets; classic plans carry percent-only rails
+  ("Cursor Models" / "Other Models"), X Subscription accounts hold one
+  weekly pool for Cursor-owned models plus prepaid credit for third-party
+  models, and the two rails gate disjoint model families — a spent prepaid
+  balance never refuses a Cursor-owned request, an empty weekly pool never
+  refuses a third-party one. A non-free membership maps to the `paid`
+  account tier. The static floor is the fixed-settings trio every plan can
+  run (`auto`, `cursor-grok-4.6-medium`, `grok-4.7-medium`); live discovery
+  advertises the account's full roster unfiltered, because the upstream
+  cannot separate models by plan — the Run's own refusal is the entitlement
+  gate. The client identity follows Cursor's download API as
+  `cli-<date>-<sha7>`. Config: `CARTETHYIA_CURSOR_CLIENT_VERSION` (pin that
+  identity), `CARTETHYIA_CURSOR_HEARTBEAT_MS` (default 5000 — the heartbeat
+  that keeps a parked Run's counted batch open), `CARTETHYIA_CURSOR_WIRE_TRACE`
+  (log one line per decoded Run frame; names only, never values).
+  Live-probed 2026-11-17 through the real adapter (quota, roster, a Run
+  turn, and the tool-relay park/resume round trip). See
+  `documentation/features/08-cursor-provider.md`.
+
+- **Provider acceptance harness** (`scripts/provider-harness/`). The
+  mandatory gate before a provider counts as done: `bun run
+  scripts/provider-harness/run.ts --provider <id> --creds <export.json>
+  --model <included-model>` drives the four core tasks — `text`,
+  `single-tool`, `parallel-tools`, `arg-fidelity` — plus `multi-account`,
+  `chat-surfaces`, and `tools-surfaces`, through the real registry adapter
+  with live output, and exits 0 only when every task passes (`--json` for a
+  machine-readable report; `--min-gap-ms` paces same-account dispatches the
+  way the gateway paces them in production). The verdict and the plan's
+  included-model set are recorded in the provider's feature page, and the
+  provider-catalog skill now requires a harness pass before a provider is
+  called complete.
+
+- `CARTETHYIA_BIND_HOST` — the address the HTTP listener binds (default
+  `0.0.0.0`, unchanged). Set `127.0.0.1` for reverse-proxy deployments
+  (cloudflared, Caddy, nginx on the same host) so the gateway is reachable
+  only through the proxy and never directly from the network.
+- `CARTETHYIA_TOOL_RESULT_MAX_KB` — opt-in tool-result truncation. Off by
+  default; when set, a tool result larger than the limit is cut with a marker
+  before it enters the conversation history instead of being forwarded whole.
+- **Withdrawn tools stay dispatchable.** Tools that appear in the conversation
+  history but are absent from the current request's `tools` are re-declared to
+  the provider as stateless stubs, so a client that narrows its tool set
+  mid-conversation no longer breaks pairing on the next turn.
+- **Qoder presents the vendor's real machine identity.** The `runtime-info`
+  bridge (extracted from the official CLI's npm package by
+  `scripts/tools/qoder-umid-extract.mjs`) now feeds chat, auth, check-in, and
+  credits-claim with the machine-scoped identity the upstream actually scores
+  — previously chat presented an OS-derived spoof while claims used the
+  desktop token, two different "machines" for one account. The bridge token
+  is shared by every account on one host by design (migration 0049 relaxes
+  the per-account unique index for that source), the identity is
+  majority-voted across three bridge runs and cached per realm, and
+  `CARTETHYIA_QODER_MIN_GAP_MS` (default 400) spaces same-account dispatches
+  because the upstream scores request cadence. Sustained
+  `queueType=p4/RESOURCE_LIMIT` queue envelopes — an egress/machine risk pin,
+  not a capacity queue — re-alarm in telemetry every
+  `CARTETHYIA_QODER_P4_WARN_STREAK` (default 5) and surface their priority
+  class on the error detail; a queued envelope whose body arrives as a JSON
+  string no longer misclassifies as an authentication failure.
+- **Factory Droid tracks the official CLI version.** The client identity
+  headers (`X-Client-Version`, `user-agent: factory-cli/<v>`) now follow the
+  npm `droid` feed (Factory's own CLI) instead of a pinned `1.0.0`, with a
+  pinned fallback for a cold process. Qoder CN resolves the same discovered
+  Qoder IDE version as the international realm, so both realms present one
+  build identity.
+
+### Fixed
+
+- **Cross-surface hardening campaign** (surface audit, 43 findings; see
+  `documentation/archive/2026-11-15-surface-audit-hardening-proposal.md`). The
+  public highlights:
+  - **Tool calls keep one identity.** Tool-call ids collected across stream
+    chunks are keyed per call, composite prefixes (`call_`/`fc_` stacking)
+    collapse, and arguments are repaired exactly once at every completion
+    boundary — chat sync, chat stream, Messages sync/stream, and Responses.
+    A second tool call that reuses an answered id no longer wipes or reopens
+    the previous one.
+  - **Terminal states stop lying.** A stream that dies without a terminal
+    event no longer reports `stop`; chat mirrors the dangling tool-call guard
+    (a `tool_calls` finish with zero emitted calls downgrades to `stop`);
+    upstream-aborted streams attach usage while caller cancels still null it.
+  - **SSE decoding is bounded.** Bare-line continuations only continue an
+    incomplete JSON frame (a lost event boundary is now an error instead of
+    two frames merged into one delta), continuations are capped, and a stream
+    ending mid-JSON throws instead of dispatching the truncated frame. Qoder's
+    blank lines inside JSON strings still decode.
+  - **Hosted tools keep their configuration.** An `mcp` tool's
+    `server_label`/`server_url`/`allowed_tools` and a web-search tool's
+    `search_context_size`/`filters` are captured at ingress per family and
+    re-emitted on the wire that carries them — they were silently dropped.
+  - **Cache hints are consumed literally.** Breakpoint hint positions map to
+    their Nth-from-last placements on every wire, and the Codex builder no
+    longer synthesizes a shared `prompt_cache_key` string (the adapter's real
+    per-session key is the only key source).
+  - **One verdict per request field across surfaces.** Tool schema bounds
+    (64 KiB per schema, depth 24, 512 array items, 256 declarations, name
+    charset), tool arrays (non-array, duplicates), `tool_choice`, stop
+    sequences, `service_tier`, `response_format`, and reasoning effort/budget
+    are validated identically on `/v1/messages`, `/v1/responses`, and
+    `/v1/chat/completions` — the same request no longer passes on one surface
+    and fails on another.
+  - **Ingress content bounds.** Inline attachments are capped at 32 MiB, and
+    the content-part policy (image/media references) is consistent across
+    surfaces.
+  - **`tool_choice` is a routing requirement.** A forced tool_choice routes
+    only to candidates whose dialect supports it instead of silently dropping
+    the constraint.
+  - **Anthropic thinking-strip is wire-family gated.** The thinking-sampling
+    param quirk applies only on the Messages wire, not to every provider that
+    happens to match.
+  - **One error builder on the Responses stream.** Error events share a single
+    shape (origin/code/category) so clients get consistent envelopes, and
+    refusal completions stay wire-faithful.
+  - **InferHub identifies the gateway.** Both wire legs send
+    `user-agent: Cartethyia/<version>` by default — InferHub has no first-party
+    client identity to cloak.
+- Claude Messages cache hints: the listed positions are consumed from the last
+  message backward as intended (the first forward iteration marked the oldest
+  block instead of the newest).
+
+### Changed
+
+- **SenseNova provider ids renamed to name their realm.** `sensenova` →
+  `sensecn` (China, `token.sensenova.cn`) and `sensenova-intl` → `senseintl`
+  (`token.sensenova.ai`), displayed as "SenseNova (China)" / "SenseNova (Intl)".
+  A forward migration (0048, both database dialects) repoints existing
+  provider rows, accounts, models, routing settings, pool assignments, and
+  telemetry, so installed deployments keep working unchanged. Model ids
+  (`sensenova-6.8-flash`, the U1.5 image rows, …) are untouched — those are
+  the upstream's own names. No OAuth is affected: both realms are plain
+  API-key providers.
+- **Dashboard: more well-known providers.** NVIDIA NIM, GMI Cloud, Cerebras,
+  TokenHarbor, and both Xiaomi MiMo plans now group under "Well Known API Key
+  Providers" instead of the long-tail "Other" section.
+- **Reasoning ranks live on one ladder.** Effort/budget ranking, per-model
+  defaults, wire floors, and replay gating moved from per-provider hardcoded
+  regexes into a unified thinking-ladder; DeepSeek-style reasoning replay is
+  now a declarative ladder flag instead of a model regex.
+- **Adapter wire facts are declarative.** `stateless_responses`,
+  `requires_upstream_stream`, and `default_payload` moved from per-adapter
+  imperative patches (grok's stream/store fiddling, previous_response_id
+  deletion, hardcoded allowlists) onto the adapter configuration, applied
+  uniformly after encoding.
+- **Strict tool arguments at ingress.** Tool-call arguments are repaired once
+  (bounded) at parse and kept byte-verbatim afterward; unrepairable arguments
+  fail with a clear error instead of flowing as `null` fields. Tool-choice
+  validation is shared, and hosted/native tool declarations reject unknown
+  fields rather than forwarding them.
+- Cross-surface contract suite (`test/transport/surface/contract.test.ts`)
+  pins one canonical event list through all five encoders with an annotated
+  divergence ledger — the regression net behind the fixes above.
+- OAuth browser logins whose redirect port the gateway owns (DeepAI, Trae) now
+  redirect to the gateway's own listener — `http://127.0.0.1:<port>/callback` —
+  where root-level callback routes complete the exchange, replacing the
+  ephemeral loopback listener for those providers. The login redirect is
+  delivered on the machine the browser runs on: locally it completes in place;
+  on a remote server the browser shows "connection refused" by design, and the
+  console dialog now says so up front and presents pasting the redirect URL as
+  the primary completion step. Providers that pin their own port (Codex, Kiro,
+  OpenRouter, Claude, Antigravity, Devin, Perch) keep the loopback listener for
+  local logins. `CARTETHYIA_OAUTH_CALLBACK_PORT` is removed; the redirect port
+  is the gateway's own listener port.
 
 ## [2.8.2] - 2026-11-14
 
@@ -4572,7 +4810,7 @@ rather than `fetch`, and its Run origin is resolved per dispatch from
 
   There is no quota collector and no static catalog: no Cursor quota endpoint is
   established, and the roster is per-account and per-plan. See
-  [Cursor provider](documentation/features/cursor-provider.md).
+  [Cursor provider](documentation/features/08-cursor-provider.md).
 - **Trae is a working provider, on both realms.** `trae` and `traecn` are two
 providers, not one region flag: separate core, account, and pay hosts, and a
 CN `Cloud-IDE-JWT` against an intl `Bearer` plus a live client version — the

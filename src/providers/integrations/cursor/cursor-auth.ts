@@ -38,11 +38,11 @@ import {
   AUTH_REQUEST_TIMEOUT_MS,
   CURSOR_API_BASE_URL,
   CURSOR_OAUTH_CLIENT_ID,
-  CURSOR_WEBSITE_URL,
+  CURSOR_WEBSITE_BASE_URL,
   SESSION_REFRESH_TIMEOUT_MS,
   SIGN_IN_POLICY_VIOLATION,
   isExchangeableApiKey,
-} from "./cursor-shared";
+} from "./cursor-wire";
 
 /** Device authorizations live 5 minutes before the flow is abandoned. */
 const DEVICE_EXPIRY_SECONDS = 300;
@@ -249,7 +249,7 @@ export class CursorOAuthClient extends OAuthDeviceFlow {
       redirectTarget: "cli",
     });
     return {
-      verificationUri: `${CURSOR_WEBSITE_URL}/loginDeepControl?${params.toString()}`,
+      verificationUri: `${CURSOR_WEBSITE_BASE_URL}/loginDeepControl?${params.toString()}`,
       // No user code: approval happens against the browser session.
       userCode: "",
       deviceAuthId: uuid,

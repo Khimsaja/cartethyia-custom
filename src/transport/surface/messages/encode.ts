@@ -2,6 +2,8 @@ import type { CanonicalEvent, CanonicalStopReason, ContentPart, UsageRecord } fr
 import { assertBoundedJsonDepth, isRecord } from "../../../protocol/codecs";
 import { messagesStopReason } from "../../../protocol/stop-reason";
 import { reasoningTextOf } from "../../../protocol/reasoning-text";
+import { toolIdentityKey } from "../../../protocol/tool-identity";
+import { repairToolArguments } from "../../../protocol/tool-repair-args";
 import {
   reasoningSummaryHasBoundary,
   reasoningSummaryIdentity,
@@ -48,6 +50,23 @@ function parseArgs(value: unknown): unknown {
     return parsed;
   } catch (error) {
     if (error instanceof GatewayError) throw error;
+    // F-26: repair applies at the boundary where the arguments become a
+    // complete value — the same jsonrepair pass the Chat encoder applies —
+    // so a bridged upstream's truncated object reaches the client as a
+    // `tool_use` block with strict JSON input instead of a raw string the
+    // wire rejects.
+    const repaired = repairToolArguments(value);
+    if (repaired !== value) {
+      try {
+        const parsed = JSON.parse(repaired) as unknown;
+        if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+          assertBoundedJsonDepth(parsed);
+          return parsed;
+        }
+      } catch {
+        // fall through to the raw value below
+      }
+    }
     return value;
   }
 }
@@ -153,41 +172,60 @@ export function groupedBlocks(events: readonly CanonicalEvent[]): {
   let previousReasoningIdentity: ReasoningSummaryIdentity | undefined;
   let previousReasoningText: string | undefined;
   let droppedUnnamedToolCalls = 0;
-  // Fragments per call; joined once at flush so N deltas cost O(N), not O(N²).
-  const toolArguments = new Map<string, { name?: string; chunks: string[] }>();
-  const flushTools = (): void => {
-    for (const [callId, call] of toolArguments) {
+  // Fragments per call identity (F-24), retained ACROSS flushes: a flush
+  // ships the block as it stands, and a later fragment (an interleaved
+  // parallel stream's continuation) updates the same block in place instead
+  // of being dropped by the old flush-and-clear (F-37 — the sync twin of the
+  // stream path's state wipe).
+  const toolArguments = new Map<
+    string,
+    { name?: string; rawId: string; chunks: string[]; block?: MessagesWireObject; counted?: true }
+  >();
+  const flushTools = (final: boolean): void => {
+    for (const call of toolArguments.values()) {
       // Never a placeholder: see `requireMessagesToolName`. A call the
       // upstream never named cannot be expressed on the wire at all, so it is
-      // dropped and counted — the caller downgrades `tool_use` to `end_turn`
-      // rather than failing the whole response over a recoverable omission.
+      // dropped and counted (once, at the final flush) — the caller downgrades
+      // `tool_use` to `end_turn` rather than failing the whole response over a
+      // recoverable omission.
       if (call.name === undefined || call.name.trim().length === 0) {
-        droppedUnnamedToolCalls += 1;
+        if (final && call.counted === undefined) {
+          call.counted = true;
+          droppedUnnamedToolCalls += 1;
+        }
         continue;
       }
-      blocks.push({
-        type: "tool_use",
-        id: callId,
-        name: call.name,
-        input: parseArgs(call.chunks.join("")),
-      });
+      const input = parseArgs(call.chunks.join(""));
+      if (call.block === undefined) {
+        call.block = { type: "tool_use", id: call.rawId, name: call.name, input };
+        blocks.push(call.block);
+      } else {
+        // A continuation after the block shipped: the same block grows.
+        call.block["input"] = input;
+      }
     }
-    toolArguments.clear();
+    if (final) toolArguments.clear();
   };
   for (const event of events) {
     if (event.type === "tool_call_delta") {
-      const previous = toolArguments.get(event.call_id);
+      const key = toolIdentityKey(event.call_id);
+      const previous = toolArguments.get(key);
       const chunks = previous?.chunks ?? [];
       chunks.push(event.arguments_delta ?? "");
       const name = event.name ?? previous?.name;
-      toolArguments.set(event.call_id, {
+      toolArguments.set(key, {
+        rawId: previous?.rawId ?? event.call_id,
         // Absent until some delta names the call; sticky once seen.
         ...(name === undefined ? {} : { name }),
+        // The block shipped at an earlier flush is retained so the
+        // continuation updates it in place instead of forking a second block.
+        ...(previous?.block === undefined ? {} : { block: previous.block }),
+        ...(previous?.counted === undefined ? {} : { counted: previous.counted }),
         chunks,
       });
       continue;
     }
-    flushTools();
+    flushTools(false);
     if (event.type === "content_delta") {
       // Foreign extensions (responses:*, chat audio, …) have no Messages
       // representation and degrade away instead of reaching the client as a
@@ -237,7 +275,7 @@ export function groupedBlocks(events: readonly CanonicalEvent[]): {
       if (resultBlock !== undefined) blocks.push(resultBlock);
     }
   }
-  flushTools();
+  flushTools(true);
   return { blocks, droppedUnnamedToolCalls };
 }
 /**

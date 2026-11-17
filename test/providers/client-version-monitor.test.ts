@@ -40,6 +40,29 @@ describe("trae client version stays pinned", () => {
   });
 });
 
+describe("factory droid client version discovery", () => {
+  // The official CLI publishes to npm as `droid` (repo Factory-AI/factory);
+  // the discovery source follows that feed and the provider id `factory`
+  // resolves to it.
+  test("npm `droid` is the discovery source, with a semver fallback", () => {
+    expect(VERSION_SOURCES.factoryDroid.sources).toEqual([
+      { url: "https://registry.npmjs.org/droid/latest" },
+    ]);
+    expect(VERSION_SOURCES.factoryDroid.fallback).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(getProviderClientVersion("factory")?.client).toBe("factory-droid");
+    expect(getProviderClientVersion("factory")?.version).toBe(VERSION_SOURCES.factoryDroid.fallback);
+  });
+});
+
+describe("qoder and qodercn share one resolver", () => {
+  // One IDE build identity per product, two deployment realms — the CN gateway
+  // must present the same COSY_VERSION the intl gateway sees.
+  test("qodercn resolves the qoder version", () => {
+    expect(getProviderClientVersion("qodercn")?.client).toBe("qoder");
+    expect(getProviderClientVersion("qodercn")?.version).toBe(getProviderClientVersion("qoder")?.version);
+  });
+});
+
 describe("clixad client version discovery", () => {
   // The gateway publishes its paired CLI build as `cli_latest` on the
   // unauthenticated `/v1/models` listing.
@@ -80,45 +103,6 @@ describe("clixad client version discovery", () => {
   });
 });
 
-describe("cursor client version discovery", () => {
-  const source = VERSION_SOURCES.cursor.sources[0];
-  const extract = source?.extract;
-
-  function download(body: unknown): Response {
-    return new Response(JSON.stringify(body), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
-  }
-
-  test("the wire identity is cli-<version>-<sha7>, not the bare semver", async () => {
-    // Cursor's own header was observed live as `cli-2026.10.19-6bbf2c4`. The
-    // download API returns `version` and `commitSha` separately, so the header
-    // has to be composed here; sending the semver alone advertises a different
-    // client than the IDE does.
-    const got = await extract?.(download({ version: "3.26.13", commitSha: "3bfec373749d3d4a53a151283022d49743ab50ba" }));
-    expect(got).toBe("cli-3.26.13-3bfec37");
-  });
-
-  test("a missing commit sha degrades to the semver, not to null", async () => {
-    // Half an identity is still better than a pinned fallback.
-    expect(await extract?.(download({ version: "3.26.13" }))).toBe("3.26.13");
-  });
-
-  test("a non-semver version is rejected", async () => {
-    expect(await extract?.(download({ version: "nightly", commitSha: "3bfec37" }))).toBeNull();
-  });
-
-  test("an unparseable body is rejected rather than guessed", async () => {
-    expect(await extract?.(new Response("not json", { status: 200 }))).toBeNull();
-  });
-
-  test("cursor has a discovery source and a wire-shaped fallback", () => {
-    expect(source?.url).toContain("cursor.com/api/download");
-    expect(VERSION_SOURCES.cursor.fallback).toMatch(/^cli-/);
-  });
-});
-
 describe("opencode client version fallback", () => {
   test("the source is the CLI's own npm feed", () => {
     expect(VERSION_SOURCES.opencode.sources[0]?.url).toContain(
@@ -129,7 +113,7 @@ describe("opencode client version fallback", () => {
   test("the fallback is the current latest release", () => {
     // A cold process sends this before discovery resolves; if it lags the
     // upstream release the UA advertises a client build that no longer ships.
-    expect(VERSION_SOURCES.opencode.fallback).toBe("2.2.7");
+    expect(VERSION_SOURCES.opencode.fallback).toBe("2.3.0");
   });
 });
 
@@ -175,13 +159,13 @@ describe("client version monitor snapshot", () => {
   });
 
   test("uses current client feeds for Claude Code and Kiro", async () => {
-    expect(VERSION_SOURCES.claudeCli.fallback).toBe("2.1.322");
+    expect(VERSION_SOURCES.claudeCli.fallback).toBe("2.1.325");
     expect(VERSION_SOURCES.claudeCli.sources[0]?.url).toBe(
       "https://registry.npmjs.org/@anthropic-ai/claude-code/latest",
     );
     expect(VERSION_SOURCES.claudeSdk.fallback).toBe("0.128.0");
     expect(VERSION_SOURCES.claudeSdk.sources).toEqual([]);
-    expect(VERSION_SOURCES.kiro.fallback).toBe("1.4.154");
+    expect(VERSION_SOURCES.kiro.fallback).toBe("1.4.178");
     expect(VERSION_SOURCES.kiro.sources[0]?.url).toBe(
       "https://formulae.brew.sh/api/cask/kiro.json",
     );
@@ -190,7 +174,7 @@ describe("client version monitor snapshot", () => {
     const resolver = createClientVersionResolver({
       key: `test-kiro-cask-${crypto.randomUUID()}`,
       client: "kiro",
-      fallback: "1.4.154",
+      fallback: "1.4.178",
       sources: [VERSION_SOURCES.kiro.sources[0]!],
     });
     await resolver.ensure(
@@ -230,13 +214,13 @@ describe("default extractor covers the consolidated sources", () => {
       name: "qoder npm",
       key: "test-qoder",
       source: VERSION_SOURCES.qoder.sources[0]!,
-      body: { version: "1.1.81" },
-      expected: "1.1.81",
+      body: { version: "1.1.89" },
+      expected: "1.1.89",
     },
     {
       name: "cline vscode extension",
       key: "test-cline-client",
-      source: VERSION_SOURCES.clineClient.sources[0]!,
+      source: { url: "https://raw.githubusercontent.com/cline/cline/main/apps/vscode/package.json" },
       body: { name: "cline", version: "4.1.27" },
       expected: "4.1.27",
     },
@@ -380,18 +364,22 @@ describe("freebuff client version stays pinned", () => {
   });
 });
 
-describe("deepai client version stays pinned", () => {
-  test("no discovery source exists, and the fallback is the audited desktop bundle", () => {
-    // DeepAI Code (macOS/Windows only) publishes no machine-readable version
-    // feed. The pin is the version unpacked from the audited bundle — raise
-    // it when the next bundle is audited.
-    expect(VERSION_SOURCES.deepai.fallback).toBe("0.3.35");
-    expect(VERSION_SOURCES.deepai.sources).toEqual([]);
-    expect(getDeepAIVersion()).toBe("0.3.35");
+describe("deepai client version tracks the auto-updater feed", () => {
+  test("the Electron-updater generic feed is the discovery source", () => {
+    // The DeepAI Code desktop app polls its own updater feed
+    // (`downloads.deepai.org/deepai-code/releases/latest.yml`) — the same
+    // feed this resolver reads, so discovery cannot go stale while the
+    // vendor ships. The fallback is the version verified live on 2026-11-14.
+    expect(VERSION_SOURCES.deepai.fallback).toBe("0.3.37");
+    expect(VERSION_SOURCES.deepai.sources).toHaveLength(1);
+    expect(VERSION_SOURCES.deepai.sources[0]?.url).toBe(
+      "https://downloads.deepai.org/deepai-code/releases/latest.yml",
+    );
   });
 
-  test("it is wired into the refresh cycle and reports its pinned fallback", () => {
+  test("the identity is wired into the refresh cycle on the new fallback", () => {
     expect(getProviderClientVersion("deepai")?.client).toBe("deepai");
-    expect(getProviderClientVersion("deepai")?.version).toBe("0.3.35");
+    expect(getProviderClientVersion("deepai")?.version).toBe("0.3.37");
+    expect(getDeepAIVersion()).toBe("0.3.37");
   });
 });

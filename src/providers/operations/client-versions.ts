@@ -16,29 +16,6 @@ import {
   buildGrokShellUserAgent,
 } from "./cli-platform";
 
-/**
- * Newest Cursor build from the official download API, as the IDE's own header
- * spells it.
- *
- * Cursor's `x-cursor-client-version` is not the IDE semver on its own: the wire
- * value is `cli-<version>-<sha7>` (observed live as `cli-2026.11.05-86047df`).
- * The download API is the only source that returns both halves — `version` and
- * `commitSha` — so they are joined here rather than guessed. A semver alone
- * would be a different identity than the one the IDE sends.
- */
-async function cursorVersion(response: Response): Promise<string | null> {
-  try {
-    const data = (await response.json()) as { version?: unknown; commitSha?: unknown };
-    const version = data.version;
-    if (!isSemverish(version)) return null;
-    const sha = typeof data.commitSha === "string" ? data.commitSha.trim() : "";
-    const short = sha.length >= 7 ? sha.slice(0, 7) : "";
-    return short.length > 0 ? `cli-${version.trim()}-${short}` : version.trim();
-  } catch {
-    return null;
-  }
-}
-
 async function codeBuddyCnVersion(response: Response): Promise<string | null> {
   try {
     const data = (await response.json()) as { version?: unknown };
@@ -150,11 +127,45 @@ async function clixadVersion(response: Response): Promise<string | null> {
   }
 }
 
+/**
+ * Electron-updater generic feed: `latest.yml` / `latest-mac.yml` carry a
+ * `version:` key with the current desktop release. This is the same feed the
+ * app's own auto-updater polls, so it cannot go stale while the vendor ships.
+ */
+async function electronUpdaterVersion(response: Response): Promise<string | null> {
+  const body = await response.text();
+  const match = /^version:\s*["']?([A-Za-z0-9][A-Za-z0-9.\-]*)/m.exec(body);
+  return match && isSemverish(match[1]) ? match[1] : null;
+}
+
+/**
+ * Newest Cursor build from the official download API, as the CLI's own header
+ * spells it.
+ *
+ * Cursor's `x-cursor-client-version` is not the IDE semver on its own: the wire
+ * value is `cli-<date>-<sha7>` (observed live as `cli-2026.11.05-86047df`).
+ * The download API is the only source that returns both halves — `version` and
+ * `commitSha` — so they are joined here rather than guessed. A semver alone
+ * would be a different identity than the one the CLI sends.
+ */
+async function cursorVersion(response: Response): Promise<string | null> {
+  try {
+    const data = (await response.json()) as { version?: unknown; commitSha?: unknown };
+    const version = data.version;
+    if (!isSemverish(version)) return null;
+    const sha = typeof data.commitSha === "string" ? data.commitSha.trim() : "";
+    const short = sha.length >= 7 ? sha.slice(0, 7) : "";
+    return short.length > 0 ? `cli-${version.trim()}-${short}` : version.trim();
+  } catch {
+    return null;
+  }
+}
+
 /** Ordered upstream sources and pinned fallbacks for every client version. */
 export const VERSION_SOURCES = {
   antigravity: {
     key: "antigravity",
-    fallback: "2.31.0",
+    fallback: "2.32.1",
     sources: [
       {
         url: "https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml",
@@ -164,12 +175,15 @@ export const VERSION_SOURCES = {
   },
   qoder: {
     key: "qoder",
-    // The desktop IDE hardcodes its COSY_VERSION as "1.1.80" (`S9` in the
-    // unpacked worker bundle); the model-server surface sees this value, so
-    // the gateway presents the same build the IDE ships. Discovery (npm
-    // `@qoder-ai/qodercli/latest`) may report a newer CLI, but the CLI and
-    // IDE are different products — the chat surface identity is the IDE's.
-    fallback: "1.1.80",
+    // The chat surface identity is the worker-core build line: the desktop
+    // 0.5.12 core sends `cosy-version: 1.1.86-hotfix.5` (capture 2026-11-17)
+    // and its runtime-info names the product `qodercli` — the npm
+    // `@qoder-ai/qodercli` package ships that same runtime, so its latest tag
+    // is the freshest build of the family. The fallback is the version the
+    // real desktop core sends today; the resolver only ever adopts a
+    // *newer* discovered value, so discovery lifts the pin without ever
+    // presenting a build older than the captured core.
+    fallback: "1.1.86-hotfix.5",
     sources: [{ url: "https://registry.npmjs.org/@qoder-ai/qodercli/latest" }],
   },
   opencode: {
@@ -178,16 +192,16 @@ export const VERSION_SOURCES = {
     // under `@opencode/cli`, and this feed is what its own installer reads.
     // Fallback = the current latest release; raise it whenever the package
     // moves so a cold process does not present a stale client build.
-    fallback: "2.2.7",
+    fallback: "2.3.0",
     minVersion: "2.0.0",
     sources: [{ url: "https://opencode.ai/update/api/latest/cli/npm" }],
   },
   commandcode: {
     key: "commandcode",
-    // npm `command-code` latest as of 2026-11-07. The CLI sends this as
+    // npm `command-code` latest as of 2026-11-14. The CLI sends this as
     // `x-command-code-version`, so a stale fallback presents a client build
     // the upstream no longer ships — raise it whenever the package moves.
-    fallback: "1.88.5",
+    fallback: "1.89.1",
     sources: [{ url: "https://registry.npmjs.org/command-code/latest" }],
   },
   grok: {
@@ -196,14 +210,6 @@ export const VERSION_SOURCES = {
     sources: [
       { url: "https://storage.googleapis.com/grok-build-public-artifacts/cli/stable" },
       { url: "https://registry.npmjs.org/@xai-official/grok/latest" },
-    ],
-  },
-  clineClient: {
-    key: "cline-client",
-    fallback: "4.1.26",
-    minVersion: "4.1.23",
-    sources: [
-      { url: "https://raw.githubusercontent.com/cline/cline/main/apps/vscode/package.json" },
     ],
   },
   clineSdk: {
@@ -218,7 +224,7 @@ export const VERSION_SOURCES = {
   },
   codex: {
     key: "codex",
-    fallback: "0.167.1",
+    fallback: "0.169.0",
     sources: [{ url: "https://registry.npmjs.org/@openai/codex/latest" }],
   },
   kimiCli: {
@@ -228,7 +234,7 @@ export const VERSION_SOURCES = {
   },
   kiro: {
     key: "kiro",
-    fallback: "1.4.154",
+    fallback: "1.4.178",
     sources: [
       {
         // Kiro's downloads page exposes no stable version string. Homebrew
@@ -241,7 +247,7 @@ export const VERSION_SOURCES = {
   },
   codebuddy: {
     key: "codebuddy",
-    fallback: "2.183.0",
+    fallback: "2.184.0",
     sources: [
       { url: "https://registry.npmjs.org/@tencent-ai/codebuddy-code/latest" },
       { url: "https://registry.npmmirror.com/@tencent-ai/codebuddy-code/latest" },
@@ -264,7 +270,7 @@ export const VERSION_SOURCES = {
     // Current `@anthropic-ai/claude-code` release, so the billing
     // `cc_version=` suffix and the `claude-cli/` User-Agent stay on what
     // upstream ships.
-    fallback: "2.1.322",
+    fallback: "2.1.325",
     sources: [{ url: "https://registry.npmjs.org/@anthropic-ai/claude-code/latest" }],
   },
   claudeSdk: {
@@ -296,7 +302,7 @@ export const VERSION_SOURCES = {
   },
   muse: {
     key: "muse-code",
-    fallback: "1.4.15-R8339.1",
+    fallback: "1.4.20-R8619.1",
     sources: [{ url: "https://api.meta.ai/muse-code/channels/muse-stable" }],
   },
   trae: {
@@ -315,17 +321,17 @@ export const VERSION_SOURCES = {
   freepi: {
     key: "freepi",
     // The free-pi CLI version — the `x-client-version` the gateway reports.
-    // Fallback = the current npm latest (0.6.19 as of 2026-11-12); a cold
+    // Fallback = the current npm latest (0.6.21 as of 2026-11-14); a cold
     // process sends it until the monitor's first successful discovery.
-    fallback: "0.6.19",
+    fallback: "0.6.21",
     sources: [{ url: "https://registry.npmjs.org/free-pi-cli/latest" }],
   },
   perch: {
     key: "perch",
     // The official Perch CLI, spawned by the adapter for hosted inference.
-    // Fallback = the current npm latest (2.4.128 as of 2026-11-11); a cold
+    // Fallback = the current npm latest (2.4.132 as of 2026-11-14); a cold
     // process sends it until the monitor's first successful discovery.
-    fallback: "2.4.128",
+    fallback: "2.4.132",
     sources: [{ url: "https://registry.npmjs.org/perchai-cli/latest" }],
   },
   clixad: {
@@ -356,22 +362,27 @@ export const VERSION_SOURCES = {
   },
   deepai: {
     key: "deepai",
-    // No machine-readable public feed exists for the DeepAI Code desktop app
-    // (macOS/Windows only, no npm/CLI line). Fallback = the version unpacked
-    // from the audited bundle (2026-11-11, DeepAI Code 0.3.35). Raise it
-    // when the next bundle is audited. Pinned-only by design for the same
-    // reason as `freebuff`.
-    fallback: "0.3.35",
-    sources: [],
+    // The Electron-updater generic feed the DeepAI Code desktop app's own
+    // auto-updater polls (`downloads.deepai.org/deepai-code/releases`,
+    // surfaced by the 0.3.35 wire audit). Verified live 2026-11-14: 0.3.37,
+    // up from the audited 0.3.35 pin — the old "no machine-readable feed"
+    // note was wrong; the feed just was not looked for.
+    fallback: "0.3.37",
+    sources: [
+      {
+        url: "https://downloads.deepai.org/deepai-code/releases/latest.yml",
+        extract: electronUpdaterVersion,
+      },
+    ],
   },
   cursor: {
     key: "cursor",
-    // Fallback = the newest stable build from the official download API
-    // (cli-3.29.15-86776fc). Discovery replaces it within one monitor tick; it
-    // is only what a cold process sends before the first successful fetch.
-    // Kept equal to `FALLBACK_CLIENT_VERSION` in the cursor adapter so the
-    // badge and the request header always send one identity.
-    fallback: "cli-3.29.15-86776fc",
+    // Fallback = the newest stable build from the official download API at the
+    // time of wiring (cli-2026.11.05-86047df). Discovery replaces it within one
+    // monitor tick; it is only what a cold process sends before the first
+    // successful fetch. Kept equal to `CURSOR_CLIENT_VERSION` in the cursor
+    // wire module so the badge and the request header always send one identity.
+    fallback: "cli-2026.11.05-86047df",
     sources: [
       {
         url: "https://cursor.com/api/download?platform=win32-x64-user&releaseTrack=stable",
@@ -403,6 +414,15 @@ export const VERSION_SOURCES = {
       },
     ],
   },
+  factoryDroid: {
+    key: "factory-droid",
+    // The official Factory Droid CLI publishes to npm as `droid` (bin `droid`,
+    // repo `Factory-AI/factory`, maintainers @factory.ai). Fallback = the npm
+    // latest at the time of wiring (1.12.1); a cold process sends it until the
+    // monitor's first successful discovery.
+    fallback: "1.12.1",
+    sources: [{ url: "https://registry.npmjs.org/droid/latest" }],
+  },
 } as const;
 
 const resolvers = {
@@ -419,7 +439,6 @@ const resolvers = {
   opencode: createClientVersionResolver({ ...VERSION_SOURCES.opencode, client: "opencode" }),
   commandcode: createClientVersionResolver({ ...VERSION_SOURCES.commandcode, client: "command-code" }),
   grok: createClientVersionResolver({ ...VERSION_SOURCES.grok, client: "grok" }),
-  clineClient: createClientVersionResolver({ ...VERSION_SOURCES.clineClient, client: "cline" }),
   clineSdk: createClientVersionResolver({ ...VERSION_SOURCES.clineSdk, client: "cline-sdk" }),
   clineCli: createClientVersionResolver({ ...VERSION_SOURCES.clineCli, client: "cline-cli" }),
   codex: createClientVersionResolver({ ...VERSION_SOURCES.codex, client: "codex" }),
@@ -433,6 +452,7 @@ const resolvers = {
   kilo: createClientVersionResolver({ ...VERSION_SOURCES.kilo, client: "kilo" }),
   muse: createClientVersionResolver({ ...VERSION_SOURCES.muse, client: "muse" }),
   zcode: createClientVersionResolver({ ...VERSION_SOURCES.zcode, client: "zcode" }),
+  factoryDroid: createClientVersionResolver({ ...VERSION_SOURCES.factoryDroid, client: "factory-droid" }),
 } satisfies Record<keyof typeof VERSION_SOURCES, ClientVersionResolver>;
 const PROVIDER_VERSION_RESOLVERS: Readonly<Record<string, ClientVersionResolver>> = {
   antigravity: resolvers.antigravity,
@@ -447,15 +467,14 @@ const PROVIDER_VERSION_RESOLVERS: Readonly<Record<string, ClientVersionResolver>
   "opencode-zen": resolvers.opencode,
   "opencode-go": resolvers.opencode,
   // The identity this provider is dispatched under is the CLI's, so the route
-  // identity reports the CLI version, not the VS Code extension manifest
-  // (`clineClient`).
+  // identity reports the CLI version, not the VS Code extension manifest.
   cline: resolvers.clineCli,
   codex: resolvers.codex,
   qoder: resolvers.qoder,
+  cursor: resolvers.cursor,
   hermes: resolvers.hermes,
   trae: resolvers.trae,
   traecn: resolvers.trae,
-  cursor: resolvers.cursor,
   commandcode: resolvers.commandcode,
   cb: resolvers.codebuddy,
   cbcn: resolvers.codebuddyCn,
@@ -467,6 +486,10 @@ const PROVIDER_VERSION_RESOLVERS: Readonly<Record<string, ClientVersionResolver>
   kilo: resolvers.kilo,
   muse: resolvers.muse,
   zcode: resolvers.zcode,
+  // Both Qoder realms present the same IDE build identity (one COSY_VERSION
+  // per product, not per deployment host).
+  qodercn: resolvers.qoder,
+  factory: resolvers.factoryDroid,
 };
 
 /** Returns the current client version without performing network I/O. */
@@ -486,6 +509,30 @@ export function getRouteIdentityVersions(): {
 export async function refreshProviderClientVersions(): Promise<void> {
   const resolversToRefresh = [...new Set(Object.values(PROVIDER_VERSION_RESOLVERS))];
   await Promise.allSettled(resolversToRefresh.map((resolver) => resolver.ensure()));
+  scheduleFallbackRetry(resolversToRefresh);
+}
+
+let fallbackRetryTimer: ReturnType<typeof setTimeout> | undefined;
+/**
+ * One bounded retry for resolvers still on their pinned fallback.
+ *
+ * `ensure()` swallows per-source failures (the loader returns null rather
+ * than throwing, so there is no error to observe), and the monitor's tick is
+ * 30 minutes — a transient blip would otherwise leave a cold identity stale
+ * for the whole interval while every other client is current. One retry
+ * 90 seconds after the pass closes most of that gap. Unref'd and single-shot:
+ * it never holds the process open, never stacks up, and a resolver that
+ * recovers on the retry reports `latest` on the next pinned-versions read.
+ */
+function scheduleFallbackRetry(resolvers: readonly ClientVersionResolver[]): void {
+  if (fallbackRetryTimer !== undefined) return;
+  const stuck = resolvers.filter((resolver) => resolver.snapshot().source === "fallback");
+  if (stuck.length === 0) return;
+  fallbackRetryTimer = setTimeout(() => {
+    fallbackRetryTimer = undefined;
+    void Promise.allSettled(stuck.map((resolver) => resolver.ensure()));
+  }, 90_000);
+  (fallbackRetryTimer as unknown as { unref?: () => void }).unref?.();
 }
 
 /** One client identity still running on its pinned fallback. */
@@ -560,6 +607,8 @@ export const getFreebuffVersion = accessor("freebuff").get;
 export const getDeepAIVersion = accessor("deepai").get;
 
 export const getOpenCodeVersion = accessor("opencode").get;
+
+export const getFactoryDroidVersion = accessor("factoryDroid").get;
 
 export const getCommandCodeVersion = accessor("commandcode").get;
 

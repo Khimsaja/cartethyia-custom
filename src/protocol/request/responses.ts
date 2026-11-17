@@ -3,7 +3,7 @@
  */
 import type { CanonicalRequest } from "../canonical-model";
 import { clampToolCallId, isRecord } from "../codecs";
-import { markLatestBreakpoint } from "../../protocol/translation/cache-controls";
+import { markBreakpointsAtPositions } from "../../protocol/translation/cache-controls";
 import { normalizeGenerationControls, pickWireSupportedControls } from "../../protocol/translation/capabilities";
 import { resolveWireMaxTokens } from "../../protocol/translation/quirks";
 import type { DialectPolicy } from "../../protocol/translation/dialect/types";
@@ -11,6 +11,7 @@ import type { ThinkingConfig } from "../../protocol/translation/dialect/thinking
 import { resolveThinkingForModel } from "../../protocol/translation/dialect/thinking-ladder";
 import { clampThinkingLevelForModel } from "../../protocol/translation/dialect/model-thinking";
 import { isClaudeBillingHeaderText, resolveImageSource, resolveOutputVerbosity } from "../codecs";
+import { log } from "../../observability/logger";
 import { resolvePromptCacheKey } from "../../providers/operations/session-resolution";
 import { reasoningEffortFromIntent } from "../../protocol/reasoning";
 import { isWebSearchTool } from "../../protocol/translation/search";
@@ -26,16 +27,14 @@ const RESPONSES_CACHEABLE_BLOCK_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /** Marks the latest stable input block with an explicit prompt-cache breakpoint. */
-function markLatestResponsesCacheBreakpoint(input: Array<Record<string, unknown>>): void {
-  markLatestBreakpoint(input, {
-    isInputItem: (item) =>
-      item["type"] === "message" && (item["role"] === "user" || item["role"] === "developer"),
-    isCacheableRole: (role) => role === "user" || role === "developer" || role === "system",
-    isCacheableBlock: (block) =>
-      typeof block["type"] === "string" && RESPONSES_CACHEABLE_BLOCK_TYPES.has(block["type"]),
-    writeMarker: (block) => (block["prompt_cache_breakpoint"] = { mode: "explicit" }),
-  });
-}
+const RESPONSES_CACHE_PREDICATES = {
+  isInputItem: (item: Record<string, unknown>) =>
+    item["type"] === "message" && (item["role"] === "user" || item["role"] === "developer"),
+  isCacheableRole: (role: unknown) => role === "user" || role === "developer" || role === "system",
+  isCacheableBlock: (block: Record<string, unknown>) =>
+    typeof block["type"] === "string" && RESPONSES_CACHEABLE_BLOCK_TYPES.has(block["type"]),
+  writeMarker: (block: Record<string, unknown>) => (block["prompt_cache_breakpoint"] = { mode: "explicit" }),
+} as const;
 
 /** Renders a canonical computer-use result as a Responses `computer_screenshot`. */
 function computerOutputForWire(content: unknown): Record<string, unknown> {
@@ -81,6 +80,37 @@ const RESPONSES_EXTENSION_PASSTHROUGH: ReadonlyArray<string> = [
   "user",
 ];
 
+/**
+ * F-9: the hosted-declaration fields THIS wire re-emits, per family. Keys in
+ * `hosted_fields` outside the set are dropped with a debug log — a field the
+ * ingress allowlist captured for another wire's vocabulary must not reach an
+ * upstream that rejects unknown fields.
+ */
+const RESPONSES_WEB_SEARCH_FIELDS: ReadonlySet<string> = new Set([
+  "search_context_size",
+  "user_location",
+  "filters",
+]);
+const RESPONSES_MCP_FIELDS: ReadonlySet<string> = new Set([
+  "server_label",
+  "server_url",
+  "allowed_tools",
+  "headers",
+  "require_approval",
+]);
+
+function pickHostedFields(
+  tool: { readonly name: string; readonly hosted_fields?: Record<string, unknown> },
+  allowed: ReadonlySet<string>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(tool.hosted_fields ?? {})) {
+    if (allowed.has(key)) out[key] = value;
+    else if (value !== undefined) log.debug("responses: dropping hosted tool field this wire does not carry", { tool: tool.name, field: key });
+  }
+  return out;
+}
+
 export function canonicalToResponsesPayload(
   request: CanonicalRequest,
   options: {
@@ -89,6 +119,14 @@ export function canonicalToResponsesPayload(
     readonly dialectPolicy?: DialectPolicy;
     readonly thinking?: ThinkingConfig;
     readonly maxOutputTokens?: number;
+    /**
+     * F-20: the upstream does not persist responses — a
+     * `previous_response_id` (even a real `response.id` from an earlier turn)
+     * answers 404. Continuity comes from the full `input` history, so the
+     * codec strips the linkage fields once, declaratively, instead of every
+     * stateless provider deleting them in its own prePayload.
+     */
+    readonly statelessResponses?: boolean;
   } = {},
 ): Record<string, unknown> {
   const supportsPromptCaching = options.supportsPromptCaching ?? true;
@@ -268,13 +306,15 @@ export function canonicalToResponsesPayload(
     }
     flushMessage();
   }
+  // F-34: the hint's positions are consumed — each listed n marks the
+  // Nth-from-last cacheable block, not just the latest one.
   if (
     supportsPromptCaching &&
     request.cache_hint !== undefined &&
     request.cache_hint !== "stable_prefix" &&
     request.cache_hint.list.length > 0
   ) {
-    markLatestResponsesCacheBreakpoint(input);
+    markBreakpointsAtPositions(input, RESPONSES_CACHE_PREDICATES, request.cache_hint.list);
   }
   const payload: Record<string, unknown> = {
     model: request.model,
@@ -299,8 +339,19 @@ export function canonicalToResponsesPayload(
       // A hosted web-search tool is a first-class tool on this wire. Emitting
       // the caller's Anthropic `web_search_*` payload verbatim sent Codex
       // `{"type": null}` and a 400 ("Unsupported tool type: None"); Responses
-      // names the same capability `web_search_preview`.
-      if (isWebSearchTool(tool)) return { type: "web_search_preview" };
+      // names the same capability `web_search_preview`. F-9: the declaration's
+      // configuration fields arrive in `hosted_fields` (ingress allowlist) and
+      // re-emit here — a search request used to arrive search-less.
+      if (isWebSearchTool(tool))
+        return {
+          type: "web_search_preview",
+          ...pickHostedFields(tool, RESPONSES_WEB_SEARCH_FIELDS),
+        };
+      // F-9: an MCP declaration re-emits its server configuration — without
+      // this the tool arrived server-less (and `jsonSchema` is `{}` for a
+      // hosted type, so the passthrough below emitted an empty object).
+      if (tool.tool_type === "mcp" && tool.hosted_fields !== undefined)
+        return { type: "mcp", ...pickHostedFields(tool, RESPONSES_MCP_FIELDS) };
       if (tool.tool_type !== undefined && tool.tool_type !== "function" && isRecord(tool.jsonSchema))
         return tool.jsonSchema;
       return {
@@ -330,10 +381,14 @@ export function canonicalToResponsesPayload(
       payload.tool_choice = request.tool_choice;
     }
   }
-  if (request.conversation?.previous_response_id !== undefined)
-    payload.previous_response_id = request.conversation.previous_response_id;
-  if (request.conversation?.conversation_id !== undefined)
-    payload.conversation = request.conversation.conversation_id;
+  if (options.statelessResponses !== true) {
+    // A stateful route preserves the linkage verbatim; a stateless one has no
+    // response store to look the id up in (F-20).
+    if (request.conversation?.previous_response_id !== undefined)
+      payload.previous_response_id = request.conversation.previous_response_id;
+    if (request.conversation?.conversation_id !== undefined)
+      payload.conversation = request.conversation.conversation_id;
+  }
   if (request.metadata !== undefined) payload.metadata = request.metadata;
   if (request.reasoning) {
     const reasoning: Record<string, unknown> = {};
