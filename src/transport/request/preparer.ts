@@ -33,6 +33,7 @@ import {
   shouldWarnDegradation,
 } from "./degradation";
 import { DEFAULT_ESTIMATED_OUTPUT_TOKENS, estimateInputTokens } from "./token-estimate";
+import { inputLimitExceeded } from "./input-limits";
 import { condenseHandoffRequest, replaceImagePartsWithText } from "./vision-rewrite";
 import { resolveContinuationAffinityWithRebase } from "./continuation-affinity";
 
@@ -514,6 +515,23 @@ export class ProxyRequestPreparer {
       effectiveRequest.generation_controls.max_completion_tokens ??
       DEFAULT_ESTIMATED_OUTPUT_TOKENS;
     const chosen = eligible[0]!;
+    // Operator per-request input cap (see input-limits): reject before
+    // dispatch so one giant request cannot burn an account's per-minute
+    // token quota and rate-limit the shared pool. Checked against the
+    // estimate on the final projected request, not the raw inbound body.
+    const inputCap = inputLimitExceeded(estimatedInputTokens, chosen.provider_id);
+    if (inputCap !== null) {
+      throw new GatewayError(
+        "context_length_exceeded",
+        413,
+        `Request input (~${estimatedInputTokens} tokens) exceeds this provider's per-request limit of ${inputCap} tokens (request {requestId}). Shorten the input and try again.`,
+        {
+          providerId: chosen.provider_id,
+          estimatedInputTokens,
+          maxInputTokens: inputCap,
+        },
+      );
+    }
     // plan() guarantees a non-empty candidate list (it throws otherwise).
     return {
       ...(requestedAuto ? { displayModel: AUTO_MODEL_NAME } : {}),
