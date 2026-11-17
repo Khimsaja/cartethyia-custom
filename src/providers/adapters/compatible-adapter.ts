@@ -292,7 +292,7 @@ export class OpenAICompatibleAdapter extends BaseProviderAdapter {
     // universal Messages-wire thinking strip inside it does not leak onto
     // chat/responses providers that never asked for it.
     const effectiveRequest = hasParamQuirk(candidate.provider_id, baseRequest.model)
-      ? applyParamQuirks(baseRequest, candidate.provider_id)
+      ? applyParamQuirks(baseRequest, candidate.provider_id, wireFamily)
       : baseRequest;
     const promptCacheKey = resolvePromptCacheKey(effectiveRequest, context);
     const dialectPolicy: DialectPolicy = resolveDialect(

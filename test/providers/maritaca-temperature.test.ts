@@ -52,7 +52,7 @@ const maritacaAdapter = new ExposedAdapter({
 describe("Maritaca temperature override", () => {
   test("forces temperature to 1, overriding the caller's value", () => {
     const request = makeRequest(0.2);
-    const forced = applyParamQuirks(request, "maritaca");
+    const forced = applyParamQuirks(request, "maritaca", "chat");
 
     expect(forced.generation_controls.temperature).toBe(1);
     expect(forced.generation_controls.top_p).toBe(0.8);
@@ -60,7 +60,7 @@ describe("Maritaca temperature override", () => {
   });
 
   test("forces temperature to 1 when the caller sent none", () => {
-    const forced = applyParamQuirks(makeRequest(), "maritaca");
+    const forced = applyParamQuirks(makeRequest(), "maritaca", "chat");
     expect(forced.generation_controls.temperature).toBe(1);
   });
 
@@ -71,7 +71,7 @@ describe("Maritaca temperature override", () => {
 
   test("unlisted providers are returned untouched", () => {
     const request = makeRequest(0.2);
-    expect(applyParamQuirks(request, "deepai")).toBe(request);
+    expect(applyParamQuirks(request, "deepai", "chat")).toBe(request);
   });
 
   test("generic adapter emits temperature 1 for maritaca", async () => {
