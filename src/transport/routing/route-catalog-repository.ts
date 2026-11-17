@@ -20,7 +20,9 @@ import {
   cliMappingSourceKeys,
   mergeModelCatalog,
   type MergedModelRow,
+  pruneCatalogModels,
   resolveRouteUserAgent,
+  resolveTemplateReachableModels,
 } from "./route-catalog-helpers";
 import {
   type AccountRouteRow,
@@ -55,7 +57,7 @@ type RouteCatalogSnapshotResult = Omit<RouteSnapshot, "revision" | "created_at">
 const SNAPSHOT_FANOUT_YIELD_EVERY = 50_000;
 
 /**
- * Staged state for one snapshot build. The load reads all thirteen row sets
+ * Staged state for one snapshot build. The load reads all fourteen row sets
  * first, then compiles every lookup map/table once, then resolves candidates
  * against them through the resolver methods below. Everything here is local to
  * one build; nothing outlives it. Splitting this out of
@@ -97,7 +99,36 @@ class RouteCatalogBuildContext {
 
   constructor(rows: CatalogRead) {
     this.rows = rows;
-    this.mergedModelRows = mergeModelCatalog(rows.modelRows);
+    // Global catalog: every model row is kept (template-only pruning is
+    // disabled in pruneCatalogModels, operator decision 2026-11-13). The
+    // template/alias/combo seeds below still feed the reachability
+    // computation, which the pass-through prune currently ignores.
+    const enabledMappingBuckets = new Set<string>();
+    for (const row of rows.cliMappingSettingRows) {
+      if (row.mappingsEnabled) enabledMappingBuckets.add(`${row.tenantId}:${row.apiKeyId}`);
+    }
+    const aliasTargets: Record<string, string[]> = {};
+    for (const row of rows.aliasRows) {
+      (aliasTargets[row.alias] ??= []).push(row.targetModel);
+    }
+    const comboMembers: Record<string, string[]> = {};
+    for (const row of rows.comboRows) {
+      const members = (comboMembers[row.name] ??= []);
+      for (const member of row.members) members.push(member);
+    }
+    const templateSeeds: string[] = [];
+    for (const row of rows.templateRows) {
+      for (const model of row.models) templateSeeds.push(model);
+    }
+    for (const row of rows.cliMappingRows) {
+      if (!row.enabled) continue;
+      if (!enabledMappingBuckets.has(`${row.tenantId}:${row.apiKeyId}`)) continue;
+      templateSeeds.push(row.targetModel);
+    }
+    this.mergedModelRows = pruneCatalogModels(
+      mergeModelCatalog(rows.modelRows),
+      resolveTemplateReachableModels(templateSeeds, aliasTargets, comboMembers),
+    );
     /**
      * Tenants that asked to ignore an account-wide cooldown.
      *

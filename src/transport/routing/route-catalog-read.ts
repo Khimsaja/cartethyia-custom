@@ -1,4 +1,4 @@
-// Route catalog row reads: the thirteen-row-set fan-out that loads the
+// Route catalog row reads: the fourteen-row-set fan-out that loads the
 // persisted catalog once per snapshot. Every query is a column projection (see
 // `route-catalog-helpers.ts`) so the payload stays at what the snapshot
 // actually reads. The pure build over these rows lives in
@@ -13,6 +13,7 @@ import {
   modelAliases,
   modelCombos,
   models,
+  modelTemplates,
   networkPools,
   poolRoutingSettings,
   providerAccounts,
@@ -36,6 +37,7 @@ import {
   POOL_SETTING_COLUMNS,
   PROVIDER_COLUMNS,
   ROUTING_COLUMNS,
+  TEMPLATE_COLUMNS,
 } from "./route-catalog-helpers";
 
 /**
@@ -66,7 +68,7 @@ export async function runBounded<T extends readonly unknown[]>(
 /**
  * Concurrent reads a snapshot rebuild may hold at once. The rebuild shares
  * one Postgres pool (`DATABASE_POOL_MAX`) with the request path, and its
- * thirteen catalog reads used to start together — thirteen connections
+ * fourteen catalog reads used to start together — fourteen connections
  * claimed in the same instant a burst of key lookups needed them, which is
  * one of the ways a rebuild turned into connect timeouts for everyone
  * (2026-11-14). Four lanes still finish the reads quickly — each is a
@@ -82,6 +84,8 @@ export type AccountRouteRow = { [K in keyof typeof ACCOUNT_COLUMNS]: (typeof pro
 type AliasRouteRow = { [K in keyof typeof ALIAS_COLUMNS]: (typeof modelAliases.$inferSelect)[K] };
 /** A row of `model_combos` as the snapshot read sees it. */
 type ComboRouteRow = { [K in keyof typeof COMBO_COLUMNS]: (typeof modelCombos.$inferSelect)[K] };
+/** A row of `model_templates` as the snapshot read sees it. */
+type TemplateRouteRow = { [K in keyof typeof TEMPLATE_COLUMNS]: (typeof modelTemplates.$inferSelect)[K] };
 /** A row of `provider_routing_settings` as the snapshot read sees it. */
 type RoutingRouteRow = { [K in keyof typeof ROUTING_COLUMNS]: (typeof providerRoutingSettings.$inferSelect)[K] };
 /** A row of `network_pools` as the snapshot read sees it. */
@@ -109,13 +113,14 @@ type PoolSettingRouteRow = {
 /** A row of `console_settings` as the snapshot read sees it. */
 type SettingsRouteRow = { tenantId: string | null; preferences: ConsoleSettingsPreferences };
 
-/** The thirteen row sets behind one snapshot load. */
+/** The fourteen row sets behind one snapshot load. */
 export interface CatalogRead {
   providerRows: readonly ProviderRouteRow[];
   modelRows: readonly ModelRouteRow[];
   accountRows: readonly AccountRouteRow[];
   aliasRows: readonly AliasRouteRow[];
   comboRows: readonly ComboRouteRow[];
+  templateRows: readonly TemplateRouteRow[];
   routingRows: readonly RoutingRouteRow[];
   poolRows: readonly PoolRouteRow[];
   poolAccountRows: readonly PoolAccountRouteRow[];
@@ -138,6 +143,7 @@ export async function readCatalogRows(db: CartethyiaDatabase): Promise<CatalogRe
     accountRows,
     aliasRows,
     comboRows,
+    templateRows,
     routingRows,
     poolRows,
     poolAccountRows,
@@ -158,6 +164,7 @@ export async function readCatalogRows(db: CartethyiaDatabase): Promise<CatalogRe
           .orderBy(asc(providerAccounts.status), asc(providerAccounts.createdAt), asc(providerAccounts.id)),
       () => db.select(ALIAS_COLUMNS).from(modelAliases),
       () => db.select(COMBO_COLUMNS).from(modelCombos),
+      () => db.select(TEMPLATE_COLUMNS).from(modelTemplates),
       () => db.select(ROUTING_COLUMNS).from(providerRoutingSettings),
       () => db.select(POOL_COLUMNS).from(networkPools),
       () => db.select(POOL_ACCOUNT_COLUMNS).from(providerPoolAccounts),
@@ -182,6 +189,7 @@ export async function readCatalogRows(db: CartethyiaDatabase): Promise<CatalogRe
     accountRows,
     aliasRows,
     comboRows,
+    templateRows,
     routingRows,
     poolRows,
     poolAccountRows,

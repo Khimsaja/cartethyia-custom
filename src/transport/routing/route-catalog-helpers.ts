@@ -9,6 +9,7 @@ import {
   models,
   modelAliases,
   modelCombos,
+  modelTemplates,
   networkPools,
   poolRoutingSettings,
   providerAccounts,
@@ -238,6 +239,115 @@ export function mergeModelCatalog(
 }
 
 /**
+ * Global catalog (template-only pruning disabled).
+ *
+ * The route snapshot fans every persisted model out to every account of its
+ * provider (~750k candidates on this deployment), and the snapshot is
+ * rebuilt wholesale whenever the account-health sweep recovers an account.
+ * Each rebuild allocates the whole catalog again, so resident memory and
+ * CPU spike on every rebuild.
+ *
+ * Template-only pruning used to keep only models reachable from a model
+ * template, but it also dropped every non-template model from routing
+ * (e.g. deepai/deepseek-v4.1-flash was unroutable despite an enabled
+ * catalog row and a live account). The heap-leak root cause turned out to
+ * be the Bun --cpu-prof flag, not catalog size, so the operator disabled
+ * the prune: the catalog is global again and every enabled model routes.
+ * `pruneCatalogModels` below is intentionally a pass-through; the
+ * template-reachability helpers are retained so the prune can be
+ * re-enabled by restoring the filter.
+ */
+export type TemplateReachableModels = {
+  /** Exact `provider/model` pairs reachable from a template or CLI target. */
+  readonly qualified: ReadonlySet<string>;
+  /** Bare model ids reachable from a template (any provider may serve them). */
+  readonly bare: ReadonlySet<string>;
+  /** Providers named by a qualified pair (passthrough anchors). */
+  readonly providers: ReadonlySet<string>;
+};
+
+/** Mirrors router.ts normalizeAliasKey: exact match first, then a trailing
+ * `[...]` variant, then the `claude-<slot>-…` family-slot fallback. */
+function normalizeTemplateAliasKey(
+  requested: string,
+  aliasMap: Readonly<Record<string, unknown>>,
+): string {
+  if (aliasMap[requested] !== undefined) return requested;
+  let base = requested;
+  const bracket = requested.indexOf("[");
+  if (bracket > 0) {
+    base = requested.slice(0, bracket);
+    if (aliasMap[base] !== undefined) return base;
+  }
+  if (base.startsWith("claude-")) {
+    const rest = base.slice("claude-".length);
+    if (aliasMap[rest] !== undefined) return rest;
+    const dash = rest.indexOf("-");
+    if (dash > 0) {
+      const slot = rest.slice(0, dash);
+      if (aliasMap[slot] !== undefined) return slot;
+    }
+  }
+  return base;
+}
+
+/**
+ * Expands template entries (plus CLI mapping targets) to the model
+ * references the request path can resolve them to: alias chains first, then
+ * combo members, recursively — the same shape as the request path's
+ * resolveAlias + expandMember, but over the union of every in-scope
+ * tenant's rows, so a name that means different things in different
+ * tenants resolves to all of them. Cycles stop instead of throwing: a bad
+ * alias is unroutable either way, and the builder must never throw.
+ */
+export function resolveTemplateReachableModels(
+  seeds: readonly string[],
+  aliasTargets: Readonly<Record<string, readonly string[]>>,
+  comboMembers: Readonly<Record<string, readonly string[]>>,
+): TemplateReachableModels {
+  const qualified = new Set<string>();
+  const bare = new Set<string>();
+  const providers = new Set<string>();
+  const seen = new Set<string>();
+  const queue: { name: string; depth: number }[] = seeds.map((name) => ({ name, depth: 0 }));
+  while (queue.length > 0) {
+    const { name, depth } = queue.shift()!;
+    if (seen.has(name) || depth > 16) continue;
+    seen.add(name);
+    const aliasKey = normalizeTemplateAliasKey(name, aliasTargets);
+    const targets = aliasTargets[aliasKey];
+    if (targets !== undefined && targets.length > 0) {
+      for (const target of targets) queue.push({ name: target, depth: depth + 1 });
+      continue;
+    }
+    const members = comboMembers[aliasKey];
+    if (members !== undefined && members.length > 0) {
+      for (const member of members) queue.push({ name: member, depth: depth + 1 });
+      continue;
+    }
+    const slash = name.indexOf("/");
+    if (slash === -1) bare.add(name);
+    else {
+      qualified.add(name);
+      providers.add(name.slice(0, slash));
+    }
+  }
+  return { qualified, bare, providers };
+}
+
+export function pruneCatalogModels(
+  rows: readonly MergedModelRow[],
+  reachable: TemplateReachableModels,
+): MergedModelRow[] {
+  // Global catalog: no pruning. The template-reachability set is computed
+  // by the caller but intentionally unused here (see the comment above
+  // TemplateReachableModels). Restore the filter below to re-enable
+  // template-only pruning.
+  void reachable;
+  return [...rows];
+}
+
+/**
  * Column projections for the snapshot read.
  *
  * The builder reads a handful of fields from each table, but the read used to
@@ -305,6 +415,11 @@ export const COMBO_COLUMNS = {
   name: modelCombos.name,
   members: modelCombos.members,
   strategy: modelCombos.strategy,
+} as const;
+
+export const TEMPLATE_COLUMNS = {
+  tenantId: modelTemplates.tenantId,
+  models: modelTemplates.models,
 } as const;
 
 export const ROUTING_COLUMNS = {

@@ -2,8 +2,8 @@
  * `runBounded`: the snapshot rebuild's catalog reads run with bounded
  * concurrency.
  *
- * The rebuild's thirteen catalog reads used to start together in one
- * `Promise.all`, claiming thirteen pool connections in the same instant a
+ * The rebuild's fourteen catalog reads used to start together in one
+ * `Promise.all`, claiming fourteen pool connections in the same instant a
  * burst of key lookups needed them — one of the ways a rebuild turned into
  * connect timeouts for everyone (2026-11-14). The runner caps the lanes
  * while preserving result order.
