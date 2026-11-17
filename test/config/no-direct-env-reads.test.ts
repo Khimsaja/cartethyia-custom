@@ -72,6 +72,11 @@ const ALLOW_LIST: Readonly<Record<string, Readonly<Record<string, string>>>> = {
     // still read through the spec.
     CARTETHYIA_PROCESS_INDEX: "presence check; absent must error, not default to 0",
   },
+  "src/config/timeouts.ts": {
+    // Early-commit rollout switch; default-off flag: only "1"/"true" enables,
+    // while the generic flag reader enables unless the literal "false".
+    CARTETHYIA_STREAM_EARLY_COMMIT_ENABLED: "default-off flag semantics beyond generic reader",
+  },
   "src/observability/payload-capture.ts": {
     // Telemetry subsystem knob; the retention value is also in `.env.example`
     // and read directly here because the capture module is otherwise pure.
