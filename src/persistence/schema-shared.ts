@@ -100,6 +100,12 @@ export function healthColumns() {
   return {
     status: healthStatus("status").notNull().default("active"),
     consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+    // Auth-escalation streak (migration 0043): consecutive upstream auth
+    // rejections within a 24 h window, bounded by last_auth_rejection_at.
+    // Declared here so the three tables that spread healthColumns() match
+    // the migration; no code currently writes these columns.
+    consecutiveAuthRejections: integer("consecutive_auth_rejections").notNull().default(0),
+    lastAuthRejectionAt: timestamp("last_auth_rejection_at", { withTimezone: true }),
     lastSuccessAt: timestamp("last_success_at", { withTimezone: true }),
     lastError: text("last_error"),
     lastErrorCategory: text("last_error_category"),
