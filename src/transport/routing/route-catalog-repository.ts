@@ -99,10 +99,10 @@ class RouteCatalogBuildContext {
 
   constructor(rows: CatalogRead) {
     this.rows = rows;
-    // Global catalog: every model row is kept (template-only pruning is
-    // disabled in pruneCatalogModels, operator decision 2026-11-13). The
-    // template/alias/combo seeds below still feed the reachability
-    // computation, which the pass-through prune currently ignores.
+    // Template-only catalog: only model rows reachable from a model template
+    // (or an enabled CLI mapping target) are kept — see pruneCatalogModels,
+    // re-enabled by operator decision 2026-11-18. The template/alias/combo
+    // seeds below feed the reachability computation.
     const enabledMappingBuckets = new Set<string>();
     for (const row of rows.cliMappingSettingRows) {
       if (row.mappingsEnabled) enabledMappingBuckets.add(`${row.tenantId}:${row.apiKeyId}`);
