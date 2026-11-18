@@ -624,10 +624,9 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
 
   constructor(
     private readonly builder: SnapshotBuilder,
-    options: { readonly rebuildDebounceMs?: number; readonly minRebuildIntervalMs?: number } = {},
+    options: { readonly rebuildDebounceMs?: number } = {},
   ) {
     this.rebuildDebounceMs = options.rebuildDebounceMs ?? 500;
-    this.minRebuildIntervalMs = options.minRebuildIntervalMs ?? 300_000;
     // Peers' mutations arrive once per process, not per instance: the handler
     // schedules a background rebuild, which is the only one there is.
     this.unsubscribe = subscribeRoutingInvalidation(() => {
@@ -643,41 +642,18 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
   private readonly rebuildDebounceMs: number;
 
   /**
-   * Minimum wall-clock gap between cached rebuilds. The account-health sweep
-   * invalidates whenever any account recovers, and each rebuild re-reads the
-   * whole catalog and allocates a fresh frozen snapshot; at the sweep's
-   * cadence that churn dominates gateway CPU and heap growth. A recovered
-   * account becomes routable at most this long after its cooldown expires
-   * (cooldowns are 10+ min), so a 5-minute floor costs nothing noticeable.
-   */
-  private readonly minRebuildIntervalMs: number;
-
-  /**
-   * Wall-clock time the last rebuild attempt started. 0 before the first.
-   * Stamped on attempt, not only on success: a failed build must also count
-   * against the minimum rebuild interval, or a failing catalog retries on
-   * every invalidation and each attempt allocates a fresh ~1GB snapshot
-   * that nothing collects (2026-11-14: 8 failed attempts in 10 minutes
-   * took the gateway from 1.4GB to 9.2GB RSS and the pool timeouts that
-   * failed the builds kept coming).
-   */
-  private lastRebuildAt = 0;
-
-  /**
    * Schedules a background rebuild at the current revision. Debounced: while a
    * timer is pending, further invalidates just bump the revision and the
    * pending rebuild picks up the latest. Single-flight by construction — the
    * rebuild itself reuses {@link building}, so concurrent callers share one
-   * promise for the same revision. Rate-limited: the timer waits out the
-   * minimum rebuild interval so a burst of invalidates cannot rebuild more
-   * than once per interval.
+   * promise for the same revision.
+   *
+   * Pure upstream behavior (operator decision 2026-11-18): no minimum
+   * rebuild interval. The catalog is template-only pruned, so each rebuild
+   * is cheap; the floor that used to throttle rebuilds was removed.
    */
   private scheduleRebuild(): void {
     if (this.stopped || this.rebuildTimer !== undefined) return;
-    const delay = Math.max(
-      this.rebuildDebounceMs,
-      this.minRebuildIntervalMs - (Date.now() - this.lastRebuildAt),
-    );
     this.rebuildTimer = setTimeout(() => {
       this.rebuildTimer = undefined;
       void this.rebuildNow().catch((error: unknown) => {
@@ -685,7 +661,7 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
         // last-completed snapshot, and the next invalidation retries.
         log.warn("[route-snapshot] background rebuild failed", error as Error);
       });
-    }, delay);
+    }, this.rebuildDebounceMs);
     if (typeof this.rebuildTimer.unref === "function") this.rebuildTimer.unref();
   }
 
@@ -747,10 +723,6 @@ export class InMemoryRouteSnapshotService implements RouteSnapshotService {
   }
 
   private async build(revision: RoutingRevision): Promise<RouteSnapshot> {
-    // Stamp the attempt here: see lastRebuildAt. A failed build still
-    // allocates its partial snapshot, so it must count against the
-    // interval just like a successful one.
-    this.lastRebuildAt = Date.now();
     const built = await this.builder().catch((error: unknown) => {
       // A failed build still allocated its partial snapshot. Collect it
       // now: the collector rarely gets a clean window while rebuilds are

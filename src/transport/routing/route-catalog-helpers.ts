@@ -247,8 +247,9 @@ export function mergeModelCatalog(
  * Each rebuild allocates the whole catalog again, so resident memory and
  * CPU spike on every rebuild. With the catalog pruned to template-reachable
  * models the fan-out is orders of magnitude smaller, so rebuilds stay cheap.
- * The 5-minute rebuild floor (minRebuildIntervalMs) stays in place as the
- * backstop against invalidation churn.
+ * The rebuild has no minimum interval (pure upstream behavior, operator
+ * decision 2026-11-18): with the catalog pruned this small, rebuilds stay
+ * cheap even when invalidations arrive in bursts.
  *
  * Only models reachable from a model template can be sold: a template entry
  * resolves through aliases and combos to concrete (provider, model) pairs,
