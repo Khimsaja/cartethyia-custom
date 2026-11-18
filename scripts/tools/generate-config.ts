@@ -33,6 +33,7 @@ const KIND_LABEL: Record<Entry["kind"], string> = {
   "optional-int": "integer, optional",
   required: "string, required",
   flag: "flag",
+  "opt-in-flag": "flag (`1`/`true`)",
   list: "comma-separated list",
 };
 
@@ -47,6 +48,8 @@ function defaultValue(entry: Entry): string {
       return "— (unset throws at startup)";
     case "flag":
       return "enabled (disabled only when literally `false`)";
+    case "opt-in-flag":
+      return "off";
     case "optional-text":
     case "optional-int":
     case "list":

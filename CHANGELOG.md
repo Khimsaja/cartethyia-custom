@@ -8,9 +8,130 @@ current baseline; an existing one applies the numbered files that followed it.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.8.4] - 2026-11-18 · Codename Arc-en-Ciel
+
+### Added
+
+- **Numes provider.** OpenAI-compatible marketplace key (`sk-numes-...`) on
+  `api.numes.ai/api/v1`: the static roster seeds the nine live-verified
+  `:free` rows (zero price, `freeTier`), discovery maps the full 331-model
+  catalog for manual adds, quota comes from `GET /api/v1/key`, and the
+  provider lands in Free Limited with its brand mark.
+- **Runcrate provider.** OpenAI-compatible inference on
+  `api.runcrate.ai/v1` plus the Anthropic Messages wire on the same base
+  (both verified live): the roster tags the five free-allowance models
+  (DeepSeek V4.1 Flash, GLM 5.3 Flash, GLM 5.3, gpt-oss 120B, Qwen3.8
+  Flash — weekly workspace allowance, free tier) with `free`/`freeTier`,
+  discovery returns the 120-model catalog, quota reads
+  `GET www.runcrate.ai/api/v1/billing/balance` (the free allowance itself
+  has no API — dashboard only), and the provider lands in Free Limited
+  with its brand mark.
+- **Perch plans are chosen for the account.** Fresh Perch logins select the
+  free Starter plan automatically after the OAuth exchange, and dispatch
+  re-selects it lazily when the session reports no plan — ending the
+  "Pick a plan to start using Perch" refusal that greeted every new
+  account before its first call.
+- **Qoder provider re-implemented end to end** (provider module, risk
+  controls with `CARTETHYIA_QODER_MIN_GAP_MS` / `CARTETHYIA_QODER_P4_WARN_STREAK`,
+  check-in, plan/quota rules, discovery, quota actions), returning after
+  the removal that predated it.
+- **Antigravity: `gemini-4-hydrogen`.** Argon-shaped wire tiers with the
+  `medium` default tier, so the logical id dispatches to
+  `gemini-4-hydrogen-medium`.
+- **Clixad roster follows the upstream rename.** `deepseek-v4-flash` is now
+  `deepseek-v4.1-flash` (the old id left the upstream listing) and three
+  new free rows joined it: `glm-5.3-flash`, `gemini-3.8-flash`, and the
+  renamed V4.1 — seven free rows total, effort ladders from the live
+  listing.
+- **GitHub Copilot Auto gains an intelligence alias.** `mai-code-2-flash`
+  now enters the `/auto` flow pinned to the intelligence tier, alongside
+  the existing `gpt-6-luna` efficiency alias; the legacy virtual `auto`
+  id left the offline roster (its balance-tier decisions are picked
+  dynamically by the upstream either way). Verified live: every tier
+  answered its decision and a follow-up turn
+  (`scripts/provider-probing/github/github-auto-tier-probe.ts`).
+- **Kilo and OpenRouter free rosters gain five live-verified rows.**
+  `baidu/ernie-5.5-flash-preview:free`, `inclusionai/ling-3.2-flash:free`,
+  `particle-ai/particle-1:free`, `recursive/flint-v1.0:free`, and
+  `thinkingmachines/inkling-2-small:free` join the shared zero-price roster
+  (limits, reasoning, and vision read from OpenRouter's `/api/v1/models`).
+- **Vercel default catalog gains three billed picks.** `tencent/hy4-flash`
+  (vision, 1M ctx), `meta/muse-ember` (vision/document/audio inputs, 1M
+  ctx), and `xiaomi/mimo-v2.6-flash` (vision/audio inputs, 1.05M ctx) with
+  the capabilities the upstream declares.
+
+### Fixed
+
+- **Console update apply restricted to platform admins.** `POST /console/api/updates/apply` now requires `platform:admin` scope instead of tenant-scoped `dashboard:write`, preventing tenant API keys from triggering a gateway-wide package update and process restart.
+- **Perch turn tickets identify as a current client.** The turn-ticket mint
+  now stamps `ticketClient: 2` — the marker both the shipping CLI (2.4.137)
+  and Desktop (2.5.9) send — and an upstream `banned` verdict maps to an
+  upstream authentication failure instead of an outage, so routing stops
+  dialing an account Perch has banned for looking like a foreign app
+  (evidence: `documentation/research/perch/2026-11-18-perch-ticketclient-surface-gate.md`).
+- **Clixad long sessions no longer fail with 502 on large payloads.** The edge
+  in front of the Clixad gateway answers 403 "Blocked" to large plain-JSON
+  request bodies (a ~576KB, 100-message session was rejected while small
+  requests passed), which surfaced as `transport_unavailable`/502 on the
+  failing trace. The Clixad adapter now always gzips the request body and
+  sends `Content-Type: application/vnd.clixad.chat+gzip`, matching the Clixad
+  CLI's encoding; `ApiKeyProviderSpec` gained an optional
+  `request_compression` field for this.
+- **DeepAI stops dropping over-long messages.** The upstream silently drops
+  any single message longer than ~128k characters (a 250k-char message came
+  back with a 289-prompt-token request); the DeepAI adapter now chunks such
+  messages at 90k characters before they leave, so long-context turns keep
+  their history (evidence:
+  `documentation/research/deepai/2026-11-18-deepai-context-limits-and-message-drop.md`).
+- **`carte` keeps the diagnosis on screen.** A gateway startup failure used
+  to flash and exit; an interactive window now holds for 30 seconds with
+  amber guidance (including the reinstall commands) while piped or
+  scripted runs still exit at once with the actionable detail on stderr.
+- **Trivially short upstream rate-limit windows no longer churn accounts.**
+  A provider-stated `retry_after`/`resets_in_seconds` below the configured
+  rate-limit cooldown (OpenRouter's `retry_after_seconds: 1`) is now floored
+  up to it, so the cooldown survives the sweep's next tick; the raw stated
+  window still rides the classification so the auto-disable gate's sub-5-minute
+  exemption keeps reading the provider's own number.
+- **Recoverable auth rejections cool down instead of saying "Re-login
+  required".** A bare 401/403 or an expired-but-refreshable token is now its
+  own `auth_rejected` category — a cooldown that heals on success — while the
+  terminal `auth_invalidated` (named revocation / definitive refresh failure)
+  stays the only state that asks for a re-login. Routing excludes the
+  cooldown as hard, and a successful quota check lifts it.
+- **A `cooldown` status can never persist without a recovery deadline.** The
+  shared verdict seam now stamps a bounded fallback deadline when none is
+  supplied, so `sweepExpiredCooldowns` can always recover the row.
+- **Cursor upstream refusals fail over again.** `response_start` is no longer
+  emitted before upstream contact: a failure observed before the first event
+  throws a typed upstream verdict (quota 429 / auth 401 / else 502) so the
+  attempt loop can rotate candidates, and mid-stream failures carry
+  `stop_details` so the client envelope keeps the quota/auth code.
+- **Kiro accounts stop parking for six hours on a profile-400.** The
+  management `Get-Usage-Limits` refusal `Invalid profileArn` is reported as
+  transient (annotated, never counted toward the park threshold) so the sweep
+  retries it next pass, and `quota_fetch_failed` cooldowns are now healed the
+  moment a quota read succeeds.
+- **Codex tool calls registered but never completed are recovered at stream
+  end.** If the upstream bills a tool call (its tokens appear in usage) but its
+  completion frames never arrive, the Codex decoder now surfaces the call from
+  the `output_item.added` item before the terminal — so a `tool_use` stop
+  always has a visible `tool_use` block and Claude Code never sees "tool call
+  could not be parsed" on a turn that really produced one.
+
 ## [2.8.3] - 2026-11-17 · Codename Arc-en-ciel
 
 ### Changed
+
+- **Codex-routed turns no longer lose their tool calls.** The Codex Responses
+  stream decoder only emitted tool-call events from argument *delta* frames,
+  so an upstream that delivers the complete call on the done frames (or only
+  on `response.output_item.done`) produced a turn whose terminal still said
+  `tool_use` but whose translated stream carried no `tool_use` block — the
+  exact shape Claude Code reports as "the model's tool call could not be
+  parsed". The done frames now fall back to the complete arguments when no
+  delta was streamed, guarded so a call that already streamed is never
+  emitted twice.
 
 - **Docker defaults close the 2026-11-16 origin-misconfig class.** The image's
   `HEALTHCHECK` dials `127.0.0.1` instead of `localhost` (which can resolve to

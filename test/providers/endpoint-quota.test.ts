@@ -472,4 +472,3 @@ describe("Qoder quota — an unreadable body is not a zero balance", () => {
     expect(result.windows).toHaveLength(1);
   });
 });
-

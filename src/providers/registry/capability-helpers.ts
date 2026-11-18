@@ -102,13 +102,11 @@ export function traeDiscovery(
 }
 
 /**
- * Qoder's live model list for one realm.
+ * Qoder model discovery for one realm.
  *
- * The request has to be signed with the account's COSY identity and has to
- * carry the body that was signed — a bare GET is refused — so discovery cannot
- * use the generic bearer helper. It resolves the same identity dispatch uses
- * (PAT exchange or the persisted OAuth state) and then lists against the
- * realm's own gateway hosts.
+ * A single live call, `get_quota_config` on the account's `x-openapi-auth` JWT,
+ * returns per-model `model_config` and per-bucket `quota_config`. Both realms
+ * answer the same shape, just on their own gateway hosts.
  */
 export function qoderDiscovery(
   realm: QoderRealm,

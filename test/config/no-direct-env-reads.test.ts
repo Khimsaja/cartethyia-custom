@@ -97,6 +97,12 @@ const ALLOW_LIST: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   "src/providers/integrations/qoder/qoder-umid.ts": {
     // (no environment reads — the OS identity is derived from host state)
   },
+  "src/transport/dispatch/leases.ts": {
+    // TipRouter pool-affinity override; custom list semantics the generic
+    // reader cannot express: unset defaults to cb, explicitly empty
+    // disables affinity entirely, and readList maps both to undefined.
+    CARTETHYIA_POOL_AFFINITY_PROVIDERS: "custom list semantics beyond generic reader",
+  },
   "src/transport/routing/auto-model.ts": {
     // TipRouter auto-model gate; default-off flag: only "1"/"true" enables,
     // while the generic flag reader enables unless the literal "false".

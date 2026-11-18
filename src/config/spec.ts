@@ -61,6 +61,15 @@ interface FlagConfigEntry {
   readonly kind: "flag";
 }
 
+/**
+ * Opt-in switch: disabled unless the literal string `"1"` or `"true"` is
+ * set. For rollout switches whose safe default is off — the spec `flag`
+ * kind is enabled-unless-`"false"`, the wrong polarity here.
+ */
+interface OptInFlagConfigEntry {
+  readonly kind: "opt-in-flag";
+}
+
 /** Comma-separated list; an empty result reads as absent. */
 interface ListConfigEntry {
   readonly kind: "list";
@@ -73,6 +82,7 @@ export type ConfigEntry =
   | OptionalIntConfigEntry
   | RequiredTextConfigEntry
   | FlagConfigEntry
+  | OptInFlagConfigEntry
   | ListConfigEntry;
 
 /**
@@ -269,6 +279,7 @@ export const CONFIG_SPEC = {
     min: 30_000,
     max: 300_000,
   },
+  CARTETHYIA_STREAM_EARLY_COMMIT_ENABLED: { kind: "opt-in-flag" },
   CARTETHYIA_STREAM_EARLY_COMMIT_BUDGET_MS: {
     kind: "int",
     default: 10_000,

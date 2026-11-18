@@ -370,8 +370,14 @@ export async function createTestGateway(
   const routeSnapshot: { current: RouteSnapshot } = { current: emptySnapshot() };
   // The real snapshot service, over an in-memory catalog. Routing, alias
   // resolution, capability filtering, and admission all run for real; only the
-  // catalog's origin is a fixture.
-  const snapshotService = new InMemoryRouteSnapshotService(async () => routeSnapshot.current);
+  // catalog's origin is a fixture. The rebuild floor is zero here: the
+  // helper's contract is "the next request observes the new routes", and the
+  // production 5-minute floor would strand the test on the pre-write
+  // snapshot past its settle guard. Production keeps its floor (see
+  // route-model.ts); tests that exercise the floor build their own service.
+  const snapshotService = new InMemoryRouteSnapshotService(async () => routeSnapshot.current, {
+    minRebuildIntervalMs: 0,
+  });
   const routingEngine = new RoutingEngine();
   const admissionService = new ApiKeyAdmissionService(new InMemoryAdmissionCounterStore());
   const proxyPreparer = new ProxyRequestPreparer({

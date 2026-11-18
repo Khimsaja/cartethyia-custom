@@ -19,8 +19,8 @@ import {
   deploymentInfraErrorRule,
   githubRules,
   modelFrequencyWindowRule,
-  qoderPlanGatedRule,
   qoderModelQuotaRule,
+  qoderPlanGatedRule,
   zcodeStartPlanTrialRule,
   traeRules,
   inceptionRules,
@@ -28,6 +28,7 @@ import {
 } from "./provider-rules";
 import {
   credentialRejectedRule,
+  freebuffFreeModeRefusalRule,
   gatewayCapacityExhaustedRule,
   modelCapacityRule,
   modelPlanGatedRule,
@@ -35,10 +36,13 @@ import {
   modelUnsupportedRule,
   priceRefusalRule,
   proxyConnectRefusalRule,
+  qoderAgentLimitRule,
   quotaExhaustedRule,
   rateLimitRule,
   transportFaultRule,
   validationRequiredRule,
+  wafPromptRejectionRule,
+  inferhubMarketplaceExhaustedRule,
 } from "./provider-rules/generic";
 import { policyRejection as isPolicyRejectionWording } from "./provider-rules/buddy";
 import { zcodeTrialRefusal } from "./provider-rules/zcode";
@@ -93,6 +97,16 @@ export function classifyAccountError(
   // model (see the `zcode-start-plan-trial` rule).
   const zcodeTrialRefused = zcodeTrialRefusal(providerId, statusCode, message, modelId);
 
+  // (TipRouter local patch, not upstream): the marketplace has no provider
+  // for this model right now — nothing wrong with the account to record.
+  const inferhubNoCapacity =
+    (providerId === "inferhub" ||
+      lower.includes("inferhub") ||
+      (rawUpstreamResponse !== undefined &&
+        rawUpstreamResponse.replace(/\s+/g, "").toLowerCase().includes('"source":"inferhub"'))) &&
+    (providerCode === "no_capacity" ||
+      lower.includes("no_capacity") ||
+      lower.includes("all offers exhausted"));
   // A price refusal is a verdict on the *request*, not on the account. inferhub
   // answers 402 with `no provider's ask matches your max-per-mtok bid`: the
   // caller's own price ceiling was below every upstream ask, which says nothing
@@ -104,6 +118,45 @@ export function classifyAccountError(
     lower.includes("max-per-mtok") ||
     lower.includes("no provider's ask") ||
     (lower.includes("ask") && lower.includes("bid"));
+  // A WAF prompt rejection is a verdict on the *request*, not on the account.
+  // inferhub answers HTTP 403 with "request blocked by the provider's web
+  // application firewall: the prompt matched an attack signature" when a
+  // buyer's prompt trips the upstream WAF. The credential is fine — refreshing
+  // the token cannot change that outcome — so it must never flip the account
+  // to auth_invalidated/disabled. Only that request fails. (TipRouter local
+  // patch, 2026-10-14; ported to the rule-based classifier in the 2.8.4 merge
+  // — the carve-out used to live in account-health-service.ts.)
+  const wafPromptRejection =
+    lower.includes("web application firewall") ||
+    (lower.includes("attack signature") && statusCode === 403);
+  // TipRouter local patch (not upstream): a free-mode shape refusal is a
+  // verdict on the *request*, not on the account. Freebuff free mode
+  // answers `{"error":"free_mode_client_check_failed","message":"The
+  // developer message role is not supported."}` for any request carrying a
+  // `developer` role message. The credential is fine, so it must never
+  // flip the account to auth_invalidated/disabled. The encoder fix in
+  // freebuff.ts stops the shape from being sent at all; this signal is
+  // the safety net for any other free-mode shape refusal.
+  const freebuffFreeModeRefusal =
+    providerId === "freebuff" &&
+    (providerCode === "free_mode_client_check_failed" ||
+      lower.includes("free_mode_client_check_failed") ||
+      lower.includes("developer message role is not supported"));
+  // TipRouter local patch (not upstream): a Qoder agent-limit refusal is
+  // a verdict on the (account, model) pair, not on the credential. Qoder
+  // answers `{"code":"115","message":"{\"agentLimitResetTime\":<ms>}"}`
+  // when the account's agent quota for the slot is exhausted; the named
+  // reset is created_at + 30 days, so it must NEVER become a cooldown.
+  // The failure is transient per-request — the same account answered the
+  // same lite slot 7 seconds after a 115 on 2026-11-11 — so the account
+  // must never flip to auth_invalidated/disabled the way ~141 OAuth
+  // accounts did during the 09:00 WIB wave (the classifier had no 115
+  // arm, so the bare 403 fell through to a credential verdict). Matched
+  // on the code when it is parsed out and on the body text when it is
+  // not (Qoder codes are usually matched on body text; see the 112 arm).
+  const qoderAgentLimit =
+    (providerId === "qoder" || providerId === "qodercn") &&
+    (providerCode === "115" || lower.includes("agentlimitresettime"));
   // Deployment/proxy infrastructure errors (DEPLOYMENT_DISABLED, etc.) are
   // transport-level proxy pool failures, not account quota exhaustion.
   // Mutating the account parks it for an hour while the pool itself stays
@@ -134,23 +187,63 @@ export function classifyAccountError(
   const modelFrequencyWindow =
     lower.includes("frequency limit") && lower.includes("switch to the other models");
 
+  // Free-pi concurrent-session cap (TipRouter local patch, 2026-11-10): the
+  // upstream allows max 4 concurrent CLI sessions per signed-in account and
+  // answers HTTP 409 `concurrent_session` ("You've already got 4 free-pi CLI
+  // sessions running ... Slot frees in 30 min if a session crashed"). The cap
+  // blocks EVERY model on the account, so this is an account-wide cooldown,
+  // not a per-model one — which is why the category must stay out of the
+  // throttle set (`rate_limit_transient` / `model_capacity` /
+  // `model_unreachable`: the writer would scope those to the model pair and
+  // leave the account routable) and out of the auto-disable targets
+  // (`quota_exceeded` / `rate_limit_transient`). `server_error` cools the
+  // whole account for the 30 minutes the upstream names for a crashed slot.
+  // The window is fixed, not the parsed one: the message also says "wait a
+  // minute", which would under-cool. Without this arm the 409 fell through
+  // to a non-mutating default, the account stayed `active` with 0 consecutive
+  // failures, and the router kept feeding a wedged account (2026-11-10:
+  // 4 accounts, 500+ 409s, freepi success 17.8%).
+  if (providerId === "freepi" && statusCode === 409) {
+    const cooldownMs = 30 * 60_000;
+    return result(
+      "server_error",
+      "cooldown",
+      cooldownMs,
+      new Date(Date.now() + cooldownMs),
+      reason("Free-pi concurrent session limit (4 per account)"),
+      origin === "upstream",
+    );
+  }
+
+  // Free-pi ad-gate refusal (2026-11-10): the upstream pauses free
+  // completions when no ad impression is registered for the session
+  // ("Ads aren't showing for this account"). The credential is fine — the
+  // session simply has not shown ads — so this must never read as
+  // `auth_invalidated` (which it fell through to before, parking healthy
+  // accounts as "Re-login required" and cooling them on the auth lane).
+  // `server_error` cools the whole account briefly; the adapter already
+  // retried once with a fresh ad-registered session, so a refusal that
+  // lands here again means the upstream genuinely has no ads for the
+  // account right now. Ten minutes, not thirty: ad inventory refreshes on
+  // the order of minutes, and a longer park would keep a healthy account
+  // out of rotation for no reason.
+  if (providerId === "freepi" && providerCode === "ads_required") {
+    const cooldownMs = 10 * 60_000;
+    return result(
+      "server_error",
+      "cooldown",
+      cooldownMs,
+      new Date(Date.now() + cooldownMs),
+      reason("Free-pi ads required (no ad impression for this session)"),
+      origin === "upstream",
+    );
+  }
+
   // Quota-shaped provider codes/messages (e.g. xAI's
   const quotaSignal =
     !priceRefusal &&
     !deploymentInfraError &&
     (statusCode === 402 ||
-      // Qoder answers an exhausted credit balance with
-      // `{"code":"112","message":"{\"pricingUrl\":...}"}` — the body points at
-      // the pricing page, i.e. "buy more", which is a balance verdict, not an
-      // auth one. It fell through to `auth_invalidated` and the console showed
-      // "Re-login required" on an account whose credential was fine, sending
-      // operators to re-authenticate instead of topping up.
-      // Recognising it here keeps it out of `auth_invalidated`; the branch
-      // below scopes the resulting cooldown to the model, because the account
-      // keeps serving its other models.
-      providerCode === "112" ||
-      providerCode === "110" ||
-      providerCode === "116" ||
       providerCode === "insufficient_quota" ||
       providerCode === "quota_exceeded" ||
       providerCode === "subscription:free-usage-exhausted" ||
@@ -196,9 +289,7 @@ export function classifyAccountError(
       lower.includes("spending limit") ||
       lower.includes("spending cap") ||
       lower.includes("monthly spend limit") ||
-      lower.includes("billing daily count exceeded") ||
-      // Same Qoder family reached by body text when the code is not parsed out.
-      (lower.includes("pricingurl") && lower.includes("qoder.com/pricing")));
+      lower.includes("billing daily count exceeded"));
   // A deterministic content-policy rejection is NOT credential invalidation.
   // CodeBuddy returns HTTP 403 with provider code 11140 ("request illegal",
   // "did not pass the safety review") — refreshing the token cannot change
@@ -255,16 +346,11 @@ export function classifyAccountError(
    * The upstream accepted the request and put it in a queue behind other
    * callers — it is busy, not rejecting the caller's credential.
    *
-   * Qoder answers `403 {"code":"10605","message":"{\"isQueued\":true,
-   * \"modelKey\":\"dfmodel\",\"queueCount\":1395,...}"}`. The 403 is what made
-   * this misclassify: the generic `(401 || 403) && accountEvidence` arm claimed
-   * it as `auth_invalidated`, so a healthy account was parked as "Re-login
-   * required" purely because the provider was busy, and an operator was sent
-   * to re-authenticate a credential that was never rejected.
-   *
-   * Matched on the queue evidence rather than on the bare `10605`, so an
-   * unrelated 403 that happens to share the code is not swept in. The bodies
+   * Matched on the queue evidence rather than on the bare code, so an
+   * unrelated 403 that happens to share a code is not swept in. The bodies
    * are nested JSON, so the tell is the key, not a parse of the envelope.
+   * (Qoder was the original source of this signal; the match stays for any
+   * provider that emits the same queue vocabulary.)
    */
   const queuedUpstream =
     providerCode === "10605" ||
@@ -294,6 +380,10 @@ export function classifyAccountError(
     credentialKind,
     buddyBanned,
     priceRefusal,
+    inferhubNoCapacity,
+    wafPromptRejection,
+    freebuffFreeModeRefusal,
+    qoderAgentLimit,
     quotaSignal,
     policyRejection,
     deploymentInfraError,
@@ -350,6 +440,10 @@ const ACCOUNT_ERROR_RULES: readonly AccountErrorRule[] = [
   proxyConnectRefusalRule,
   validationRequiredRule,
   ...githubRules,
+  wafPromptRejectionRule,
+  freebuffFreeModeRefusalRule,
+  qoderAgentLimitRule,
+  inferhubMarketplaceExhaustedRule,
   credentialRejectedRule,
   priceRefusalRule,
   qoderPlanGatedRule,

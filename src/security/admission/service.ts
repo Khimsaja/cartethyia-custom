@@ -26,6 +26,15 @@ type LifetimeUsagePersister = (input: {
 type FreshLifetimeConsumedReader = (apiKeyId: string) => Promise<number | undefined>;
 
 
+/** Fired when an API key is rejected for hitting its concurrency limit (429).
+ *  Consumed by TipRouter to warn the key owner via in-app notification.
+ *  Invoked synchronously from the rejection path: the implementation MUST be
+ *  fire-and-forget and MUST never throw into the admission path. */
+export type ConcurrencyLimitRejectHandler = (event: {
+  readonly apiKeyId: string;
+  readonly at: number;
+}) => void;
+
 export class ApiKeyAdmissionService {
   constructor(
     private readonly store: AdmissionCounterStore,
@@ -43,6 +52,7 @@ export class ApiKeyAdmissionService {
     private readonly concurrencyTolerance?: (
       tenantId: string,
     ) => Promise<number | null> | number | null,
+    private readonly onConcurrencyLimitReject?: ConcurrencyLimitRejectHandler,
   ) {
     if (!store) throw new Error("ApiKeyAdmissionService requires an admission store");
   }
@@ -142,6 +152,15 @@ export class ApiKeyAdmissionService {
     } catch (error) {
       if (error instanceof GatewayError) {
         metrics.proxy_admission_total.inc(1, { reason: admissionMetricLabel(String(error.details.reason)) });
+        if (error.details.reason === "concurrency-limit") {
+          // TipRouter: warn the key owner via in-app notification. Fire-and-forget:
+          // the 429 response must never wait on this, and it must never throw.
+          try {
+            this.onConcurrencyLimitReject?.({ apiKeyId, at: this.clock() });
+          } catch {
+            /* hot path stays intact */
+          }
+        }
         throw error;
       }
       metrics.proxy_admission_total.inc(1, { reason: "admission_unavailable" });

@@ -26,6 +26,16 @@ export type AccountErrorCategory =
   | "model_unreachable"
   | "auth_invalidated"
   /**
+   * A credential rejection the upstream stated but that is *recoverable*: the
+   * verdict cools the account down (`status: "cooldown"`) instead of disabling
+   * it, because the evidence is weak — a bare 401/403, an expired-but-
+   * refreshable token, or a static token that may still work. Distinguished
+   * from {@link auth_invalidated}, which is the terminal verdict reserved for
+   * a named revocation or a definitive refresh-grant failure: that state
+   * needs a re-login, this one heals on its own.
+   */
+  | "auth_rejected"
+  /**
    * The upstream banned this credential: a verdict on the account, e.g. buddy
    * `11140` "request illegal" with "Your account has been restricted due to
    * unusual activity". Cooldown cannot help — the account is not throttled, it
@@ -167,6 +177,14 @@ export interface AccountErrorSignals {
   /** Buddy-family provider: the only family with provider-specific codes below. */
   readonly buddyBanned: boolean;
   readonly priceRefusal: boolean;
+  /** A WAF prompt rejection is a verdict on the request, not on the account. */
+  readonly wafPromptRejection: boolean;
+  /** A freebuff free-mode shape refusal is a verdict on the request. */
+  readonly freebuffFreeModeRefusal: boolean;
+  /** A Qoder agent-limit refusal is a verdict on the (account, model) pair. */
+  readonly qoderAgentLimit: boolean;
+  /** An inferhub marketplace-exhausted payload: no provider for this model. */
+  readonly inferhubNoCapacity: boolean;
   readonly quotaSignal: boolean;
   readonly policyRejection: boolean;
   /** Deployment/proxy pool failure: transport infrastructure, not the account. */
@@ -213,6 +231,16 @@ export interface AccountErrorClassification {
    * reads it: a provider-stated window is the truth and is never multiplied.
    */
   readonly providerStated?: boolean;
+  /**
+   * The window the provider itself stated, in milliseconds, when the evidence
+   * carried one (`null`/`undefined` when it did not). This is the *raw* stated
+   * value, before any rule floors or defaults it — `cooldownMs` may be larger
+   * (the rate-limit arm floors a trivially short `retry_after` up to the
+   * configured cooldown). Writers that need the provider's own number — the
+   * auto-disable gate's sub-5-minute exemption — read this, not `cooldownMs`.
+   */
+  readonly statedCooldownMs?: number | null;
+
   /**
    * True when the classification is a verdict on the *credential* (not a
    * transient backoff): the request should rotate to a sibling account now

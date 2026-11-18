@@ -106,12 +106,16 @@ test("each backend has matching baseline and incremental migrations", () => {
     // the merge kept the local names (rename detection) and no duplicate
     // no-op migration re-entered the tree.
     // Upstream 2.8.1 adds 0047_add_provider_device_flow_proxy.sql.
+    // Upstream 2.8.3 adds 0048 (sensenova renamed to sensecn/senseintl)
+    // and 0049 (Qoder native identity, machine-scoped).
     "0043_add_auth_escalation_counters.sql",
     "0044_add_provider_custom_user_agent.sql",
     "0046_add_accounts_quota_plan_fetched_at.sql",
     "0046_add_models_warning_metadata.sql",
     "0047_add_provider_device_flow_proxy.sql",
     "0047_migrate_workbuddy_to_codebuddy.sql",
+    "0048_rename_sensenova_to_sense.sql",
+    "0049_qoder_native_identity_machine_scoped.sql",
   ];
   expect(postgres).toEqual(expected);
   expect(sqlite).toEqual(expected);

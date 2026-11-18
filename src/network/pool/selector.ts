@@ -201,6 +201,13 @@ export class NetworkPoolSelector implements PoolSelectionBackend {
    * Distributed pool admission — the selection algorithm lives in
    * `selector-inflight.ts`; this wrapper supplies state, Redis, and the
    * pool-usage notification hook.
+   *
+   * When `rotation` is supplied, scoring is replaced by strict round-robin.
+   * When `affinityKey` is supplied (and no rotation), scoring is replaced
+   * by rendezvous order for that key: candidates are tried in the key's
+   * stable hash ranking, so the same key lands on the same pool while that
+   * pool keeps admitting, and fails over in a fixed order when it does
+   * not. Every gate still applies; only the ordering changes.
    */
   async tryAcquireAvailablePool(
     eligiblePoolIds: readonly string[],
@@ -209,6 +216,8 @@ export class NetworkPoolSelector implements PoolSelectionBackend {
     weightsByPool?: Record<string, number>,
     rotation?: PoolRotation,
     providerMaxInflight?: number,
+    /** Sticky-assignment key (e.g. one provider account); see the doc above. */
+    affinityKey?: string,
   ): Promise<{ poolId: string; release: () => void } | undefined> {
     return readTryAcquireAvailablePool(
       this,
@@ -219,6 +228,7 @@ export class NetworkPoolSelector implements PoolSelectionBackend {
       weightsByPool,
       rotation,
       providerMaxInflight,
+      affinityKey,
     );
   }
 

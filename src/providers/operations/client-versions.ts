@@ -329,9 +329,9 @@ export const VERSION_SOURCES = {
   perch: {
     key: "perch",
     // The official Perch CLI, spawned by the adapter for hosted inference.
-    // Fallback = the current npm latest (2.4.132 as of 2026-11-14); a cold
+    // Fallback = the current npm latest (2.4.137 as of 2026-11-18); a cold
     // process sends it until the monitor's first successful discovery.
-    fallback: "2.4.132",
+    fallback: "2.4.137",
     sources: [{ url: "https://registry.npmjs.org/perchai-cli/latest" }],
   },
   clixad: {

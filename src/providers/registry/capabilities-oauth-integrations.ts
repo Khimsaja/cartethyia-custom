@@ -155,4 +155,53 @@ export const OAUTH_INTEGRATION_CAPABILITIES = {
       async () => (await import("../integrations/clixad/provider")).CLIXAD_DEFAULT_MODELS,
     ),
   },
+  numes: {
+    loadAdapter: async () => createApiKeyAdapter((await import("../integrations/numes/provider")).NUMES_SPEC),
+    loadModels: async () => (await import("../integrations/numes/provider")).NUMES_DEFAULT_MODELS,
+    // Numes is a plain API-key provider (`sk-numes-...` from the dashboard);
+    // no OAuth surface. `/api/v1/models` is key-scoped and lists the whole
+    // catalog — the static roster carries only the `:free` rows and
+    // discovery returns everything the key can call, so paid rows stay
+    // addable by hand.
+    // `GET /api/v1/key` reports the key's usage counters and optional spend
+    // cap; the account balance endpoint wants a management key, which is a
+    // different credential than the inference key stored here.
+    loadQuotaCollector: quotaCapability(() => import("../integrations/numes/numes-quota"), "fetchNumesQuota"),
+    loadModelDiscovery: async () => withStaticRosterFallback(
+      async ({ baseUrl, credential, fetcher }) => {
+        const { discoverNumesModels } = await import("../integrations/numes/provider");
+        return discoverNumesModels({
+          baseUrl,
+          ...(credential === undefined ? {} : { credential }),
+          ...(fetcher === undefined ? {} : { fetcher }),
+        });
+      },
+      async () => (await import("../integrations/numes/provider")).NUMES_DEFAULT_MODELS,
+    ),
+  },
+  runcrate: {
+    // OpenAI-compatible chat plus the Anthropic Messages wire the same base
+    // serves (both verified live 2026-11-18).
+    endpointPathsByWireFamily: {
+      chat: "/chat/completions",
+      messages: "/messages",
+    },
+    loadAdapter: async () => createApiKeyAdapter((await import("../integrations/runcrate/provider")).RUNCRATE_SPEC),
+    loadModels: async () => (await import("../integrations/runcrate/provider")).RUNCRATE_DEFAULT_MODELS,
+    // Runcrate is a plain API-key provider (`rc_live_...`). The catalog is
+    // key-scoped: the static roster carries the five free-allowance rows and
+    // discovery returns all 120 so paid models stay addable by hand.
+    loadQuotaCollector: quotaCapability(() => import("../integrations/runcrate/runcrate-quota"), "fetchRuncrateQuota"),
+    loadModelDiscovery: async () => withStaticRosterFallback(
+      async ({ baseUrl, credential, fetcher }) => {
+        const { discoverRuncrateModels } = await import("../integrations/runcrate/provider");
+        return discoverRuncrateModels({
+          baseUrl,
+          ...(credential === undefined ? {} : { credential }),
+          ...(fetcher === undefined ? {} : { fetcher }),
+        });
+      },
+      async () => (await import("../integrations/runcrate/provider")).RUNCRATE_DEFAULT_MODELS,
+    ),
+  },
 };

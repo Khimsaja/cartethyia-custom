@@ -92,7 +92,12 @@ describe("model cooldown route snapshot invalidation", () => {
 
   beforeAll(async () => {
     world = await createWorld({ modelId: "deepseek-v4.1-flash" });
-    routeService = new InMemoryRouteSnapshotService(createDatabaseSnapshotBuilder(getDb()));
+    // No rebuild floor here: this suite invalidates and then waits for the
+    // rebuilt snapshot, and the production 5-minute floor would strand it
+    // past the settle guard. Production keeps its floor; see gateway.ts.
+    routeService = new InMemoryRouteSnapshotService(createDatabaseSnapshotBuilder(getDb()), {
+      minRebuildIntervalMs: 0,
+    });
   });
 
   afterAll(async () => {
@@ -100,7 +105,7 @@ describe("model cooldown route snapshot invalidation", () => {
     await world?.cleanup();
   });
 
-  test("Qoder virtual model rate limits evict a cached route and then exclude only that pair", async () => {
+  test("a model-scoped rate limit evicts a cached route and then excludes only that pair", async () => {
     const before = await routeService.getSnapshot();
     const candidate = before.candidates.find(
       (row) => row.provider_account_id === world.accountId && row.model_id === world.modelId,
@@ -110,15 +115,15 @@ describe("model cooldown route snapshot invalidation", () => {
     await reportAttemptOutcome(getDb(), {
       accountId: world.accountId,
       modelId: "deepseek-v4.1-flash",
-      error: new GatewayError("quota_exceeded", 429, "Qoder rate limit exceeded", {
-        providerId: "qoder",
+      error: new GatewayError("quota_exceeded", 429, "rate limit exceeded", {
+        providerId: "some-provider",
         providerStatus: 429,
         providerCode: "rate_limit_exceeded",
       }, "upstream"),
       evidence: {
         origin: "upstream",
         scope: "provider",
-        providerId: "qoder",
+        providerId: "some-provider",
         statusCode: 429,
       },
       snapshotService: routeService,
@@ -285,11 +290,11 @@ describe("model cooldown route snapshot invalidation", () => {
 
 describe("a queued upstream is capacity, not a dead credential", () => {
   /**
-   * The reported failure: Qoder answers `403 {"code":"10605", ...}` with
-   * `isQueued:true` and a `queueCount`. The 403 made the generic auth arm
-   * claim it, so a healthy account was parked as `auth_invalidated` — the
-   * console's "Re-login required" — purely because the provider was busy.
-   * The credential was never rejected; refreshing it cannot shorten a queue.
+   * The reported failure shape: a `403` carrying `isQueued:true` and a
+   * `queueCount`. The 403 made the generic auth arm claim it, so a healthy
+   * account was parked as `auth_invalidated` — the console's "Re-login
+   * required" — purely because the provider was busy. The credential was
+   * never rejected; refreshing it cannot shorten a queue.
    */
   const queued = (): GatewayError =>
     new GatewayError(
@@ -304,7 +309,7 @@ describe("a queued upstream is capacity, not a dead credential", () => {
     const classification = classifyAccountError(queued(), {
       origin: "upstream",
       scope: "account",
-      providerId: "qoder",
+      providerId: "some-provider",
       modelId: "deepseek-v4.1-flash",
     });
     expect(classification.category).toBe("model_capacity");
@@ -318,7 +323,7 @@ describe("a queued upstream is capacity, not a dead credential", () => {
       origin: "upstream",
       scope: "account",
       credentialEvidence: true,
-      providerId: "qoder",
+      providerId: "some-provider",
       modelId: "deepseek-v4.1-flash",
     });
     expect(classification.category).not.toBe("auth_invalidated");
@@ -336,7 +341,7 @@ describe("a queued upstream is capacity, not a dead credential", () => {
     const classification = classifyAccountError(error, {
       origin: "upstream",
       scope: "account",
-      providerId: "qoder",
+      providerId: "some-provider",
       modelId: "deepseek-v4.1-flash",
     });
     expect(classification.category).toBe("model_capacity");
@@ -355,9 +360,12 @@ describe("a queued upstream is capacity, not a dead credential", () => {
     const classification = classifyAccountError(error, {
       origin: "upstream",
       scope: "account",
-      providerId: "qoder",
+      providerId: "some-provider",
     });
-    expect(classification.category).toBe("auth_invalidated");
+    // A bare credential rejection is the *recoverable* verdict: it cools the
+    // account down rather than claiming the terminal `auth_invalidated` state.
+    expect(classification.category).toBe("auth_rejected");
+    expect(classification.status).toBe("cooldown");
   });
 });
 
@@ -371,11 +379,13 @@ describe("Trae upstream auth verdict 1001", () => {
       "upstream" as never,
     );
 
-  test("is auth_invalidated, not the unknown fallback", () => {
+  test("is auth_rejected (recoverable cooldown), not the unknown fallback", () => {
     // The 1001 code is numeric, so the bare-401/403 credential arm normally
     // refuses to claim it. Without the explicit Trae recognition the account
     // fell to `unknown` with `mutatesAccount: false` — it stayed in rotation
     // and was re-dialled on every request despite the upstream's auth verdict.
+    // The verdict is recoverable: no revocation was named, so the account
+    // cools down as `auth_rejected` rather than parking as `auth_invalidated`.
     const classification = classifyAccountError(trae1001(), {
       origin: "upstream",
       scope: "account",
@@ -385,7 +395,7 @@ describe("Trae upstream auth verdict 1001", () => {
       credentialEvidence: true,
       statusCode: 401,
     });
-    expect(classification.category).toBe("auth_invalidated");
+    expect(classification.category).toBe("auth_rejected");
     expect(classification.mutatesAccount).toBe(true);
     expect(classification.routesVisible).toBe(true);
   });
@@ -457,7 +467,7 @@ describe("an unclassified failure is a cooldown, never a parked account", () => 
     const classification = classifyAccountError(error, {
       origin: "upstream",
       scope: "account",
-      providerId: "qoder",
+      providerId: "some-provider",
     });
     expect(classification.category).toBe("unknown");
     expect(classification.status).toBe("cooldown");
@@ -502,12 +512,36 @@ describe("a reset window the upstream stated in structured fields", () => {
     expect(classification.cooldownMs).toBeGreaterThan(900_000);
   });
 
-  test("reads a relative reset the caller passes directly", () => {
+  test("a stated window below the rate-limit floor is raised to it", () => {
+    // `resets_in_seconds: 600` is a real statement, but it is shorter than the
+    // configured 15-minute rate-limit cooldown — and a trivially short window
+    // is exactly what let accounts churn with no visible backoff. The floor
+    // wins; the raw stated value stays visible on the classification.
     const classification = classifyAccountError(
       new GatewayError("upstream_error" as never, 429, "rate limit exceeded"),
       { ...evidence, statusCode: 429, upstreamBody: { resets_in_seconds: 600 } },
     );
-    expect(classification.cooldownMs).toBe(600_000);
+    expect(classification.cooldownMs).toBe(900_000);
+    expect(classification.statedCooldownMs).toBe(600_000);
+    expect(classification.providerStated).toBe(true);
+  });
+
+  test("a one-second retry_after is floored to the rate-limit cooldown", () => {
+    // The reported OpenRouter shape: `retry_after_seconds: 1` produced a
+    // one-second cooldown that expired before the sweep's next tick, so the
+    // account read active again almost immediately and the health log showed
+    // no cooldown at all.
+    const classification = classifyAccountError(
+      new GatewayError("upstream_error" as never, 429, "rate limit exceeded"),
+      {
+        ...evidence,
+        statusCode: 429,
+        upstreamBody: { error: { retry_after_seconds: 1 } },
+      },
+    );
+    expect(classification.category).toBe("rate_limit_transient");
+    expect(classification.cooldownMs).toBe(900_000);
+    expect(classification.statedCooldownMs).toBe(1_000);
   });
 
   test("a reset already in the past is not a window", () => {
@@ -596,7 +630,7 @@ describe("GitHub Copilot not-licensed verdict", () => {
       statusCode: 401,
       credentialEvidence: true,
     });
-    expect(classification.category).toBe("auth_invalidated");
+    expect(classification.category).toBe("auth_rejected");
     expect(classification.status).toBe("cooldown");
   });
 });

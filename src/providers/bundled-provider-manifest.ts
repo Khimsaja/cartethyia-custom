@@ -162,6 +162,20 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
     credentialUrl: "https://deepai.org",
     credentialHint: "Sign in via the DeepAI desktop flow (loopback exchange → api_key) or paste a DeepAI api_key. Model calls are authenticated with the Api-Key header; the daily free allowance is 50 Theos and 11 models draw nothing from it.",
   },
+  {
+    id: "numes",
+    displayName: "Numes",
+    baseUrl: "https://api.numes.ai/api/v1",
+    credentialUrl: "https://numes.ai/dashboard/keys",
+    credentialHint: "Create an API key at numes.ai/dashboard/keys (`sk-numes-...`, USD or BTC). OpenAI-compatible chat; model ids are `author/slug` and the `:free` suffix marks zero-price rows.",
+  },
+  {
+    id: "runcrate",
+    displayName: "Runcrate",
+    baseUrl: "https://api.runcrate.ai/v1",
+    credentialUrl: "https://www.runcrate.ai/dashboard/api-keys",
+    credentialHint: "Create an API key at runcrate.ai (Dashboard → Keys, `rc_live_...`). OpenAI-compatible chat plus an Anthropic Messages wire on the same base; five open models serve a free weekly workspace allowance (GitHub sign-up needs no card).",
+  },
 
   // OpenAI-compatible bearer aggregators. Each is a bare host already rooted at
   // its own version prefix, so the `/v1`-prefixed wire paths stay pinned by the
@@ -424,6 +438,7 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
     credentialUrl: `${QODER_REALMS.cn.website}/account/integrations`,
     credentialHint: "Paste a Personal Access Token (pt-...) from the Qoder CN integrations page, or sign in with your Qoder China account.",
   },
+
   // Proxied by default, unlike most providers here. Trae applies account-level
   // ban/detection heuristics to the request origin, and a direct egress makes
   // every account in the pool share one identifiable address — the proxy is

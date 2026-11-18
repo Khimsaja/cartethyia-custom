@@ -48,6 +48,26 @@ interface FreepiAdapterOptions {
   readonly fetch?: typeof fetch;
 }
 
+/**
+ * True when the failure is the upstream's ad gate: no ad impression is
+ * registered for the session, so free completions are paused. The code rides
+ * in `details.providerCode` (HTTP error path) or `details.upstream_code`
+ * (SSE error frames); the prose fallback covers callers that only kept the
+ * message.
+ */
+function isAdsRequiredError(err: unknown): boolean {
+  if (err instanceof GatewayError) {
+    const details = err.details as Record<string, unknown> | undefined;
+    for (const key of ["providerCode", "upstream_code"] as const) {
+      const value = details?.[key];
+      if (typeof value === "string" && value.toLowerCase() === "ads_required") return true;
+    }
+    const message = err.message.toLowerCase();
+    if (message.includes("ads_required") || message.includes("ads aren't showing")) return true;
+  }
+  return false;
+}
+
 export class FreepiAdapter implements ProviderAdapter {
   readonly provider_id: ProviderId;
   private readonly fetchFn: typeof fetch;
@@ -159,6 +179,21 @@ export class FreepiAdapter implements ProviderAdapter {
           // turn that still carries the stale tool_call ids.
           this.#sessions.rotate(owner);
           activeRequest = rebased;
+          activeOwner = withFreshFreepiAffinity(owner);
+          lifecycle.release();
+          continue;
+        }
+        if (attempt === 0 && isAdsRequiredError(err)) {
+          // A session whose ad registration lapsed (or never landed — the
+          // upstream had no ad inventory when it was first created) answers
+          // every chat with `ads_required`, and the session id is cached, so
+          // without a retry the account fails until the gateway restarts.
+          // Drop the stale session and try once with a fresh ad-registered
+          // one; a second refusal means the upstream genuinely has no ads
+          // for the account right now. Events are buffered until the stream
+          // proves clean, so a retry here can never duplicate streamed
+          // content. (TipRouter local patch.)
+          this.#sessions.rotate(owner);
           activeOwner = withFreshFreepiAffinity(owner);
           lifecycle.release();
           continue;

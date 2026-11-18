@@ -175,6 +175,10 @@ export const credentialRejectedRule: AccountErrorRule = {
   name: "credential-rejected",
   match: (s) =>
     !s.quotaSignal &&
+    !s.wafPromptRejection &&
+    !s.freebuffFreeModeRefusal &&
+    !s.qoderAgentLimit &&
+    !s.inferhubNoCapacity &&
     !s.policyRejection &&
     !s.hostedToolFailure &&
     !s.modelEntitlementFailure &&
@@ -239,7 +243,11 @@ export const credentialRejectedRule: AccountErrorRule = {
       disabledRecoveryMs > 0 ? new Date(Date.now() + disabledRecoveryMs) : null;
     const cooldownMs = recoverable ? resolveAccountAuthRejectedCooldownMs() : disabledRecoveryMs;
     return s.result(
-      "auth_invalidated",
+      // `auth_rejected` is the recoverable verdict: it cools the account down
+      // and heals on its own. `auth_invalidated` stays reserved for the
+      // terminal arm — a named revocation on a refreshable credential — which
+      // is the only auth outcome the console may render "Re-login required".
+      recoverable ? "auth_rejected" : "auth_invalidated",
       recoverable ? "cooldown" : "disabled",
       cooldownMs,
       recoverable ? new Date(Date.now() + cooldownMs) : disabledRetryAt,
@@ -262,6 +270,78 @@ export const priceRefusalRule: AccountErrorRule = {
   match: (s) => s.priceRefusal,
   decide: (s) =>
     s.result("quota_exhausted", "cooldown", 0, null, s.reason("Request price refused by the provider"), false),
+};
+
+// A WAF prompt block says this prompt was refused by the upstream firewall,
+// so the account is not at fault and must not be mutated: `mutatesAccount`
+// is false and the deadline is left null. The category is
+// `policy_blocked_invalid_request` because the request was refused on policy
+// grounds — not because the credential is invalid — and the caller can fix it
+// by changing the prompt. (TipRouter local patch, 2026-10-14; ported to the
+// rule-based classifier in the 2.8.4 merge.)
+export const wafPromptRejectionRule: AccountErrorRule = {
+  name: "waf-prompt-rejection",
+  match: (s) => s.wafPromptRejection,
+  decide: (s) =>
+    s.result("policy_blocked_invalid_request", "cooldown", 0, null, s.reason("Request blocked by the provider WAF"), false),
+};
+
+// A free-mode shape refusal says this request was refused for carrying a
+// role the free mode does not support (`free_mode_client_check_failed` —
+// "The developer message role is not supported."). The credential is fine,
+// so the account must not be mutated. The encoder fix in freebuff.ts stops
+// the developer role from being sent at all, so this arm is a safety net
+// for any other free-mode shape refusal. (TipRouter local patch, 2026-11-11.)
+export const freebuffFreeModeRefusalRule: AccountErrorRule = {
+  name: "freebuff-free-mode-refusal",
+  match: (s) => s.freebuffFreeModeRefusal,
+  decide: (s) =>
+    s.result("policy_blocked_invalid_request", "cooldown", 0, null, s.reason("Request refused by freebuff free mode (unsupported role)"), false),
+};
+
+// Qoder's agent-limit refusal (`{"code":"115",...}`) says this (account,
+// model) pair is throttled right now, not that the credential died.
+// Classified `rate_limit_transient` so the writer scopes it to the model
+// pair: the account stays active for its other models and the pair rests
+// 10 minutes. Fixed window on purpose — the reset the upstream names is
+// created_at + 30 days, which must never park a working account for a
+// month. (TipRouter local patch, 2026-11-11.)
+export const qoderAgentLimitRule: AccountErrorRule = {
+  name: "qoder-agent-limit",
+  match: (s) => s.qoderAgentLimit,
+  decide: (s) => {
+    const cooldownMs = 10 * 60_000;
+    return s.result(
+      "rate_limit_transient",
+      "cooldown",
+      cooldownMs,
+      new Date(Date.now() + cooldownMs),
+      s.reason("Qoder agent limit for this model"),
+      s.origin === "upstream" && s.modelId !== undefined,
+      false,
+      true,
+    );
+  },
+};
+
+// The marketplace has no provider for this model right now — nothing wrong
+// with the account to record. Must precede `credential-rejected`,
+// `quota-exhausted`, `rate-limit` and `model-capacity`: at 503/529 the last
+// claimed this payload and cooled the pair; at 429 the rate-limit arm would.
+// (TipRouter local patch.)
+export const inferhubMarketplaceExhaustedRule: AccountErrorRule = {
+  name: "inferhub-marketplace-exhausted",
+  match: (s) => s.inferhubNoCapacity,
+  decide: (s) =>
+    s.result(
+      "model_capacity",
+      "cooldown",
+      0,
+      null,
+      s.reason("InferHub marketplace exhausted; no provider available for this model"),
+      // Never mutates: there is nothing wrong with the account to record.
+      false,
+    ),
 };
 
 export const modelPlanGatedRule: AccountErrorRule = {
@@ -329,7 +409,20 @@ export const rateLimitRule: AccountErrorRule = {
       s.lower.includes("tpm limit") ||
       s.lower.includes("rpm limit")),
   decide: (s) => {
-    const cooldownMs = s.statedCooldownMs ?? DEFAULT_RATE_LIMIT_COOLDOWN_MS();
+    const fallbackMs = DEFAULT_RATE_LIMIT_COOLDOWN_MS();
+    // A provider-stated window still wins when it is *longer* than the
+    // configured cooldown, but a trivially short `retry_after` (OpenRouter's
+    // `retry_after_seconds: 1`) is not a real reset window — honoring it
+    // verbatim expired the cooldown before the sweep's next tick and left the
+    // account churning active → cooldown → active with no visible backoff.
+    // The configured rate-limit cooldown is therefore a floor, not just a
+    // fallback. The raw stated value still rides on the classification
+    // (`statedCooldownMs`) so the auto-disable gate's sub-5-minute exemption
+    // keeps reading the provider's own number.
+    const cooldownMs =
+      s.statedCooldownMs === null
+        ? fallbackMs
+        : Math.max(s.statedCooldownMs, fallbackMs);
     // Same per-account reasoning as quota above: the failing account (or
     // its model, when modelId is present) backs off so routing tries the
     // next candidate instead of hammering the same key.

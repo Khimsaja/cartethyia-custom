@@ -63,10 +63,14 @@ export async function reportAttemptOutcome(
     ...report.evidence,
     ...(report.modelId === undefined ? {} : { modelId: report.modelId }),
   }).catch(() => null);
-  // Gated on `routesVisible`, not on `mutatesAccount`: a model cooldown changes
+  // Gated on `mutatesAccount` AND `routesVisible`: a model cooldown changes
   // routing, while a repeated report with the same deadline or a streak-only
-  // write does not.
-  if (classification?.routesVisible) await report.snapshotService?.invalidate();
+  // write does not — and a failure that does not mutate the account (a verdict
+  // on one request, e.g. a WAF prompt block) must not invalidate the snapshot
+  // either, or every refused prompt would force a full catalog rebuild.
+  // (TipRouter local patch: the un-gated form rebuilt the snapshot on every
+  // refused request.)
+  if (classification?.mutatesAccount && classification?.routesVisible) await report.snapshotService?.invalidate();
 }
 
 export async function listAccountHealthEvents(
