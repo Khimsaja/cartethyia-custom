@@ -166,5 +166,11 @@ describe("errorClientResponseBody", () => {
       error: Record<string, unknown>;
     };
     expect(parsed.error.code).toBe("internal_error");
+    // The stored copy must match the wire: our brand, our sentence — never
+    // the internal product name or a bare "Internal server error".
+    expect(parsed.error.origin).toBe("tiprouter");
+    expect(parsed.error.message).toBe(
+      "TipRouter: an internal error occurred. Please retry; if it persists, quote the request id to support.",
+    );
   });
 });

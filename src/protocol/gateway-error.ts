@@ -255,6 +255,18 @@ const TIPROUTER_PUBLIC_MESSAGES: Readonly<Record<GatewayErrorCode, string>> = {
 const TIPROUTER_PUBLIC_MESSAGE_FALLBACK =
   "TipRouter: the request failed. Please try again; if it persists, quote the request id to support.";
 
+/**
+ * The TipRouter-owned public sentence for one error code.
+ *
+ * The envelope paths that only have a raw (non-`GatewayError`) failure still
+ * owe the client our sentence: a hardcoded gateway-authored fallback here
+ * would reach the buyer without the TipRouter name, which is exactly the
+ * raw-error leak the sanitizer exists to close.
+ */
+export function tiprouterPublicMessage(code: GatewayErrorCode): string {
+  return TIPROUTER_PUBLIC_MESSAGES[code] ?? TIPROUTER_PUBLIC_MESSAGE_FALLBACK;
+}
+
 /** Formats a gateway error for public/internal clients without mutating it. */
 export function explainGatewayError(error: GatewayError): string {
   // Upstream failures carry the provider's own words in `message`

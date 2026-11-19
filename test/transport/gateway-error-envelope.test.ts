@@ -37,6 +37,7 @@ import {
   publicErrorOrigin,
   publicGatewayErrorBody,
   publicGatewayErrorDetails,
+  tiprouterPublicMessage,
   type GatewayErrorCode,
 } from "../../src/protocol/gateway-error";
 
@@ -620,6 +621,18 @@ describe("explainGatewayError — upstream failures speak TipRouter", () => {
       expect(text.startsWith("TipRouter:"), `code ${code}`).toBe(true);
       expect(text, `code ${code}`).not.toContain("raw upstream prose");
     }
+  });
+
+  test("tiprouterPublicMessage hands the raw-failure fallbacks our sentence", () => {
+    // The three fallback sites (error middleware, stream finalize, stored
+    // client response) only have a code, not a GatewayError — they must still
+    // speak TipRouter, never a hardcoded gateway-authored sentence.
+    expect(tiprouterPublicMessage("internal_error")).toBe(
+      "TipRouter: an internal error occurred. Please retry; if it persists, quote the request id to support.",
+    );
+    expect(tiprouterPublicMessage("transport_unavailable")).toBe(
+      "TipRouter: the connection to the provider failed. Please try again.",
+    );
   });
 });
 

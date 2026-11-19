@@ -1,5 +1,5 @@
 // Attempt completion bookkeeping: one home for everything every dispatch attempt ends with.
-import { GatewayError, publicGatewayErrorBody } from "../../protocol/gateway-error";
+import { GatewayError, publicGatewayErrorBody, tiprouterPublicMessage } from "../../protocol/gateway-error";
 import type { UsageRecord } from "../../protocol/canonical-model";
 import {
   classifyUpstreamFailure,
@@ -42,8 +42,17 @@ export function errorClientResponseBody(error: unknown): string {
     // copy cannot drift from what the client received.
     return JSON.stringify(publicGatewayErrorBody(error));
   }
+  // A raw (non-`GatewayError`) failure has no typed code of its own, so the
+  // stored copy must match what the error middleware sends on the wire for
+  // it: the public `tiprouter` origin and our sentence for `internal_error`.
+  // The old copy stamped the internal product name and a bare "Internal
+  // server error", which is exactly the raw-error leak the sanitizer closes.
   return JSON.stringify({
-    error: { origin: "cartethyia", code: "internal_error", message: "Internal server error" },
+    error: {
+      origin: "tiprouter",
+      code: "internal_error",
+      message: tiprouterPublicMessage("internal_error"),
+    },
   });
 }
 
