@@ -260,13 +260,13 @@ export interface ShareLinkResponse {
 /**
  * Default prefix for newly generated API keys.
  *
- * The separator is a hyphen, not an underscore, and the random tail is a fixed
- * 16 characters: `pn-carte-` for personal keys, `sh-carte-` for the ones a
- * share template issues. Both are metadata shown in the console — nothing
- * looks a key up by its prefix — so changing these does not invalidate rows
- * already stored, which keep the prefix they were issued with.
+ * `tip_` for personal keys, `sh-carte-` for the ones a share template
+ * issues. The random tail is a fixed 16 characters. Both are metadata shown
+ * in the console — nothing looks a key up by its prefix — so changing these
+ * does not invalidate rows already stored, which keep the prefix they were
+ * issued with.
  */
-export const DEFAULT_API_KEY_PREFIX = "pn-carte-";
+export const DEFAULT_API_KEY_PREFIX = "tip_";
 /** Default prefix used by share templates and the keys they issue. */
 export const DEFAULT_SHARE_API_KEY_PREFIX = "sh-carte-";
 
