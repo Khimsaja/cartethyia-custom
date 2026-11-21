@@ -123,20 +123,6 @@ export const OAUTH_INTEGRATION_CAPABILITIES = {
       async () => (await import("../integrations/freepi/freepi-catalog")).FREEPI_MODELS,
     ),
   },
-  perch: {
-    loadAdapter: async () => (await import("../integrations/perch/perch")).createPerchAdapter(),
-    loadModels: async () => (await import("../integrations/perch/perch-catalog")).PERCH_MODELS,
-    // Perch login is Supabase PKCE (Google/GitHub); the session blob
-    // (access/refresh token) is the credential, and the CLI refreshes it.
-    loadAuthentication: oauthCapability(() => import("../integrations/perch/perch-oauth"), "perchOAuthClient", { withRefresher: true }),
-    loadQuotaCollector: quotaCapability(() => import("../integrations/perch/perch-quota"), "fetchPerchQuota"),
-    // The hosted API exposes no public model list — Roost tiers are the only
-    // surface the CLI accepts, so discovery returns the static roster.
-    loadModelDiscovery: async () => async () => {
-      const { PERCH_MODELS } = await import("../integrations/perch/perch-catalog");
-      return PERCH_MODELS;
-    },
-  },
   clixad: {
     loadAdapter: async () => createApiKeyAdapter((await import("../integrations/clixad/provider")).CLIXAD_SPEC),
     loadModels: async () => (await import("../integrations/clixad/provider")).CLIXAD_DEFAULT_MODELS,

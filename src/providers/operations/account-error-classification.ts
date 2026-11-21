@@ -24,7 +24,6 @@ import {
   zcodeStartPlanTrialRule,
   traeRules,
   inceptionRules,
-  perchRules,
 } from "./provider-rules";
 import {
   credentialRejectedRule,
@@ -239,6 +238,34 @@ export function classifyAccountError(
     );
   }
 
+  // Free-pi concurrent-session cap (TipRouter local patch, 2026-11-10): the
+  // upstream allows max 4 concurrent CLI sessions per signed-in account and
+  // answers HTTP 409 `concurrent_session` ("You've already got 4 free-pi CLI
+  // sessions running ... Slot frees in 30 min if a session crashed"). The cap
+  // blocks EVERY model on the account, so this is an account-wide cooldown,
+  // not a per-model one — which is why the category must stay out of the
+  // throttle set (`rate_limit_transient` / `model_capacity` /
+  // `model_unreachable`: the writer would scope those to the model pair and
+  // leave the account routable) and out of the auto-disable targets
+  // (`quota_exceeded` / `rate_limit_transient`). `server_error` cools the
+  // whole account for the 30 minutes the upstream names for a crashed slot.
+  // The window is fixed, not the parsed one: the message also says "wait a
+  // minute", which would under-cool. Without this arm the 409 fell through
+  // to a non-mutating default, the account stayed `active` with 0 consecutive
+  // failures, and the router kept feeding a wedged account (2026-11-10:
+  // 4 accounts, 500+ 409s, freepi success 17.8%).
+  if (providerId === "freepi" && statusCode === 409) {
+    const cooldownMs = 30 * 60_000;
+    return result(
+      "server_error",
+      "cooldown",
+      cooldownMs,
+      new Date(Date.now() + cooldownMs),
+      reason("Free-pi concurrent session limit (4 per account)"),
+      origin === "upstream",
+    );
+  }
+
   // Quota-shaped provider codes/messages (e.g. xAI's
   const quotaSignal =
     !priceRefusal &&
@@ -411,7 +438,12 @@ export function classifyAccountError(
   }
 
   // Same reasoning as above, with the shortest backoff: an unmapped failure
-  // must still be retried automatically rather than parked forever.
+  // must still be retried automatically rather than parked forever. When the
+  // evidence is account-scoped (`canMutate`), write the cooldown so the
+  // account backs off instead of staying `active` at the head of the plan and
+  // being re-dialed on every request; provider-scoped evidence stays
+  // non-mutating (the upstream is failing for everyone, no single account is
+  // at fault).
   const unclassifiedMs = UNCLASSIFIED_COOLDOWN_MS();
   return result(
     "unknown",
@@ -419,7 +451,7 @@ export function classifyAccountError(
     unclassifiedMs,
     new Date(Date.now() + unclassifiedMs),
     reason("Unclassified provider failure"),
-    false,
+    canMutate,
   );
 }
 
@@ -452,7 +484,6 @@ const ACCOUNT_ERROR_RULES: readonly AccountErrorRule[] = [
   qoderModelQuotaRule,
   quotaExhaustedRule,
   ...inceptionRules,
-  ...perchRules,
   rateLimitRule,
   modelCapacityRule,
   modelUnsupportedRule,

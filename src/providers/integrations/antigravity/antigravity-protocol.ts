@@ -161,7 +161,9 @@ const ANTIGRAVITY_MODEL_WIRE_PROFILES: Readonly<
     modelEnum: "MODEL_PLACEHOLDER_M322",
     maxOutputTokens: 65536,
   },
-  // Gemini 4 Argon effort tiers (real deployment names).
+  // Gemini 4 effort tiers (deployment names per the agy 1.5.12 roster
+  // reference). Argon caps at 65,536; Carbon, Hydrogen, and Neon ship
+  // 262,144 — matching each family's catalog row.
   "gemini-4-argon-low": {
     maxOutputTokens: 65536,
   },
@@ -171,15 +173,34 @@ const ANTIGRAVITY_MODEL_WIRE_PROFILES: Readonly<
   "gemini-4-argon-high": {
     maxOutputTokens: 65536,
   },
-  // Gemini 4 Hydrogen effort tiers — same deployment shape as Argon.
+  "gemini-4-carbon-low": {
+    maxOutputTokens: 262144,
+  },
+  "gemini-4-carbon-medium": {
+    maxOutputTokens: 262144,
+  },
+  "gemini-4-carbon-high": {
+    maxOutputTokens: 262144,
+  },
+  // Gemini 4 Hydrogen effort tiers — same deployment shape as Carbon.
   "gemini-4-hydrogen-low": {
-    maxOutputTokens: 65536,
+    maxOutputTokens: 262144,
   },
   "gemini-4-hydrogen-medium": {
-    maxOutputTokens: 65536,
+    maxOutputTokens: 262144,
   },
   "gemini-4-hydrogen-high": {
-    maxOutputTokens: 65536,
+    maxOutputTokens: 262144,
+  },
+  // Gemini 4 Neon effort tiers — same deployment shape as Hydrogen.
+  "gemini-4-neon-low": {
+    maxOutputTokens: 262144,
+  },
+  "gemini-4-neon-medium": {
+    maxOutputTokens: 262144,
+  },
+  "gemini-4-neon-high": {
+    maxOutputTokens: 262144,
   },
   // GPT-OSS via Antigravity (verified live).
   "gpt-oss-120b-medium": {
@@ -230,12 +251,22 @@ const ANTIGRAVITY_TIER_THINKING_BUDGET: Readonly<Record<string, number>> = Objec
  * Default effort tier each logical id deploys as at dispatch (the wire id is
  * `<id>-<tier>`). Ids not listed here are already wire ids and pass through.
  */
+/**
+ * Default effort tier each logical id deploys as at dispatch (the wire id is
+ * `<id>-<tier>`). Ids not listed here are already wire ids and pass through.
+ *
+ * Defaults follow the Antigravity CLI (agy 1.5.12) roster reference: the
+ * Gemini 4 family opens at effort medium, and Neon — the family's newest
+ * SKU — opens at high.
+ */
 const ANTIGRAVITY_DEFAULT_TIER: Readonly<Record<string, AntigravityEffortSuffix>> = Object.freeze({
   "gemini-3.6-flash": "low",
   "gemini-3.7-flash": "low",
   "gemini-3.8-flash": "low",
-  "gemini-4-argon": "low",
+  "gemini-4-argon": "medium",
+  "gemini-4-carbon": "medium",
   "gemini-4-hydrogen": "medium",
+  "gemini-4-neon": "high",
   "gpt-oss-120b": "medium",
 });
 
@@ -312,7 +343,7 @@ export function normalizeAntigravityToolSchema(schema: unknown): unknown {
  * `oneOf` / multi-type `type: [...]` declaration — even a degenerate
  * `anyOf` of two identical string schemas, and even at the root. The Gemini
  * builder's sanitizer keeps those constructs (Gemini itself accepts them), so
- * a tool that declares a union (e.g. OMP's `task` tool's `model` field)
+ * a tool that declares a union (e.g. a client's `task` tool's `model` field)
  * ships an invalid schema and the upstream 400s the whole request with
  * `tools.N.custom.input_schema: JSON schema is invalid`.
  *
@@ -416,7 +447,7 @@ export function normalizeAntigravityToolSchemas(request: CanonicalRequest): Cano
  * The Claude-route upstream requires every `thinking` block in a replayed
  * assistant turn to carry a `signature`; an unsigned block is rejected with
  * `400 messages.N.content.0.thinking.signature: Field required`. Chat-surface
- * clients (e.g. OMP) replay reasoning as a bare `reasoning_content` string
+ * clients (e.g. a chat-surface agent client) replay reasoning as a bare `reasoning_content` string
  * that has no signature — there is nothing to forward, and sending it as an
  * unsigned `thought` part guarantees the 400.
  *

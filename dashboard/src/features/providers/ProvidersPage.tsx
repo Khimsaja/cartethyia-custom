@@ -147,14 +147,57 @@ function pastedEndpointRoot(value: string): string | null {
 
 // ── Custom Compatible Provider Modal ──────────────────────────────────────────
 
-function AddCompatibleModal({
+/** The wire values the create-provider request is built from. */
+export interface CompatibleProviderRequestInput {
+  readonly providerId: string;
+  readonly label: string;
+  readonly baseUrl: string;
+  readonly wireFamily: WireFamily;
+  readonly sendCliIdentity: boolean;
+  readonly publicKey: boolean;
+  readonly serviceKinds: readonly ServiceKind[] | undefined;
+  readonly extraHeaders: Readonly<Record<string, string>>;
+}
+
+/**
+ * Builds the create-provider request for one modal submission.
+ *
+ * Pure and exported so the suite can pin the request shape directly: the
+ * modal's submit runs through `useCreateProvider`, and happy-dom cannot drive
+ * the text inputs that fill it.
+ */
+export function buildCompatibleProviderRequest(
+  input: CompatibleProviderRequestInput,
+): CreateProviderRequest {
+  return {
+    providerId: input.providerId,
+    label: input.label,
+    baseUrl: input.baseUrl,
+    wireFamily: input.wireFamily,
+    // "Public Key" means the upstream answers without any credential: the
+    // provider needs no account (routing emits its credential-less candidate)
+    // and the modal registers a `none` account named "Public Key" so the
+    // operator sees the route in the account list.
+    requiresAccount: input.publicKey === true ? false : undefined,
+    compatibilityProfile: {
+      cli_identity: input.sendCliIdentity,
+      ...(input.serviceKinds !== undefined ? { service_kinds: input.serviceKinds } : {}),
+      ...(Object.keys(input.extraHeaders).length > 0 ? { extra_headers: input.extraHeaders } : {}),
+    },
+  };
+}
+
+export function AddCompatibleModal({
   variant,
   open,
   onClose,
+  /** Test seam: pre-set the Public Key switch without driving the control. */
+  publicKey: initialPublicKey = false,
 }: {
   variant: "openai-compatible" | "anthropic-compatible";
   open: boolean;
   onClose: () => void;
+  publicKey?: boolean;
 }): ReactNode {
   const create = useCreateProvider();
   const createAccount = useCreateProviderAccount();
@@ -164,6 +207,7 @@ function AddCompatibleModal({
   const [providerId, setProviderId] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [credential, setCredential] = useState("");
+  const [publicKey, setPublicKey] = useState(initialPublicKey);
   const [autoFetchModels, setAutoFetchModels] = useState(false);
   const [sendCliIdentity, setSendCliIdentity] = useState(true);
   const [headerPairs, setHeaderPairs] = useState<readonly HeaderPair[]>([]);
@@ -192,6 +236,7 @@ function AddCompatibleModal({
     if (!open) return;
     setLabel("");
     setCredential("");
+    setPublicKey(false);
     setWireFamily(defaultWire);
     setBaseUrl("");
     setAutoFetchModels(false);
@@ -265,9 +310,27 @@ function AddCompatibleModal({
       setError("Base URL is required");
       return;
     }
+    // A public-key provider registers its credential-less "Public Key"
+    // account, which is not optional — that row is what routing dials.
+    if (publicKey) {
+      setError(null);
+      await runCreate({ providerId: providerId.trim().toLowerCase() }, true);
+      return;
+    }
+    if (!credential.trim()) {
+      setError("API Key is required — or enable “Public Key” for a no-key endpoint");
+      return;
+    }
+    await runCreate({ providerId: providerId.trim().toLowerCase() }, false);
+  };
+
+  const runCreate = async (
+    ids: { readonly providerId: string },
+    asPublicKey: boolean,
+  ): Promise<void> => {
 
     const extraHeaders = pairsToHeaders(headerPairs);
-    const id = providerId.trim().toLowerCase();
+    const id = ids.providerId;
     // Advanced capabilities: send the narrowed kind list only when the
     // operator opened the section and changed it. Absent = the historical
     // default (every kind enabled).
@@ -276,19 +339,24 @@ function AddCompatibleModal({
     setSubmitting(true);
     setError(null);
     try {
-      const req: CreateProviderRequest = {
-        providerId: id,
-        label: label.trim(),
-        baseUrl: baseUrl.trim(),
-        wireFamily,
-        compatibilityProfile: {
-          cli_identity: sendCliIdentity,
-          ...(advancedKinds !== undefined ? { service_kinds: advancedKinds } : {}),
-          ...(Object.keys(extraHeaders).length > 0 ? { extra_headers: extraHeaders } : {}),
-        },
-      };
-      await create.mutateAsync(req);
-      if (credential.trim()) {
+      await create.mutateAsync(
+        buildCompatibleProviderRequest({
+          providerId: id,
+          label: label.trim(),
+          baseUrl: baseUrl.trim(),
+          wireFamily,
+          sendCliIdentity,
+          publicKey: asPublicKey,
+          serviceKinds: advancedKinds,
+          extraHeaders,
+        }),
+      );
+      if (asPublicKey) {
+        await createAccount.mutateAsync({
+          providerId: id,
+          request: { credentialKind: "none", label: "Public Key" },
+        });
+      } else {
         await createAccount.mutateAsync({
           providerId: id,
           request: { credentialKind: "api_key", secret: credential.trim() },
@@ -387,7 +455,9 @@ function AddCompatibleModal({
           <label className="form-label" htmlFor="compat-credential">
             <span>API Key</span>
             <span className="form-hint">
-              Optional — saved with this provider and used to authenticate every request.
+              {publicKey
+                ? "Off — this is a Public Key endpoint: requests go out with no credential at all."
+                : "Optional — saved with this provider and used to authenticate every request."}
             </span>
           </label>
           <Inline gap="8px">
@@ -398,6 +468,8 @@ function AddCompatibleModal({
                 placeholder="sk-..."
                 value={credential}
                 onChange={(e) => setCredential(e.target.value)}
+                disabled={publicKey}
+                aria-describedby="compat-public-key-hint"
               />
             </div>
             <Button
@@ -412,6 +484,17 @@ function AddCompatibleModal({
               Paste
             </Button>
           </Inline>
+          <ListRow
+            actions={<Switch checked={publicKey} onChange={setPublicKey} id="compat-public-key" />}
+          >
+            <div>
+              <div className="text-body font-semibold">Public Key — no API key needed</div>
+              <div className="mt-1 text-badge text-text-tertiary" id="compat-public-key-hint">
+                The upstream answers without a credential. Requests go out unauthenticated,
+                and a "Public Key" account is registered to route this provider.
+              </div>
+            </div>
+          </ListRow>
           {testResult ? (
             <>
               <div
@@ -776,30 +859,13 @@ function CustomProvidersSection({
 const FOUNDING_IDS = new Set(["inferhub"]);
 /** Free tiers with a small daily allowance rather than a standing free tier. */
 const FREE_LIMITED_IDS = new Set([
-  "grok",
   "opencode",
   "cline",
-  // Nous Research publishes a free allowance alongside its paid catalog, and
-  // its `/v1/models` marks those rows at zero price, so discovery can keep the
-  // list current instead of encoding it by hand.
-  "hermes",
-  // Kilo Code resells the OpenRouter catalog — `/api/openrouter`, the same
-  // upstream Cline fronts — and serves a `kilo-auto/free` routing alias
-  // alongside its paid rows, so its free allowance is metered against that
-  // one reseller rather than a standing free tier.
-  "kilo",
-  // Inception Labs ships a standing free tier — mercury-3 at zero price —
-  // rather than a daily allowance, but it belongs in the same section as the
-  // other free-limited providers an operator reaches for first.
-  "inception",
   // ZCode Start exposes account-specific, time-limited GLM grants.
   "zcode-start",
   // Free-pi is ad-funded: a daily USD/credit allowance (guest or GitHub
   // sign-in), with a small set of "Free Unlimited" rows on the free tier.
   "freepi",
-  // Perch Starter is free with a Google/GitHub sign-in: Roost Standard and
-  // Standard 1M tiers, a $20/month included-usage allowance.
-  "perch",
   // Zro serves open models with a small per-key allowance; a key only sees
   // the models it may call, and the free allowance is metered per use.
   "zro",
@@ -844,6 +910,9 @@ const WELL_KNOWN_API_KEY_IDS = new Set([
   "meta",
   "deepseek",
   "commandcode",
+  // Inception Labs: the Mercury diffusion-LLM house — a household name with a
+  // published API-key signup, reached for beside the other majors.
+  "inception",
   // Alibaba's OpenAI-compatible DashScope: a household-enough name that an
   // operator looks for beside the other majors rather than in "Other".
   "dashscope",

@@ -147,7 +147,6 @@ const iconAssets: Record<
   qianfan: { file: "qianfan", ext: "ico" },
   larprouter: { file: "larprouter", ext: "png" },
   freebuff: { file: "freebuff", ext: "webp" },
-  perch: { file: "perch", ext: "png" },
   freepi: { file: "freepi", ext: "ico" },
   factory: { file: "factory", ext: "ico" },
   // Same Qwen brand as the qwen provider; the portal is its API-key surface.

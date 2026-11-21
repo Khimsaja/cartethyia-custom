@@ -326,14 +326,6 @@ export const VERSION_SOURCES = {
     fallback: "0.6.21",
     sources: [{ url: "https://registry.npmjs.org/free-pi-cli/latest" }],
   },
-  perch: {
-    key: "perch",
-    // The official Perch CLI, spawned by the adapter for hosted inference.
-    // Fallback = the current npm latest (2.4.137 as of 2026-11-18); a cold
-    // process sends it until the monitor's first successful discovery.
-    fallback: "2.4.137",
-    sources: [{ url: "https://registry.npmjs.org/perchai-cli/latest" }],
-  },
   clixad: {
     key: "clixad",
     // The Clixad gateway publishes the CLI build it is paired with as
@@ -431,9 +423,8 @@ const resolvers = {
   hermes: createClientVersionResolver({ ...VERSION_SOURCES.hermes, client: "hermes" }),
   trae: createClientVersionResolver({ ...VERSION_SOURCES.trae, client: "trae" }),
   freepi: createClientVersionResolver({ ...VERSION_SOURCES.freepi, client: "freepi" }),
-  perch: createClientVersionResolver({ ...VERSION_SOURCES.perch, client: "perch" }),
-  clixad: createClientVersionResolver({ ...VERSION_SOURCES.clixad, client: "clixad" }),
   freebuff: createClientVersionResolver({ ...VERSION_SOURCES.freebuff, client: "freebuff" }),
+  clixad: createClientVersionResolver({ ...VERSION_SOURCES.clixad, client: "clixad" }),
   deepai: createClientVersionResolver({ ...VERSION_SOURCES.deepai, client: "deepai" }),
   cursor: createClientVersionResolver({ ...VERSION_SOURCES.cursor, client: "cursor" }),
   opencode: createClientVersionResolver({ ...VERSION_SOURCES.opencode, client: "opencode" }),
@@ -457,7 +448,6 @@ const resolvers = {
 const PROVIDER_VERSION_RESOLVERS: Readonly<Record<string, ClientVersionResolver>> = {
   antigravity: resolvers.antigravity,
   freepi: resolvers.freepi,
-  perch: resolvers.perch,
   clixad: resolvers.clixad,
   freebuff: resolvers.freebuff,
   deepai: resolvers.deepai,
@@ -602,7 +592,6 @@ export const getHermesVersion = accessor("hermes").get;
 export const getTraeVersion = accessor("trae").get;
 export const getAntigravityVersion = accessor("antigravity").get;
 export const getFreepiVersion = accessor("freepi").get;
-export const getPerchVersion = accessor("perch").get;
 export const getFreebuffVersion = accessor("freebuff").get;
 export const getDeepAIVersion = accessor("deepai").get;
 
@@ -665,6 +654,41 @@ export const adoptClaudeCliVersion = accessor("claudeCli").adopt;
 export const getClaudeSdkVersion = accessor("claudeSdk").get;
 
 export const getKiroVersion = accessor("kiro").get;
+
+/**
+ * The agent runtime (KAS) build bundled in the official 1.4.178 IDE. The
+ * new-service User-Agent tail names it (`KiroIDE-<ide>-<machine>-KAS/<agent>`),
+ * so an identity claiming IDE 1.4.178 must also claim this runtime version —
+ * the pair is what the wire actually carries.
+ */
+export const KIRO_AGENT_VERSION = "0.66.102-hotfix.1" as const;
+
+/** UA tail for the new runtime service: device marker + agent runtime + client affiliation. */
+function kiroIdeRuntimeSuffix(version: string, machineId: string): string {
+  return `KiroIDE-${version}-${machineId}-KAS/${KIRO_AGENT_VERSION} acp-client/kiro-ide`;
+}
+
+/**
+ * Builds the `x-amz-user-agent` companion for the new runtime service
+ * (`runtime.generateAssistantResponse`, the official 1.4.x IDE identity).
+ * Measured wire: `aws-sdk-js/1.0.0 <suffix>`.
+ */
+export function buildKiroIdeAmzUserAgent(version = getKiroVersion(), machineId = ""): string {
+  return `aws-sdk-js/1.0.0 ${kiroIdeRuntimeSuffix(version, machineId)}`;
+}
+
+/**
+ * Builds the full `user-agent` for the new runtime service. Measured wire:
+ * SDK framing, the OS and node segments, `api/kiroruntime#1.0.0 m/N`, then the
+ * device+runtime+affiliation suffix. The machine id lives here — the new
+ * service path carries no separate machine-id header.
+ */
+export function buildKiroIdeUserAgent(version = getKiroVersion(), machineId = ""): string {
+  return (
+    `aws-sdk-js/1.0.0 ua/2.1 os/${KIRO_SYSTEM_VERSION} lang/js md/nodejs#${KIRO_NODE_VERSION} ` +
+    `api/kiroruntime#1.0.0 m/N ${kiroIdeRuntimeSuffix(version, machineId)}`
+  );
+}
 
 /**
  * Builds the `x-amz-user-agent` companion header for the generation surface.

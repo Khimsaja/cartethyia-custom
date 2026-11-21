@@ -19,6 +19,7 @@ import type { ProviderRegistry } from "../provider-registry";
 import { quotaLens, setCachedQuota } from "./cache";
 import { persistQuotaSnapshot } from "./snapshot";
 import { applyAccountVerdict } from "../operations/account-health-service";
+import { resolveAccountDisabledRecoveryMs } from "../../config/cooldowns";
 import { asJsonbRecord } from "../../shared/coerce";
 import { KIRO_DEFAULT_LABELS } from "../integrations/kiro/kiro-oauth";
 import { invalidateCredentialCache } from "../operations/provider-credential-service";
@@ -71,6 +72,17 @@ export interface QuotaRefreshDeps {
   readonly markApiKeyCredential?: (providerId: string, credential: string) => Promise<string>;
   /** Invalidates the route snapshot when a stamped figure may exclude an account. */
   readonly snapshotInvalidator?: { invalidate(): unknown } | undefined;
+  /**
+   * Resolves the **account egress** a quota fetch must leave through: the
+   * tenant's active network pool (rotated), or direct when none exists. Kiro
+   * correlates a credential with its egress — a usage read that leaves from a
+   * different address than the account's other traffic is refused outright and
+   * read as a rejected credential. Absent (tests, or hosts without the
+   * binding factory) means direct egress, unchanged.
+   */
+  readonly fetcherFor?:
+    | ((accountId: string, tenantId?: string | null) => QuotaFetchLike | Promise<QuotaFetchLike>)
+    | undefined;
 }
 
 /** Bound on concurrently tracked single-flight quota refreshes; keys are account ids, so the real bound is the account count. */
@@ -82,6 +94,13 @@ const MAX_INFLIGHT = 1_000;
  * rapid clicks) share one upstream fetch instead of hammering the provider.
  */
 export const inFlightAccountQuotaRefreshes = new Map<string, Promise<QuotaRefreshOutcome>>();
+
+/**
+ * The callable shape every quota fetcher shares. The global `typeof fetch`
+ * carries extra callable properties (`preconnect`), pooled egress fetches do
+ * not — accept the common callable shape instead of either full type.
+ */
+type QuotaFetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 /**
  * Binds an abort signal to outbound quota fetches while preserving Bun's
@@ -101,6 +120,57 @@ export function signalFetch(signal: AbortSignal): typeof fetch {
 /** Combines the caller's abort signal with the fetch budget. */
 export function timeoutSignal(requestSignal: AbortSignal, ms: number): AbortSignal {
   return AbortSignal.any([requestSignal, AbortSignal.timeout(ms)]);
+}
+
+/**
+ * Binds an abort signal onto an **arbitrary** fetch implementation — the pooled
+ * account egress — while the plain {@link signalFetch} variant wraps the global
+ * fetch. Pooled fetches carry no `preconnect` static, so the fallback names the
+ * global one.
+ */
+export function signalFetchOver(
+  fetchImpl: QuotaFetchLike,
+  signal: AbortSignal,
+): typeof fetch {
+  const wrapped = (
+    url: Parameters<typeof fetch>[0],
+    init?: Parameters<typeof fetch>[1],
+  ): Promise<Response> => fetchImpl(url, { ...init, signal });
+  return Object.assign(wrapped, {
+    preconnect: (...args: Parameters<typeof fetch.preconnect>): void =>
+      globalThis.fetch.preconnect(...args),
+  });
+}
+
+/**
+ * Per-account egress resolver for quota fetches, bound to the refresh budget.
+ *
+ * Kiro (AWS) correlates a credential with the egress it presents from: the
+ * usage read must leave through the same egress family the account's other
+ * traffic uses, and a direct-from-host call for an account whose traffic
+ * otherwise rides a pool is refused outright (`401/403`) — which the health
+ * surface then misreads as a rejected credential and parks the account over.
+ * Deps that carry an egress resolver get the pooled fetch; everyone else keeps
+ * the historical direct fetch unchanged.
+ */
+export async function quotaFetcherFor(
+  deps: {
+    readonly fetcherFor?:
+      | ((
+          accountId: string,
+          tenantId?: string | null,
+        ) => QuotaFetchLike | Promise<QuotaFetchLike>)
+      | undefined;
+  },
+  accountId: string,
+  tenantId: string | null | undefined,
+  signal: AbortSignal,
+): Promise<typeof fetch> {
+  if (!deps.fetcherFor) return signalFetch(signal);
+  const pooled = (await Promise.resolve(deps.fetcherFor(accountId, tenantId)).catch(() => undefined)) as
+    | QuotaFetchLike
+    | undefined;
+  return pooled === undefined ? signalFetch(signal) : signalFetchOver(pooled, signal);
 }
 
 /**
@@ -162,14 +232,19 @@ export async function recordAccountCheck(
   snapshotInvalidator?: { invalidate(): unknown },
 ): Promise<void> {
   if (outcome.authInvalidated === true) {
+    // A timed cooldown, never a permanent disable: the account comes back once
+    // the recovery window elapses and is re-probed then, so a credential that
+    // heals (re-issued key, re-authorized grant) is never parked forever. The
+    // category still reads `auth_invalidated`, which is what the console uses
+    // to render "Re-login required" and what the quota sweep excludes from
+    // re-probing while it is cooling.
+    const recoveryMs = resolveAccountDisabledRecoveryMs();
     const disabled = await applyAccountVerdict(db, {
       accountId,
-      status: "disabled",
+      status: "cooldown",
       reason: outcome.error ?? "Provider rejected account authentication",
       category: "auth_invalidated",
-      // No deadline: a credential rejected as invalid cannot heal by waiting,
-      // and the OAuth refresh sweep must not keep spending refresh attempts.
-      cooldownUntil: null,
+      cooldownUntil: recoveryMs > 0 ? new Date(Date.now() + recoveryMs) : null,
     });
     if (disabled) {
       invalidateCredentialCache(accountId);
@@ -196,8 +271,8 @@ export async function recordAccountCheck(
       "model_unreachable",
       // `quota_fetch_failed` is the park reason when the quota surface itself
       // refused/errored. A successful read is direct counter-evidence that the
-      // last failure was transient or stale (e.g. Kiro's profile-400 before
-      // the account's profile resolved), so it must lift immediately instead of
+      // last failure was transient or stale (e.g. a usage surface that refused
+      // a query before the account's profile resolved), so it must lift immediately instead of
       // leaving the account parked for the whole fallback window.
       "quota_fetch_failed",
       // `auth_rejected` is the *recoverable* credential verdict: a quota fetch

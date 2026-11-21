@@ -6,6 +6,10 @@
  * (status `disabled`) with the marker reason `auto-disable (rate-limited): …`
  * and the configured recovery window. The recovery sweep is the only automatic
  * path back (D03); an operator disable stays terminal.
+ *
+ * Only verdicts that mutate reach the intercept, and a rate limit mutates only
+ * when the upstream stated a usable window — an unstated (or sub-sweep-tick)
+ * 429 is a skip that parks nothing, so it can never auto-disable either.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -143,6 +147,10 @@ const upstream429Evidence = {
   scope: "account" as const,
   statusCode: 429,
   credentialEvidence: true,
+  // A rate-limit verdict only mutates when the upstream states a usable
+  // window — an unstated (or sub-sweep-tick) 429 is a skip that touches no
+  // column, so the intercept tests state one the account can wait out.
+  retryAfterMs: 30 * 60_000,
 };
 
 /** An upstream quota verdict that classifies as `quota_exhausted`, mutating. */
@@ -200,13 +208,16 @@ describe("auto-disable intercept", () => {
     expect(row.modelCooldowns).toEqual({});
   });
 
-  test("toggle on disables on an upstream rate limit with the marker", async () => {
+  test("toggle on cools on an upstream rate limit with the marker", async () => {
     await seedTenant();
     await setToggle(true);
     const accountId = await insertAccount();
     await recordAccountFailure(db!, accountId, upstream429(), upstream429Evidence);
     const row = await rowOf(accountId);
-    expect(row.status).toBe("disabled");
+    // The auto-disable intercept lands as a *timed cooldown* on the recovery
+    // window — never a permanent `disabled` — so the account comes back once
+    // the window elapses.
+    expect(row.status).toBe("cooldown");
     expect(row.lastError).toContain("auto-disable (rate-limited): ");
     expect(row.lastErrorCategory).toBe("rate_limit_transient");
     expect(row.cooldownUntil).not.toBeNull();
@@ -214,17 +225,17 @@ describe("auto-disable intercept", () => {
     expect(until - Date.now()).toBeGreaterThan(RECOVERY_MS - 60_000);
     expect(until - Date.now()).toBeLessThanOrEqual(RECOVERY_MS);
     const events = await eventFor(accountId);
-    expect(events.at(-1)?.toStatus).toBe("disabled");
+    expect(events.at(-1)?.toStatus).toBe("cooldown");
     expect(events.at(-1)?.reason).toContain("auto-disable (rate-limited): ");
   });
 
-  test("toggle on disables on upstream quota exhaustion", async () => {
+  test("toggle on cools on upstream quota exhaustion", async () => {
     await seedTenant();
     await setToggle(true);
     const accountId = await insertAccount();
     await recordAccountFailure(db!, accountId, upstreamQuota(), upstreamQuotaEvidence);
     const row = await rowOf(accountId);
-    expect(row.status).toBe("disabled");
+    expect(row.status).toBe("cooldown");
     expect(row.lastErrorCategory).toBe("quota_exhausted");
     expect(row.lastError).toContain("auto-disable (rate-limited): ");
   });
@@ -242,7 +253,7 @@ describe("auto-disable intercept", () => {
       const accountId = await insertAccount({ consecutiveFailures: 5 });
       await recordAccountFailure(db!, accountId, upstream429(), upstream429Evidence);
       const row = await rowOf(accountId);
-      expect(row.status).toBe("disabled");
+      expect(row.status).toBe("cooldown");
       const until = (row.cooldownUntil as Date).getTime();
       const hours = (until - Date.now()) / (60 * 60 * 1000);
       expect(hours).toBeGreaterThan(35);
@@ -254,7 +265,7 @@ describe("auto-disable intercept", () => {
     }
   });
 
-  test("a 429 with a modelId still disables the account, not just the pair (D02)", async () => {
+  test("a 429 with a modelId still cools the account, not just the pair (D02)", async () => {
     await seedTenant();
     await setToggle(true);
     const accountId = await insertAccount();
@@ -263,7 +274,7 @@ describe("auto-disable intercept", () => {
       modelId: "deepseek-v4.1-flash",
     });
     const row = await rowOf(accountId);
-    expect(row.status).toBe("disabled");
+    expect(row.status).toBe("cooldown");
     expect(row.modelCooldowns).toEqual({});
     expect(row.lastError).toContain("auto-disable (rate-limited): ");
   });
@@ -312,13 +323,13 @@ describe("auto-disable intercept", () => {
     expect(row.lastError).toBeNull();
   });
 
-  test("shared account is disabled when any tenant has the toggle on (D06)", async () => {
+  test("shared account cools when any tenant has the toggle on (D06)", async () => {
     await seedTenant();
     await setToggle(true);
     const accountId = await insertAccount({ tenantId: null });
     await recordAccountFailure(db!, accountId, upstream429(), upstream429Evidence);
     const row = await rowOf(accountId);
-    expect(row.status).toBe("disabled");
+    expect(row.status).toBe("cooldown");
   });
 });
 

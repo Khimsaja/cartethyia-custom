@@ -169,6 +169,7 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
     credentialUrl: "https://numes.ai/dashboard/keys",
     credentialHint: "Create an API key at numes.ai/dashboard/keys (`sk-numes-...`, USD or BTC). OpenAI-compatible chat; model ids are `author/slug` and the `:free` suffix marks zero-price rows.",
   },
+
   {
     id: "runcrate",
     displayName: "Runcrate",
@@ -463,14 +464,6 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
     defaultSkipProxy: true,
     credentialUrl: "https://freepi.ai",
     credentialHint: "Sign in with a GitHub device code (free-pi login), or paste a free-pi JWT issued by the backend.",
-  },
-  {
-    id: "perch",
-    displayName: "Perch",
-    baseUrl: "https://app.perchai.app",
-    defaultSkipProxy: true,
-    credentialUrl: "https://chat.perchai.app",
-    credentialHint: "Sign in with Google or GitHub (Perch account). Starter includes Roost Standard and Standard 1M.",
   },
   { id: "ollamacloud", displayName: "Ollama Cloud", baseUrl: "https://ollama.com/v1", credentialUrl: "https://ollama.com/settings/keys" },
   { id: "gemini", displayName: "Google Gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta", serviceKinds: ["llm", "websearch", "imageGeneration"], credentialUrl: "https://aistudio.google.com/app/apikey" },
