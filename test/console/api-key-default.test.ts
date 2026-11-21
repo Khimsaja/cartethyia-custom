@@ -247,10 +247,10 @@ dbDescribe("default gateway API key", () => {
       });
       expect(created.isDefault).toBe(false);
       expect(created.keyPrefix).toBe(DEFAULT_API_KEY_PREFIX);
-      expect(created.secret).toMatch(/^pn-carte-[A-Za-z0-9_-]{16}$/);
+      expect(created.secret).toMatch(/^tip_[A-Za-z0-9_-]{16}$/);
 
       const rotated = await operations.regenerateKey(owner(tenant.tenantId), created.id);
-      expect(rotated.secret).toMatch(/^pn-carte-[A-Za-z0-9_-]{16}$/);
+      expect(rotated.secret).toMatch(/^tip_[A-Za-z0-9_-]{16}$/);
       expect((await operations.listKeys(owner(tenant.tenantId))).find((key) => key.id === created.id)?.keyPrefix)
         .toBe(DEFAULT_API_KEY_PREFIX);
 
