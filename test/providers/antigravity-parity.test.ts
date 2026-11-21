@@ -14,12 +14,17 @@ import {
   antigravityThinkingBudget,
   antigravityWireModelId,
   collapseAntigravityVariant,
+  getAntigravityModelWireProfile,
   getAntigravityUserAgent,
   flattenAntigravitySchema,
   normalizeAntigravityToolSchema,
   normalizeAntigravityToolSchemas,
 } from "../../src/providers/integrations/antigravity/antigravity-protocol";
 import { buildAntigravityEnvelope } from "../../src/providers/integrations/antigravity/antigravity";
+import {
+  ANTIGRAVITY_FREE_TIER_MODEL_IDS,
+  ANTIGRAVITY_MODELS,
+} from "../../src/providers/integrations/antigravity/antigravity-models";
 import { buildGeminiPayload } from "../../src/protocol/request/gemini";
 import type { CanonicalRequest } from "../../src/protocol/canonical-model";
 
@@ -413,8 +418,15 @@ describe("Antigravity wire model mapping & variant collapse", () => {
     expect(antigravityWireModelId("claude-opus-4-6")).toBe("claude-opus-4-6-thinking");
     expect(antigravityWireModelId("gemini-3.1-pro")).toBe("gemini-pro-agent");
     expect(antigravityWireModelId("gemini-2.5-flash")).toBe("gemini-2.5-flash");
+    // Sonar is a standalone deployment id, not an effort tier: it has no
+    // default tier and must pass through untouched.
+    expect(antigravityWireModelId("gemini-4-hydrogen-sonar")).toBe("gemini-4-hydrogen-sonar");
+    // Claude 5.5 bare ids are 404 upstream; they resolve to a live tier.
+    expect(antigravityWireModelId("claude-opus-5-5")).toBe("claude-opus-5-5-high");
+    expect(antigravityWireModelId("claude-sonnet-5-5")).toBe("claude-sonnet-5-5-high");
     // Tier rows are already deployment ids and pass through untouched.
     expect(antigravityWireModelId("gemini-4-carbon-high")).toBe("gemini-4-carbon-high");
+    expect(antigravityWireModelId("claude-opus-5-5-low")).toBe("claude-opus-5-5-low");
   });
 
   test("collapses effort variants back to logical catalog model ids", () => {
@@ -472,10 +484,69 @@ describe("Antigravity effort-tier vocabulary (single owner)", () => {
       ["gemini-4-hydrogen", "medium"],
       ["gemini-4-neon", "high"],
       ["gpt-oss-120b", "medium"],
+      ["claude-opus-5-5", "high"],
+      ["claude-sonnet-5-5", "high"],
     ] as const) {
       const wire = antigravityWireModelId(logical);
       expect(wire).toBe(`${logical}-${tier}`);
       expect(collapseAntigravityVariant(wire)).toBe(logical);
     }
+  });
+});
+
+describe("Antigravity catalog free-tier marking", () => {
+  test("only rows published on the probed free-tier account are marked free", () => {
+    // Source of truth is the 2026-11-21 `fetchAvailableModels` probe: 18 wire
+    // deployments collapsed to the ids in ANTIGRAVITY_FREE_TIER_MODEL_IDS.
+    // Other static rows are discoverable but were not published on that free
+    // plan, so they must NOT be grouped as free or priced at zero.
+    expect(ANTIGRAVITY_MODELS.length).toBeGreaterThan(0);
+    for (const model of ANTIGRAVITY_MODELS) {
+      if (ANTIGRAVITY_FREE_TIER_MODEL_IDS.has(model.modelId)) {
+        expect(model.freeTier).toBe(true);
+        expect(model.cost.input).toBe(0);
+        expect(model.cost.output).toBe(0);
+      } else {
+        expect(model.freeTier).toBeUndefined();
+      }
+    }
+    // Guard against an empty allowlist silently unflagging everything.
+    expect(ANTIGRAVITY_FREE_TIER_MODEL_IDS.size).toBeGreaterThan(0);
+  });
+
+  test("gemini-4-hydrogen-sonar is catalogued at live-measured limits", () => {
+    // Verified live 2026-11-21: direct chat answers
+    // `modelVersion: gemini-4-hydrogen-sonar`; published limits are 1,048,576
+    // in / 65,536 out. Earlier Hydrogen tiers publish 262,144 out.
+    const sonar = ANTIGRAVITY_MODELS.find((m) => m.modelId === "gemini-4-hydrogen-sonar");
+    expect(sonar).toBeDefined();
+    expect(sonar?.contextLimit).toBe(1_048_576);
+    expect(sonar?.outputLimit).toBe(65_536);
+  });
+});
+
+describe("Antigravity wire profiles published by live discovery", () => {
+  test("Claude 5.5 tiers carry their live model enums and 128000 cap", () => {
+    // `fetchAvailableModels` on 2026-11-21 publishes these enums and a
+    // 128,000-token output ceiling per tier. Bare ids are 404 upstream, so
+    // only the tier deployments have wire profiles.
+    for (const [wire, modelEnum] of [
+      ["claude-opus-5-5-low", "MODEL_PLACEHOLDER_M400"],
+      ["claude-opus-5-5-medium", "MODEL_PLACEHOLDER_M401"],
+      ["claude-opus-5-5-high", "MODEL_PLACEHOLDER_M402"],
+      ["claude-sonnet-5-5-low", "MODEL_PLACEHOLDER_M403"],
+      ["claude-sonnet-5-5-medium", "MODEL_PLACEHOLDER_M404"],
+      ["claude-sonnet-5-5-high", "MODEL_PLACEHOLDER_M405"],
+    ] as const) {
+      expect(getAntigravityModelWireProfile(wire)?.modelEnum).toBe(modelEnum);
+      expect(getAntigravityModelWireProfile(wire)?.maxOutputTokens).toBe(128000);
+    }
+  });
+
+  test("tab_jump preview has its live enum and 4096 cap", () => {
+    expect(getAntigravityModelWireProfile("tab_jump_flash_lite_preview")?.modelEnum).toBe(
+      "MODEL_PLACEHOLDER_M28",
+    );
+    expect(getAntigravityModelWireProfile("tab_jump_flash_lite_preview")?.maxOutputTokens).toBe(4096);
   });
 });
