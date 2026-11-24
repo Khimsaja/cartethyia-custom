@@ -87,6 +87,10 @@ export const QODER_VIRTUAL_MODELS: readonly QoderVirtualModel[] = [
   // `lite` is the free-tier plan package over `qmodel` (Qwen3.7-Plus):
   // same 1M window and multimodal input, capped at 64k output, free tier.
   { id: "lite-qwen-3.7-plus", target: "lite", displayName: "Lite-Qwen-3.7-Plus", free: true, outputLimit: 65536, vision: true },
+  // HungerG is the free event model over `hmodel` (assistant/app groups only;
+  // see the roster comment — discovery never sees it). Caller-facing id is
+  // the event name.
+  { id: "hungerg", target: "hmodel", displayName: "HungerG", free: true, vision: true },
 ];
 
 /** Shared lookup table for the virtual roster (see `shared/virtual-models`). */

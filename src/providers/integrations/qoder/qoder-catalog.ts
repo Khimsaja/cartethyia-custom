@@ -166,6 +166,13 @@ export const QODER_INTL_MODEL_CONFIGS: Readonly<Record<string, QoderModelConfig>
   // `lite` is the free-tier plan package: same 1M window and multimodal input
   // as `qmodel` (Qwen3.7-Plus), capped at 64k output, free tier.
   lite: { id: "lite", display_name: "Lite-Qwen-3.7-Plus", max_input_tokens: 1000000, max_output_tokens: 65_536, is_vl: true, is_free: true, is_reasoning: false },
+  // HungerG (`hmodel`) — Qoder's free event model (23–30 Nov 2026). Upstream
+  // lists it ONLY in the `assistant` and `app` groups of /model/list, never in
+  // `chat`, so discovery (chat group only) can never surface it; it lives here
+  // as a static row instead. Verified live 2026-11-24: the agent endpoint
+  // answers with real content on this key and usage bills 0.0 credits. The
+  // output ceiling is the sibling 1M-reasoning value — upstream states none.
+  hmodel: { id: "hmodel", display_name: "HungerG", max_input_tokens: 1000000, max_output_tokens: 131_072, is_vl: true, is_free: true, is_reasoning: true },
 };
 
 /**
